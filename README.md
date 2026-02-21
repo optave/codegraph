@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="#-why-codegraph">Why codegraph?</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-features">Features</a> •
   <a href="#-commands">Commands</a> •
@@ -31,6 +32,61 @@
 > **Zero network calls. Zero telemetry. Your code never leaves your machine.**
 >
 > Codegraph uses [tree-sitter](https://tree-sitter.github.io/) (via WASM — no native compilation required) to parse your codebase into an AST, extracts functions, classes, imports, and call sites, resolves dependencies, and stores everything in a local SQLite database. Query it instantly from the command line.
+
+---
+
+## 💡 Why codegraph?
+
+<sub>Comparison last verified: February 2025</sub>
+
+Most dependency graph tools only tell you which **files** import which — codegraph tells you which **functions** call which, who their callers are, and what breaks when something changes. Here's how it compares to the alternatives:
+
+### The problem with existing tools
+
+| Tool | What it does well | Where it falls short |
+|---|---|---|
+| [Madge](https://github.com/pahen/madge) | Simple file-level JS/TS dependency graphs | No function-level analysis, no impact tracing, JS/TS only |
+| [dependency-cruiser](https://github.com/sverweij/dependency-cruiser) | Architectural rule validation for JS/TS | Module-level only (function-level explicitly out of scope), requires config |
+| [Skott](https://github.com/antoine-music/skott) | Module graph with unused code detection | File-level only, JS/TS only, no persistent database |
+| [Nx graph](https://nx.dev/) | Monorepo project-level dependency graph | Requires Nx workspace, project-level only (not file or function) |
+| [Sourcetrail](https://github.com/CoatiSoftware/Sourcetrail) | Rich GUI with symbol-level graphs | Archived/discontinued (2021), no JS/TS, no CLI |
+| [Sourcegraph](https://sourcegraph.com/) | Enterprise code search and navigation | Not a dependency graph tool, SaaS ($19+/user/mo), no longer open source |
+| [CodeSee](https://www.codesee.io/) | Visual codebase maps | Cloud-based (code leaves your machine), acquired by GitKraken |
+| [Understand](https://scitools.com/) | Deep multi-language static analysis | $100+/month per seat, GUI-only, no CI or AI integration |
+| [pyan](https://github.com/Technologicat/pyan) / [cflow](https://www.gnu.org/software/cflow/) | Function-level call graphs | Single-language each (Python / C only), no persistence, no queries |
+
+### What makes codegraph different
+
+**Function-level granularity, not just files.** Tools like Madge, dependency-cruiser, and Skott show you that `fileA.ts` imports `fileB.ts`. Codegraph shows you that `handleAuth()` calls `validateToken()` which calls `decryptJWT()` — and that 14 callers across 9 files break if `decryptJWT` changes. That's the difference between knowing a dependency exists and understanding its blast radius.
+
+**One tool for multiple languages.** Instead of juggling Madge for JS/TS, pyan for Python, and cflow for C — codegraph parses JavaScript, TypeScript, Python, and Terraform in a single CLI with a unified graph. One database, one query interface.
+
+**Built for AI-assisted development.** Codegraph includes a native [MCP server](https://modelcontextprotocol.io/) so AI agents like Claude can query your dependency graph directly. No other dependency graph tool offers this. When an AI assistant needs to understand what a function touches before modifying it, `codegraph fn <name>` gives it the answer instantly.
+
+**Git diff impact analysis out of the box.** Run `codegraph diff-impact` and see exactly which functions changed in your diff, their callers, and the full blast radius — ready to paste into a PR comment. Ships with a GitHub Actions workflow that does this automatically on every pull request.
+
+**Fully local, zero telemetry, zero cost.** Your code never leaves your machine. No accounts, no API keys, no cloud. Unlike CodeSee, Sourcegraph, or Snyk Code, there is no data exfiltration risk. Unlike Understand, there's no $100/month seat license. Apache-2.0 licensed, free forever.
+
+**Build once, query instantly.** Codegraph stores everything in a local SQLite database. After the initial build (~30s for a 3,200-file project), every query runs in under 100ms. Most competitors re-parse the entire codebase on every run.
+
+**Semantic search with local embeddings.** Search your codebase by meaning, not just text. `codegraph search "handle authentication"` uses locally-run embeddings (via HuggingFace Transformers) to find relevant functions — no API keys, no cloud, no cost per query.
+
+### Feature comparison
+
+| Capability | codegraph | Madge | dep-cruiser | Skott | Nx graph | Sourcetrail |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Function-level analysis | **Yes** | — | — | — | — | **Yes** |
+| Multi-language | **4** | 1 | 1 | 1 | Any (project) | 4 |
+| Semantic search | **Yes** | — | — | — | — | — |
+| MCP / AI agent support | **Yes** | — | — | — | — | — |
+| Git diff impact | **Yes** | — | — | — | Partial | — |
+| Persistent database | **Yes** | — | — | — | — | Yes |
+| Watch mode | **Yes** | — | — | — | Daemon | — |
+| CI workflow included | **Yes** | — | Rules | — | Yes | — |
+| Cycle detection | **Yes** | Yes | Yes | Yes | — | — |
+| Zero config | **Yes** | Yes | — | Yes | — | — |
+| Fully local / no telemetry | **Yes** | Yes | Yes | Yes | Partial | Yes |
+| Free & open source | **Yes** | Yes | Yes | Yes | Partial | Archived |
 
 ---
 
