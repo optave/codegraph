@@ -60,19 +60,15 @@ Many tools in this space are cloud-based or SaaS — meaning your code leaves yo
 
 ### What makes codegraph different
 
-**Function-level granularity, not just files.** Tools like Madge, dependency-cruiser, and Skott show you that `fileA.ts` imports `fileB.ts`. Codegraph shows you that `handleAuth()` calls `validateToken()` which calls `decryptJWT()` — and that 14 callers across 9 files break if `decryptJWT` changes. That's the difference between knowing a dependency exists and understanding its blast radius.
-
-**One tool for multiple languages.** Instead of juggling Madge for JS/TS, pyan for Python, and cflow for C — codegraph parses JavaScript, TypeScript, Python, and Terraform in a single CLI with a unified graph. One database, one query interface.
-
-**Built for AI-assisted development.** Codegraph includes a native [MCP server](https://modelcontextprotocol.io/) so AI agents like Claude can query your dependency graph directly. No other dependency graph tool offers this. When an AI assistant needs to understand what a function touches before modifying it, `codegraph fn <name>` gives it the answer instantly.
-
-**Git diff impact analysis out of the box.** Run `codegraph diff-impact` and see exactly which functions changed in your diff, their callers, and the full blast radius — ready to paste into a PR comment. Ships with a GitHub Actions workflow that does this automatically on every pull request.
-
-**Fully local, zero telemetry, zero cost.** Your code never leaves your machine. No accounts, no API keys, no cloud. Unlike CodeSee, Sourcegraph, or Snyk Code, there is no data exfiltration risk. Unlike Understand, there's no $100/month seat license. Apache-2.0 licensed, free forever.
-
-**Build once, query instantly.** Codegraph stores everything in a local SQLite database. After the initial build (~30s for a 3,200-file project), every query runs in under 100ms. Most competitors re-parse the entire codebase on every run.
-
-**Semantic search with local embeddings.** Search your codebase by meaning, not just text. `codegraph search "handle authentication"` uses locally-run embeddings (via HuggingFace Transformers) to find relevant functions — no API keys, no cloud, no cost per query.
+| | Differentiator | In practice |
+|---|---|---|
+| **🔬** | **Function-level, not just files** | Traces `handleAuth()` → `validateToken()` → `decryptJWT()` and shows 14 callers across 9 files break if `decryptJWT` changes |
+| **🌐** | **Multi-language, one CLI** | JS/TS + Python + Terraform in a single graph — no juggling Madge, pyan, and cflow |
+| **🤖** | **AI-agent ready** | Built-in [MCP server](https://modelcontextprotocol.io/) — AI assistants query your graph directly via `codegraph fn <name>` |
+| **💥** | **Git diff impact** | `codegraph diff-impact` shows changed functions, their callers, and full blast radius — ships with a GitHub Actions workflow |
+| **🔒** | **Fully local, zero telemetry** | No accounts, no API keys, no cloud, no data exfiltration — Apache-2.0, free forever |
+| **⚡** | **Build once, query instantly** | SQLite-backed — build in ~30s, every query under 100ms. Most competitors re-parse every run |
+| **🧠** | **Semantic search** | `codegraph search "handle auth"` uses local embeddings (HuggingFace) — no API keys, no cost per query |
 
 ### Feature comparison
 
