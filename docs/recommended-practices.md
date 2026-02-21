@@ -153,6 +153,31 @@ This project uses codegraph. The database is at `.codegraph/graph.db`.
 - **To trace breakage**: `codegraph fn-impact <name> --no-tests`
 
 Rebuild after major structural changes: `codegraph build`
+
+### Semantic search
+
+Use `codegraph search` to find functions by intent rather than exact name.
+When a single query might miss results, combine multiple angles with `;`:
+
+  codegraph search "validate auth; check token; verify JWT"
+  codegraph search "parse config; load settings" --kind function
+
+Multi-query search uses Reciprocal Rank Fusion — functions that rank
+highly across several queries surface first. This is especially useful
+when you're not sure what naming convention the codebase uses.
+
+When writing multi-queries, use 2-4 sub-queries (2-4 words each) that
+attack the problem from different angles. Pick from these strategies:
+- **Naming variants**: cover synonyms the author might have used
+  ("send email; notify user; deliver message")
+- **Abstraction levels**: pair high-level intent with low-level operation
+  ("handle payment; charge credit card")
+- **Input/output sides**: cover the read half and write half
+  ("parse config; apply settings")
+- **Domain + technical**: bridge business language and implementation
+  ("onboard tenant; create organization; provision workspace")
+
+Use `--kind function` to cut noise. Use `--file <pattern>` to scope.
 ```
 
 ### Claude Code hooks
@@ -227,6 +252,82 @@ Build embeddings first (one-time):
 codegraph embed                          # ~23 MB model, fast
 codegraph embed --model nomic            # ~137 MB, best quality
 ```
+
+### Multi-query search
+
+When a single query doesn't capture what you're looking for, combine multiple angles with `;`. Results are ranked using Reciprocal Rank Fusion (RRF) — functions that score well across multiple queries rise to the top.
+
+Use **2-4 sub-queries**. Each sub-query should attack the problem from a different angle. The framework below covers the four most effective angles — pick 2-3 that fit your situation:
+
+#### 1. Name what it does vs. what it's called
+
+Codebases are inconsistent. The function you want might be called `authenticate`, `checkAuth`, `verifyUser`, or `ensureLoggedIn`. Cover the likely naming variations:
+
+```bash
+# You think "validate input" — but the author might have written "sanitize", "check", or "parse"
+codegraph search "validate input; sanitize request; check params"
+
+# You think "send email" — but it could be "notify", "mail", or "deliver"
+codegraph search "send email; notify user; deliver message"
+```
+
+#### 2. Describe the behavior at different abstraction levels
+
+A high-level description ("handle payment") and a low-level one ("charge credit card") often match different but related functions. Combining them surfaces the full chain:
+
+```bash
+# High-level intent + low-level implementation
+codegraph search "handle payment; charge credit card; create Stripe session"
+
+# Architecture concept + concrete operation
+codegraph search "rate limiting; count requests per window; throttle API"
+```
+
+#### 3. Cover the input side and the output side
+
+Many operations have a clear "read" half and a "write" half. Querying both surfaces the full pipeline:
+
+```bash
+# Reading config + applying config
+codegraph search "parse config file; apply settings; load environment"
+
+# Receiving data + transforming data
+codegraph search "deserialize JSON payload; map response to model"
+```
+
+#### 4. Include the domain term and the technical term
+
+Business logic often uses domain language that differs from the technical implementation. Bridge both:
+
+```bash
+# Domain language + implementation pattern
+codegraph search "onboard new tenant; create organization; provision workspace"
+
+# User-facing concept + internal mechanism
+codegraph search "user permissions; role-based access; check authorization"
+```
+
+#### Putting it together
+
+A real-world search typically mixes 2-3 of these angles:
+
+```bash
+# Refactoring a caching layer — synonyms + abstraction levels + domain terms
+codegraph search "cache invalidation; expire stale entries; TTL cleanup" --kind function
+
+# Finding all auth-related code before a security review
+codegraph search "authenticate request; verify JWT; check session token" --file "src/api/*"
+
+# Understanding how errors propagate — input/output + abstraction
+codegraph search "catch exception; format error response; report failure to client"
+```
+
+**Additional tips:**
+
+- Keep each sub-query to **2-4 words** — embedding models work best on short, focused phrases
+- Use `--kind function` or `--kind method` to cut noise from class/type matches
+- Use `--file <pattern>` to scope to a directory when you roughly know where the code lives
+- Lower `--rrf-k` (e.g., `--rrf-k 30`) to make top-ranked results dominate more sharply
 
 ---
 

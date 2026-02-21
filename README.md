@@ -69,7 +69,7 @@ Most dependency graph tools only tell you which **files** import which — codeg
 | **💥** | **Git diff impact** | `codegraph diff-impact` shows changed functions, their callers, and full blast radius — ships with a GitHub Actions workflow |
 | **🔒** | **Fully local, zero telemetry** | No accounts, no API keys, no cloud, no data exfiltration — Apache-2.0, free forever |
 | **⚡** | **Build once, query instantly** | SQLite-backed — build in ~30s, every query under 100ms. Most competitors re-parse every run |
-| **🧠** | **Semantic search** | `codegraph search "handle auth"` uses local embeddings (HuggingFace) — no API keys, no cost per query |
+| **🧠** | **Semantic search** | `codegraph search "handle auth"` uses local embeddings — multi-query with RRF ranking via `"auth; token; JWT"` |
 
 ### How other tools compare
 
@@ -124,7 +124,7 @@ codegraph deps src/index.ts  # file-level import/export map
 | 🗺️ | **Module map** | Bird's-eye view of your most-connected files |
 | 🔄 | **Cycle detection** | Find circular dependencies at file or function level |
 | 📤 | **Export** | DOT (Graphviz), Mermaid, and JSON graph export |
-| 🧠 | **Semantic search** | Embeddings-powered natural language code search |
+| 🧠 | **Semantic search** | Embeddings-powered natural language search with multi-query RRF ranking |
 | 👀 | **Watch mode** | Incrementally update the graph as files change |
 | 🤖 | **MCP server** | Model Context Protocol integration for AI assistants |
 | 🔒 | **Fully local** | No network calls, no data exfiltration, SQLite-backed |
@@ -183,6 +183,19 @@ codegraph search "parse config" --min-score 0.4 -n 10
 codegraph models               # List available models
 ```
 
+#### Multi-query search
+
+Separate queries with `;` to search from multiple angles at once. Results are ranked using [Reciprocal Rank Fusion (RRF)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — items that rank highly across multiple queries rise to the top.
+
+```bash
+codegraph search "auth middleware; JWT validation"
+codegraph search "parse config; read settings; load env" -n 20
+codegraph search "error handling; retry logic" --kind function
+codegraph search "database connection; query builder" --rrf-k 30
+```
+
+A single trailing semicolon is ignored (falls back to single-query mode). The `--rrf-k` flag controls the RRF smoothing constant (default 60) — lower values give more weight to top-ranked results.
+
 #### Available Models
 
 | Flag | Model | Dimensions | Size | License | Notes |
@@ -209,6 +222,9 @@ codegraph mcp                  # Start MCP server for AI assistants
 | `--depth <n>` | Transitive trace depth (default varies by command) |
 | `-j, --json` | Output as JSON |
 | `-v, --verbose` | Enable debug output |
+| `-k, --kind <kind>` | Filter by kind: `function`, `method`, `class` (search) |
+| `--file <pattern>` | Filter by file path pattern (search) |
+| `--rrf-k <n>` | RRF smoothing constant for multi-query search (default 60) |
 
 ## 🌐 Language Support
 
@@ -283,8 +299,7 @@ Add this to your project's `CLAUDE.md` to help AI agents use codegraph:
 ```markdown
 ## Code Navigation
 
-This project uses codegraph (see Quick Start if not already installed).
-The codegraph database is at `.codegraph/graph.db`.
+This project uses codegraph. The database is at `.codegraph/graph.db`.
 
 - **Before modifying a function**: `codegraph fn <name> --no-tests`
 - **Before modifying a file**: `codegraph deps <file>`
@@ -293,6 +308,31 @@ The codegraph database is at `.codegraph/graph.db`.
 - **To trace breakage**: `codegraph fn-impact <name> --no-tests`
 
 Rebuild after major structural changes: `codegraph build`
+
+### Semantic search
+
+Use `codegraph search` to find functions by intent rather than exact name.
+When a single query might miss results, combine multiple angles with `;`:
+
+  codegraph search "validate auth; check token; verify JWT"
+  codegraph search "parse config; load settings" --kind function
+
+Multi-query search uses Reciprocal Rank Fusion — functions that rank
+highly across several queries surface first. This is especially useful
+when you're not sure what naming convention the codebase uses.
+
+When writing multi-queries, use 2-4 sub-queries (2-4 words each) that
+attack the problem from different angles. Pick from these strategies:
+- **Naming variants**: cover synonyms the author might have used
+  ("send email; notify user; deliver message")
+- **Abstraction levels**: pair high-level intent with low-level operation
+  ("handle payment; charge credit card")
+- **Input/output sides**: cover the read half and write half
+  ("parse config; apply settings")
+- **Domain + technical**: bridge business language and implementation
+  ("onboard tenant; create organization; provision workspace")
+
+Use `--kind function` to cut noise. Use `--file <pattern>` to scope.
 ```
 
 ## 📋 Recommended Practices
@@ -344,6 +384,24 @@ buildGraph('/path/to/project');
 
 // Query programmatically
 const results = queryNameData('myFunction', '/path/to/.codegraph/graph.db');
+```
+
+```js
+import { searchData, multiSearchData, buildEmbeddings } from '@optave/codegraph';
+
+// Build embeddings (one-time)
+await buildEmbeddings('/path/to/project');
+
+// Single-query search
+const { results } = await searchData('handle auth', dbPath);
+
+// Multi-query search with RRF ranking
+const { results: fused } = await multiSearchData(
+  ['auth middleware', 'JWT validation'],
+  dbPath,
+  { limit: 10, minScore: 0.3 }
+);
+// Each result has: { name, kind, file, line, rrf, queryScores[] }
 ```
 
 ## ⚠️ Limitations
