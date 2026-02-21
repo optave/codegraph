@@ -41,35 +41,6 @@
 
 Most dependency graph tools only tell you which **files** import which — codegraph tells you which **functions** call which, who their callers are, and what breaks when something changes. Here's how it compares to the alternatives:
 
-### The problem with existing tools
-
-Many tools in this space are cloud-based or SaaS — meaning your code leaves your machine. Others require external services, accounts, or API keys. Codegraph makes **zero network calls** and has **zero telemetry**. Everything runs locally.
-
-| Tool | What it does well | Where it falls short |
-|---|---|---|
-| [Madge](https://github.com/pahen/madge) | Simple file-level JS/TS dependency graphs | No function-level analysis, no impact tracing, JS/TS only |
-| [dependency-cruiser](https://github.com/sverweij/dependency-cruiser) | Architectural rule validation for JS/TS | Module-level only (function-level explicitly out of scope), requires config |
-| [Skott](https://github.com/antoine-music/skott) | Module graph with unused code detection | File-level only, JS/TS only, no persistent database |
-| [Nx graph](https://nx.dev/) | Monorepo project-level dependency graph | Requires Nx workspace, project-level only (not file or function) |
-| [Sourcetrail](https://github.com/CoatiSoftware/Sourcetrail) | Rich GUI with symbol-level graphs | Archived/discontinued (2021), no JS/TS, no CLI |
-| [Sourcegraph](https://sourcegraph.com/) | Enterprise code search and navigation | Cloud/SaaS — code sent to servers, $19+/user/mo, no longer open source |
-| [CodeSee](https://www.codesee.io/) | Visual codebase maps | Cloud-based — code leaves your machine, acquired by GitKraken |
-| [Understand](https://scitools.com/) | Deep multi-language static analysis | $100+/month per seat, proprietary, GUI-only, no CI or AI integration |
-| [Snyk Code](https://snyk.io/) | AI-powered security scanning | Cloud-based — code sent to Snyk servers for analysis, not a dependency graph tool |
-| [pyan](https://github.com/Technologicat/pyan) / [cflow](https://www.gnu.org/software/cflow/) | Function-level call graphs | Single-language each (Python / C only), no persistence, no queries |
-
-### What makes codegraph different
-
-| | Differentiator | In practice |
-|---|---|---|
-| **🔬** | **Function-level, not just files** | Traces `handleAuth()` → `validateToken()` → `decryptJWT()` and shows 14 callers across 9 files break if `decryptJWT` changes |
-| **🌐** | **Multi-language, one CLI** | JS/TS + Python + Terraform in a single graph — no juggling Madge, pyan, and cflow |
-| **🤖** | **AI-agent ready** | Built-in [MCP server](https://modelcontextprotocol.io/) — AI assistants query your graph directly via `codegraph fn <name>` |
-| **💥** | **Git diff impact** | `codegraph diff-impact` shows changed functions, their callers, and full blast radius — ships with a GitHub Actions workflow |
-| **🔒** | **Fully local, zero telemetry** | No accounts, no API keys, no cloud, no data exfiltration — Apache-2.0, free forever |
-| **⚡** | **Build once, query instantly** | SQLite-backed — build in ~30s, every query under 100ms. Most competitors re-parse every run |
-| **🧠** | **Semantic search** | `codegraph search "handle auth"` uses local embeddings (HuggingFace) — no API keys, no cost per query |
-
 ### Feature comparison
 
 | Capability | codegraph | Madge | dep-cruiser | Skott | Nx graph | Sourcetrail |
@@ -86,6 +57,35 @@ Many tools in this space are cloud-based or SaaS — meaning your code leaves yo
 | Zero config | **Yes** | Yes | — | Yes | — | — |
 | Fully local / no telemetry | **Yes** | Yes | Yes | Yes | Partial | Yes |
 | Free & open source | **Yes** | Yes | Yes | Yes | Partial | Archived |
+
+### What makes codegraph different
+
+| | Differentiator | In practice |
+|---|---|---|
+| **🔬** | **Function-level, not just files** | Traces `handleAuth()` → `validateToken()` → `decryptJWT()` and shows 14 callers across 9 files break if `decryptJWT` changes |
+| **🌐** | **Multi-language, one CLI** | JS/TS + Python + Terraform in a single graph — no juggling Madge, pyan, and cflow |
+| **🤖** | **AI-agent ready** | Built-in [MCP server](https://modelcontextprotocol.io/) — AI assistants query your graph directly via `codegraph fn <name>` |
+| **💥** | **Git diff impact** | `codegraph diff-impact` shows changed functions, their callers, and full blast radius — ships with a GitHub Actions workflow |
+| **🔒** | **Fully local, zero telemetry** | No accounts, no API keys, no cloud, no data exfiltration — Apache-2.0, free forever |
+| **⚡** | **Build once, query instantly** | SQLite-backed — build in ~30s, every query under 100ms. Most competitors re-parse every run |
+| **🧠** | **Semantic search** | `codegraph search "handle auth"` uses local embeddings (HuggingFace) — no API keys, no cost per query |
+
+### How other tools compare
+
+Many tools in this space are cloud-based or SaaS — meaning your code leaves your machine. Others require external services, accounts, or API keys. Codegraph makes **zero network calls** and has **zero telemetry**. Everything runs locally.
+
+| Tool | What it does well | Where it falls short |
+|---|---|---|
+| [Madge](https://github.com/pahen/madge) | Simple file-level JS/TS dependency graphs | No function-level analysis, no impact tracing, JS/TS only |
+| [dependency-cruiser](https://github.com/sverweij/dependency-cruiser) | Architectural rule validation for JS/TS | Module-level only (function-level explicitly out of scope), requires config |
+| [Skott](https://github.com/antoine-music/skott) | Module graph with unused code detection | File-level only, JS/TS only, no persistent database |
+| [Nx graph](https://nx.dev/) | Monorepo project-level dependency graph | Requires Nx workspace, project-level only (not file or function) |
+| [Sourcetrail](https://github.com/CoatiSoftware/Sourcetrail) | Rich GUI with symbol-level graphs | Archived/discontinued (2021), no JS/TS, no CLI |
+| [Sourcegraph](https://sourcegraph.com/) | Enterprise code search and navigation | Cloud/SaaS — code sent to servers, $19+/user/mo, no longer open source |
+| [CodeSee](https://www.codesee.io/) | Visual codebase maps | Cloud-based — code leaves your machine, acquired by GitKraken |
+| [Understand](https://scitools.com/) | Deep multi-language static analysis | $100+/month per seat, proprietary, GUI-only, no CI or AI integration |
+| [Snyk Code](https://snyk.io/) | AI-powered security scanning | Cloud-based — code sent to Snyk servers for analysis, not a dependency graph tool |
+| [pyan](https://github.com/Technologicat/pyan) / [cflow](https://www.gnu.org/software/cflow/) | Function-level call graphs | Single-language each (Python / C only), no persistence, no queries |
 
 ---
 
