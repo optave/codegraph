@@ -39,12 +39,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/compass-soul/codegraph.git"
+    "url": "https://github.com/optave/codegraph.git"
   },
   "bugs": {
-    "url": "https://github.com/compass-soul/codegraph/issues"
+    "url": "https://github.com/optave/codegraph/issues"
   },
-  "homepage": "https://github.com/compass-soul/codegraph#readme",
+  "homepage": "https://github.com/optave/codegraph#readme",
   "dependencies": {
     "better-sqlite3": "^11.0.0",
     "commander": "^12.0.0",

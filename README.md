@@ -1,173 +1,297 @@
-# codegraph
+<p align="center">
+  <img src="https://img.shields.io/badge/codegraph-dependency%20intelligence-blue?style=for-the-badge&logo=graphql&logoColor=white" alt="codegraph" />
+</p>
 
-Local code dependency graph CLI. Parse codebases with [tree-sitter](https://tree-sitter.github.io/), store in SQLite, query at file and function level. No network calls, no data leaves your machine.
+<h1 align="center">codegraph</h1>
 
-## Install
+<p align="center">
+  <strong>Local code dependency graph CLI — parse, query, and visualize your codebase at file and function level.</strong>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/codegraph"><img src="https://img.shields.io/npm/v/codegraph?style=flat-square&logo=npm&logoColor=white&label=npm" alt="npm version" /></a>
+  <a href="https://github.com/optave/codegraph/blob/main/LICENSE"><img src="https://img.shields.io/github/license/optave/codegraph?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="MIT License" /></a>
+  <a href="https://github.com/optave/codegraph/actions"><img src="https://img.shields.io/github/actions/workflow/status/optave/codegraph/codegraph-impact.yml?style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI" /></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node >= 20" />
+  <img src="https://img.shields.io/badge/platform-local%20only-important?style=flat-square&logo=shield&logoColor=white" alt="Local Only" />
+</p>
+
+<p align="center">
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-features">Features</a> •
+  <a href="#-commands">Commands</a> •
+  <a href="#-language-support">Languages</a> •
+  <a href="#-ai-agent-integration">AI Integration</a> •
+  <a href="#-ci--github-actions">CI/CD</a> •
+  <a href="#-contributing">Contributing</a>
+</p>
+
+---
+
+> **Zero network calls. Zero telemetry. Your code never leaves your machine.**
+>
+> Codegraph uses [tree-sitter](https://tree-sitter.github.io/) to parse your codebase into an AST, extracts functions, classes, imports, and call sites, resolves dependencies, and stores everything in a local SQLite database. Query it instantly from the command line.
+
+---
+
+## 🚀 Quick Start
 
 ```bash
-git clone https://github.com/compass-soul/codegraph.git
+# Install
+git clone https://github.com/optave/codegraph.git
 cd codegraph
 npm install --legacy-peer-deps
-npm link  # makes `codegraph` available globally
-```
+npm link
 
-## Usage
-
-### Build the graph
-
-```bash
+# Build a graph for any project
 cd your-project
-codegraph build
-# → .codegraph/graph.db created
+codegraph build        # → .codegraph/graph.db created
+
+# Start exploring
+codegraph map          # see most-connected files
+codegraph query myFunc # find any function, see callers & callees
+codegraph deps src/index.ts  # file-level import/export map
 ```
 
-Parses all `.js`, `.ts`, `.tsx`, `.jsx`, `.mjs`, `.cjs`, `.py` files. Skips `node_modules`, `dist`, `build`, `.git`, `__pycache__`, `.venv`, etc. Also supports `.tf`/`.hcl` (Terraform) if the grammar is available.
+## ✨ Features
 
-### Query a symbol
+| | Feature | Description |
+|---|---|---|
+| 🔍 | **Symbol search** | Find any function, class, or method by name with callers/callees |
+| 📁 | **File dependencies** | See what a file imports and what imports it |
+| 💥 | **Impact analysis** | Trace every file affected by a change (transitive) |
+| 🧬 | **Function-level tracing** | Call chains, caller trees, and function-level impact |
+| 📊 | **Diff impact** | Parse `git diff`, find overlapping functions, trace their callers |
+| 🗺️ | **Module map** | Bird's-eye view of your most-connected files |
+| 🔄 | **Cycle detection** | Find circular dependencies at file or function level |
+| 📤 | **Export** | DOT (Graphviz), Mermaid, and JSON graph export |
+| 🧠 | **Semantic search** | Embeddings-powered natural language code search |
+| 👀 | **Watch mode** | Incrementally update the graph as files change |
+| 🤖 | **MCP server** | Model Context Protocol integration for AI assistants |
+| 🔒 | **Fully local** | No network calls, no data exfiltration, SQLite-backed |
+
+## 📦 Commands
+
+### Build & Watch
 
 ```bash
-codegraph query routeReply
+codegraph build [dir]          # Parse and build the dependency graph
+codegraph build --no-incremental  # Force full rebuild
+codegraph watch [dir]          # Watch for changes, update graph incrementally
 ```
 
-Find any function, class, or method by name. Shows callers and callees.
-
-### File dependencies
+### Query & Explore
 
 ```bash
-codegraph deps src/auto-reply/reply/route-reply.ts
+codegraph query <name>         # Find a symbol — shows callers and callees
+codegraph deps <file>          # File imports/exports
+codegraph map                  # Top 20 most-connected files
+codegraph map -n 50            # Top 50
 ```
 
-What does this file import? What imports it? What's defined in it?
-
-### File-level impact analysis
+### Impact Analysis
 
 ```bash
-codegraph impact route-reply.ts
+codegraph impact <file>        # Transitive reverse dependency trace
+codegraph fn <name>            # Function-level: callers, callees, call chain
+codegraph fn <name> --no-tests --depth 5
+codegraph fn-impact <name>     # What functions break if this one changes
+codegraph diff-impact          # Impact of unstaged git changes
+codegraph diff-impact --staged # Impact of staged changes
+codegraph diff-impact HEAD~3   # Impact vs a specific ref
 ```
 
-Transitive reverse dependency trace — every file that would be affected if this file changes.
-
-### Module map
+### Export & Visualization
 
 ```bash
-codegraph map          # top 20 most-connected files
-codegraph map -n 50    # top 50
+codegraph export -f dot        # Graphviz DOT format
+codegraph export -f mermaid    # Mermaid diagram
+codegraph export -f json       # JSON graph
+codegraph export --functions -o graph.dot  # Function-level, write to file
+codegraph cycles               # Detect circular dependencies
+codegraph cycles --functions   # Function-level cycles
 ```
 
-High-level overview ranked by inbound edges (how many files depend on each).
-
-### Function-level dependencies
+### Semantic Search
 
 ```bash
-codegraph fn routeReply              # callers, callees, transitive chain
-codegraph fn routeReply --no-tests   # exclude test/spec files
-codegraph fn routeReply --depth 5    # deeper transitive trace
+codegraph embed                # Build embeddings (requires prior build)
+codegraph search "handle authentication"  # Natural language search
+codegraph search "parse config" --min-score 0.4 -n 10
+codegraph models               # List available embedding models
 ```
 
-Shows what a function calls, what calls it, and the transitive call chain up to configurable depth. Resolves calls through import context and class hierarchy.
-
-### Function-level impact
+### AI Integration
 
 ```bash
-codegraph fn-impact deliverOutboundPayloads --no-tests
+codegraph mcp                  # Start MCP server for AI assistants
 ```
 
-Like `impact` but at function granularity — traces which functions would break if this one changes.
-
-### Diff impact
-
-```bash
-codegraph diff-impact              # unstaged changes vs working tree
-codegraph diff-impact --staged     # staged changes
-codegraph diff-impact HEAD~3       # vs a specific ref
-codegraph diff-impact --no-tests   # exclude test files from results
-```
-
-Parses a git diff, finds which functions overlap with changed lines, traces their callers. Uses actual tree-sitter node boundaries for precise function range detection.
-
-## Common flags
+### Common Flags
 
 | Flag | Description |
-|------|-------------|
+|---|---|
 | `-d, --db <path>` | Custom path to `graph.db` |
 | `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files |
 | `--depth <n>` | Transitive trace depth (default varies by command) |
+| `-j, --json` | Output as JSON |
+| `-v, --verbose` | Enable debug output |
 
-## How it works
+## 🌐 Language Support
 
-1. **Parse**: tree-sitter parses every source file into an AST
-2. **Extract**: Functions, classes, methods, interfaces, imports, exports, and call sites are extracted
-3. **Resolve**: Imports are resolved to actual files (handles `.js`→`.ts` ESM convention, `tsconfig.json` path aliases, `baseUrl`)
-4. **Store**: Everything goes into SQLite (nodes + edges) with actual tree-sitter node boundaries
-5. **Query**: All queries run against the local SQLite DB
+| Language | Extensions | Coverage |
+|---|---|---|
+| ![JavaScript](https://img.shields.io/badge/-JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black) | `.js`, `.jsx`, `.mjs`, `.cjs` | Full — functions, classes, imports, call sites |
+| ![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) | `.ts`, `.tsx` | Full — interfaces, type aliases, `.d.ts` |
+| ![Python](https://img.shields.io/badge/-Python-3776AB?style=flat-square&logo=python&logoColor=white) | `.py` | Functions, classes, methods, imports, decorators |
+| ![Terraform](https://img.shields.io/badge/-Terraform-844FBA?style=flat-square&logo=terraform&logoColor=white) | `.tf`, `.hcl` | Resource, data, variable, module, output blocks |
 
-### Language Support
+## ⚙️ How It Works
 
-- **JavaScript/TypeScript** (.js, .jsx, .ts, .tsx, .mjs, .cjs) — full support including interfaces, type aliases, and `.d.ts` files
-- **Python** (.py) — functions, classes, methods, `import`/`from...import` statements, decorators
-- **Terraform/HCL** (.tf, .hcl) — resource/data/variable/module/output blocks
+```
+┌──────────┐    ┌───────────┐    ┌───────────┐    ┌──────────┐    ┌─────────┐
+│  Source   │───▶│ tree-sitter│───▶│  Extract  │───▶│  Resolve │───▶│ SQLite  │
+│  Files   │    │   Parse   │    │  Symbols  │    │  Imports │    │   DB    │
+└──────────┘    └───────────┘    └───────────┘    └──────────┘    └─────────┘
+                                                                       │
+                                                                       ▼
+                                                                 ┌─────────┐
+                                                                 │  Query  │
+                                                                 └─────────┘
+```
 
-### Call resolution
+1. **Parse** — tree-sitter parses every source file into an AST
+2. **Extract** — Functions, classes, methods, interfaces, imports, exports, and call sites are extracted
+3. **Resolve** — Imports are resolved to actual files (handles ESM conventions, `tsconfig.json` path aliases, `baseUrl`)
+4. **Store** — Everything goes into SQLite as nodes + edges with tree-sitter node boundaries
+5. **Query** — All queries run locally against the SQLite DB — typically under 100ms
+
+### Call Resolution
 
 Calls are resolved with priority and confidence scoring:
-1. **Import-aware** (confidence 1.0): If you `import { foo } from './bar'`, a call to `foo` links to `bar`'s definition
-2. **Same-file** (confidence 1.0): Definitions in the current file
-3. **Same directory** (confidence 0.7): Definitions in the same directory
-4. **Same parent directory** (confidence 0.5): Definitions in a sibling directory
-5. **Global fallback** (confidence 0.3): Match by name across codebase
-6. **Method hierarchy**: Method calls resolved through `extends` and `implements` chains
 
-### Dynamic call detection
+| Priority | Source | Confidence |
+|---|---|---|
+| 1 | **Import-aware** — `import { foo } from './bar'` → link to `bar` | `1.0` |
+| 2 | **Same-file** — definitions in the current file | `1.0` |
+| 3 | **Same directory** — definitions in sibling files | `0.7` |
+| 4 | **Same parent directory** — definitions in sibling dirs | `0.5` |
+| 5 | **Global fallback** — match by name across codebase | `0.3` |
+| 6 | **Method hierarchy** — resolved through `extends`/`implements` | — |
 
-Best-effort detection of common dynamic patterns:
-- `fn.call()`, `fn.apply()`, `fn.bind()` — resolves the target function
-- `obj["methodName"]()` — string-literal computed access treated as regular call
-- Dynamic edges are flagged in the database for downstream tooling
+Dynamic patterns like `fn.call()`, `fn.apply()`, `fn.bind()`, and `obj["method"]()` are also detected on a best-effort basis.
 
-### What it tracks
+## 📊 Performance
 
-- **Nodes**: files, functions, arrow functions, classes, methods, interfaces, type aliases
-- **Edges**: imports, imports-type, calls (with confidence), extends, implements, reexports
-- **Boundaries**: Actual tree-sitter start/end line for every definition (used by diff-impact and embeddings)
+Benchmarked on a ~3,200-file TypeScript project:
 
-## CLAUDE.md / AI Agent Integration
+| Metric | Value |
+|---|---|
+| Build time | ~30s |
+| Nodes | 19,000+ |
+| Edges | 120,000+ |
+| Query time | <100ms |
+| DB size | ~5 MB |
 
-Add this to your project's `CLAUDE.md` (or equivalent agent instructions file) to help AI coding agents use codegraph effectively:
+## 🤖 AI Agent Integration
+
+### MCP Server
+
+Codegraph includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server, so AI assistants can query your dependency graph directly:
+
+```bash
+codegraph mcp
+```
+
+### CLAUDE.md / Agent Instructions
+
+Add this to your project's `CLAUDE.md` to help AI agents use codegraph:
 
 ```markdown
 ## Code Navigation
 
-This project has a codegraph database at `.codegraph/graph.db`. Use it to understand the codebase:
+This project has a codegraph database at `.codegraph/graph.db`.
 
-- **Before modifying a function**: `codegraph fn <name> --no-tests` — see what calls it and what it calls
-- **Before modifying a file**: `codegraph deps <file>` — see import relationships
-- **To assess PR impact**: `codegraph diff-impact --no-tests` — see what your changes affect
-- **To find entry points**: `codegraph map` — shows most-connected files
-- **To trace breakage**: `codegraph fn-impact <name> --no-tests` — what breaks if this function changes
+- **Before modifying a function**: `codegraph fn <name> --no-tests`
+- **Before modifying a file**: `codegraph deps <file>`
+- **To assess PR impact**: `codegraph diff-impact --no-tests`
+- **To find entry points**: `codegraph map`
+- **To trace breakage**: `codegraph fn-impact <name> --no-tests`
 
-Rebuild the graph after major structural changes: `codegraph build`
-
-### Workflow
-1. Run `codegraph fn <function> --no-tests` before changing any function
-2. Check callers — will your change break them?
-3. After changes, run `codegraph diff-impact --no-tests` to verify impact scope
-4. If impact is larger than expected, review before committing
+Rebuild after major structural changes: `codegraph build`
 ```
 
-## Performance
+## 🔁 CI / GitHub Actions
 
-On a ~3200-file TypeScript project (OpenClaw):
-- **Build time**: ~30 seconds
-- **19,000+ nodes**, **120,000+ edges**
-- **Query time**: <100ms (SQLite is fast)
-- **DB size**: ~5MB
+Codegraph ships with a ready-to-use GitHub Actions workflow that comments impact analysis on every pull request.
 
-## Limitations
+Copy `.github/workflows/codegraph-impact.yml` to your repo, and every PR will get a comment like:
 
-- **No full type inference**: Parses `.d.ts` interfaces but doesn't use TypeScript's type checker for overload resolution
-- **Dynamic calls are best-effort**: Complex computed property access and `eval` patterns are not resolved
-- **Python import resolution**: Resolves relative imports but doesn't follow `sys.path` or virtual environment packages
+> **3 functions changed** → **12 callers affected** across **7 files**
 
-## License
+## 🛠️ Configuration
 
-MIT
+Create a `.codegraphrc.json` in your project root to customize behavior:
+
+```json
+{
+  "include": ["src/**", "lib/**"],
+  "exclude": ["**/*.test.js", "**/__mocks__/**"],
+  "ignoreDirs": ["node_modules", ".git", "dist"],
+  "extensions": [".js", ".ts", ".tsx", ".py"],
+  "aliases": {
+    "@/": "./src/",
+    "@utils/": "./src/utils/"
+  },
+  "build": {
+    "incremental": true
+  }
+}
+```
+
+## 📖 Programmatic API
+
+Codegraph also exports a full API for use in your own tools:
+
+```js
+import { buildGraph, queryNameData, findCycles, exportDOT } from 'codegraph';
+
+// Build the graph
+buildGraph('/path/to/project');
+
+// Query programmatically
+const results = queryNameData('myFunction', '/path/to/.codegraph/graph.db');
+```
+
+## ⚠️ Limitations
+
+- **No full type inference** — parses `.d.ts` interfaces but doesn't use TypeScript's type checker for overload resolution
+- **Dynamic calls are best-effort** — complex computed property access and `eval` patterns are not resolved
+- **Python imports** — resolves relative imports but doesn't follow `sys.path` or virtual environment packages
+
+## 🤝 Contributing
+
+Contributions are welcome! Here's how to get started:
+
+```bash
+git clone https://github.com/optave/codegraph.git
+cd codegraph
+npm install --legacy-peer-deps
+npm test                # run tests with vitest
+```
+
+1. Fork the repo
+2. Create your feature branch (`git checkout -b feat/amazing-feature`)
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
+
+## 📄 License
+
+[MIT](LICENSE) — use it however you want.
+
+---
+
+<p align="center">
+  <sub>Built with <a href="https://tree-sitter.github.io/">tree-sitter</a> and <a href="https://github.com/WiseLibs/better-sqlite3">better-sqlite3</a>. No data leaves your machine. Ever.</sub>
+</p>
