@@ -12,7 +12,7 @@ import { loadNative } from './native.js';
 export function convertAliasesForNative(aliases) {
   if (!aliases) return null;
   return {
-    baseUrl: aliases.baseUrl || null,
+    baseUrl: aliases.baseUrl || '',
     paths: Object.entries(aliases.paths || {}).map(([pattern, targets]) => ({
       pattern,
       targets,

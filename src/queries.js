@@ -566,6 +566,36 @@ export function diffImpactData(customDbPath, opts = {}) {
   };
 }
 
+export function listFunctionsData(customDbPath, opts = {}) {
+  const db = openReadonlyOrFail(customDbPath);
+  const noTests = opts.noTests || false;
+  const kinds = ['function', 'method', 'class'];
+  const placeholders = kinds.map(() => '?').join(', ');
+
+  const conditions = [`kind IN (${placeholders})`];
+  const params = [...kinds];
+
+  if (opts.file) {
+    conditions.push('file LIKE ?');
+    params.push(`%${opts.file}%`);
+  }
+  if (opts.pattern) {
+    conditions.push('name LIKE ?');
+    params.push(`%${opts.pattern}%`);
+  }
+
+  let rows = db
+    .prepare(
+      `SELECT name, kind, file, line FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY file, line`,
+    )
+    .all(...params);
+
+  if (noTests) rows = rows.filter((r) => !isTestFile(r.file));
+
+  db.close();
+  return { count: rows.length, functions: rows };
+}
+
 // ─── Human-readable output (original formatting) ───────────────────────
 
 export function queryName(name, customDbPath, opts = {}) {
