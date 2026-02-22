@@ -1,4 +1,4 @@
-name: Publish to npm
+name: Publish
 
 on:
   workflow_dispatch:
@@ -32,13 +32,74 @@ jobs:
       - run: npm install --legacy-peer-deps
       - run: npm test
 
-  publish:
+  build-native:
     needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            node_arch: x64
+            node_os: linux
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            node_arch: arm64
+            node_os: darwin
+          - os: macos-14
+            target: x86_64-apple-darwin
+            node_arch: x64
+            node_os: darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            node_arch: x64
+            node_os: win32
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.target }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/codegraph-core
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@3
+
+      - name: Build native addon
+        working-directory: crates/codegraph-core
+        run: napi build --release --target ${{ matrix.target }}
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.node_os }}-${{ matrix.node_arch }}
+          path: crates/codegraph-core/*.node
+          if-no-files-found: error
+
+  publish:
+    needs: build-native
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
       contents: write
       id-token: write
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,11 +123,62 @@ jobs:
           npm version ${{ inputs.version }} -m "release: v%s"
           echo "new_version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Publish (dry run)
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Publish platform packages
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.new_version }}"
+
+          declare -A PACKAGES=(
+            ["linux-x64"]="@optave/codegraph-linux-x64-gnu"
+            ["darwin-arm64"]="@optave/codegraph-darwin-arm64"
+            ["darwin-x64"]="@optave/codegraph-darwin-x64"
+            ["win32-x64"]="@optave/codegraph-win32-x64-msvc"
+          )
+
+          for artifact_dir in artifacts/native-*/; do
+            platform=$(basename "$artifact_dir" | sed 's/^native-//')
+            pkg_name=${PACKAGES[$platform]}
+            node_os=${platform%%-*}
+            node_arch=${platform##*-}
+
+            mkdir -p "pkg/$platform"
+            cp "$artifact_dir"/*.node "pkg/$platform/codegraph-core.node"
+
+            cat > "pkg/$platform/package.json" <<PKGJSON
+          {
+            "name": "${pkg_name}",
+            "version": "${VERSION}",
+            "description": "Native codegraph-core binary for ${node_os}-${node_arch}",
+            "os": ["${node_os}"],
+            "cpu": ["${node_arch}"],
+            "main": "codegraph-core.node",
+            "files": ["codegraph-core.node"],
+            "license": "Apache-2.0",
+            "repository": {
+              "type": "git",
+              "url": "https://github.com/optave/codegraph.git"
+            }
+          }
+          PKGJSON
+
+            echo "Publishing ${pkg_name}@${VERSION}"
+            if [ "${{ inputs.dry-run }}" = "true" ]; then
+              npm publish "pkg/$platform" --access public --dry-run
+            else
+              npm publish "pkg/$platform" --access public
+            fi
+          done
+
+      - name: Publish main package (dry run)
         if: inputs.dry-run
         run: npm publish --access public --provenance --dry-run
 
-      - name: Publish
+      - name: Publish main package
         if: "!inputs.dry-run"
         run: npm publish --access public --provenance
 
