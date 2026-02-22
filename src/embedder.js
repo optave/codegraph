@@ -55,7 +55,7 @@ export const MODELS = {
   },
 };
 
-export const DEFAULT_MODEL = 'minilm';
+export const DEFAULT_MODEL = 'jina-code';
 const BATCH_SIZE_MAP = {
   minilm: 32,
   'jina-small': 16,
