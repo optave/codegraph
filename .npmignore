@@ -1,7 +1,11 @@
 .git/
 .github/
 .codegraph/
+.husky/
 tests/
+docs/
 *.db
 .codegraphrc.json
+.versionrc.json
+commitlint.config.js
 codegraph-improvements.md

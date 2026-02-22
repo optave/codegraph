@@ -90,6 +90,10 @@ Releases are triggered via the `publish.yml` workflow (`workflow_dispatch`). By 
 
 The workflow can be overridden with a specific version via the `version-override` input. Locally, `npm run release:dry-run` previews the bump and changelog.
 
+## Git Conventions
+
+- Never add AI co-authorship lines (`Co-Authored-By` or similar) to commit messages.
+
 ## Node Version
 
 Requires Node >= 20.

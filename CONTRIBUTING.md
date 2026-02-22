@@ -11,11 +11,17 @@ kinds — bug fixes, new features, documentation, and new language support.
 ```bash
 git clone https://github.com/optave/codegraph.git
 cd codegraph
-npm install
+npm install                      # also installs git hooks via husky
 npm test                         # run the full test suite
 ```
 
 **Requirements:** Node.js >= 20
+
+After `npm install`, [Husky](https://typicode.github.io/husky/) automatically
+installs two git hooks:
+
+- **pre-commit** — runs `npm run lint` (Biome) before each commit
+- **commit-msg** — validates your commit message against the [commit convention](#commit-convention)
 
 ## Project Structure
 
@@ -61,9 +67,22 @@ npx vitest run -t "finds cycles"          # Single test by name
 npm run build:wasm               # Rebuild WASM grammars
 ```
 
+## Branch Naming Convention
+
+Branch names **must** match one of these prefixes:
+
+```
+feat/    fix/    docs/    refactor/    test/    chore/
+ci/      perf/   build/   release/     revert/  dependabot/
+```
+
+Examples: `feat/add-cpp-support`, `fix/cycle-detection-edge-case`,
+`chore/update-deps`. This is enforced in CI on pull requests.
+
 ## Commit Convention
 
-We use short conventional-style prefixes:
+We use [Conventional Commits](https://www.conventionalcommits.org/). Messages
+are validated locally by a `commit-msg` hook and in CI on pull requests.
 
 | Prefix | Use for |
 |--------|---------|
@@ -72,7 +91,12 @@ We use short conventional-style prefixes:
 | `docs:` | Documentation only |
 | `refactor:` | Code changes that don't fix bugs or add features |
 | `test:` | Adding or updating tests |
-| `chore:` | Maintenance, dependencies, CI |
+| `chore:` | Maintenance, dependencies |
+| `ci:` | CI/CD changes |
+| `perf:` | Performance improvements |
+| `build:` | Build system or external dependencies |
+| `style:` | Code style (formatting, whitespace) |
+| `revert:` | Reverting a previous commit |
 
 Examples:
 ```
@@ -80,7 +104,24 @@ feat: add C language support
 fix: resolve false positive cycles in HCL modules
 docs: update adding-a-language guide
 test: add parity tests for Python extractor
+perf: cache tree-sitter parser instances
+ci: add branch naming check to PR workflow
 ```
+
+### Breaking Changes
+
+For breaking changes, add a `!` after the type or include a `BREAKING CHANGE:`
+footer:
+
+```
+feat!: rename --output flag to --format
+
+fix: change default export format
+
+BREAKING CHANGE: JSON export now uses camelCase keys instead of snake_case.
+```
+
+Breaking changes trigger a **major** version bump during release.
 
 ## Testing
 
@@ -175,7 +216,9 @@ Use [GitHub Issues](https://github.com/optave/codegraph/issues) with:
 ## Code Style
 
 - All source is plain JavaScript (ES modules) — no transpilation
-- No linter is currently configured; keep style consistent with existing code
+- [Biome](https://biomejs.dev/) is used for linting and formatting (config in `biome.json`)
+- Run `npm run lint` to check and `npm run lint:fix` to auto-fix
+- The pre-commit hook runs the linter automatically
 - Use `const`/`let` (no `var`)
 - Prefer early returns over deep nesting
 - Keep functions focused and reasonably sized
