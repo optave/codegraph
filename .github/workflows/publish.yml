@@ -3,17 +3,6 @@ name: Publish
 on:
   release:
     types: [published]
-  workflow_dispatch:
-    inputs:
-      version-override:
-        description: "Override auto-detected bump (patch/minor/major/x.y.z). Leave empty to auto-detect from commits."
-        required: false
-        type: string
-      dry-run:
-        description: "Dry run (skip actual publish)"
-        required: false
-        type: boolean
-        default: false
 
 permissions: {}
 
@@ -128,37 +117,19 @@ jobs:
           git checkout -- package-lock.json
           CURRENT=$(node -p "require('./package.json').version")
 
-          if [ "${{ github.event_name }}" = "release" ]; then
-            # Extract version from the release tag instead of trusting package.json
-            TAG="${{ github.event.release.tag_name }}"
-            RELEASE_VERSION="${TAG#v}"
-            if [ "$CURRENT" != "$RELEASE_VERSION" ]; then
-              echo "::warning::package.json ($CURRENT) doesn't match release tag ($TAG) — bumping to match"
-              npx commit-and-tag-version --release-as "$RELEASE_VERSION" --skip.tag --skip.changelog
-            else
-              echo "Triggered by release event — version $CURRENT matches tag $TAG"
-            fi
+          # Extract version from the release tag
+          TAG="${{ github.event.release.tag_name }}"
+          RELEASE_VERSION="${TAG#v}"
+          if [ "$CURRENT" != "$RELEASE_VERSION" ]; then
+            echo "::warning::package.json ($CURRENT) doesn't match release tag ($TAG) — bumping to match"
+            npx commit-and-tag-version --release-as "$RELEASE_VERSION" --skip.tag --skip.changelog
           else
-            OVERRIDE="${{ inputs.version-override }}"
-            if [ -n "$OVERRIDE" ] && [ "$CURRENT" = "$OVERRIDE" ]; then
-              echo "Version already at $OVERRIDE — skipping bump"
-            elif [ -n "$OVERRIDE" ]; then
-              npx commit-and-tag-version --release-as "$OVERRIDE" --skip.tag
-            else
-              npx commit-and-tag-version --skip.tag
-            fi
+            echo "Version $CURRENT already matches tag $TAG"
           fi
 
           NEW_VERSION=$(node -p "require('./package.json').version")
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-
-          # Verify the version was actually bumped (skip for release events and matching overrides)
-          if [ "${{ github.event_name }}" != "release" ] && [ "$NEW_VERSION" = "$CURRENT" ] && [ "$CURRENT" != "$OVERRIDE" ]; then
-            echo "::error::Version was not bumped (still $CURRENT). Check commit history or provide a version-override."
-            exit 1
-          fi
-
-          echo "Will publish version $NEW_VERSION (was $CURRENT)"
+          echo "Will publish version $NEW_VERSION"
 
       - name: Download native artifacts
         uses: actions/download-artifact@v4
@@ -215,23 +186,16 @@ jobs:
           PKGJSON
 
             echo "Publishing ${pkg_name}@${VERSION}"
-            if [ "${{ inputs.dry-run }}" = "true" ]; then
-              npm publish "./pkg/$platform" --access public --provenance --dry-run
-            else
-              npm publish "./pkg/$platform" --access public --provenance
-            fi
+            npm publish "./pkg/$platform" --access public --provenance --tag latest
           done
 
-      - name: Publish main package (dry run)
-        if: inputs.dry-run
-        run: npm publish --access public --provenance --dry-run
+      - name: Disable prepublishOnly
+        run: npm pkg set scripts.prepublishOnly=""
 
       - name: Publish main package
-        if: "!inputs.dry-run"
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag latest
 
       - name: Push version bump via PR
-        if: "!inputs.dry-run"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
