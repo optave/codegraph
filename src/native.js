@@ -29,13 +29,6 @@ export function loadNative() {
 
   const require = createRequire(import.meta.url);
 
-  // Try the umbrella package first (if published as @optave/codegraph-core)
-  try {
-    _cached = require('@optave/codegraph-core');
-    return _cached;
-  } catch { /* try platform package */ }
-
-  // Try the platform-specific package
   const key = `${os.platform()}-${os.arch()}`;
   const pkg = PLATFORM_PACKAGES[key];
   if (pkg) {

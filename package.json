@@ -27,6 +27,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "echo \"No linter configured yet\"",
+    "version": "node scripts/sync-native-versions.js && git add package.json",
     "prepublishOnly": "npm test"
   },
   "keywords": [
@@ -55,10 +56,10 @@
   "optionalDependencies": {
     "@huggingface/transformers": "^3.8.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@optave/codegraph-linux-x64-gnu": "0.1.0",
-    "@optave/codegraph-darwin-arm64": "0.1.0",
-    "@optave/codegraph-darwin-x64": "0.1.0",
-    "@optave/codegraph-win32-x64-msvc": "0.1.0"
+    "@optave/codegraph-linux-x64-gnu": "1.3.0",
+    "@optave/codegraph-darwin-arm64": "1.3.0",
+    "@optave/codegraph-darwin-x64": "1.3.0",
+    "@optave/codegraph-win32-x64-msvc": "1.3.0"
   },
   "devDependencies": {
     "@tree-sitter-grammars/tree-sitter-hcl": "^1.2.0",
