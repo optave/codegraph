@@ -66,6 +66,93 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'fn_deps',
+    description: 'Show function-level dependency chain: what a function calls and what calls it',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Function/method/class name (partial match)' },
+        depth: { type: 'number', description: 'Transitive caller depth', default: 3 },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'fn_impact',
+    description:
+      'Show function-level blast radius: all functions transitively affected by changes to a function',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Function/method/class name (partial match)' },
+        depth: { type: 'number', description: 'Max traversal depth', default: 5 },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'diff_impact',
+    description: 'Analyze git diff to find which functions changed and their transitive callers',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        staged: { type: 'boolean', description: 'Analyze staged changes only', default: false },
+        ref: { type: 'string', description: 'Git ref to diff against (default: HEAD)' },
+        depth: { type: 'number', description: 'Transitive caller depth', default: 3 },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+      },
+    },
+  },
+  {
+    name: 'semantic_search',
+    description:
+      'Search code symbols by meaning using embeddings (requires prior `codegraph embed`)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural language search query' },
+        limit: { type: 'number', description: 'Max results to return', default: 15 },
+        min_score: { type: 'number', description: 'Minimum similarity score (0-1)', default: 0.2 },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'export_graph',
+    description: 'Export the dependency graph in DOT (Graphviz), Mermaid, or JSON format',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        format: {
+          type: 'string',
+          enum: ['dot', 'mermaid', 'json'],
+          description: 'Export format',
+        },
+        file_level: {
+          type: 'boolean',
+          description: 'File-level graph (true) or function-level (false)',
+          default: true,
+        },
+      },
+      required: ['format'],
+    },
+  },
+  {
+    name: 'list_functions',
+    description:
+      'List functions, methods, and classes in the codebase, optionally filtered by file or name pattern',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Filter by file path (partial match)' },
+        pattern: { type: 'string', description: 'Filter by function name (partial match)' },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+      },
+    },
+  },
 ];
 
 export { TOOLS };
@@ -90,9 +177,16 @@ export async function startMCPServer(customDbPath) {
   }
 
   // Lazy import query functions to avoid circular deps at module load
-  const { queryNameData, impactAnalysisData, moduleMapData, fileDepsData } = await import(
-    './queries.js'
-  );
+  const {
+    queryNameData,
+    impactAnalysisData,
+    moduleMapData,
+    fileDepsData,
+    fnDepsData,
+    fnImpactData,
+    diffImpactData,
+    listFunctionsData,
+  } = await import('./queries.js');
 
   const require = createRequire(import.meta.url);
   const Database = require('better-sqlite3');
@@ -129,6 +223,78 @@ export async function startMCPServer(customDbPath) {
         }
         case 'module_map':
           result = moduleMapData(dbPath, args.limit || 20);
+          break;
+        case 'fn_deps':
+          result = fnDepsData(args.name, dbPath, {
+            depth: args.depth,
+            noTests: args.no_tests,
+          });
+          break;
+        case 'fn_impact':
+          result = fnImpactData(args.name, dbPath, {
+            depth: args.depth,
+            noTests: args.no_tests,
+          });
+          break;
+        case 'diff_impact':
+          result = diffImpactData(dbPath, {
+            staged: args.staged,
+            ref: args.ref,
+            depth: args.depth,
+            noTests: args.no_tests,
+          });
+          break;
+        case 'semantic_search': {
+          const { searchData } = await import('./embedder.js');
+          result = await searchData(args.query, dbPath, {
+            limit: args.limit,
+            minScore: args.min_score,
+          });
+          if (result === null) {
+            return {
+              content: [
+                { type: 'text', text: 'Semantic search unavailable. Run `codegraph embed` first.' },
+              ],
+              isError: true,
+            };
+          }
+          break;
+        }
+        case 'export_graph': {
+          const { exportDOT, exportMermaid, exportJSON } = await import('./export.js');
+          const db = new Database(findDbPath(dbPath), { readonly: true });
+          const fileLevel = args.file_level !== false;
+          switch (args.format) {
+            case 'dot':
+              result = exportDOT(db, { fileLevel });
+              break;
+            case 'mermaid':
+              result = exportMermaid(db, { fileLevel });
+              break;
+            case 'json':
+              result = exportJSON(db);
+              break;
+            default:
+              db.close();
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Unknown format: ${args.format}. Use dot, mermaid, or json.`,
+                  },
+                ],
+                isError: true,
+              };
+          }
+          db.close();
+          break;
+        }
+        case 'list_functions':
+          result = listFunctionsData(dbPath, {
+            file: args.file,
+            pattern: args.pattern,
+            noTests: args.no_tests,
+          });
           break;
         default:
           return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
