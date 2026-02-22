@@ -139,12 +139,33 @@ jobs:
               npx commit-and-tag-version
             fi
           fi
-          echo "new_version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Verify the version was actually bumped (skip for release events and matching overrides)
+          if [ "${{ github.event_name }}" != "release" ] && [ "$NEW_VERSION" = "$CURRENT" ] && [ "$CURRENT" != "$OVERRIDE" ]; then
+            echo "::error::Version was not bumped (still $CURRENT). Check commit history or provide a version-override."
+            exit 1
+          fi
+
+          echo "Will publish version $NEW_VERSION (was $CURRENT)"
 
       - name: Download native artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
+
+      - name: Verify version not already on npm
+        run: |
+          VERSION="${{ steps.version.outputs.new_version }}"
+          PKG="@optave/codegraph"
+          echo "Checking if $PKG@$VERSION already exists on npm..."
+          if npm view "$PKG@$VERSION" version 2>/dev/null; then
+            echo "::error::$PKG@$VERSION is already published on npm. Bump to a higher version."
+            exit 1
+          fi
+          echo "$PKG@$VERSION is not yet published — proceeding"
 
       - name: Publish platform packages
         shell: bash

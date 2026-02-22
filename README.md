@@ -45,20 +45,19 @@ Most dependency graph tools only tell you which **files** import which — codeg
 
 ### Feature comparison
 
-| Capability | codegraph | Madge | dep-cruiser | Skott | Nx graph | Sourcetrail | GitNexus |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Function-level analysis | **Yes** | — | — | — | — | **Yes** | **Yes** |
-| Multi-language | **11** | 1 | 1 | 1 | Any (project) | 4 | 9 |
-| Semantic search | **Yes** | — | — | — | — | — | **Yes** |
-| MCP / AI agent support | **Yes** | — | — | — | — | — | **Yes** |
-| Git diff impact | **Yes** | — | — | — | Partial | — | **Yes** |
-| Persistent database | **Yes** | — | — | — | — | Yes | **Yes** |
-| Watch mode | **Yes** | — | — | — | Daemon | — | — |
-| CI workflow included | **Yes** | — | Rules | — | Yes | — | — |
-| Cycle detection | **Yes** | Yes | Yes | Yes | — | — | — |
-| Zero config | **Yes** | Yes | — | Yes | — | — | **Yes** |
-| Fully local / no telemetry | **Yes** | Yes | Yes | Yes | Partial | Yes | **Yes** |
-| Free & open source | **Yes** | Yes | Yes | Yes | Partial | Archived | No |
+| Capability | codegraph | [code-graph-rag](https://github.com/vitali87/code-graph-rag) | [glimpse](https://github.com/seatedro/glimpse) | [CodeMCP](https://github.com/SimplyLiz/CodeMCP) | [axon](https://github.com/harshkedia177/axon) | [autodev-codebase](https://github.com/anrgct/autodev-codebase) | [arbor](https://github.com/Anandb71/arbor) | [Claude-code-memory](https://github.com/Durafen/Claude-code-memory) |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Function-level analysis | **Yes** | **Yes** | **Yes** | **Yes** | **Yes** | **Yes** | **Yes** | — |
+| Multi-language | **11** | Multi | Multi | SCIP langs | Few | **40+** | Multi | — |
+| Semantic search | **Yes** | **Yes** | — | — | — | **Yes** | **Yes** | **Yes** |
+| MCP / AI agent support | **Yes** | **Yes** | — | **Yes** | — | — | **Yes** | **Yes** |
+| Git diff impact | **Yes** | — | — | — | **Yes** | — | — | — |
+| Watch mode | **Yes** | — | — | — | — | — | — | — |
+| CI workflow included | **Yes** | — | — | — | — | — | — | — |
+| Cycle detection | **Yes** | — | — | — | **Yes** | — | — | — |
+| Zero config | **Yes** | — | **Yes** | — | — | — | **Yes** | — |
+| Fully local / no telemetry | **Yes** | Partial | **Yes** | **Yes** | **Yes** | Partial | **Yes** | — |
+| Free & open source | **Yes** | Yes | Yes | Custom | — | — | Yes | — |
 
 ### What makes codegraph different
 
@@ -78,17 +77,17 @@ Many tools in this space are cloud-based or SaaS — meaning your code leaves yo
 
 | Tool | What it does well | Where it falls short |
 |---|---|---|
+| [code-graph-rag](https://github.com/vitali87/code-graph-rag) | Graph RAG with Memgraph, multi-provider AI, semantic search, code editing via AST | Requires Docker (Memgraph), depends on cloud AI providers, complex setup |
+| [glimpse](https://github.com/seatedro/glimpse) | Clipboard-first LLM context tool, call graphs, LSP resolution, token counting | Context-packing tool, not a dependency graph — no persistence, no queries |
+| [CodeMCP](https://github.com/SimplyLiz/CodeMCP) | SCIP compiler-grade indexing, compound operations (83% token savings), secret scanning | Custom license, requires SCIP toolchains per language, limited language coverage |
+| [axon](https://github.com/harshkedia177/axon) | 11-phase pipeline, KuzuDB, community detection, dead code, change coupling | No license, Python-focused, limited language support |
+| [autodev-codebase](https://github.com/anrgct/autodev-codebase) | 40+ languages, interactive Cytoscape.js visualization, LLM reranking | No license, some embedding providers require cloud APIs, complex setup |
+| [arbor](https://github.com/Anandb71/arbor) | Native GUI, confidence scoring, architectural role classification, fuzzy search | GUI-focused — no CLI pipeline, no watch mode, no CI integration |
+| [Claude-code-memory](https://github.com/Durafen/Claude-code-memory) | Persistent codebase memory for Claude Code, Memory Guard quality gate | Cloud-dependent (Voyage AI), requires Qdrant, not a code analysis tool |
 | [Madge](https://github.com/pahen/madge) | Simple file-level JS/TS dependency graphs | No function-level analysis, no impact tracing, JS/TS only |
 | [dependency-cruiser](https://github.com/sverweij/dependency-cruiser) | Architectural rule validation for JS/TS | Module-level only (function-level explicitly out of scope), requires config |
-| [Skott](https://github.com/antoine-music/skott) | Module graph with unused code detection | File-level only, JS/TS only, no persistent database |
 | [Nx graph](https://nx.dev/) | Monorepo project-level dependency graph | Requires Nx workspace, project-level only (not file or function) |
-| [Sourcetrail](https://github.com/CoatiSoftware/Sourcetrail) | Rich GUI with symbol-level graphs | Archived/discontinued (2021), no JS/TS, no CLI |
-| [Sourcegraph](https://sourcegraph.com/) | Enterprise code search and navigation | Cloud/SaaS — code sent to servers, $19+/user/mo, no longer open source |
-| [CodeSee](https://www.codesee.io/) | Visual codebase maps | Cloud-based — code leaves your machine, acquired by GitKraken |
-| [Understand](https://scitools.com/) | Deep multi-language static analysis | $100+/month per seat, proprietary, GUI-only, no CI or AI integration |
-| [Snyk Code](https://snyk.io/) | AI-powered security scanning | Cloud-based — code sent to Snyk servers for analysis, not a dependency graph tool |
 | [pyan](https://github.com/Technologicat/pyan) / [cflow](https://www.gnu.org/software/cflow/) | Function-level call graphs | Single-language each (Python / C only), no persistence, no queries |
-| [GitNexus](https://gitnexus.dev/) | Function-level graph with hybrid search and MCP | PolyForm Noncommercial license, no watch mode, no cycle detection, no CI workflow |
 
 ---
 
