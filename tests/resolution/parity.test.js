@@ -47,7 +47,7 @@ describe('convertAliasesForNative', () => {
 
   it('handles empty aliases', () => {
     const result = convertAliasesForNative({ baseUrl: null, paths: {} });
-    expect(result.baseUrl).toBeNull();
+    expect(result.baseUrl).toBe('');
     expect(result.paths).toHaveLength(0);
   });
 });

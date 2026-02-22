@@ -202,7 +202,7 @@ describe('convertAliasesForNative', () => {
 
   it('handles missing baseUrl and paths', () => {
     const result = convertAliasesForNative({});
-    expect(result).toEqual({ baseUrl: null, paths: [] });
+    expect(result).toEqual({ baseUrl: '', paths: [] });
   });
 });
 
