@@ -59,11 +59,11 @@ jobs:
           workspaces: crates/codegraph-core
 
       - name: Install napi-rs CLI
-        run: npm install -g @napi-rs/cli
+        run: npm install -g @napi-rs/cli@3
 
       - name: Build native addon
         working-directory: crates/codegraph-core
-        run: napi build --platform --release --target ${{ matrix.target }}
+        run: napi build --release --target ${{ matrix.target }}
 
       - name: Prepare platform package
         shell: bash
@@ -71,9 +71,8 @@ jobs:
           PKG_DIR="npm/${{ matrix.node-os }}-${{ matrix.node-arch }}"
           mkdir -p "$PKG_DIR"
 
-          # Find the built .node file
-          NODE_FILE=$(find crates/codegraph-core -name "*.node" | head -1)
-          cp "$NODE_FILE" "$PKG_DIR/codegraph-core.node"
+          # Copy the built .node file (use glob to avoid Windows find issues)
+          cp crates/codegraph-core/*.node "$PKG_DIR/codegraph-core.node"
 
           # Read version from root package.json
           VERSION=$(node -p "require('./package.json').version")
