@@ -3,3 +3,4 @@ node_modules/
 *.db
 coverage/
 .env
+grammars/*.wasm

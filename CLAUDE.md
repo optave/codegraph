@@ -17,7 +17,7 @@ npm run test:watch               # Watch mode
 npm run test:coverage            # Coverage report
 npx vitest run tests/parsers/javascript.test.js   # Single test file
 npx vitest run -t "finds cycles"                  # Single test by name
-npm run build:wasm               # Rebuild WASM grammars (only after upgrading grammar devDeps)
+npm run build:wasm               # Rebuild WASM grammars from devDeps (built automatically on npm install)
 ```
 
 **Linter/Formatter:** [Biome](https://biomejs.dev/) — config in `biome.json`, scoped to `src/` and `tests/`.
@@ -26,6 +26,8 @@ npm run build:wasm               # Rebuild WASM grammars (only after upgrading g
 npm run lint                     # Check for lint + format issues
 npm run lint:fix                 # Auto-fix lint + format issues
 npm run format                   # Auto-format only
+npm run release                  # Bump version, update CHANGELOG, create tag (auto-detects semver from commits)
+npm run release:dry-run          # Preview what release would do without writing anything
 ```
 
 ## Architecture
@@ -56,7 +58,7 @@ JS source is plain JavaScript (ES modules) in `src/`. No transpilation step. The
 **Key design decisions:**
 - **Dual-engine architecture:** Native Rust parsing via napi-rs (`crates/codegraph-core/`) with automatic fallback to WASM. Controlled by `--engine native|wasm|auto` (default: `auto`)
 - Platform-specific prebuilt binaries published as optional npm packages (`@optave/codegraph-{platform}-{arch}`)
-- WASM grammars are pre-built and committed in `grammars/` — used as fallback when native addon is unavailable
+- WASM grammars are built from devDeps on `npm install` (via `prepare` script) and not committed to git — used as fallback when native addon is unavailable
 - `@huggingface/transformers` and `@modelcontextprotocol/sdk` are optional dependencies, lazy-loaded
 - HCL and Python parsers fail gracefully if unavailable
 - Import resolution uses a 6-level priority system with confidence scoring (import-aware → same-file → directory → parent → global → method hierarchy)
@@ -78,6 +80,15 @@ tests/
 ```
 
 Integration tests create a temp copy of the fixture project for isolation.
+
+## Release Process
+
+Releases are triggered via the `publish.yml` workflow (`workflow_dispatch`). By default, `commit-and-tag-version` auto-detects the semver bump from commit history since the last tag:
+- `BREAKING CHANGE` footer or `type!:` → **major**
+- `feat:` → **minor**
+- everything else → **patch**
+
+The workflow can be overridden with a specific version via the `version-override` input. Locally, `npm run release:dry-run` previews the bump and changelog.
 
 ## Node Version
 
