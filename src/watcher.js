@@ -2,9 +2,9 @@
 import fs from 'fs';
 import path from 'path';
 import { openDb, initSchema } from './db.js';
-import { createParsers, getParser, extractSymbols, extractHCLSymbols, extractPythonSymbols } from './parser.js';
+import { parseFileIncremental, createParseTreeCache, getActiveEngine } from './parser.js';
 import { IGNORE_DIRS, EXTENSIONS, normalizePath } from './constants.js';
-import { resolveImportPath } from './builder.js';
+import { resolveImportPath } from './resolve.js';
 import { warn, debug, info } from './logger.js';
 
 function shouldIgnore(filePath) {
@@ -19,7 +19,7 @@ function isTrackedExt(filePath) {
 /**
  * Parse a single file and update the database incrementally.
  */
-function updateFile(db, rootDir, filePath, parsers, stmts) {
+async function updateFile(db, rootDir, filePath, stmts, engineOpts, cache) {
   const relPath = normalizePath(path.relative(rootDir, filePath));
 
   const oldNodes = stmts.countNodes.get(relPath)?.c || 0;
@@ -29,11 +29,9 @@ function updateFile(db, rootDir, filePath, parsers, stmts) {
   stmts.deleteNodes.run(relPath);
 
   if (!fs.existsSync(filePath)) {
+    if (cache) cache.remove(filePath);
     return { file: relPath, nodesAdded: 0, nodesRemoved: oldNodes, edgesAdded: 0, deleted: true };
   }
-
-  const parser = getParser(parsers, filePath);
-  if (!parser) return null;
 
   let code;
   try { code = fs.readFileSync(filePath, 'utf-8'); }
@@ -42,18 +40,8 @@ function updateFile(db, rootDir, filePath, parsers, stmts) {
     return null;
   }
 
-  let tree;
-  try { tree = parser.parse(code); }
-  catch (err) {
-    warn(`Parse error in ${relPath}: ${err.message}`);
-    return null;
-  }
-
-  const isHCL = filePath.endsWith('.tf') || filePath.endsWith('.hcl');
-  const isPython = filePath.endsWith('.py');
-  const symbols = isHCL ? extractHCLSymbols(tree, filePath)
-    : isPython ? extractPythonSymbols(tree, filePath)
-    : extractSymbols(tree, filePath);
+  const symbols = await parseFileIncremental(cache, filePath, code, engineOpts);
+  if (!symbols) return null;
 
   stmts.insertNode.run(relPath, 'file', relPath, 0, null);
 
@@ -131,7 +119,7 @@ function updateFile(db, rootDir, filePath, parsers, stmts) {
   };
 }
 
-export async function watchProject(rootDir) {
+export async function watchProject(rootDir, opts = {}) {
   const dbPath = path.join(rootDir, '.codegraph', 'graph.db');
   if (!fs.existsSync(dbPath)) {
     console.error('No graph.db found. Run `codegraph build` first.');
@@ -140,7 +128,12 @@ export async function watchProject(rootDir) {
 
   const db = openDb(dbPath);
   initSchema(db);
-  const parsers = await createParsers();
+  const engineOpts = { engine: opts.engine || 'auto' };
+  const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
+  console.log(`Watch mode using ${engineName} engine${engineVersion ? ` (v${engineVersion})` : ''}`);
+
+  const cache = createParseTreeCache();
+  console.log(cache ? 'Incremental parsing enabled (native tree cache)' : 'Incremental parsing unavailable (full re-parse)');
 
   const stmts = {
     insertNode: db.prepare('INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line) VALUES (?, ?, ?, ?, ?)'),
@@ -164,18 +157,16 @@ export async function watchProject(rootDir) {
   let timer = null;
   const DEBOUNCE_MS = 300;
 
-  function processPending() {
+  async function processPending() {
     const files = [...pending];
     pending.clear();
 
-    const updates = db.transaction(() => {
-      const results = [];
-      for (const filePath of files) {
-        const result = updateFile(db, rootDir, filePath, parsers, stmts);
-        if (result) results.push(result);
-      }
-      return results;
-    })();
+    const results = [];
+    for (const filePath of files) {
+      const result = await updateFile(db, rootDir, filePath, stmts, engineOpts, cache);
+      if (result) results.push(result);
+    }
+    const updates = results;
 
     for (const r of updates) {
       const nodeDelta = r.nodesAdded - r.nodesRemoved;
@@ -206,6 +197,7 @@ export async function watchProject(rootDir) {
   process.on('SIGINT', () => {
     console.log('\nStopping watcher...');
     watcher.close();
+    if (cache) cache.clear();
     db.close();
     process.exit(0);
   });

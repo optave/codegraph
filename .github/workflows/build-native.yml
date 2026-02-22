@@ -1,0 +1,134 @@
+name: Build Native
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            package: '@optave/codegraph-linux-x64-gnu'
+            node-arch: x64
+            node-os: linux
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            package: '@optave/codegraph-darwin-arm64'
+            node-arch: arm64
+            node-os: darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+            package: '@optave/codegraph-darwin-x64'
+            node-arch: x64
+            node-os: darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: '@optave/codegraph-win32-x64-msvc'
+            node-arch: x64
+            node-os: win32
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.target }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/codegraph-core
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@3
+
+      - name: Build native addon
+        working-directory: crates/codegraph-core
+        run: napi build --release --target ${{ matrix.target }}
+
+      - name: Prepare platform package
+        shell: bash
+        run: |
+          PKG_DIR="npm/${{ matrix.node-os }}-${{ matrix.node-arch }}"
+          mkdir -p "$PKG_DIR"
+
+          # Copy the built .node file (use glob to avoid Windows find issues)
+          cp crates/codegraph-core/*.node "$PKG_DIR/codegraph-core.node"
+
+          # Read version from root package.json
+          VERSION=$(node -p "require('./package.json').version")
+
+          # Generate package.json for the platform package
+          cat > "$PKG_DIR/package.json" <<EOF
+{
+  "name": "${{ matrix.package }}",
+  "version": "${VERSION}",
+  "description": "Native codegraph-core binary for ${{ matrix.node-os }}-${{ matrix.node-arch }}",
+  "os": ["${{ matrix.node-os }}"],
+  "cpu": ["${{ matrix.node-arch }}"],
+  "main": "codegraph-core.node",
+  "files": ["codegraph-core.node"],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/optave/codegraph.git"
+  }
+}
+EOF
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.node-os }}-${{ matrix.node-arch }}
+          path: npm/${{ matrix.node-os }}-${{ matrix.node-arch }}/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Publish platform packages
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in artifacts/native-*/; do
+            echo "Publishing $(cat "$dir/package.json" | grep '"name"')"
+            cd "$dir"
+            npm publish --access public || true
+            cd -
+          done

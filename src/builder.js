@@ -3,10 +3,13 @@ import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
 import { openDb, initSchema } from './db.js';
-import { createParsers, getParser, extractSymbols, extractHCLSymbols, extractPythonSymbols, extractGoSymbols, extractRustSymbols, extractJavaSymbols, extractCSharpSymbols, extractRubySymbols, extractPHPSymbols } from './parser.js';
+import { parseFilesAuto, getActiveEngine } from './parser.js';
 import { IGNORE_DIRS, EXTENSIONS, normalizePath } from './constants.js';
 import { loadConfig } from './config.js';
 import { warn, debug, info } from './logger.js';
+import { resolveImportPath, computeConfidence, resolveImportsBatch } from './resolve.js';
+
+export { resolveImportPath } from './resolve.js';
 
 export function collectFiles(dir, files = [], config = {}) {
   let entries;
@@ -61,70 +64,6 @@ export function loadPathAliases(rootDir) {
     }
   }
   return aliases;
-}
-
-function resolveViaAlias(importSource, aliases, rootDir) {
-  if (aliases.baseUrl && !importSource.startsWith('.') && !importSource.startsWith('/')) {
-    const candidate = path.resolve(aliases.baseUrl, importSource);
-    for (const ext of ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js']) {
-      const full = candidate + ext;
-      if (fs.existsSync(full)) return full;
-    }
-  }
-
-  for (const [pattern, targets] of Object.entries(aliases.paths)) {
-    const prefix = pattern.replace(/\*$/, '');
-    if (!importSource.startsWith(prefix)) continue;
-    const rest = importSource.slice(prefix.length);
-    for (const target of targets) {
-      const resolved = target.replace(/\*$/, rest);
-      for (const ext of ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js']) {
-        const full = resolved + ext;
-        if (fs.existsSync(full)) return full;
-      }
-    }
-  }
-  return null;
-}
-
-export function resolveImportPath(fromFile, importSource, rootDir, aliases) {
-  if (!importSource.startsWith('.') && aliases) {
-    const aliasResolved = resolveViaAlias(importSource, aliases, rootDir);
-    if (aliasResolved) return normalizePath(path.relative(rootDir, aliasResolved));
-  }
-  if (!importSource.startsWith('.')) return importSource;
-  const dir = path.dirname(fromFile);
-  let resolved = path.resolve(dir, importSource);
-
-  if (resolved.endsWith('.js')) {
-    const tsCandidate = resolved.replace(/\.js$/, '.ts');
-    if (fs.existsSync(tsCandidate)) return normalizePath(path.relative(rootDir, tsCandidate));
-    const tsxCandidate = resolved.replace(/\.js$/, '.tsx');
-    if (fs.existsSync(tsxCandidate)) return normalizePath(path.relative(rootDir, tsxCandidate));
-  }
-
-  for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.py', '/index.ts', '/index.tsx', '/index.js', '/__init__.py']) {
-    const candidate = resolved + ext;
-    if (fs.existsSync(candidate)) {
-      return normalizePath(path.relative(rootDir, candidate));
-    }
-  }
-  if (fs.existsSync(resolved)) return normalizePath(path.relative(rootDir, resolved));
-  return normalizePath(path.relative(rootDir, resolved));
-}
-
-/**
- * Compute proximity-based confidence for call resolution.
- */
-function computeConfidence(callerFile, targetFile, importedFrom) {
-  if (!targetFile || !callerFile) return 0.3;
-  if (callerFile === targetFile) return 1.0;
-  if (importedFrom === targetFile) return 1.0;
-  if (path.dirname(callerFile) === path.dirname(targetFile)) return 0.7;
-  const callerParent = path.dirname(path.dirname(callerFile));
-  const targetParent = path.dirname(path.dirname(targetFile));
-  if (callerParent === targetParent) return 0.5;
-  return 0.3;
 }
 
 /**
@@ -193,7 +132,11 @@ export async function buildGraph(rootDir, opts = {}) {
   const config = loadConfig(rootDir);
   const incremental = opts.incremental !== false && config.build && config.build.incremental !== false;
 
-  const parsers = await createParsers();
+  // Engine selection: 'native', 'wasm', or 'auto' (default)
+  const engineOpts = { engine: opts.engine || 'auto' };
+  const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
+  console.log(`Using ${engineName} engine${engineVersion ? ` (v${engineVersion})` : ''}`);
+
   const aliases = loadPathAliases(rootDir);
   // Merge config aliases
   if (config.aliases) {
@@ -255,7 +198,6 @@ export async function buildGraph(rootDir, opts = {}) {
 
   // First pass: parse files and insert nodes
   const fileSymbols = new Map();
-  let parsed = 0, skipped = 0;
 
   // For incremental builds, also load existing symbols that aren't changing
   if (!isFullBuild) {
@@ -268,73 +210,50 @@ export async function buildGraph(rootDir, opts = {}) {
     ? files.map(f => ({ file: f }))
     : changed;
 
-  const insertMany = db.transaction(() => {
-    for (const item of filesToParse) {
-      const filePath = item.file;
-      const parser = getParser(parsers, filePath);
-      if (!parser) { skipped++; continue; }
+  // ── Unified parse via parseFilesAuto ───────────────────────────────
+  const filePaths = filesToParse.map(item => item.file);
+  const allSymbols = await parseFilesAuto(filePaths, rootDir, engineOpts);
 
-      let code;
-      if (item.content) {
-        code = item.content;
-      } else {
-        try { code = fs.readFileSync(filePath, 'utf-8'); }
-        catch (err) {
-          warn(`Skipping ${path.relative(rootDir, filePath)}: ${err.message}`);
-          skipped++;
-          continue;
-        }
-      }
+  // Build a hash lookup from incremental data (changed items may carry pre-computed hashes)
+  const precomputedHashes = new Map();
+  for (const item of filesToParse) {
+    if (item.hash && item.relPath) {
+      precomputedHashes.set(item.relPath, item.hash);
+    }
+  }
 
-      let tree;
-      try { tree = parser.parse(code); }
-      catch (e) {
-        warn(`Parse error in ${path.relative(rootDir, filePath)}: ${e.message}`);
-        skipped++;
-        continue;
-      }
-
-      const relPath = normalizePath(path.relative(rootDir, filePath));
-      const isHCL = filePath.endsWith('.tf') || filePath.endsWith('.hcl');
-      const isPython = filePath.endsWith('.py');
-      const isGo = filePath.endsWith('.go');
-      const isRust = filePath.endsWith('.rs');
-      const isJava = filePath.endsWith('.java');
-      const isCSharp = filePath.endsWith('.cs');
-      const isRuby = filePath.endsWith('.rb');
-      const isPHP = filePath.endsWith('.php');
-      const symbols = isHCL ? extractHCLSymbols(tree, filePath)
-        : isPython ? extractPythonSymbols(tree, filePath)
-        : isGo ? extractGoSymbols(tree, filePath)
-        : isRust ? extractRustSymbols(tree, filePath)
-        : isJava ? extractJavaSymbols(tree, filePath)
-        : isCSharp ? extractCSharpSymbols(tree, filePath)
-        : isRuby ? extractRubySymbols(tree, filePath)
-        : isPHP ? extractPHPSymbols(tree, filePath)
-        : extractSymbols(tree, filePath);
+  const insertAll = db.transaction(() => {
+    for (const [relPath, symbols] of allSymbols) {
       fileSymbols.set(relPath, symbols);
 
       insertNode.run(relPath, 'file', relPath, 0, null);
-
       for (const def of symbols.definitions) {
         insertNode.run(def.name, def.kind, relPath, def.line, def.endLine || null);
       }
-
       for (const exp of symbols.exports) {
         insertNode.run(exp.name, exp.kind, relPath, exp.line, null);
       }
 
       // Update file hash for incremental builds
       if (upsertHash) {
-        const hash = item.hash || fileHash(code);
-        upsertHash.run(relPath, hash, Date.now());
+        const existingHash = precomputedHashes.get(relPath);
+        if (existingHash) {
+          upsertHash.run(relPath, existingHash, Date.now());
+        } else {
+          const absPath = path.join(rootDir, relPath);
+          let code;
+          try { code = fs.readFileSync(absPath, 'utf-8'); } catch { code = null; }
+          if (code !== null) {
+            upsertHash.run(relPath, fileHash(code), Date.now());
+          }
+        }
       }
-
-      parsed++;
-      if (parsed % 100 === 0) process.stdout.write(`  Parsed ${parsed}/${filesToParse.length} files\r`);
     }
   });
-  insertMany();
+  insertAll();
+
+  const parsed = allSymbols.size;
+  const skipped = filesToParse.length - parsed;
   console.log(`Parsed ${parsed} files (${skipped} skipped)`);
 
   // Clean up removed file hashes
@@ -345,13 +264,33 @@ export async function buildGraph(rootDir, opts = {}) {
     }
   }
 
+  // ── Batch import resolution ────────────────────────────────────────
+  // Collect all (fromFile, importSource) pairs and resolve in one native call
+  const batchInputs = [];
+  for (const [relPath, symbols] of fileSymbols) {
+    const absFile = path.join(rootDir, relPath);
+    for (const imp of symbols.imports) {
+      batchInputs.push({ fromFile: absFile, importSource: imp.source });
+    }
+  }
+  const batchResolved = resolveImportsBatch(batchInputs, rootDir, aliases);
+
+  function getResolved(absFile, importSource) {
+    if (batchResolved) {
+      const key = `${absFile}|${importSource}`;
+      const hit = batchResolved.get(key);
+      if (hit !== undefined) return hit;
+    }
+    return resolveImportPath(absFile, importSource, rootDir, aliases);
+  }
+
   // Build re-export map for barrel resolution
   const reexportMap = new Map();
   for (const [relPath, symbols] of fileSymbols) {
     const reexports = symbols.imports.filter(imp => imp.reexport);
     if (reexports.length > 0) {
       reexportMap.set(relPath, reexports.map(imp => ({
-        source: resolveImportPath(path.join(rootDir, relPath), imp.source, rootDir, aliases),
+        source: getResolved(path.join(rootDir, relPath), imp.source),
         names: imp.names,
         wildcardReexport: imp.wildcardReexport || false
       })));
@@ -426,7 +365,7 @@ export async function buildGraph(rootDir, opts = {}) {
 
       // Import edges
       for (const imp of symbols.imports) {
-        const resolvedPath = resolveImportPath(path.join(rootDir, relPath), imp.source, rootDir, aliases);
+        const resolvedPath = getResolved(path.join(rootDir, relPath), imp.source);
         const targetRow = getNodeId.get(resolvedPath, 'file', resolvedPath, 0);
         if (targetRow) {
           const edgeKind = imp.reexport ? 'reexports' : imp.typeOnly ? 'imports-type' : 'imports';
@@ -454,7 +393,7 @@ export async function buildGraph(rootDir, opts = {}) {
       // Build import name -> target file mapping
       const importedNames = new Map();
       for (const imp of symbols.imports) {
-        const resolvedPath = resolveImportPath(path.join(rootDir, relPath), imp.source, rootDir, aliases);
+        const resolvedPath = getResolved(path.join(rootDir, relPath), imp.source);
         for (const name of imp.names) {
           const cleanName = name.replace(/^\*\s+as\s+/, '');
           importedNames.set(cleanName, resolvedPath);
