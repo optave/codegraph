@@ -93,7 +93,7 @@ Most code graph tools make you choose: **fast local analysis with no AI, or powe
 | **⚡** | **Always-fresh graph** | Three-tier change detection: journal (O(changed)) → mtime+size (O(n) stats) → hash (O(changed) reads). Sub-second rebuilds even on large codebases. Competitors re-index everything from scratch; Merkle-tree approaches still require O(n) filesystem scanning |
 | **🔓** | **Zero-cost core, LLM-enhanced when you want** | Full graph analysis with no API keys, no accounts, no cost. Optionally bring your own LLM provider for richer embeddings and AI-powered search — your code only goes to the provider you already chose |
 | **🔬** | **Function-level, not just files** | Traces `handleAuth()` → `validateToken()` → `decryptJWT()` and shows 14 callers across 9 files break if `decryptJWT` changes |
-| **🤖** | **Built for AI agents** | 13-tool [MCP server](https://modelcontextprotocol.io/) — AI assistants query your graph directly. Single-repo by default, your code doesn't leak to other projects |
+| **🤖** | **Built for AI agents** | 17-tool [MCP server](https://modelcontextprotocol.io/) — AI assistants query your graph directly. Single-repo by default, your code doesn't leak to other projects |
 | **🌐** | **Multi-language, one CLI** | JS/TS + Python + Go + Rust + Java + C# + PHP + Ruby + HCL in a single graph — no juggling Madge, pyan, and cflow |
 | **💥** | **Git diff impact** | `codegraph diff-impact` shows changed functions, their callers, and full blast radius — ships with a GitHub Actions workflow |
 | **🧠** | **Semantic search** | Local embeddings by default, LLM-powered embeddings when opted in — multi-query with RRF ranking via `"auth; token; JWT"` |
@@ -132,7 +132,7 @@ Here is a cold, analytical breakdown to help you decide which tool fits your wor
 | Aspect | Optave Codegraph | Narsil-MCP |
 | :--- | :--- | :--- |
 | **Philosophy** | Lean, deterministic, AI-optimized | Comprehensive, feature-dense |
-| **AI Tool Count** | 13 focused tools | 90 distinct tools |
+| **AI Tool Count** | 17 focused tools | 90 distinct tools |
 | **Language Support** | 11 languages | 32 languages |
 | **Primary Interface** | CLI-first with MCP integration | MCP-first (CLI is secondary) |
 | **Supply Chain Risk** | Low (minimal dependency tree) | Higher (requires massive dependency graph for embedded ML/scanners) |
@@ -141,7 +141,7 @@ Here is a cold, analytical breakdown to help you decide which tool fits your wor
 #### Choose Codegraph if:
 
 * **You need the fastest possible incremental rebuilds.** Codegraph’s three-tier change detection (journal → mtime+size → hash) achieves true O(changed) when the watcher is running — only touched files are processed. Narsil’s Merkle trees still require O(n) filesystem scanning to recompute hashes on every rebuild, even when nothing changed. On a 3,000-file project, this is the difference between near-instant and noticeable.
-* **You want to optimize AI agent reasoning.** Large Language Models degrade in performance and hallucinate when overwhelmed with choices. Codegraph’s tight 13-tool surface area ensures agents quickly understand their capabilities without wasting context window tokens.
+* **You want to optimize AI agent reasoning.** Large Language Models degrade in performance and hallucinate when overwhelmed with choices. Codegraph’s tight 17-tool surface area ensures agents quickly understand their capabilities without wasting context window tokens.
 * **You are concerned about supply chain attacks.** To support 90 tools, SBOMs, and neural embeddings, a tool must pull in a massive dependency tree. Codegraph keeps its dependencies minimal, dramatically reducing the risk of malicious code sneaking onto your machine.
 * **You want deterministic blast-radius checks.** Features like `diff-impact` are built specifically to tell you exactly how a changed function cascades through your codebase before you merge a PR.
 * **You value a strong standalone CLI.** You want to query your code graph locally without necessarily spinning up an AI agent.
@@ -190,7 +190,7 @@ codegraph deps src/index.ts  # file-level import/export map
 | 📤 | **Export** | DOT (Graphviz), Mermaid, and JSON graph export |
 | 🧠 | **Semantic search** | Embeddings-powered natural language search with multi-query RRF ranking |
 | 👀 | **Watch mode** | Incrementally update the graph as files change |
-| 🤖 | **MCP server** | 13-tool MCP server for AI assistants; single-repo by default, opt-in multi-repo |
+| 🤖 | **MCP server** | 17-tool MCP server for AI assistants; single-repo by default, opt-in multi-repo |
 | 🔒 | **Your code, your choice** | Zero-cost core with no API keys. Optionally enhance with your LLM provider — your code only goes where you send it |
 
 ## 📦 Commands
@@ -391,7 +391,7 @@ Metrics are normalized per file for cross-version comparability. Times above are
 
 ### MCP Server
 
-Codegraph includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server with 13 tools, so AI assistants can query your dependency graph directly:
+Codegraph includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server with 17 tools, so AI assistants can query your dependency graph directly:
 
 ```bash
 codegraph mcp                  # Single-repo mode (default) — only local project
@@ -405,20 +405,35 @@ codegraph mcp --repos a,b      # Multi-repo with allowlist
 
 ### CLAUDE.md / Agent Instructions
 
-Add this to your project's `CLAUDE.md` to help AI agents use codegraph:
+Add this to your project's `CLAUDE.md` to help AI agents use codegraph (full template in the [AI Agent Guide](docs/ai-agent-guide.md#claudemd-template)):
 
 ```markdown
 ## Code Navigation
 
 This project uses codegraph. The database is at `.codegraph/graph.db`.
 
-- **Before modifying a function**: `codegraph fn <name> --no-tests`
-- **Before modifying a file**: `codegraph deps <file>`
-- **To assess PR impact**: `codegraph diff-impact --no-tests`
-- **To find entry points**: `codegraph map`
-- **To trace breakage**: `codegraph fn-impact <name> --no-tests`
+### Before modifying code, always:
+1. `codegraph where <name>` — find where the symbol lives
+2. `codegraph explain <file-or-function>` — understand the structure
+3. `codegraph context <name> -T` — get full context (source, deps, callers)
+4. `codegraph fn-impact <name> -T` — check blast radius before editing
 
-Rebuild after major structural changes: `codegraph build`
+### After modifying code:
+5. `codegraph diff-impact --staged -T` — verify impact before committing
+
+### Other useful commands
+- `codegraph build .` — rebuild the graph (incremental by default)
+- `codegraph map` — module overview
+- `codegraph fn <name> -T` — function call chain
+- `codegraph deps <file>` — file-level dependencies
+- `codegraph search "<query>"` — semantic search (requires `codegraph embed`)
+- `codegraph cycles` — check for circular dependencies
+
+### Flags
+- `-T` / `--no-tests` — exclude test files (use by default)
+- `-j` / `--json` — JSON output for programmatic use
+- `-f, --file <path>` — scope to a specific file
+- `-k, --kind <kind>` — filter by symbol kind
 
 ### Semantic search
 
@@ -455,6 +470,8 @@ See **[docs/recommended-practices.md](docs/recommended-practices.md)** for integ
 - **AI agents** — MCP server, CLAUDE.md templates, Claude Code hooks
 - **Developer workflow** — watch mode, explore-before-you-edit, semantic search
 - **Secure credentials** — `apiKeyCommand` with 1Password, Bitwarden, Vault, macOS Keychain, `pass`
+
+For AI-specific integration, see the **[AI Agent Guide](docs/ai-agent-guide.md)** — a comprehensive reference covering the 6-step agent workflow, complete command-to-MCP mapping, Claude Code hooks, and token-saving patterns.
 
 ## 🔁 CI / GitHub Actions
 

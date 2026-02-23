@@ -127,6 +127,8 @@ Speed up CI by caching `.codegraph/`:
 
 ## AI Agent Integration
 
+> **Comprehensive guide:** See [AI Agent Guide](./ai-agent-guide.md) for the full reference — 6-step agent workflow, complete command reference with MCP tool mappings, Claude Code hooks, CLAUDE.md template, and CI/CD integration patterns.
+
 ### MCP server
 
 Start the MCP server so AI assistants can query your graph:
@@ -141,52 +143,44 @@ By default, the MCP server runs in **single-repo mode** — the AI agent can onl
 
 Enable `--multi-repo` to let the agent query any registered repository, or use `--repos` to restrict access to a specific set of repos.
 
-The server exposes tools for `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, and `hotspots`.
+The server exposes 17 tools: `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `context`, `explain`, `where`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, `hotspots`, and `list_repos` (multi-repo only). See the [AI Agent Guide MCP reference](./ai-agent-guide.md#mcp-server-reference) for the full tool-to-CLI mapping table.
 
 ### CLAUDE.md for your project
 
-Add this to your project's `CLAUDE.md` so AI agents know codegraph is available:
+Add this to your project's `CLAUDE.md` so AI agents know codegraph is available. A full template is in the [AI Agent Guide](./ai-agent-guide.md#claudemd-template). Here's the short version:
 
 ```markdown
 ## Code Navigation
 
 This project uses codegraph. The database is at `.codegraph/graph.db`.
 
-- **Before modifying a function**: `codegraph fn <name> --no-tests`
-- **Before modifying a file**: `codegraph deps <file>`
-- **To assess PR impact**: `codegraph diff-impact --no-tests`
-- **To find entry points**: `codegraph map`
-- **To trace breakage**: `codegraph fn-impact <name> --no-tests`
+### Before modifying code, always:
+1. `codegraph where <name>` — find where the symbol lives
+2. `codegraph explain <file-or-function>` — understand the structure
+3. `codegraph context <name> -T` — get full context (source, deps, callers)
+4. `codegraph fn-impact <name> -T` — check blast radius before editing
 
-Rebuild after major structural changes: `codegraph build`
+### After modifying code:
+5. `codegraph diff-impact --staged -T` — verify impact before committing
 
-### Semantic search
+### Other useful commands
+- `codegraph build .` — rebuild the graph (incremental by default)
+- `codegraph map` — module overview
+- `codegraph fn <name> -T` — function call chain
+- `codegraph deps <file>` — file-level dependencies
+- `codegraph search "<query>"` — semantic search (requires `codegraph embed`)
+- `codegraph cycles` — check for circular dependencies
 
-Use `codegraph search` to find functions by intent rather than exact name.
-When a single query might miss results, combine multiple angles with `;`:
-
-  codegraph search "validate auth; check token; verify JWT"
-  codegraph search "parse config; load settings" --kind function
-
-Multi-query search uses Reciprocal Rank Fusion — functions that rank
-highly across several queries surface first. This is especially useful
-when you're not sure what naming convention the codebase uses.
-
-When writing multi-queries, use 2-4 sub-queries (2-4 words each) that
-attack the problem from different angles. Pick from these strategies:
-- **Naming variants**: cover synonyms the author might have used
-  ("send email; notify user; deliver message")
-- **Abstraction levels**: pair high-level intent with low-level operation
-  ("handle payment; charge credit card")
-- **Input/output sides**: cover the read half and write half
-  ("parse config; apply settings")
-- **Domain + technical**: bridge business language and implementation
-  ("onboard tenant; create organization; provision workspace")
-
-Use `--kind function` to cut noise. Use `--file <pattern>` to scope.
+### Flags
+- `-T` / `--no-tests` — exclude test files (use by default)
+- `-j` / `--json` — JSON output for programmatic use
+- `-f, --file <path>` — scope to a specific file
+- `-k, --kind <kind>` — filter by symbol kind
 ```
 
 ### Claude Code hooks
+
+> **Detailed reference:** See [AI Agent Guide — Claude Code Hooks](./ai-agent-guide.md#claude-code-hooks) for full documentation of each hook's behavior, triggers, and a complete `settings.json` example.
 
 You can configure [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) to give Claude automatic dependency context and keep the graph fresh as it edits files:
 
@@ -510,5 +504,5 @@ cp node_modules/@optave/codegraph/.github/workflows/codegraph-impact.yml .github
 codegraph embed
 
 # 7. (Optional) Add CLAUDE.md for AI agents
-# See the AI Agent Integration section above
+# See docs/ai-agent-guide.md for the full template
 ```
