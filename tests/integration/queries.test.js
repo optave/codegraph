@@ -34,6 +34,7 @@ import {
   impactAnalysisData,
   moduleMapData,
   queryNameData,
+  statsData,
   whereData,
 } from '../../src/queries.js';
 
@@ -468,5 +469,88 @@ describe('whereData', () => {
     const data = whereData('nonexistent.js', dbPath, { file: true });
     expect(data.mode).toBe('file');
     expect(data.results).toHaveLength(0);
+  });
+});
+
+// ─── noTests filtering ───────────────────────────────────────────────
+
+describe('noTests filtering', () => {
+  test('queryNameData excludes test file nodes and callers', () => {
+    const all = queryNameData('authenticate', dbPath);
+    const filtered = queryNameData('authenticate', dbPath, { noTests: true });
+
+    const allFn = all.results.find((r) => r.name === 'authenticate' && r.kind === 'function');
+    const filteredFn = filtered.results.find(
+      (r) => r.name === 'authenticate' && r.kind === 'function',
+    );
+
+    // testAuthenticate should be in callers without filter
+    expect(allFn.callers.map((c) => c.name)).toContain('testAuthenticate');
+    // testAuthenticate should be excluded with noTests
+    expect(filteredFn.callers.map((c) => c.name)).not.toContain('testAuthenticate');
+  });
+
+  test('queryNameData excludes test file results', () => {
+    const all = queryNameData('testAuthenticate', dbPath);
+    const filtered = queryNameData('testAuthenticate', dbPath, { noTests: true });
+
+    expect(all.results).toHaveLength(1);
+    expect(filtered.results).toHaveLength(0);
+  });
+
+  test('statsData excludes test files from counts', () => {
+    const all = statsData(dbPath);
+    const filtered = statsData(dbPath, { noTests: true });
+
+    // File count should be lower
+    expect(filtered.files.total).toBeLessThan(all.files.total);
+    // Node count should be lower (test file + testAuthenticate removed)
+    expect(filtered.nodes.total).toBeLessThan(all.nodes.total);
+    // Edge count should be lower (test import + test call edge removed)
+    expect(filtered.edges.total).toBeLessThan(all.edges.total);
+  });
+
+  test('statsData hotspots exclude test files', () => {
+    const filtered = statsData(dbPath, { noTests: true });
+    for (const h of filtered.hotspots) {
+      expect(h.file).not.toMatch(/\.test\./);
+    }
+  });
+
+  test('impactAnalysisData excludes test dependents', () => {
+    const all = impactAnalysisData('auth.js', dbPath);
+    const filtered = impactAnalysisData('auth.js', dbPath, { noTests: true });
+
+    const allFiles = Object.values(all.levels)
+      .flat()
+      .map((f) => f.file);
+    const filteredFiles = Object.values(filtered.levels)
+      .flat()
+      .map((f) => f.file);
+
+    expect(allFiles).toContain('auth.test.js');
+    expect(filteredFiles).not.toContain('auth.test.js');
+  });
+
+  test('fileDepsData excludes test importers', () => {
+    const all = fileDepsData('auth.js', dbPath);
+    const filtered = fileDepsData('auth.js', dbPath, { noTests: true });
+
+    const allImportedBy = all.results[0].importedBy.map((i) => i.file);
+    const filteredImportedBy = filtered.results[0].importedBy.map((i) => i.file);
+
+    expect(allImportedBy).toContain('auth.test.js');
+    expect(filteredImportedBy).not.toContain('auth.test.js');
+  });
+
+  test('moduleMapData excludes test files', () => {
+    const all = moduleMapData(dbPath, 20);
+    const filtered = moduleMapData(dbPath, 20, { noTests: true });
+
+    const allFiles = all.topNodes.map((n) => n.file);
+    const filteredFiles = filtered.topNodes.map((n) => n.file);
+
+    expect(allFiles).toContain('auth.test.js');
+    expect(filteredFiles).not.toContain('auth.test.js');
   });
 });

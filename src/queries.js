@@ -739,8 +739,36 @@ export function statsData(customDbPath, opts = {}) {
   const db = openReadonlyOrFail(customDbPath);
   const noTests = opts.noTests || false;
 
+  // Build set of test file IDs for filtering nodes and edges
+  let testFileIds = null;
+  if (noTests) {
+    const allFileNodes = db.prepare("SELECT id, file FROM nodes WHERE kind = 'file'").all();
+    testFileIds = new Set();
+    const testFiles = new Set();
+    for (const n of allFileNodes) {
+      if (isTestFile(n.file)) {
+        testFileIds.add(n.id);
+        testFiles.add(n.file);
+      }
+    }
+    // Also collect non-file node IDs that belong to test files
+    const allNodes = db.prepare('SELECT id, file FROM nodes').all();
+    for (const n of allNodes) {
+      if (testFiles.has(n.file)) testFileIds.add(n.id);
+    }
+  }
+
   // Node breakdown by kind
-  const nodeRows = db.prepare('SELECT kind, COUNT(*) as c FROM nodes GROUP BY kind').all();
+  let nodeRows;
+  if (noTests) {
+    const allNodes = db.prepare('SELECT id, kind, file FROM nodes').all();
+    const filtered = allNodes.filter((n) => !testFileIds.has(n.id));
+    const counts = {};
+    for (const n of filtered) counts[n.kind] = (counts[n.kind] || 0) + 1;
+    nodeRows = Object.entries(counts).map(([kind, c]) => ({ kind, c }));
+  } else {
+    nodeRows = db.prepare('SELECT kind, COUNT(*) as c FROM nodes GROUP BY kind').all();
+  }
   const nodesByKind = {};
   let totalNodes = 0;
   for (const r of nodeRows) {
@@ -749,7 +777,18 @@ export function statsData(customDbPath, opts = {}) {
   }
 
   // Edge breakdown by kind
-  const edgeRows = db.prepare('SELECT kind, COUNT(*) as c FROM edges GROUP BY kind').all();
+  let edgeRows;
+  if (noTests) {
+    const allEdges = db.prepare('SELECT source_id, target_id, kind FROM edges').all();
+    const filtered = allEdges.filter(
+      (e) => !testFileIds.has(e.source_id) && !testFileIds.has(e.target_id),
+    );
+    const counts = {};
+    for (const e of filtered) counts[e.kind] = (counts[e.kind] || 0) + 1;
+    edgeRows = Object.entries(counts).map(([kind, c]) => ({ kind, c }));
+  } else {
+    edgeRows = db.prepare('SELECT kind, COUNT(*) as c FROM edges GROUP BY kind').all();
+  }
   const edgesByKind = {};
   let totalEdges = 0;
   for (const r of edgeRows) {

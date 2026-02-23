@@ -286,6 +286,7 @@ const BASE_TOOLS = [
           description: 'Rank files or directories',
         },
         limit: { type: 'number', description: 'Number of results to return', default: 10 },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
       },
     },
   },
@@ -540,6 +541,7 @@ export async function startMCPServer(customDbPath, options = {}) {
             metric: args.metric,
             level: args.level,
             limit: args.limit,
+            noTests: args.no_tests,
           });
           break;
         }
