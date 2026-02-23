@@ -1,1 +1,2 @@
 npm run lint
+codegraph build 2>/dev/null || node src/cli.js build . 2>/dev/null || true
