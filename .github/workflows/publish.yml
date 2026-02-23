@@ -5,6 +5,12 @@ on:
     branches: [main]
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 2.1.0, without v prefix). Used to retry a failed stable release.'
+        required: true
+        type: string
 
 concurrency:
   group: publish
@@ -17,7 +23,7 @@ jobs:
     name: Preflight checks
     runs-on: ubuntu-latest
     # Skip dev publish when the push is a stable release version bump
-    if: "${{ github.event_name == 'release' || !startsWith(github.event.head_commit.message, 'chore: release v') }}"
+    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: release v') }}"
     permissions:
       contents: read
     steps:
@@ -49,6 +55,10 @@ jobs:
             VERSION="${TAG#v}"
             NPM_TAG="latest"
             echo "Stable release: $VERSION (from tag $TAG)"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            NPM_TAG="latest"
+            echo "Stable release (manual retry): $VERSION"
           else
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
             NEXT_PATCH=$((PATCH + 1))
@@ -228,13 +238,13 @@ jobs:
       # ── Stable-only: version bump PR and tag ──
 
       - name: Configure git
-        if: github.event_name == 'release'
+        if: github.event_name != 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Push version bump via PR
-        if: github.event_name == 'release'
+        if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.compute-version.outputs.version }}
