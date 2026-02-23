@@ -5,6 +5,7 @@ import path from 'node:path';
 import { loadConfig } from './config.js';
 import { EXTENSIONS, IGNORE_DIRS, normalizePath } from './constants.js';
 import { initSchema, openDb } from './db.js';
+import { readJournal, writeJournalHeader } from './journal.js';
 import { debug, warn } from './logger.js';
 import { getActiveEngine, parseFilesAuto } from './parser.js';
 import { computeConfidence, resolveImportPath, resolveImportsBatch } from './resolve.js';
@@ -82,7 +83,23 @@ function fileHash(content) {
 }
 
 /**
+ * Stat a file, returning { mtimeMs, size } or null on error.
+ */
+function fileStat(filePath) {
+  try {
+    const s = fs.statSync(filePath);
+    return { mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Determine which files have changed since last build.
+ * Three-tier cascade:
+ *   Tier 0 — Journal: O(changed) when watcher was running
+ *   Tier 1 — mtime+size: O(n) stats, O(changed) reads
+ *   Tier 2 — Hash comparison: O(changed) reads (fallback from Tier 1)
  */
 function getChangedFiles(db, allFiles, rootDir) {
   // Check if file_hashes table exists
@@ -95,7 +112,6 @@ function getChangedFiles(db, allFiles, rootDir) {
   }
 
   if (!hasTable) {
-    // No hash table = first build, everything is new
     return {
       changed: allFiles.map((f) => ({ file: f })),
       removed: [],
@@ -105,29 +121,15 @@ function getChangedFiles(db, allFiles, rootDir) {
 
   const existing = new Map(
     db
-      .prepare('SELECT file, hash FROM file_hashes')
+      .prepare('SELECT file, hash, mtime, size FROM file_hashes')
       .all()
-      .map((r) => [r.file, r.hash]),
+      .map((r) => [r.file, r]),
   );
 
-  const changed = [];
+  // Build set of current files for removal detection
   const currentFiles = new Set();
-
   for (const file of allFiles) {
-    const relPath = normalizePath(path.relative(rootDir, file));
-    currentFiles.add(relPath);
-
-    let content;
-    try {
-      content = fs.readFileSync(file, 'utf-8');
-    } catch {
-      continue;
-    }
-    const hash = fileHash(content);
-
-    if (existing.get(relPath) !== hash) {
-      changed.push({ file, content, hash, relPath });
-    }
+    currentFiles.add(normalizePath(path.relative(rootDir, file)));
   }
 
   const removed = [];
@@ -135,6 +137,124 @@ function getChangedFiles(db, allFiles, rootDir) {
     if (!currentFiles.has(existingFile)) {
       removed.push(existingFile);
     }
+  }
+
+  // ── Tier 0: Journal ──────────────────────────────────────────────
+  const journal = readJournal(rootDir);
+  if (journal.valid) {
+    // Validate journal timestamp against DB — journal should be from after the last build
+    const dbMtimes = db.prepare('SELECT MAX(mtime) as latest FROM file_hashes').get();
+    const latestDbMtime = dbMtimes?.latest || 0;
+
+    // Empty journal = no watcher was running, fall to Tier 1 for safety
+    const hasJournalEntries = journal.changed.length > 0 || journal.removed.length > 0;
+
+    if (hasJournalEntries && journal.timestamp >= latestDbMtime) {
+      debug(
+        `Tier 0: journal valid, ${journal.changed.length} changed, ${journal.removed.length} removed`,
+      );
+      const changed = [];
+
+      for (const relPath of journal.changed) {
+        const absPath = path.join(rootDir, relPath);
+        const stat = fileStat(absPath);
+        if (!stat) continue;
+
+        let content;
+        try {
+          content = fs.readFileSync(absPath, 'utf-8');
+        } catch {
+          continue;
+        }
+        const hash = fileHash(content);
+        const record = existing.get(relPath);
+        if (!record || record.hash !== hash) {
+          changed.push({ file: absPath, content, hash, relPath, stat });
+        }
+      }
+
+      // Merge journal removals with filesystem removals (dedup)
+      const removedSet = new Set(removed);
+      for (const relPath of journal.removed) {
+        if (existing.has(relPath)) removedSet.add(relPath);
+      }
+
+      return { changed, removed: [...removedSet], isFullBuild: false };
+    }
+    debug(
+      `Tier 0: skipped (${hasJournalEntries ? 'timestamp stale' : 'no entries'}), falling to Tier 1`,
+    );
+  }
+
+  // ── Tier 1: mtime+size fast-path ─────────────────────────────────
+  const needsHash = []; // Files that failed mtime+size check
+  const skipped = []; // Files that passed mtime+size check
+
+  for (const file of allFiles) {
+    const relPath = normalizePath(path.relative(rootDir, file));
+    const record = existing.get(relPath);
+
+    if (!record) {
+      // New file — needs full read+hash
+      needsHash.push({ file, relPath });
+      continue;
+    }
+
+    const stat = fileStat(file);
+    if (!stat) continue;
+
+    const storedMtime = record.mtime || 0;
+    const storedSize = record.size || 0;
+
+    // size > 0 guard: pre-v4 rows have size=0, always fall through to hash
+    if (storedSize > 0 && Math.floor(stat.mtimeMs) === storedMtime && stat.size === storedSize) {
+      skipped.push(relPath);
+      continue;
+    }
+
+    needsHash.push({ file, relPath, stat });
+  }
+
+  if (needsHash.length > 0) {
+    debug(`Tier 1: ${skipped.length} skipped by mtime+size, ${needsHash.length} need hash check`);
+  }
+
+  // ── Tier 2: Hash comparison ──────────────────────────────────────
+  const changed = [];
+
+  for (const item of needsHash) {
+    let content;
+    try {
+      content = fs.readFileSync(item.file, 'utf-8');
+    } catch {
+      continue;
+    }
+    const hash = fileHash(content);
+    const stat = item.stat || fileStat(item.file);
+    const record = existing.get(item.relPath);
+
+    if (!record || record.hash !== hash) {
+      changed.push({ file: item.file, content, hash, relPath: item.relPath, stat });
+    } else if (stat) {
+      // Hash matches but mtime/size was stale — self-heal by updating stored metadata
+      changed.push({
+        file: item.file,
+        content,
+        hash,
+        relPath: item.relPath,
+        stat,
+        metadataOnly: true,
+      });
+    }
+  }
+
+  // Filter out metadata-only updates from the "changed" list for parsing,
+  // but keep them so the caller can update file_hashes
+  const parseChanged = changed.filter((c) => !c.metadataOnly);
+  if (needsHash.length > 0) {
+    debug(
+      `Tier 2: ${parseChanged.length} actually changed, ${changed.length - parseChanged.length} metadata-only`,
+    );
   }
 
   return { changed, removed, isFullBuild: false };
@@ -180,9 +300,33 @@ export async function buildGraph(rootDir, opts = {}) {
     ? getChangedFiles(db, files, rootDir)
     : { changed: files.map((f) => ({ file: f })), removed: [], isFullBuild: true };
 
-  if (!isFullBuild && changed.length === 0 && removed.length === 0) {
+  // Separate metadata-only updates (mtime/size self-heal) from real changes
+  const parseChanges = changed.filter((c) => !c.metadataOnly);
+  const metadataUpdates = changed.filter((c) => c.metadataOnly);
+
+  if (!isFullBuild && parseChanges.length === 0 && removed.length === 0) {
+    // Still update metadata for self-healing even when no real changes
+    if (metadataUpdates.length > 0) {
+      try {
+        const healHash = db.prepare(
+          'INSERT OR REPLACE INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)',
+        );
+        const healTx = db.transaction(() => {
+          for (const item of metadataUpdates) {
+            const mtime = item.stat ? Math.floor(item.stat.mtimeMs) : 0;
+            const size = item.stat ? item.stat.size : 0;
+            healHash.run(item.relPath, item.hash, mtime, size);
+          }
+        });
+        healTx();
+        debug(`Self-healed mtime/size for ${metadataUpdates.length} files`);
+      } catch {
+        /* ignore heal errors */
+      }
+    }
     console.log('No changes detected. Graph is up to date.');
     db.close();
+    writeJournalHeader(rootDir, Date.now());
     return;
   }
 
@@ -191,7 +335,7 @@ export async function buildGraph(rootDir, opts = {}) {
       'PRAGMA foreign_keys = OFF; DELETE FROM node_metrics; DELETE FROM edges; DELETE FROM nodes; PRAGMA foreign_keys = ON;',
     );
   } else {
-    console.log(`Incremental: ${changed.length} changed, ${removed.length} removed`);
+    console.log(`Incremental: ${parseChanges.length} changed, ${removed.length} removed`);
     // Remove metrics/edges/nodes for changed and removed files
     const deleteNodesForFile = db.prepare('DELETE FROM nodes WHERE file = ?');
     const deleteEdgesForFile = db.prepare(`
@@ -206,7 +350,7 @@ export async function buildGraph(rootDir, opts = {}) {
       deleteMetricsForFile.run(relPath);
       deleteNodesForFile.run(relPath);
     }
-    for (const item of changed) {
+    for (const item of parseChanges) {
       const relPath = item.relPath || normalizePath(path.relative(rootDir, item.file));
       deleteEdgesForFile.run({ f: relPath });
       deleteMetricsForFile.run(relPath);
@@ -224,11 +368,11 @@ export async function buildGraph(rootDir, opts = {}) {
     'INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, ?, ?)',
   );
 
-  // Prepare hash upsert
+  // Prepare hash upsert (with size column from migration v4)
   let upsertHash;
   try {
     upsertHash = db.prepare(
-      'INSERT OR REPLACE INTO file_hashes (file, hash, mtime) VALUES (?, ?, ?)',
+      'INSERT OR REPLACE INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)',
     );
   } catch {
     upsertHash = null;
@@ -246,17 +390,17 @@ export async function buildGraph(rootDir, opts = {}) {
     // We'll fill these in during the parse pass + edge pass
   }
 
-  const filesToParse = isFullBuild ? files.map((f) => ({ file: f })) : changed;
+  const filesToParse = isFullBuild ? files.map((f) => ({ file: f })) : parseChanges;
 
   // ── Unified parse via parseFilesAuto ───────────────────────────────
   const filePaths = filesToParse.map((item) => item.file);
   const allSymbols = await parseFilesAuto(filePaths, rootDir, engineOpts);
 
-  // Build a hash lookup from incremental data (changed items may carry pre-computed hashes)
-  const precomputedHashes = new Map();
+  // Build a lookup from incremental data (changed items may carry pre-computed hashes + stats)
+  const precomputedData = new Map();
   for (const item of filesToParse) {
-    if (item.hash && item.relPath) {
-      precomputedHashes.set(item.relPath, item.hash);
+    if (item.relPath) {
+      precomputedData.set(item.relPath, item);
     }
   }
 
@@ -272,11 +416,14 @@ export async function buildGraph(rootDir, opts = {}) {
         insertNode.run(exp.name, exp.kind, relPath, exp.line, null);
       }
 
-      // Update file hash for incremental builds
+      // Update file hash with real mtime+size for incremental builds
       if (upsertHash) {
-        const existingHash = precomputedHashes.get(relPath);
-        if (existingHash) {
-          upsertHash.run(relPath, existingHash, Date.now());
+        const precomputed = precomputedData.get(relPath);
+        if (precomputed?.hash) {
+          const stat = precomputed.stat || fileStat(path.join(rootDir, relPath));
+          const mtime = stat ? Math.floor(stat.mtimeMs) : 0;
+          const size = stat ? stat.size : 0;
+          upsertHash.run(relPath, precomputed.hash, mtime, size);
         } else {
           const absPath = path.join(rootDir, relPath);
           let code;
@@ -286,9 +433,21 @@ export async function buildGraph(rootDir, opts = {}) {
             code = null;
           }
           if (code !== null) {
-            upsertHash.run(relPath, fileHash(code), Date.now());
+            const stat = fileStat(absPath);
+            const mtime = stat ? Math.floor(stat.mtimeMs) : 0;
+            const size = stat ? stat.size : 0;
+            upsertHash.run(relPath, fileHash(code), mtime, size);
           }
         }
+      }
+    }
+
+    // Also update metadata-only entries (self-heal mtime/size without re-parse)
+    if (upsertHash) {
+      for (const item of metadataUpdates) {
+        const mtime = item.stat ? Math.floor(item.stat.mtimeMs) : 0;
+        const size = item.stat ? item.stat.size : 0;
+        upsertHash.run(item.relPath, item.hash, mtime, size);
       }
     }
   });
@@ -581,6 +740,9 @@ export async function buildGraph(rootDir, opts = {}) {
   console.log(`Graph built: ${nodeCount} nodes, ${edgeCount} edges`);
   console.log(`Stored in ${dbPath}`);
   db.close();
+
+  // Write journal header after successful build
+  writeJournalHeader(rootDir, Date.now());
 
   if (!opts.skipRegistry) {
     const tmpDir = path.resolve(os.tmpdir());

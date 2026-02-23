@@ -67,6 +67,10 @@ export const MIGRATIONS = [
       );
     `,
   },
+  {
+    version: 4,
+    up: `ALTER TABLE file_hashes ADD COLUMN size INTEGER DEFAULT 0;`,
+  },
 ];
 
 export function openDb(dbPath) {

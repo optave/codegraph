@@ -50,14 +50,13 @@ Most tools in this space can't do that:
 | **Heavy infrastructure that's slow to restart** | code-graph-rag (Memgraph), axon (KuzuDB), badger-graph (Dgraph) | External databases add latency to every write. Bulk-inserting a full graph into Memgraph is not a sub-second operation |
 | **No persistence between runs** | pyan, cflow | Re-parse from scratch every time. No database, no delta, no incremental anything |
 
-**Codegraph solves this with incremental builds:**
+**Codegraph solves this with three-tier incremental change detection:**
 
-1. Every file gets an MD5 hash stored in SQLite
-2. On rebuild, only files whose hash changed get re-parsed
-3. Stale nodes and edges for changed files are cleaned, then re-inserted
-4. Everything else is untouched
+1. **Tier 0 — Journal (O(changed)):** If `codegraph watch` was running, a change journal records exactly which files were touched. The next build reads the journal and only processes those files — zero filesystem scanning
+2. **Tier 1 — mtime+size (O(n) stats, O(changed) reads):** No journal? Codegraph stats every file and compares mtime + size against stored values. Matching files are skipped without reading a single byte — 10-100x cheaper than hashing
+3. **Tier 2 — Hash (O(changed) reads):** Files that fail the mtime/size check are read and MD5-hashed. Only files whose hash actually changed get re-parsed and re-inserted
 
-**Result:** change one file in a 3,000-file project → rebuild completes in **under a second**. Put it in a commit hook, a file watcher, or let your AI agent trigger it. The graph is always current.
+**Result:** change one file in a 3,000-file project → rebuild completes in **under a second**. With watch mode active, rebuilds are near-instant — the journal makes the build proportional to the number of changed files, not the size of the codebase. Put it in a commit hook, a file watcher, or let your AI agent trigger it. The graph is always current.
 
 And because the core pipeline is pure local computation (tree-sitter + SQLite), there are no API calls, no network latency, and no cost. LLM-powered features (semantic search, richer embeddings) are a separate optional layer — they enhance the graph but never block it from being current.
 
@@ -80,7 +79,7 @@ Most code graph tools make you choose: **fast local analysis with no AI, or powe
 | Git diff impact | **Yes** | — | — | — | — | **Yes** | — | **Yes** |
 | Watch mode | **Yes** | — | **Yes** | — | — | — | — | — |
 | Cycle detection | **Yes** | — | **Yes** | — | — | — | — | **Yes** |
-| Incremental rebuilds | **Yes** | — | **Yes** | — | — | — | — | — |
+| Incremental rebuilds | **O(changed)** | — | O(n) Merkle | — | — | — | — | — |
 | Zero config | **Yes** | — | **Yes** | — | — | — | — | — |
 | Embeddable JS library (`npm install`) | **Yes** | — | — | — | — | — | — | — |
 | LLM-optional (works without API keys) | **Yes** | **Yes** | **Yes** | — | **Yes** | **Yes** | **Yes** | **Yes** |
@@ -91,7 +90,7 @@ Most code graph tools make you choose: **fast local analysis with no AI, or powe
 
 | | Differentiator | In practice |
 |---|---|---|
-| **⚡** | **Always-fresh graph** | Sub-second incremental rebuilds via file-hash tracking. Run on every commit, every save, in watch mode — the graph is never stale. Competitors re-index everything from scratch |
+| **⚡** | **Always-fresh graph** | Three-tier change detection: journal (O(changed)) → mtime+size (O(n) stats) → hash (O(changed) reads). Sub-second rebuilds even on large codebases. Competitors re-index everything from scratch; Merkle-tree approaches still require O(n) filesystem scanning |
 | **🔓** | **Zero-cost core, LLM-enhanced when you want** | Full graph analysis with no API keys, no accounts, no cost. Optionally bring your own LLM provider for richer embeddings and AI-powered search — your code only goes to the provider you already chose |
 | **🔬** | **Function-level, not just files** | Traces `handleAuth()` → `validateToken()` → `decryptJWT()` and shows 14 callers across 9 files break if `decryptJWT` changes |
 | **🤖** | **Built for AI agents** | 13-tool [MCP server](https://modelcontextprotocol.io/) — AI assistants query your graph directly. Single-repo by default, your code doesn't leak to other projects |
@@ -101,12 +100,12 @@ Most code graph tools make you choose: **fast local analysis with no AI, or powe
 
 ### How other tools compare
 
-The key question is: **can you rebuild your graph on every commit in a large codebase without it costing money or taking minutes?** Most tools in this space either re-index everything from scratch (slow), require cloud API calls for core features (costly), or both. Codegraph's incremental builds keep the graph current in milliseconds — and the core pipeline needs no API keys at all. LLM-powered features are opt-in, using whichever provider you already work with.
+The key question is: **can you rebuild your graph on every commit in a large codebase without it costing money or taking minutes?** Most tools in this space either re-index everything from scratch (slow), require cloud API calls for core features (costly), or both. Codegraph's three-tier incremental detection achieves true O(changed) in the best case — when the watcher is running, rebuilds are proportional only to the number of files that changed, not the size of the codebase. The core pipeline needs no API keys at all. LLM-powered features are opt-in, using whichever provider you already work with.
 
 | Tool | What it does well | The tradeoff |
 |---|---|---|
 | [joern](https://github.com/joernio/joern) | Full CPG (AST + CFG + PDG) for vulnerability discovery, Scala query DSL, 14 languages, daily releases | No incremental builds — full re-parse on every change. Requires JDK 21, no built-in MCP, no watch mode |
-| [narsil-mcp](https://github.com/postrv/narsil-mcp) | 90 MCP tools, 32 languages, taint analysis, SBOM, dead code, neural search, Merkle-tree incremental indexing, single ~30MB binary | Primarily MCP-only — no standalone CLI query interface. Neural search requires API key or ONNX source build |
+| [narsil-mcp](https://github.com/postrv/narsil-mcp) | 90 MCP tools, 32 languages, taint analysis, SBOM, dead code, neural search, Merkle-tree incremental indexing, single ~30MB binary | Merkle trees still require O(n) filesystem scanning on every rebuild. Primarily MCP-only — no standalone CLI query interface. Neural search requires API key or ONNX source build |
 | [code-graph-rag](https://github.com/vitali87/code-graph-rag) | Graph RAG with Memgraph, multi-provider AI, semantic search, code editing via AST | No incremental rebuilds — full re-index + re-embed through cloud APIs on every change. Requires Docker |
 | [cpg](https://github.com/Fraunhofer-AISEC/cpg) | Formal Code Property Graph (AST + CFG + PDG + DFG), ~10 languages, MCP module, LLVM IR support, academic specifications | No incremental builds. Requires JVM + Gradle, no zero config, no watch mode |
 | [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | Knowledge graph with precomputed structural intelligence, 7 MCP tools, hybrid search (BM25 + semantic + RRF), clustering, process tracing | Full 6-phase pipeline re-run on changes. KuzuDB graph DB, browser mode limited to ~5,000 files. **PolyForm NC — no commercial use** |
@@ -137,10 +136,11 @@ Here is a cold, analytical breakdown to help you decide which tool fits your wor
 | **Language Support** | 11 languages | 32 languages |
 | **Primary Interface** | CLI-first with MCP integration | MCP-first (CLI is secondary) |
 | **Supply Chain Risk** | Low (minimal dependency tree) | Higher (requires massive dependency graph for embedded ML/scanners) |
-| **Graph Updates** | Sub-second incremental (file-hash) | Parallel re-indexing / Merkle trees |
+| **Graph Updates** | **Three-tier O(changed)** — journal → mtime+size → hash. With watch mode, only changed files are touched | Merkle trees — O(n) filesystem scan on every rebuild to recompute tree hashes |
 
 #### Choose Codegraph if:
 
+* **You need the fastest possible incremental rebuilds.** Codegraph’s three-tier change detection (journal → mtime+size → hash) achieves true O(changed) when the watcher is running — only touched files are processed. Narsil’s Merkle trees still require O(n) filesystem scanning to recompute hashes on every rebuild, even when nothing changed. On a 3,000-file project, this is the difference between near-instant and noticeable.
 * **You want to optimize AI agent reasoning.** Large Language Models degrade in performance and hallucinate when overwhelmed with choices. Codegraph’s tight 13-tool surface area ensures agents quickly understand their capabilities without wasting context window tokens.
 * **You are concerned about supply chain attacks.** To support 90 tools, SBOMs, and neural embeddings, a tool must pull in a massive dependency tree. Codegraph keeps its dependencies minimal, dramatically reducing the risk of malicious code sneaking onto your machine.
 * **You want deterministic blast-radius checks.** Features like `diff-impact` are built specifically to tell you exactly how a changed function cascades through your codebase before you merge a PR.

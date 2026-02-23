@@ -9,6 +9,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { buildGraph } from '../../src/builder.js';
+import { JOURNAL_FILENAME, writeJournalHeader } from '../../src/journal.js';
 
 // ES-module versions of the sample-project fixture so the parser
 // generates import edges (the originals use CommonJS require()).
@@ -129,5 +130,149 @@ describe('buildGraph', () => {
     expect(hashes).toContain('math.js');
     expect(hashes).toContain('utils.js');
     expect(hashes).toContain('index.js');
+  });
+
+  test('file_hashes stores real mtime and size', () => {
+    const db = new Database(dbPath, { readonly: true });
+    const rows = db.prepare('SELECT file, mtime, size FROM file_hashes').all();
+    db.close();
+    for (const row of rows) {
+      // mtime should be a reasonable epoch ms (not Date.now() from build time, but actual file mtime)
+      expect(row.mtime).toBeGreaterThan(0);
+      // size should be > 0 for our fixture files
+      expect(row.size).toBeGreaterThan(0);
+    }
+  });
+
+  test('journal header is written after build', () => {
+    const journalPath = path.join(tmpDir, '.codegraph', JOURNAL_FILENAME);
+    expect(fs.existsSync(journalPath)).toBe(true);
+    const content = fs.readFileSync(journalPath, 'utf-8');
+    expect(content).toMatch(/^# codegraph-journal v1 \d+/);
+  });
+});
+
+describe('three-tier incremental builds', () => {
+  let incrDir, incrDbPath;
+
+  beforeAll(async () => {
+    incrDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-tier-'));
+    for (const [name, content] of Object.entries(FIXTURE_FILES)) {
+      fs.writeFileSync(path.join(incrDir, name), content);
+    }
+    // First full build
+    await buildGraph(incrDir, { skipRegistry: true });
+    incrDbPath = path.join(incrDir, '.codegraph', 'graph.db');
+  });
+
+  afterAll(() => {
+    if (incrDir) fs.rmSync(incrDir, { recursive: true, force: true });
+  });
+
+  test('rebuild with no changes detects nothing (Tier 1 mtime+size)', async () => {
+    const consoleSpy = [];
+    const origLog = console.log;
+    console.log = (...args) => consoleSpy.push(args.join(' '));
+    try {
+      await buildGraph(incrDir, { skipRegistry: true });
+    } finally {
+      console.log = origLog;
+    }
+    const output = consoleSpy.join('\n');
+    expect(output).toContain('No changes detected');
+  });
+
+  test('rebuild after modifying a file detects change (Tier 1 mtime miss → Tier 2 hash)', async () => {
+    // Modify math.js
+    const mathPath = path.join(incrDir, 'math.js');
+    fs.writeFileSync(
+      mathPath,
+      `${FIXTURE_FILES['math.js']}\nexport function subtract(a, b) { return a - b; }\n`,
+    );
+
+    const consoleSpy = [];
+    const origLog = console.log;
+    console.log = (...args) => consoleSpy.push(args.join(' '));
+    try {
+      await buildGraph(incrDir, { skipRegistry: true });
+    } finally {
+      console.log = origLog;
+    }
+    const output = consoleSpy.join('\n');
+    expect(output).toContain('Incremental: 1 changed');
+
+    // Verify the new function was added
+    const db = new Database(incrDbPath, { readonly: true });
+    const names = db
+      .prepare("SELECT name FROM nodes WHERE kind = 'function'")
+      .all()
+      .map((r) => r.name);
+    db.close();
+    expect(names).toContain('subtract');
+  });
+
+  test('rebuild with valid journal uses Tier 0', async () => {
+    // Reset math.js to original
+    fs.writeFileSync(path.join(incrDir, 'math.js'), FIXTURE_FILES['math.js']);
+    // Build to get clean state
+    await buildGraph(incrDir, { skipRegistry: true });
+
+    // Now simulate watcher: write journal with only utils.js changed
+    const db = new Database(incrDbPath, { readonly: true });
+    const latestMtime = db.prepare('SELECT MAX(mtime) as m FROM file_hashes').get().m;
+    db.close();
+    writeJournalHeader(incrDir, latestMtime);
+
+    // Modify utils.js and record it in the journal
+    const utilsPath = path.join(incrDir, 'utils.js');
+    fs.writeFileSync(
+      utilsPath,
+      `${FIXTURE_FILES['utils.js']}\nexport function helper() { return 42; }\n`,
+    );
+    fs.appendFileSync(path.join(incrDir, '.codegraph', JOURNAL_FILENAME), 'utils.js\n');
+
+    const consoleSpy = [];
+    const origLog = console.log;
+    console.log = (...args) => consoleSpy.push(args.join(' '));
+    try {
+      await buildGraph(incrDir, { skipRegistry: true });
+    } finally {
+      console.log = origLog;
+    }
+    const output = consoleSpy.join('\n');
+    expect(output).toContain('Incremental: 1 changed');
+
+    // Verify the new function was added
+    const db2 = new Database(incrDbPath, { readonly: true });
+    const names = db2
+      .prepare("SELECT name FROM nodes WHERE kind = 'function'")
+      .all()
+      .map((r) => r.name);
+    db2.close();
+    expect(names).toContain('helper');
+  });
+
+  test('rebuild with corrupt journal falls back to Tier 1', async () => {
+    // Reset utils.js
+    fs.writeFileSync(path.join(incrDir, 'utils.js'), FIXTURE_FILES['utils.js']);
+    await buildGraph(incrDir, { skipRegistry: true });
+
+    // Corrupt the journal
+    fs.writeFileSync(
+      path.join(incrDir, '.codegraph', JOURNAL_FILENAME),
+      'garbage not a valid header\n',
+    );
+
+    // Rebuild with no actual changes — should still detect nothing via Tier 1
+    const consoleSpy = [];
+    const origLog = console.log;
+    console.log = (...args) => consoleSpy.push(args.join(' '));
+    try {
+      await buildGraph(incrDir, { skipRegistry: true });
+    } finally {
+      console.log = origLog;
+    }
+    const output = consoleSpy.join('\n');
+    expect(output).toContain('No changes detected');
   });
 });

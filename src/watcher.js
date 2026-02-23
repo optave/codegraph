@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EXTENSIONS, IGNORE_DIRS, normalizePath } from './constants.js';
 import { initSchema, openDb } from './db.js';
+import { appendJournalEntries } from './journal.js';
 import { info, warn } from './logger.js';
 import { createParseTreeCache, getActiveEngine, parseFileIncremental } from './parser.js';
 import { resolveImportPath } from './resolve.js';
@@ -205,6 +206,19 @@ export async function watchProject(rootDir, opts = {}) {
     }
     const updates = results;
 
+    // Append processed files to journal for Tier 0 detection on next build
+    if (updates.length > 0) {
+      const entries = updates.map((r) => ({
+        file: r.file,
+        deleted: r.deleted || false,
+      }));
+      try {
+        appendJournalEntries(rootDir, entries);
+      } catch {
+        /* journal write failure is non-fatal */
+      }
+    }
+
     for (const r of updates) {
       const nodeDelta = r.nodesAdded - r.nodesRemoved;
       const nodeStr = nodeDelta >= 0 ? `+${nodeDelta}` : `${nodeDelta}`;
@@ -234,6 +248,17 @@ export async function watchProject(rootDir, opts = {}) {
   process.on('SIGINT', () => {
     console.log('\nStopping watcher...');
     watcher.close();
+    // Flush any pending file paths to journal before exit
+    if (pending.size > 0) {
+      const entries = [...pending].map((filePath) => ({
+        file: normalizePath(path.relative(rootDir, filePath)),
+      }));
+      try {
+        appendJournalEntries(rootDir, entries);
+      } catch {
+        /* best-effort */
+      }
+    }
     if (cache) cache.clear();
     db.close();
     process.exit(0);
