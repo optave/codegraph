@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [2.3.0](https://github.com/optave/codegraph/compare/v2.2.1...v2.3.0) (2026-02-23)
+
+**Smarter embeddings, richer CLI output, and robustness fixes.** This release introduces graph-enriched embedding strategies that use dependency context instead of raw source code, adds config-level test exclusion and recursive explain depth, outputs Mermaid diagrams from `diff-impact`, filters low-confidence edges from exports, and fixes numerous issues found through dogfooding.
+
+### Features
+
+* **embeddings:** graph-enriched embedding strategy — uses callers/callees from the dependency graph instead of raw source (~100 tokens vs ~360 avg), with context window overflow detection and `--strategy` flag ([c5dcd59](https://github.com/optave/codegraph/commit/c5dcd59))
+* **cli:** add `excludeTests` config option with `--include-tests` CLI override ([56135e7](https://github.com/optave/codegraph/commit/56135e7))
+* **cli:** add `--depth` option to `explain` for recursive dependency exploration ([56135e7](https://github.com/optave/codegraph/commit/56135e7))
+* **cli:** add coupling score column to `map` command output ([56135e7](https://github.com/optave/codegraph/commit/56135e7))
+* **cli:** add Mermaid output to `diff-impact` command for visual impact diagrams ([d2d767f](https://github.com/optave/codegraph/commit/d2d767f))
+* **export:** add `--min-confidence` filter (default 0.5) to DOT/Mermaid/JSON exports ([08057f0](https://github.com/optave/codegraph/commit/08057f0))
+* **skill:** add `/dogfood` skill for automated release validation — install, test, compare engines, generate report ([c713ce6](https://github.com/optave/codegraph/commit/c713ce6))
+* **ci:** add query, incremental, and embedding regression benchmarks ([0fd1967](https://github.com/optave/codegraph/commit/0fd1967), [e012426](https://github.com/optave/codegraph/commit/e012426))
+
+### Performance
+
+* **parser:** reduce WASM boundary crossings in JS extractor for faster parsing ([d4ef6da](https://github.com/optave/codegraph/commit/d4ef6da))
+
+### Bug Fixes
+
+* **cli:** graceful error for `cycles`, `export`, `embed` when no `graph.db` exists ([3f56644](https://github.com/optave/codegraph/commit/3f56644))
+* **embedder:** fix `splitIdentifier` lowercasing that broke camelCase search relevance ([dd71a64](https://github.com/optave/codegraph/commit/dd71a64))
+* **embedder:** change default model to minilm (public, no auth required) with clear error guidance ([08057f0](https://github.com/optave/codegraph/commit/08057f0))
+* **embedder:** split camelCase/snake_case identifiers in embedding text for better search relevance ([08057f0](https://github.com/optave/codegraph/commit/08057f0))
+* **builder:** invalidate embeddings when nodes are deleted during incremental rebuild ([08057f0](https://github.com/optave/codegraph/commit/08057f0))
+* **builder:** handle concurrent file edits and symlink loops in watcher/builder ([6735967](https://github.com/optave/codegraph/commit/6735967))
+* **builder:** use busy-wait sleep instead of `Atomics.wait` for broader compatibility ([24f8ab1](https://github.com/optave/codegraph/commit/24f8ab1))
+* **builder:** move engine status messages from stdout to stderr ([56135e7](https://github.com/optave/codegraph/commit/56135e7))
+* **structure:** treat `.` as no filter in `structureData()` ([08057f0](https://github.com/optave/codegraph/commit/08057f0))
+* **hooks:** add missing shebangs to husky hooks for Windows compatibility ([b1e012c](https://github.com/optave/codegraph/commit/b1e012c))
+* **hooks:** track `mv`/`git mv`/`cp` commands in session edit log ([cfe633b](https://github.com/optave/codegraph/commit/cfe633b))
+* **ci:** use PR instead of direct push for green-path version pin ([beddf94](https://github.com/optave/codegraph/commit/beddf94))
+* **ci:** skip dev publish when merging release version bump PR ([ceb4c9a](https://github.com/optave/codegraph/commit/ceb4c9a))
+
+### Refactoring
+
+* **cli:** rename `--include-test-source` to `--with-test-source` for clarity ([242066f](https://github.com/optave/codegraph/commit/242066f))
+* **builder:** lazy-load `node:os` to reduce startup overhead ([603ee55](https://github.com/optave/codegraph/commit/603ee55))
+
+### Testing
+
+* add `readFileSafe` and symlink loop detection tests ([5ae1cde](https://github.com/optave/codegraph/commit/5ae1cde))
+* add embedding strategy benchmark and tests ([56a0517](https://github.com/optave/codegraph/commit/56a0517), [b8ce77c](https://github.com/optave/codegraph/commit/b8ce77c))
+
+### Documentation
+
+* add STABILITY.md with anticipated stability policy ([d3dcad5](https://github.com/optave/codegraph/commit/d3dcad5))
+* add LLM integration feature planning document ([3ac5138](https://github.com/optave/codegraph/commit/3ac5138))
+* add feature backlog and reorganize planning docs into `roadmap/` ([088b797](https://github.com/optave/codegraph/commit/088b797))
+* reorganize README — lead with problem and value, not competition ([545aa0f](https://github.com/optave/codegraph/commit/545aa0f))
+* add benchmarks section to CONTRIBUTING.md ([8395059](https://github.com/optave/codegraph/commit/8395059))
+
+## [2.2.1](https://github.com/optave/codegraph/compare/v2.2.0...v2.2.1) (2026-02-23)
+
+### Bug Fixes
+
+* **embedder:** change default embedding model from jina-code to nomic-v1.5 ([f40bb91](https://github.com/optave/codegraph/commit/f40bb91))
+* **config:** update config default and test to match nomic-v1.5 change ([3a88b4c](https://github.com/optave/codegraph/commit/3a88b4c))
+* **ci:** run benchmark after publish to prevent workflow cancellation ([68e274e](https://github.com/optave/codegraph/commit/68e274e))
+
 ## [2.2.0](https://github.com/optave/codegraph/compare/v2.1.0...v2.2.0) (2026-02-23)
 
 **New query commands, smarter call resolution, and full `--no-tests` coverage.** This release adds `explain`, `where`, and `context` commands for richer code exploration, introduces three-tier incremental change detection, improves call resolution accuracy, and extends the `--no-tests` flag to every query command.
