@@ -4,6 +4,18 @@ import Database from 'better-sqlite3';
 import { findDbPath, openReadonlyOrFail } from './db.js';
 import { warn } from './logger.js';
 
+/**
+ * Split an identifier into readable words.
+ * camelCase/PascalCase → "camel Case", snake_case → "snake case", kebab-case → "kebab case"
+ */
+function splitIdentifier(name) {
+  return name
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+}
+
 // Lazy-load transformers (heavy, optional module)
 let pipeline = null;
 let _cos_sim = null;
@@ -55,7 +67,7 @@ export const MODELS = {
   },
 };
 
-export const DEFAULT_MODEL = 'nomic-v1.5';
+export const DEFAULT_MODEL = 'minilm';
 const BATCH_SIZE_MAP = {
   minilm: 32,
   'jina-small': 16,
@@ -103,8 +115,27 @@ async function loadModel(modelKey) {
   _cos_sim = transformers.cos_sim;
 
   console.log(`Loading embedding model: ${config.name} (${config.dim}d)...`);
-  const opts = config.quantized ? { quantized: true } : {};
-  extractor = await pipeline('feature-extraction', config.name, opts);
+  const pipelineOpts = config.quantized ? { quantized: true } : {};
+  try {
+    extractor = await pipeline('feature-extraction', config.name, pipelineOpts);
+  } catch (err) {
+    const msg = err.message || String(err);
+    if (msg.includes('Unauthorized') || msg.includes('401') || msg.includes('gated')) {
+      console.error(
+        `\nModel "${config.name}" requires authentication.\n` +
+          `This model is gated on HuggingFace and needs an access token.\n\n` +
+          `Options:\n` +
+          `  1. Set HF_TOKEN env var: export HF_TOKEN=hf_...\n` +
+          `  2. Use a public model instead: codegraph embed --model minilm\n`,
+      );
+    } else {
+      console.error(
+        `\nFailed to load model "${config.name}": ${msg}\n` +
+          `Try a different model: codegraph embed --model minilm\n`,
+      );
+    }
+    process.exit(1);
+  }
   activeModel = config.name;
   console.log('Model loaded.');
   return { extractor, config };
@@ -219,7 +250,8 @@ export async function buildEmbeddings(rootDir, modelKey, customDbPath) {
         : Math.min(lines.length, startLine + 15);
       const context = lines.slice(startLine, endLine).join('\n');
 
-      const text = `${node.kind} ${node.name} in ${file}\n${context}`;
+      const readable = splitIdentifier(node.name);
+      const text = `${node.kind} ${node.name} (${readable}) in ${file}\n${context}`;
       texts.push(text);
       nodeIds.push(node.id);
       previews.push(`${node.name} (${node.kind}) -- ${file}:${node.line}`);

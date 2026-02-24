@@ -42,6 +42,8 @@
 
 **Fix:** Treat `.` (or current dir equivalent) as `null`/no filter in `structureData()`.
 
+> **FIXED** — `structureData()` now normalizes the directory argument and treats `"."` as null/no filter. (`src/structure.js`)
+
 ### 2. Stale embeddings after rebuild (Medium severity)
 
 - After an incremental `build`, embedding `node_id`s become orphaned (e.g. old IDs in 3077-range, new IDs in 4335-range)
@@ -52,6 +54,8 @@
 
 **Fix:** Either preserve node IDs across rebuilds, invalidate embeddings when node IDs change, or warn the user to re-run `embed`.
 
+> **FIXED** — Build now invalidates embeddings alongside nodes. Full builds clear the embeddings table entirely. Incremental builds delete embeddings for affected files before deleting their nodes (order matters — need node IDs to find them). After the build, any remaining orphaned embeddings trigger a warning: `"N embeddings are orphaned (nodes changed). Run codegraph embed to refresh."` (`src/builder.js`)
+
 ### 3. `embed` default model requires HuggingFace auth (Medium severity)
 
 - `codegraph embed .` crashes with `Error: Unauthorized access to file` for the default `jina-code` model
@@ -61,6 +65,8 @@
 
 **Fix:** Either default to a public model (e.g. `minilm`), auto-fallback to `minilm` on auth failure, or catch the error and provide a clear message with instructions.
 
+> **FIXED** — Default model changed from `nomic-v1.5` (gated, requires HF_TOKEN) to `minilm` (public, 23MB, always works). Additionally, `loadModel()` now catches auth/download failures and prints a clear message with options (set HF_TOKEN or use `--model minilm`) instead of crashing with a raw stack trace. (`src/embedder.js`, `src/cli.js`)
+
 ### 4. Cross-language false positive in export (Low severity)
 
 - One low-confidence (0.3) call edge: `main` (build.rs) → `setup` (tests/unit/structure.test.js)
@@ -68,6 +74,8 @@
 - Only 1 instance found across the entire graph
 
 **Fix:** Export commands could support a `--min-confidence` filter, or the default export could exclude edges below a threshold (e.g. 0.5).
+
+> **FIXED** — Added `--min-confidence <score>` option to the `export` command (default: 0.5). All three formats (DOT, Mermaid, JSON) filter edges by confidence at the SQL level. The 0.3-confidence false positive is excluded by default. Users can pass `--min-confidence 0` to include all edges. (`src/export.js`, `src/cli.js`)
 
 ## `--no-tests` Flag
 
@@ -80,3 +88,5 @@ Tested on `stats` and `map` — both correctly filter out test files:
 - `embed --model minilm` successfully generated 392 embeddings (384d)
 - `search "build graph"` returned 15 results after fresh embeddings (top hit: 37.9% `test_triangle_cycle`)
 - Search quality is reasonable but not ideal — `buildGraph` itself didn't appear in results for "build graph"
+
+> **FIXED** — Embedding text now includes a readable split of the identifier name (e.g. `buildGraph` → `"function buildGraph (build Graph) in src/builder.js"`). This lets the model naturally associate "build graph" queries with `buildGraph` without needing hybrid search. camelCase, PascalCase, snake_case, and kebab-case are all handled. (`src/embedder.js`)

@@ -402,13 +402,30 @@ export async function buildGraph(rootDir, opts = {}) {
     return;
   }
 
+  // Check if embeddings table exists (created by `embed`, not by initSchema)
+  let hasEmbeddings = false;
+  try {
+    db.prepare('SELECT 1 FROM embeddings LIMIT 1').get();
+    hasEmbeddings = true;
+  } catch {
+    /* table doesn't exist */
+  }
+
   if (isFullBuild) {
+    const deletions =
+      'PRAGMA foreign_keys = OFF; DELETE FROM node_metrics; DELETE FROM edges; DELETE FROM nodes; PRAGMA foreign_keys = ON;';
     db.exec(
-      'PRAGMA foreign_keys = OFF; DELETE FROM node_metrics; DELETE FROM edges; DELETE FROM nodes; PRAGMA foreign_keys = ON;',
+      hasEmbeddings
+        ? `${deletions.replace('PRAGMA foreign_keys = ON;', '')} DELETE FROM embeddings; PRAGMA foreign_keys = ON;`
+        : deletions,
     );
   } else {
     info(`Incremental: ${parseChanges.length} changed, ${removed.length} removed`);
-    // Remove metrics/edges/nodes for changed and removed files
+    // Remove embeddings/metrics/edges/nodes for changed and removed files
+    // Embeddings must be deleted BEFORE nodes (we need node IDs to find them)
+    const deleteEmbeddingsForFile = hasEmbeddings
+      ? db.prepare('DELETE FROM embeddings WHERE node_id IN (SELECT id FROM nodes WHERE file = ?)')
+      : null;
     const deleteNodesForFile = db.prepare('DELETE FROM nodes WHERE file = ?');
     const deleteEdgesForFile = db.prepare(`
       DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = @f)
@@ -418,12 +435,14 @@ export async function buildGraph(rootDir, opts = {}) {
       'DELETE FROM node_metrics WHERE node_id IN (SELECT id FROM nodes WHERE file = ?)',
     );
     for (const relPath of removed) {
+      deleteEmbeddingsForFile?.run(relPath);
       deleteEdgesForFile.run({ f: relPath });
       deleteMetricsForFile.run(relPath);
       deleteNodesForFile.run(relPath);
     }
     for (const item of parseChanges) {
       const relPath = item.relPath || normalizePath(path.relative(rootDir, item.file));
+      deleteEmbeddingsForFile?.run(relPath);
       deleteEdgesForFile.run({ f: relPath });
       deleteMetricsForFile.run(relPath);
       deleteNodesForFile.run(relPath);
@@ -823,6 +842,23 @@ export async function buildGraph(rootDir, opts = {}) {
   const nodeCount = db.prepare('SELECT COUNT(*) as c FROM nodes').get().c;
   info(`Graph built: ${nodeCount} nodes, ${edgeCount} edges`);
   info(`Stored in ${dbPath}`);
+
+  // Warn about orphaned embeddings that no longer match any node
+  if (hasEmbeddings) {
+    try {
+      const orphaned = db
+        .prepare('SELECT COUNT(*) as c FROM embeddings WHERE node_id NOT IN (SELECT id FROM nodes)')
+        .get().c;
+      if (orphaned > 0) {
+        warn(
+          `${orphaned} embeddings are orphaned (nodes changed). Run "codegraph embed" to refresh.`,
+        );
+      }
+    } catch {
+      /* ignore — embeddings table may have been dropped */
+    }
+  }
+
   db.close();
 
   // Write journal header after successful build

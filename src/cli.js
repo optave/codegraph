@@ -272,10 +272,15 @@ program
   .option('--functions', 'Function-level graph instead of file-level')
   .option('-T, --no-tests', 'Exclude test/spec files')
   .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
+  .option('--min-confidence <score>', 'Minimum edge confidence threshold (default: 0.5)', '0.5')
   .option('-o, --output <file>', 'Write to file instead of stdout')
   .action((opts) => {
     const db = new Database(findDbPath(opts.db), { readonly: true });
-    const exportOpts = { fileLevel: !opts.functions, noTests: resolveNoTests(opts) };
+    const exportOpts = {
+      fileLevel: !opts.functions,
+      noTests: resolveNoTests(opts),
+      minConfidence: parseFloat(opts.minConfidence),
+    };
 
     let output;
     switch (opts.format) {
@@ -412,7 +417,7 @@ program
   .action(() => {
     console.log('\nAvailable embedding models:\n');
     for (const [key, config] of Object.entries(MODELS)) {
-      const def = key === 'nomic-v1.5' ? ' (default)' : '';
+      const def = key === 'minilm' ? ' (default)' : '';
       console.log(`  ${key.padEnd(12)} ${String(config.dim).padStart(4)}d  ${config.desc}${def}`);
     }
     console.log('\nUsage: codegraph embed --model <name>');
@@ -426,8 +431,8 @@ program
   )
   .option(
     '-m, --model <name>',
-    'Embedding model: minilm, jina-small, jina-base, jina-code, nomic, nomic-v1.5 (default), bge-large. Run `codegraph models` for details',
-    'nomic-v1.5',
+    'Embedding model: minilm (default), jina-small, jina-base, jina-code, nomic, nomic-v1.5, bge-large. Run `codegraph models` for details',
+    'minilm',
   )
   .action(async (dir, opts) => {
     const root = path.resolve(dir || '.');

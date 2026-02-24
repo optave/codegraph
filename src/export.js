@@ -1,12 +1,15 @@
 import path from 'node:path';
 import { isTestFile } from './queries.js';
 
+const DEFAULT_MIN_CONFIDENCE = 0.5;
+
 /**
  * Export the dependency graph in DOT (Graphviz) format.
  */
 export function exportDOT(db, opts = {}) {
   const fileLevel = opts.fileLevel !== false;
   const noTests = opts.noTests || false;
+  const minConf = opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
   const lines = [
     'digraph codegraph {',
     '  rankdir=LR;',
@@ -23,8 +26,9 @@ export function exportDOT(db, opts = {}) {
       JOIN nodes n1 ON e.source_id = n1.id
       JOIN nodes n2 ON e.target_id = n2.id
       WHERE n1.file != n2.file AND e.kind IN ('imports', 'imports-type', 'calls')
+        AND e.confidence >= ?
     `)
-      .all();
+      .all(minConf);
     if (noTests) edges = edges.filter((e) => !isTestFile(e.source) && !isTestFile(e.target));
 
     // Try to use directory nodes from DB (built by structure analysis)
@@ -102,8 +106,9 @@ export function exportDOT(db, opts = {}) {
       JOIN nodes n2 ON e.target_id = n2.id
       WHERE n1.kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module') AND n2.kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module')
       AND e.kind = 'calls'
+      AND e.confidence >= ?
     `)
-      .all();
+      .all(minConf);
     if (noTests)
       edges = edges.filter((e) => !isTestFile(e.source_file) && !isTestFile(e.target_file));
 
@@ -126,6 +131,7 @@ export function exportDOT(db, opts = {}) {
 export function exportMermaid(db, opts = {}) {
   const fileLevel = opts.fileLevel !== false;
   const noTests = opts.noTests || false;
+  const minConf = opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
   const lines = ['graph LR'];
 
   if (fileLevel) {
@@ -136,8 +142,9 @@ export function exportMermaid(db, opts = {}) {
       JOIN nodes n1 ON e.source_id = n1.id
       JOIN nodes n2 ON e.target_id = n2.id
       WHERE n1.file != n2.file AND e.kind IN ('imports', 'imports-type', 'calls')
+        AND e.confidence >= ?
     `)
-      .all();
+      .all(minConf);
     if (noTests) edges = edges.filter((e) => !isTestFile(e.source) && !isTestFile(e.target));
 
     for (const { source, target } of edges) {
@@ -155,8 +162,9 @@ export function exportMermaid(db, opts = {}) {
       JOIN nodes n2 ON e.target_id = n2.id
       WHERE n1.kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module') AND n2.kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module')
       AND e.kind = 'calls'
+      AND e.confidence >= ?
     `)
-      .all();
+      .all(minConf);
     if (noTests)
       edges = edges.filter((e) => !isTestFile(e.source_file) && !isTestFile(e.target_file));
 
@@ -175,6 +183,7 @@ export function exportMermaid(db, opts = {}) {
  */
 export function exportJSON(db, opts = {}) {
   const noTests = opts.noTests || false;
+  const minConf = opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
 
   let nodes = db
     .prepare(`
@@ -185,13 +194,13 @@ export function exportJSON(db, opts = {}) {
 
   let edges = db
     .prepare(`
-    SELECT DISTINCT n1.file AS source, n2.file AS target, e.kind
+    SELECT DISTINCT n1.file AS source, n2.file AS target, e.kind, e.confidence
     FROM edges e
     JOIN nodes n1 ON e.source_id = n1.id
     JOIN nodes n2 ON e.target_id = n2.id
-    WHERE n1.file != n2.file
+    WHERE n1.file != n2.file AND e.confidence >= ?
   `)
-    .all();
+    .all(minConf);
   if (noTests) edges = edges.filter((e) => !isTestFile(e.source) && !isTestFile(e.target));
 
   return { nodes, edges };

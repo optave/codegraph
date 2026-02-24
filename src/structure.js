@@ -231,7 +231,8 @@ export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, director
  */
 export function structureData(customDbPath, opts = {}) {
   const db = openReadonlyOrFail(customDbPath);
-  const filterDir = opts.directory || null;
+  const rawDir = opts.directory || null;
+  const filterDir = rawDir && normalizePath(rawDir) !== '.' ? rawDir : null;
   const maxDepth = opts.depth || null;
   const sortBy = opts.sort || 'files';
   const noTests = opts.noTests || false;
