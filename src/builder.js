@@ -892,6 +892,17 @@ export async function buildGraph(rootDir, opts = {}) {
     debug(`Structure analysis failed: ${err.message}`);
   }
 
+  // Classify node roles (entry, core, utility, adapter, dead, leaf)
+  try {
+    const { classifyNodeRoles } = await import('./structure.js');
+    const roleSummary = classifyNodeRoles(db);
+    debug(
+      `Roles: ${Object.entries(roleSummary).map(([r, c]) => `${r}=${c}`).join(', ')}`,
+    );
+  } catch (err) {
+    debug(`Role classification failed: ${err.message}`);
+  }
+
   const nodeCount = db.prepare('SELECT COUNT(*) as c FROM nodes').get().c;
   info(`Graph built: ${nodeCount} nodes, ${edgeCount} edges`);
   info(`Stored in ${dbPath}`);

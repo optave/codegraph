@@ -8,7 +8,7 @@
 import { createRequire } from 'node:module';
 import { findCycles } from './cycles.js';
 import { findDbPath } from './db.js';
-import { ALL_SYMBOL_KINDS, diffImpactMermaid } from './queries.js';
+import { ALL_SYMBOL_KINDS, diffImpactMermaid, VALID_ROLES } from './queries.js';
 
 const REPO_PROP = {
   repo: {
@@ -274,6 +274,23 @@ const BASE_TOOLS = [
     },
   },
   {
+    name: 'node_roles',
+    description:
+      'Show node role classification (entry, core, utility, adapter, dead, leaf) based on connectivity patterns',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        role: {
+          type: 'string',
+          enum: VALID_ROLES,
+          description: 'Filter to a specific role',
+        },
+        file: { type: 'string', description: 'Scope to a specific file (partial match)' },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+      },
+    },
+  },
+  {
     name: 'hotspots',
     description:
       'Find structural hotspots: files or directories with extreme fan-in, fan-out, or symbol density',
@@ -372,6 +389,7 @@ export async function startMCPServer(customDbPath, options = {}) {
     whereData,
     diffImpactData,
     listFunctionsData,
+    rolesData,
   } = await import('./queries.js');
 
   const require = createRequire(import.meta.url);
@@ -537,6 +555,13 @@ export async function startMCPServer(customDbPath, options = {}) {
           result = listFunctionsData(dbPath, {
             file: args.file,
             pattern: args.pattern,
+            noTests: args.no_tests,
+          });
+          break;
+        case 'node_roles':
+          result = rolesData(dbPath, {
+            role: args.role,
+            file: args.file,
             noTests: args.no_tests,
           });
           break;

@@ -115,6 +115,16 @@ export function initSchema(db) {
   } catch {
     /* already exists */
   }
+  try {
+    db.exec('ALTER TABLE nodes ADD COLUMN role TEXT');
+  } catch {
+    /* already exists */
+  }
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_role ON nodes(role)');
+  } catch {
+    /* already exists */
+  }
 }
 
 export function findDbPath(customPath) {

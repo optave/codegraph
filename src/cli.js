@@ -21,7 +21,9 @@ import {
   impactAnalysis,
   moduleMap,
   queryName,
+  roles,
   stats,
+  VALID_ROLES,
   where,
 } from './queries.js';
 import {
@@ -527,6 +529,28 @@ program
     } else {
       console.log(formatHotspots(data));
     }
+  });
+
+program
+  .command('roles')
+  .description('Show node role classification: entry, core, utility, adapter, dead, leaf')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .option('--role <role>', `Filter by role (${VALID_ROLES.join(', ')})`)
+  .option('-f, --file <path>', 'Scope to a specific file (partial match)')
+  .option('-T, --no-tests', 'Exclude test/spec files')
+  .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
+  .option('-j, --json', 'Output as JSON')
+  .action((opts) => {
+    if (opts.role && !VALID_ROLES.includes(opts.role)) {
+      console.error(`Invalid role "${opts.role}". Valid roles: ${VALID_ROLES.join(', ')}`);
+      process.exit(1);
+    }
+    roles(opts.db, {
+      role: opts.role,
+      file: opts.file,
+      noTests: resolveNoTests(opts),
+      json: opts.json,
+    });
   });
 
 program

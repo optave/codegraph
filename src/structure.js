@@ -224,6 +224,100 @@ export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, director
   debug(`Structure: ${dirCount} directories, ${fileSymbols.size} files with metrics`);
 }
 
+// ─── Node role classification ─────────────────────────────────────────
+
+function median(sorted) {
+  if (sorted.length === 0) return 0;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+export function classifyNodeRoles(db) {
+  const rows = db
+    .prepare(
+      `SELECT n.id, n.kind, n.file,
+        COALESCE(fi.cnt, 0) AS fan_in,
+        COALESCE(fo.cnt, 0) AS fan_out
+      FROM nodes n
+      LEFT JOIN (
+        SELECT target_id, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target_id
+      ) fi ON n.id = fi.target_id
+      LEFT JOIN (
+        SELECT source_id, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source_id
+      ) fo ON n.id = fo.source_id
+      WHERE n.kind NOT IN ('file', 'directory')`,
+    )
+    .all();
+
+  if (rows.length === 0) {
+    return { entry: 0, core: 0, utility: 0, adapter: 0, dead: 0, leaf: 0 };
+  }
+
+  const exportedIds = new Set(
+    db
+      .prepare(
+        `SELECT DISTINCT e.target_id
+        FROM edges e
+        JOIN nodes caller ON e.source_id = caller.id
+        JOIN nodes target ON e.target_id = target.id
+        WHERE e.kind = 'calls' AND caller.file != target.file`,
+      )
+      .all()
+      .map((r) => r.target_id),
+  );
+
+  const nonZeroFanIn = rows
+    .filter((r) => r.fan_in > 0)
+    .map((r) => r.fan_in)
+    .sort((a, b) => a - b);
+  const nonZeroFanOut = rows
+    .filter((r) => r.fan_out > 0)
+    .map((r) => r.fan_out)
+    .sort((a, b) => a - b);
+
+  const medFanIn = median(nonZeroFanIn);
+  const medFanOut = median(nonZeroFanOut);
+
+  const updates = [];
+  const summary = { entry: 0, core: 0, utility: 0, adapter: 0, dead: 0, leaf: 0 };
+
+  for (const row of rows) {
+    const highIn = row.fan_in >= medFanIn && row.fan_in > 0;
+    const highOut = row.fan_out >= medFanOut && row.fan_out > 0;
+    const isExported = exportedIds.has(row.id);
+
+    let role;
+    if (row.fan_in === 0 && !isExported) {
+      role = 'dead';
+    } else if (row.fan_in === 0 && isExported) {
+      role = 'entry';
+    } else if (highIn && !highOut) {
+      role = 'core';
+    } else if (highIn && highOut) {
+      role = 'utility';
+    } else if (!highIn && highOut) {
+      role = 'adapter';
+    } else {
+      role = 'leaf';
+    }
+
+    updates.push({ id: row.id, role });
+    summary[role]++;
+  }
+
+  const clearRoles = db.prepare('UPDATE nodes SET role = NULL');
+  const setRole = db.prepare('UPDATE nodes SET role = ? WHERE id = ?');
+
+  db.transaction(() => {
+    clearRoles.run();
+    for (const u of updates) {
+      setRole.run(u.role, u.id);
+    }
+  })();
+
+  return summary;
+}
+
 // ─── Query functions (read-only) ──────────────────────────────────────
 
 /**

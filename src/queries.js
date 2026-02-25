@@ -67,6 +67,8 @@ export const ALL_SYMBOL_KINDS = [
   'module',
 ];
 
+export const VALID_ROLES = ['entry', 'core', 'utility', 'adapter', 'dead', 'leaf'];
+
 /**
  * Get all ancestor class names for a given class using extends edges.
  */
@@ -876,7 +878,7 @@ export function listFunctionsData(customDbPath, opts = {}) {
 
   let rows = db
     .prepare(
-      `SELECT name, kind, file, line FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY file, line`,
+      `SELECT name, kind, file, line, role FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY file, line`,
     )
     .all(...params);
 
@@ -1077,6 +1079,24 @@ export function statsData(customDbPath, opts = {}) {
     falsePositiveWarnings,
   };
 
+  // Role distribution
+  let roleRows;
+  if (noTests) {
+    const allRoleNodes = db
+      .prepare('SELECT role, file FROM nodes WHERE role IS NOT NULL')
+      .all();
+    const filtered = allRoleNodes.filter((n) => !isTestFile(n.file));
+    const counts = {};
+    for (const n of filtered) counts[n.role] = (counts[n.role] || 0) + 1;
+    roleRows = Object.entries(counts).map(([role, c]) => ({ role, c }));
+  } else {
+    roleRows = db
+      .prepare('SELECT role, COUNT(*) as c FROM nodes WHERE role IS NOT NULL GROUP BY role')
+      .all();
+  }
+  const roles = {};
+  for (const r of roleRows) roles[r.role] = r.c;
+
   db.close();
   return {
     nodes: { total: totalNodes, byKind: nodesByKind },
@@ -1086,6 +1106,7 @@ export function statsData(customDbPath, opts = {}) {
     hotspots,
     embeddings,
     quality,
+    roles,
   };
 }
 
@@ -1179,6 +1200,22 @@ export function stats(customDbPath, opts = {}) {
       for (const fp of q.falsePositiveWarnings) {
         console.log(`    ! ${fp.name} (${fp.callerCount} callers) -- ${fp.file}:${fp.line}`);
       }
+    }
+  }
+
+  // Roles
+  if (data.roles && Object.keys(data.roles).length > 0) {
+    const total = Object.values(data.roles).reduce((a, b) => a + b, 0);
+    console.log(`\nRoles:     ${total} classified symbols`);
+    const roleParts = Object.entries(data.roles)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k} ${v}`);
+    for (let i = 0; i < roleParts.length; i += 3) {
+      const row = roleParts
+        .slice(i, i + 3)
+        .map((p) => p.padEnd(18))
+        .join('');
+      console.log(`  ${row}`);
     }
   }
 
@@ -1649,6 +1686,7 @@ export function contextData(name, customDbPath, opts = {}) {
       kind: node.kind,
       file: node.file,
       line: node.line,
+      role: node.role || null,
       endLine: node.end_line || null,
       source,
       signature,
@@ -1675,7 +1713,8 @@ export function context(name, customDbPath, opts = {}) {
 
   for (const r of data.results) {
     const lineRange = r.endLine ? `${r.line}-${r.endLine}` : `${r.line}`;
-    console.log(`\n# ${r.name} (${r.kind}) — ${r.file}:${lineRange}\n`);
+    const roleTag = r.role ? ` [${r.role}]` : '';
+    console.log(`\n# ${r.name} (${r.kind})${roleTag} — ${r.file}:${lineRange}\n`);
 
     // Signature
     if (r.signature) {
@@ -1787,6 +1826,7 @@ function explainFileImpl(db, target, getFileLines) {
       name: s.name,
       kind: s.kind,
       line: s.line,
+      role: s.role || null,
       summary: fileLines ? extractSummary(fileLines, s.line) : null,
       signature: fileLines ? extractSignature(fileLines, s.line) : null,
     });
@@ -1907,6 +1947,7 @@ function explainFunctionImpl(db, target, noTests, getFileLines) {
       kind: node.kind,
       file: node.file,
       line: node.line,
+      role: node.role || null,
       endLine: node.end_line || null,
       lineCount,
       summary,
@@ -2018,8 +2059,9 @@ export function explain(target, customDbPath, opts = {}) {
         console.log(`\n## Exported`);
         for (const s of r.publicApi) {
           const sig = s.signature?.params != null ? `(${s.signature.params})` : '';
+          const roleTag = s.role ? ` [${s.role}]` : '';
           const summary = s.summary ? `  -- ${s.summary}` : '';
-          console.log(`  ${kindIcon(s.kind)} ${s.name}${sig} :${s.line}${summary}`);
+          console.log(`  ${kindIcon(s.kind)} ${s.name}${sig}${roleTag} :${s.line}${summary}`);
         }
       }
 
@@ -2027,8 +2069,9 @@ export function explain(target, customDbPath, opts = {}) {
         console.log(`\n## Internal`);
         for (const s of r.internal) {
           const sig = s.signature?.params != null ? `(${s.signature.params})` : '';
+          const roleTag = s.role ? ` [${s.role}]` : '';
           const summary = s.summary ? `  -- ${s.summary}` : '';
-          console.log(`  ${kindIcon(s.kind)} ${s.name}${sig} :${s.line}${summary}`);
+          console.log(`  ${kindIcon(s.kind)} ${s.name}${sig}${roleTag} :${s.line}${summary}`);
         }
       }
 
@@ -2045,9 +2088,10 @@ export function explain(target, customDbPath, opts = {}) {
       const lineRange = r.endLine ? `${r.line}-${r.endLine}` : `${r.line}`;
       const lineInfo = r.lineCount ? `${r.lineCount} lines` : '';
       const summaryPart = r.summary ? ` | ${r.summary}` : '';
+      const roleTag = r.role ? ` [${r.role}]` : '';
       const depthLevel = r._depth || 0;
       const heading = depthLevel === 0 ? '#' : '##'.padEnd(depthLevel + 2, '#');
-      console.log(`\n${indent}${heading} ${r.name} (${r.kind})  ${r.file}:${lineRange}`);
+      console.log(`\n${indent}${heading} ${r.name} (${r.kind})${roleTag}  ${r.file}:${lineRange}`);
       if (lineInfo || r.summary) {
         console.log(`${indent}  ${lineInfo}${summaryPart}`);
       }
@@ -2134,6 +2178,7 @@ function whereSymbolImpl(db, target, noTests) {
       kind: node.kind,
       file: node.file,
       line: node.line,
+      role: node.role || null,
       exported,
       uses: uses.map((u) => ({ name: u.name, file: u.file, line: u.line })),
     };
@@ -2220,8 +2265,9 @@ export function where(target, customDbPath, opts = {}) {
 
   if (data.mode === 'symbol') {
     for (const r of data.results) {
+      const roleTag = r.role ? ` [${r.role}]` : '';
       const tag = r.exported ? '  (exported)' : '';
-      console.log(`\n${kindIcon(r.kind)} ${r.name}  ${r.file}:${r.line}${tag}`);
+      console.log(`\n${kindIcon(r.kind)} ${r.name}${roleTag}  ${r.file}:${r.line}${tag}`);
       if (r.uses.length > 0) {
         const useStrs = r.uses.map((u) => `${u.file}:${u.line}`);
         console.log(`  Used in: ${useStrs.join(', ')}`);
@@ -2248,6 +2294,81 @@ export function where(target, customDbPath, opts = {}) {
     }
   }
   console.log();
+}
+
+// ─── rolesData ──────────────────────────────────────────────────────────
+
+export function rolesData(customDbPath, opts = {}) {
+  const db = openReadonlyOrFail(customDbPath);
+  const noTests = opts.noTests || false;
+  const filterRole = opts.role || null;
+  const filterFile = opts.file || null;
+
+  const conditions = ['role IS NOT NULL'];
+  const params = [];
+
+  if (filterRole) {
+    conditions.push('role = ?');
+    params.push(filterRole);
+  }
+  if (filterFile) {
+    conditions.push('file LIKE ?');
+    params.push(`%${filterFile}%`);
+  }
+
+  let rows = db
+    .prepare(
+      `SELECT name, kind, file, line, role FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY role, file, line`,
+    )
+    .all(...params);
+
+  if (noTests) rows = rows.filter((r) => !isTestFile(r.file));
+
+  const summary = {};
+  for (const r of rows) {
+    summary[r.role] = (summary[r.role] || 0) + 1;
+  }
+
+  db.close();
+  return { count: rows.length, summary, symbols: rows };
+}
+
+export function roles(customDbPath, opts = {}) {
+  const data = rolesData(customDbPath, opts);
+  if (opts.json) {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+
+  if (data.count === 0) {
+    console.log('No classified symbols found. Run "codegraph build" first.');
+    return;
+  }
+
+  const total = data.count;
+  console.log(`\nNode roles (${total} symbols):\n`);
+
+  const summaryParts = Object.entries(data.summary)
+    .sort((a, b) => b[1] - a[1])
+    .map(([role, count]) => `${role}: ${count}`);
+  console.log(`  ${summaryParts.join('  ')}\n`);
+
+  const byRole = {};
+  for (const s of data.symbols) {
+    if (!byRole[s.role]) byRole[s.role] = [];
+    byRole[s.role].push(s);
+  }
+
+  for (const [role, symbols] of Object.entries(byRole)) {
+    console.log(`## ${role} (${symbols.length})`);
+    for (const s of symbols.slice(0, 30)) {
+      console.log(`  ${kindIcon(s.kind)} ${s.name}  ${s.file}:${s.line}`);
+    }
+    if (symbols.length > 30) {
+      console.log(`  ... and ${symbols.length - 30} more`);
+    }
+    console.log();
+  }
 }
 
 export function fnImpact(name, customDbPath, opts = {}) {

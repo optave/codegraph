@@ -53,7 +53,9 @@ export {
   impactAnalysisData,
   moduleMapData,
   queryNameData,
+  rolesData,
   statsData,
+  VALID_ROLES,
   whereData,
 } from './queries.js';
 // Registry (multi-repo)
@@ -70,6 +72,7 @@ export {
 // Structure analysis
 export {
   buildStructure,
+  classifyNodeRoles,
   formatHotspots,
   formatModuleBoundaries,
   formatStructure,
