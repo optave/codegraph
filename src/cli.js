@@ -395,8 +395,15 @@ registry
   .command('prune')
   .description('Remove stale registry entries (missing directories or idle beyond TTL)')
   .option('--ttl <days>', 'Days of inactivity before pruning (default: 30)', '30')
+  .option('--exclude <names>', 'Comma-separated repo names to preserve from pruning')
   .action((opts) => {
-    const pruned = pruneRegistry(undefined, parseInt(opts.ttl, 10));
+    const excludeNames = opts.exclude
+      ? opts.exclude
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+      : [];
+    const pruned = pruneRegistry(undefined, parseInt(opts.ttl, 10), excludeNames);
     if (pruned.length === 0) {
       console.log('No stale entries found.');
     } else {
@@ -464,6 +471,7 @@ program
   .option('-k, --kind <kind>', 'Filter by kind: function, method, class')
   .option('--file <pattern>', 'Filter by file path pattern')
   .option('--rrf-k <number>', 'RRF k parameter for multi-query ranking', '60')
+  .option('-j, --json', 'Output as JSON')
   .action(async (query, opts) => {
     await search(query, opts.db, {
       limit: parseInt(opts.limit, 10),
@@ -473,6 +481,7 @@ program
       kind: opts.kind,
       filePattern: opts.file,
       rrfK: parseInt(opts.rrfK, 10),
+      json: opts.json,
     });
   });
 
