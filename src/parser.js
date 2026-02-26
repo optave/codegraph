@@ -279,7 +279,8 @@ function wasmExtractSymbols(parsers, filePath, code) {
   const entry = _extToLang.get(ext);
   if (!entry) return null;
   const query = _queryCache.get(entry.id) || null;
-  return entry.extractor(tree, filePath, query);
+  const symbols = entry.extractor(tree, filePath, query);
+  return symbols ? { symbols, tree, langId: entry.id } : null;
 }
 
 /**
@@ -300,7 +301,8 @@ export async function parseFileAuto(filePath, source, opts = {}) {
 
   // WASM path
   const parsers = await createParsers();
-  return wasmExtractSymbols(parsers, filePath, source);
+  const extracted = wasmExtractSymbols(parsers, filePath, source);
+  return extracted ? extracted.symbols : null;
 }
 
 /**
@@ -335,10 +337,12 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
       warn(`Skipping ${path.relative(rootDir, filePath)}: ${err.message}`);
       continue;
     }
-    const symbols = wasmExtractSymbols(parsers, filePath, code);
-    if (symbols) {
+    const extracted = wasmExtractSymbols(parsers, filePath, code);
+    if (extracted) {
       const relPath = path.relative(rootDir, filePath).split(path.sep).join('/');
-      result.set(relPath, symbols);
+      extracted.symbols._tree = extracted.tree;
+      extracted.symbols._langId = extracted.langId;
+      result.set(relPath, extracted.symbols);
     }
   }
   return result;
