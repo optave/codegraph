@@ -787,10 +787,26 @@ export async function buildGraph(rootDir, opts = {}) {
       for (const call of symbols.calls) {
         if (call.receiver && BUILTIN_RECEIVERS.has(call.receiver)) continue;
         let caller = null;
+        let callerSpan = Infinity;
         for (const def of symbols.definitions) {
           if (def.line <= call.line) {
-            const row = getNodeId.get(def.name, def.kind, relPath, def.line);
-            if (row) caller = row;
+            const end = def.endLine || Infinity;
+            if (call.line <= end) {
+              // Call is inside this definition's range — pick narrowest
+              const span = end - def.line;
+              if (span < callerSpan) {
+                const row = getNodeId.get(def.name, def.kind, relPath, def.line);
+                if (row) {
+                  caller = row;
+                  callerSpan = span;
+                }
+              }
+            } else if (!caller) {
+              // Fallback: def starts before call but call is past end
+              // Only use if we haven't found an enclosing scope yet
+              const row = getNodeId.get(def.name, def.kind, relPath, def.line);
+              if (row) caller = row;
+            }
           }
         }
         if (!caller) caller = fileNodeRow;

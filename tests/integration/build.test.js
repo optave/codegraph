@@ -357,3 +357,48 @@ describe('three-tier incremental builds', () => {
     expect(output).toContain('No changes detected');
   });
 });
+
+describe('nested function caller attribution', () => {
+  let nestDir, nestDbPath;
+
+  beforeAll(async () => {
+    nestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-nested-'));
+    // File with an outer function containing a nested helper that is called
+    fs.writeFileSync(
+      path.join(nestDir, 'nested.js'),
+      [
+        'function outer() {',
+        '  function inner() {',
+        '    return 42;',
+        '  }',
+        '  return inner();',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    await buildGraph(nestDir, { skipRegistry: true });
+    nestDbPath = path.join(nestDir, '.codegraph', 'graph.db');
+  });
+
+  afterAll(() => {
+    if (nestDir) fs.rmSync(nestDir, { recursive: true, force: true });
+  });
+
+  test('enclosing function is the caller of a nested function, not a self-call', () => {
+    const db = new Database(nestDbPath, { readonly: true });
+    const edges = db
+      .prepare(`
+        SELECT s.name as caller, t.name as callee FROM edges e
+        JOIN nodes s ON e.source_id = s.id
+        JOIN nodes t ON e.target_id = t.id
+        WHERE e.kind = 'calls'
+      `)
+      .all();
+    db.close();
+    const pairs = edges.map((e) => `${e.caller}->${e.callee}`);
+    // outer() calls inner() — should produce outer->inner edge
+    expect(pairs).toContain('outer->inner');
+    // Should NOT have inner->inner self-call (the old bug)
+    expect(pairs).not.toContain('inner->inner');
+  });
+});
