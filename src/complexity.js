@@ -234,17 +234,28 @@ function findFunctionNode(rootNode, startLine, _endLine, rules) {
  * @param {object} [engineOpts] - engine options (unused; always uses WASM for AST)
  */
 export async function buildComplexityMetrics(db, fileSymbols, rootDir, _engineOpts) {
-  const { createParsers, getParser } = await import('./parser.js');
-  const parsers = await createParsers();
-
-  // Map extensions to language IDs
-  const { LANGUAGE_REGISTRY } = await import('./parser.js');
-  const extToLang = new Map();
-  for (const entry of LANGUAGE_REGISTRY) {
-    for (const ext of entry.extensions) {
-      extToLang.set(ext, entry.id);
+  // Only initialize WASM parsers if some files lack a cached tree (native engine path)
+  let parsers = null;
+  let extToLang = null;
+  let needsFallback = false;
+  for (const [, symbols] of fileSymbols) {
+    if (!symbols._tree) {
+      needsFallback = true;
+      break;
     }
   }
+  if (needsFallback) {
+    const { createParsers, LANGUAGE_REGISTRY } = await import('./parser.js');
+    parsers = await createParsers();
+    extToLang = new Map();
+    for (const entry of LANGUAGE_REGISTRY) {
+      for (const ext of entry.extensions) {
+        extToLang.set(ext, entry.id);
+      }
+    }
+  }
+
+  const { getParser } = await import('./parser.js');
 
   const upsert = db.prepare(
     'INSERT OR REPLACE INTO function_complexity (node_id, cognitive, cyclomatic, max_nesting) VALUES (?, ?, ?, ?)',
@@ -257,30 +268,35 @@ export async function buildComplexityMetrics(db, fileSymbols, rootDir, _engineOp
 
   const tx = db.transaction(() => {
     for (const [relPath, symbols] of fileSymbols) {
-      const ext = path.extname(relPath).toLowerCase();
-      const langId = extToLang.get(ext);
-      if (!langId) continue;
+      let tree = symbols._tree;
+      let langId = symbols._langId;
+
+      // Fallback: re-read and re-parse when no cached tree (native engine)
+      if (!tree) {
+        const ext = path.extname(relPath).toLowerCase();
+        langId = extToLang.get(ext);
+        if (!langId) continue;
+
+        const absPath = path.join(rootDir, relPath);
+        let code;
+        try {
+          code = fs.readFileSync(absPath, 'utf-8');
+        } catch {
+          continue;
+        }
+
+        const parser = getParser(parsers, absPath);
+        if (!parser) continue;
+
+        try {
+          tree = parser.parse(code);
+        } catch {
+          continue;
+        }
+      }
 
       const rules = COMPLEXITY_RULES.get(langId);
       if (!rules) continue;
-
-      const absPath = path.join(rootDir, relPath);
-      let code;
-      try {
-        code = fs.readFileSync(absPath, 'utf-8');
-      } catch {
-        continue;
-      }
-
-      const parser = getParser(parsers, absPath);
-      if (!parser) continue;
-
-      let tree;
-      try {
-        tree = parser.parse(code);
-      } catch {
-        continue;
-      }
 
       for (const def of symbols.definitions) {
         if (def.kind !== 'function' && def.kind !== 'method') continue;
@@ -298,6 +314,9 @@ export async function buildComplexityMetrics(db, fileSymbols, rootDir, _engineOp
         upsert.run(row.id, result.cognitive, result.cyclomatic, result.maxNesting);
         analyzed++;
       }
+
+      // Release cached tree for GC
+      symbols._tree = null;
     }
   });
 

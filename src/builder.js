@@ -1014,6 +1014,12 @@ export async function buildGraph(rootDir, opts = {}) {
     debug(`Complexity analysis failed: ${err.message}`);
   }
 
+  // Release any remaining cached WASM trees for GC
+  for (const [, symbols] of allSymbols) {
+    symbols._tree = null;
+    symbols._langId = null;
+  }
+
   const nodeCount = db.prepare('SELECT COUNT(*) as c FROM nodes').get().c;
   info(`Graph built: ${nodeCount} nodes, ${edgeCount} edges`);
   info(`Stored in ${dbPath}`);
