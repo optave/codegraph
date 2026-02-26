@@ -620,6 +620,192 @@ Codegraph Diagnostics
 
 ---
 
+## roles — Node role classification
+
+```bash
+codegraph roles -T
+```
+
+```
+Node roles (639 symbols):
+
+  core: 168  utility: 285  entry: 29  dead: 137  leaf: 20
+
+## core (168)
+  f safePath           src/queries.js:14
+  f isTestFile         src/queries.js:21
+  f getClassHierarchy  src/queries.js:76
+  f findMatchingNodes  src/queries.js:127
+  f kindIcon           src/queries.js:175
+  ...
+```
+
+Filter by role and file:
+
+```bash
+codegraph roles --role dead -T
+```
+
+```
+Node roles (137 symbols):
+
+  dead: 137
+
+## dead (137)
+  f main                 crates/codegraph-core/build.rs:3
+  - TarjanState          crates/codegraph-core/src/cycles.rs:38
+  - CSharpExtractor      crates/codegraph-core/src/extractors/csharp.rs:6
+  o CSharpExtractor.extract  crates/codegraph-core/src/extractors/csharp.rs:9
+  ...
+```
+
+```bash
+codegraph roles --role entry -T
+```
+
+```
+Node roles (29 symbols):
+
+  entry: 29
+
+## entry (29)
+  f command:build        src/cli.js:89
+  f command:query        src/cli.js:102
+  f command:impact       src/cli.js:113
+  f command:map          src/cli.js:125
+  f command:stats        src/cli.js:139
+  ...
+```
+
+```bash
+codegraph roles --role core --file src/queries.js
+```
+
+```
+Node roles (16 symbols):
+
+  core: 16
+
+## core (16)
+  f safePath             src/queries.js:14
+  f isTestFile           src/queries.js:21
+  f getClassHierarchy    src/queries.js:76
+  f resolveMethodViaHierarchy  src/queries.js:97
+  f findMatchingNodes    src/queries.js:127
+  f kindIcon             src/queries.js:175
+  f moduleMapData        src/queries.js:310
+  f diffImpactMermaid    src/queries.js:766
+  ...
+```
+
+---
+
+## co-change — Git co-change analysis
+
+First, scan git history:
+
+```bash
+codegraph co-change --analyze
+```
+
+```
+Co-change analysis complete: 173 pairs from 289 commits (since: 1 year ago)
+```
+
+Then query globally or per file:
+
+```bash
+codegraph co-change
+```
+
+```
+Top co-change pairs:
+
+  100%     3 commits  src/extractors/csharp.js  <->  src/extractors/go.js
+  100%     3 commits  src/extractors/csharp.js  <->  src/extractors/java.js
+  100%     3 commits  src/extractors/csharp.js  <->  src/extractors/php.js
+  100%     3 commits  src/extractors/csharp.js  <->  src/extractors/ruby.js
+  100%     3 commits  src/extractors/go.js      <->  src/extractors/java.js
+  ...
+
+  Analyzed: 2026-02-26 | Window: 1 year ago
+```
+
+```bash
+codegraph co-change src/queries.js
+```
+
+```
+Co-change partners for src/queries.js:
+
+   43%    12 commits  src/mcp.js
+
+  Analyzed: 2026-02-26 | Window: 1 year ago
+```
+
+```bash
+codegraph co-change --min-jaccard 0.5 --min-support 5
+```
+
+```
+Top co-change pairs:
+
+  100%     5 commits  src/parser.js  <->  src/constants.js
+   78%     7 commits  src/builder.js  <->  src/resolve.js
+
+  Analyzed: 2026-02-26 | Window: 1 year ago
+```
+
+---
+
+## path — Shortest path between two symbols
+
+```bash
+codegraph path buildGraph resolveImports -T
+```
+
+```
+Path: buildGraph → resolveImports (1 hop)
+
+  buildGraph  src/builder.js:335  →(calls)→  resolveImports  src/resolve.js:42
+
+  Hops: 1 | Alternate paths: 0
+```
+
+```bash
+codegraph path buildGraph isTestFile -T
+```
+
+```
+Path: buildGraph → isTestFile (2 hops)
+
+  buildGraph      src/builder.js:335
+    →(calls)→  collectFiles  src/builder.js:45
+    →(calls)→  isTestFile    src/queries.js:21
+
+  Hops: 2 | Alternate paths: 1
+```
+
+```bash
+codegraph path buildGraph isTestFile -T --json
+```
+
+```json
+{
+  "from": "buildGraph",
+  "to": "isTestFile",
+  "hops": 2,
+  "path": [
+    { "name": "buildGraph", "file": "src/builder.js", "line": 335 },
+    { "name": "collectFiles", "file": "src/builder.js", "line": 45, "edgeKind": "calls" },
+    { "name": "isTestFile", "file": "src/queries.js", "line": 21, "edgeKind": "calls" }
+  ],
+  "alternatePaths": 1
+}
+```
+
+---
+
 ## registry — Multi-repo management
 
 ```bash

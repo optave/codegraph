@@ -583,6 +583,155 @@ graph LR
 
 ---
 
+## node_roles — Node role classification
+
+```json
+{
+  "tool": "node_roles",
+  "arguments": { "no_tests": true }
+}
+```
+
+```
+Node roles (639 symbols):
+
+  core: 168  utility: 285  entry: 29  dead: 137  leaf: 20
+
+## core (168)
+  f safePath           src/queries.js:14
+  f isTestFile         src/queries.js:21
+  f getClassHierarchy  src/queries.js:76
+  ...
+
+## entry (29)
+  f command:build      src/cli.js:89
+  f command:query      src/cli.js:102
+  ...
+```
+
+Filter by role:
+
+```json
+{
+  "tool": "node_roles",
+  "arguments": { "role": "dead", "no_tests": true }
+}
+```
+
+```
+Node roles (137 symbols):
+
+  dead: 137
+
+## dead (137)
+  f main                 crates/codegraph-core/build.rs:3
+  - TarjanState          crates/codegraph-core/src/cycles.rs:38
+  - CSharpExtractor      crates/codegraph-core/src/extractors/csharp.rs:6
+  ...
+```
+
+Filter by role and file:
+
+```json
+{
+  "tool": "node_roles",
+  "arguments": { "role": "core", "file": "src/queries.js" }
+}
+```
+
+```
+Node roles (16 symbols):
+
+  core: 16
+
+## core (16)
+  f safePath             src/queries.js:14
+  f isTestFile           src/queries.js:21
+  f getClassHierarchy    src/queries.js:76
+  f resolveMethodViaHierarchy  src/queries.js:97
+  f findMatchingNodes    src/queries.js:127
+  ...
+```
+
+---
+
+## co_changes — Git co-change analysis
+
+Query top co-changing file pairs:
+
+```json
+{
+  "tool": "co_changes",
+  "arguments": { "no_tests": true }
+}
+```
+
+```
+Top co-change pairs:
+
+  100%     3 commits  src/extractors/csharp.js  <->  src/extractors/go.js
+  100%     3 commits  src/extractors/csharp.js  <->  src/extractors/java.js
+  100%     3 commits  src/extractors/go.js      <->  src/extractors/java.js
+  ...
+
+  Analyzed: 2026-02-26 | Window: 1 year ago
+```
+
+Query co-change partners for a specific file:
+
+```json
+{
+  "tool": "co_changes",
+  "arguments": { "file": "src/queries.js" }
+}
+```
+
+```
+Co-change partners for src/queries.js:
+
+   43%    12 commits  src/mcp.js
+
+  Analyzed: 2026-02-26 | Window: 1 year ago
+```
+
+---
+
+## symbol_path — Shortest path between two symbols
+
+```json
+{
+  "tool": "symbol_path",
+  "arguments": { "from": "buildGraph", "to": "resolveImports", "no_tests": true }
+}
+```
+
+```
+Path: buildGraph → resolveImports (1 hop)
+
+  buildGraph  src/builder.js:335  →(calls)→  resolveImports  src/resolve.js:42
+
+  Hops: 1 | Alternate paths: 0
+```
+
+```json
+{
+  "tool": "symbol_path",
+  "arguments": { "from": "buildGraph", "to": "isTestFile", "no_tests": true }
+}
+```
+
+```
+Path: buildGraph → isTestFile (2 hops)
+
+  buildGraph      src/builder.js:335
+    →(calls)→  collectFiles  src/builder.js:45
+    →(calls)→  isTestFile    src/queries.js:21
+
+  Hops: 2 | Alternate paths: 1
+```
+
+---
+
 ## list_repos — Multi-repo registry (multi-repo mode only)
 
 Only available when the MCP server is started with `--multi-repo`.

@@ -143,7 +143,7 @@ By default, the MCP server runs in **single-repo mode** — the AI agent can onl
 
 Enable `--multi-repo` to let the agent query any registered repository, or use `--repos` to restrict access to a specific set of repos.
 
-The server exposes 18 tools: `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `symbol_path`, `context`, `explain`, `where`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, `hotspots`, and `list_repos` (multi-repo only). See the [AI Agent Guide MCP reference](./ai-agent-guide.md#mcp-server-reference) for the full tool-to-CLI mapping table.
+The server exposes 20 tools: `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `symbol_path`, `context`, `explain`, `where`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, `hotspots`, `node_roles`, `co_changes`, and `list_repos` (multi-repo only). See the [AI Agent Guide MCP reference](./ai-agent-guide.md#mcp-server-reference) for the full tool-to-CLI mapping table.
 
 ### CLAUDE.md for your project
 
@@ -167,7 +167,11 @@ This project uses codegraph. The database is at `.codegraph/graph.db`.
 - `codegraph build .` — rebuild the graph (incremental by default)
 - `codegraph map` — module overview
 - `codegraph fn <name> -T` — function call chain
+- `codegraph path <from> <to> -T` — shortest call path between two symbols
 - `codegraph deps <file>` — file-level dependencies
+- `codegraph roles --role dead -T` — find dead code (unreferenced symbols)
+- `codegraph roles --role core -T` — find core symbols (high fan-in)
+- `codegraph co-change <file>` — files that historically change together
 - `codegraph search "<query>"` — semantic search (requires `codegraph embed`)
 - `codegraph cycles` — check for circular dependencies
 
@@ -278,11 +282,14 @@ Changes are picked up incrementally — no manual rebuilds needed.
 
 ### Explore before you edit
 
-Before touching a function, check its blast radius:
+Before touching a function, understand its role and blast radius:
 
 ```bash
-codegraph fn myFunction --no-tests      # callers, callees, call chain
+codegraph where myFunction               # where it's defined and used
+codegraph roles --file src/utils/auth.ts # role of every symbol in the file (entry/core/utility/dead)
+codegraph fn myFunction --no-tests       # callers, callees, call chain
 codegraph fn-impact myFunction --no-tests  # what breaks if this changes
+codegraph path myFunction otherFunction -T # how two symbols are connected
 ```
 
 Before touching a file:
@@ -290,7 +297,33 @@ Before touching a file:
 ```bash
 codegraph deps src/utils/auth.ts         # imports and importers
 codegraph impact src/utils/auth.ts       # transitive reverse deps
+codegraph co-change src/utils/auth.ts    # files that historically change together with this one
 ```
+
+### Understand architectural roles
+
+Every symbol is auto-classified based on its connectivity pattern. Use this to prioritize what to review, find dead code, or understand a module's structure:
+
+```bash
+codegraph roles -T                       # all roles across the codebase
+codegraph roles --role dead -T           # unreferenced, non-exported symbols (cleanup candidates)
+codegraph roles --role entry -T          # entry points (high fan-out, low fan-in)
+codegraph roles --role core -T           # core symbols (high fan-in — break these, break everything)
+codegraph roles --role core --file src/builder.js  # core symbols in a specific file
+```
+
+### Surface hidden coupling with co-change analysis
+
+Static imports don't tell the full story. Files that always change together in git history are coupled — even if they don't import each other:
+
+```bash
+codegraph co-change --analyze            # scan git history (run once, then incremental)
+codegraph co-change src/parser.js        # what files always change with parser.js?
+codegraph co-change                      # top co-changing file pairs globally
+codegraph co-change --min-jaccard 0.5    # only strong coupling
+```
+
+Co-change data is automatically included in `diff-impact` output — historically coupled files appear alongside the static dependency analysis.
 
 ### Find circular dependencies early
 
@@ -513,9 +546,12 @@ echo "codegraph build" > .husky/pre-commit
 mkdir -p .github/workflows
 cp node_modules/@optave/codegraph/.github/workflows/codegraph-impact.yml .github/workflows/
 
-# 6. (Optional) Build embeddings for semantic search
+# 6. (Optional) Scan git history for co-change coupling
+codegraph co-change --analyze
+
+# 7. (Optional) Build embeddings for semantic search
 codegraph embed
 
-# 7. (Optional) Add CLAUDE.md for AI agents
+# 8. (Optional) Add CLAUDE.md for AI agents
 # See docs/guides/ai-agent-guide.md for the full template
 ```

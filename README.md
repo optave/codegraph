@@ -319,7 +319,7 @@ codegraph registry remove <name>  # Unregister
 | Flag | Description |
 |---|---|
 | `-d, --db <path>` | Custom path to `graph.db` |
-| `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files (available on `fn`, `fn-impact`, `path`, `context`, `explain`, `where`, `diff-impact`, `search`, `map`, `hotspots`, `deps`, `impact`) |
+| `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files (available on `fn`, `fn-impact`, `path`, `context`, `explain`, `where`, `diff-impact`, `search`, `map`, `hotspots`, `roles`, `co-change`, `deps`, `impact`) |
 | `--depth <n>` | Transitive trace depth (default varies by command) |
 | `-j, --json` | Output as JSON |
 | `-v, --verbose` | Enable debug output |
@@ -467,6 +467,9 @@ This project uses codegraph. The database is at `.codegraph/graph.db`.
 - `codegraph fn <name> -T` — function call chain
 - `codegraph path <from> <to> -T` — shortest call path between two symbols
 - `codegraph deps <file>` — file-level dependencies
+- `codegraph roles --role dead -T` — find dead code (unreferenced symbols)
+- `codegraph roles --role core -T` — find core symbols (high fan-in)
+- `codegraph co-change <file>` — files that historically change together
 - `codegraph search "<query>"` — semantic search (requires `codegraph embed`)
 - `codegraph cycles` — check for circular dependencies
 
