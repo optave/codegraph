@@ -259,7 +259,7 @@ After LLM integration, snapshots would also preserve embeddings, descriptions, a
 
 ### 6. MCP-native orchestration
 
-The Titan Paradigm's agents could run entirely through codegraph's [MCP server](../examples/MCP.md) instead of shelling out to the CLI. With 18 tools already exposed, the main gap is the `audit`/`triage`/`check` commands described above. After Phase 4, adding these as MCP tools — alongside [`ask_codebase`](../../roadmap/ROADMAP.md#53--mcp-integration) (Phase 5.3) for natural-language queries — would let orchestrators like Claude Code's agent teams query the graph with zero CLI overhead. The RECON agent asks the MCP server "what are the riskiest files?", each Gauntlet agent asks "should this function be decomposed?", and the STATE MACHINE asks "is this change safe?" — all through the same protocol.
+The Titan Paradigm's agents could run entirely through codegraph's [MCP server](../examples/MCP.md) instead of shelling out to the CLI. With 21 tools already exposed, the main gap is the `audit`/`triage`/`check` commands described above. After Phase 4, adding these as MCP tools — alongside [`ask_codebase`](../../roadmap/ROADMAP.md#53--mcp-integration) (Phase 5.3) for natural-language queries — would let orchestrators like Claude Code's agent teams query the graph with zero CLI overhead. The RECON agent asks the MCP server "what are the riskiest files?", each Gauntlet agent asks "should this function be decomposed?", and the STATE MACHINE asks "is this change safe?" — all through the same protocol.
 
 ---
 
