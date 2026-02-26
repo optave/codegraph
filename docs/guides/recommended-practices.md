@@ -143,7 +143,7 @@ By default, the MCP server runs in **single-repo mode** — the AI agent can onl
 
 Enable `--multi-repo` to let the agent query any registered repository, or use `--repos` to restrict access to a specific set of repos.
 
-The server exposes 20 tools: `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `symbol_path`, `context`, `explain`, `where`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, `hotspots`, `node_roles`, `co_changes`, and `list_repos` (multi-repo only). See the [AI Agent Guide MCP reference](./ai-agent-guide.md#mcp-server-reference) for the full tool-to-CLI mapping table.
+The server exposes 19 tools (20 in multi-repo mode): `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `symbol_path`, `context`, `explain`, `where`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, `hotspots`, `node_roles`, `co_changes`, and `list_repos` (multi-repo only). See the [AI Agent Guide MCP reference](./ai-agent-guide.md#mcp-server-reference) for the full tool-to-CLI mapping table.
 
 ### CLAUDE.md for your project
 

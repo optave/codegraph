@@ -172,7 +172,7 @@ Several planned features would make codegraph even more powerful for the Titan P
 | Feature | Status | How it helps |
 |---------|--------|-------------|
 | **Formal code health metrics** ([Backlog #6](../../roadmap/BACKLOG.md)) | Planned | Cyclomatic complexity, Maintainability Index, and Halstead metrics per function — directly maps to the Gauntlet's "complexity > 7 is a failure" rule. Computed from the AST we already parse |
-| **Build-time semantic metadata** ([Roadmap Phase 3.4](../../roadmap/ROADMAP.md#34--build-time-semantic-metadata)) | Planned | LLM-generated `complexity_notes`, `risk_score`, and `side_effects` per function. A sub-agent could query `codegraph assess <name>` and get "3 responsibilities, low cohesion — consider splitting" without analyzing the code itself |
+| **Build-time semantic metadata** ([Roadmap Phase 4.4](../../roadmap/ROADMAP.md#44--build-time-semantic-metadata)) | Planned | LLM-generated `complexity_notes`, `risk_score`, and `side_effects` per function. A sub-agent could query `codegraph assess <name>` and get "3 responsibilities, low cohesion — consider splitting" without analyzing the code itself |
 | **Community detection** ([Backlog #11](../../roadmap/BACKLOG.md)) | Planned | Leiden/Louvain algorithm to discover natural module boundaries vs actual file organization. Reveals which functions are tightly coupled and whether decomposition should follow the directory structure or propose a new one |
 
 ### For GLOBAL SYNC
@@ -180,7 +180,7 @@ Several planned features would make codegraph even more powerful for the Titan P
 | Feature | Status | How it helps |
 |---------|--------|-------------|
 | **Architecture boundary rules** ([Backlog #13](../../roadmap/BACKLOG.md)) | Planned | User-defined rules for allowed/forbidden dependencies between modules (e.g., "controllers must not import from other controllers"). The GLOBAL SYNC agent can enforce architectural standards automatically |
-| **Refactoring analysis** ([Roadmap Phase 7.5](../../roadmap/ROADMAP.md#75--refactoring-analysis)) | Planned | `split_analysis`, `extraction_candidates`, `boundary_analysis` — LLM-powered structural analysis that identifies exactly where shared abstractions should be created |
+| **Refactoring analysis** ([Roadmap Phase 8.5](../../roadmap/ROADMAP.md#85--refactoring-analysis)) | Planned | `split_analysis`, `extraction_candidates`, `boundary_analysis` — LLM-powered structural analysis that identifies exactly where shared abstractions should be created |
 | **Dead code detection** ([Backlog #1](../../roadmap/BACKLOG.md)) | **Done** | `codegraph roles --role dead -T` lists all symbols with zero fan-in that aren't exported. Delivered as part of node classification |
 
 ### For STATE MACHINE
@@ -188,18 +188,18 @@ Several planned features would make codegraph even more powerful for the Titan P
 | Feature | Status | How it helps |
 |---------|--------|-------------|
 | **Branch structural diff** ([Backlog #16](../../roadmap/BACKLOG.md)) | Planned | Compare code structure between two branches using git worktrees. Shows added/removed/changed symbols and their impact — perfect for validating that a refactoring branch hasn't broken the structural contract |
-| **GitHub Action + CI integration** ([Roadmap Phase 6](../../roadmap/ROADMAP.md#phase-6--github-integration--ci)) | Planned | Reusable GitHub Action that runs `diff-impact` on every PR, posts visual impact graphs, and fails if thresholds are exceeded — the STATE MACHINE becomes a CI gate |
+| **GitHub Action + CI integration** ([Roadmap Phase 7](../../roadmap/ROADMAP.md#phase-7--github-integration--ci)) | Planned | Reusable GitHub Action that runs `diff-impact` on every PR, posts visual impact graphs, and fails if thresholds are exceeded — the STATE MACHINE becomes a CI gate |
 | **Streaming / chunked results** ([Backlog #20](../../roadmap/BACKLOG.md)) | Planned | Large codebases don't blow up agent context windows; consumers process results as they arrive instead of waiting for the full payload |
 
 ---
 
 ## Recommendations: Making Codegraph Even Better for This Use Case
 
-The features above cover what codegraph can do today and what's already planned. Beyond those, the Titan Paradigm points to a class of enhancements that would naturally follow the [LLM integration work](../../roadmap/ROADMAP.md#phase-3--intelligent-embeddings) (Roadmap Phase 3) — combining codegraph's structural graph with LLM intelligence to serve multi-agent orchestration directly.
+The features above cover what codegraph can do today and what's already planned. Beyond those, the Titan Paradigm points to a class of enhancements that would naturally follow the [LLM integration work](../../roadmap/ROADMAP.md#phase-4--intelligent-embeddings) (Roadmap Phase 4) — combining codegraph's structural graph with LLM intelligence to serve multi-agent orchestration directly.
 
 ### 1. `codegraph audit` — one-call file assessment
 
-Once [build-time semantic metadata](../../roadmap/ROADMAP.md#34--build-time-semantic-metadata) (Phase 3.4) lands, codegraph will have `risk_score`, `complexity_notes`, and `side_effects` per function. A natural next step is a single `audit` command that combines these with `explain` and `fn-impact` into one structured report — exactly what each Gauntlet sub-agent needs.
+Once [build-time semantic metadata](../../roadmap/ROADMAP.md#44--build-time-semantic-metadata) (Phase 4.4) lands, codegraph will have `risk_score`, `complexity_notes`, and `side_effects` per function. A natural next step is a single `audit` command that combines these with `explain` and `fn-impact` into one structured report — exactly what each Gauntlet sub-agent needs.
 
 ```bash
 # One call per file, everything a sub-agent needs to decide pass/fail
@@ -219,7 +219,7 @@ Today, each query is a separate CLI invocation. For a swarm of 20+ sub-agents ea
 codegraph audit --batch targets.json --json > audit-results.json
 ```
 
-This becomes especially powerful after [module summaries](../../roadmap/ROADMAP.md#35--module-summaries) (Phase 3.5) — the batch output can include file-level narratives alongside function-level metrics, so sub-agents understand the module's role before diving into individual functions.
+This becomes especially powerful after [module summaries](../../roadmap/ROADMAP.md#45--module-summaries) (Phase 4.5) — the batch output can include file-level narratives alongside function-level metrics, so sub-agents understand the module's role before diving into individual functions.
 
 ### 3. `codegraph triage` — orchestrator-friendly priority queue
 
@@ -259,7 +259,7 @@ After LLM integration, snapshots would also preserve embeddings, descriptions, a
 
 ### 6. MCP-native orchestration
 
-The Titan Paradigm's agents could run entirely through codegraph's [MCP server](../examples/MCP.md) instead of shelling out to the CLI. With 18 tools already exposed, the main gap is the `audit`/`triage`/`check` commands described above. After Phase 3, adding these as MCP tools — alongside [`ask_codebase`](../../roadmap/ROADMAP.md#43--mcp-integration) (Phase 4.3) for natural-language queries — would let orchestrators like Claude Code's agent teams query the graph with zero CLI overhead. The RECON agent asks the MCP server "what are the riskiest files?", each Gauntlet agent asks "should this function be decomposed?", and the STATE MACHINE asks "is this change safe?" — all through the same protocol.
+The Titan Paradigm's agents could run entirely through codegraph's [MCP server](../examples/MCP.md) instead of shelling out to the CLI. With 18 tools already exposed, the main gap is the `audit`/`triage`/`check` commands described above. After Phase 4, adding these as MCP tools — alongside [`ask_codebase`](../../roadmap/ROADMAP.md#53--mcp-integration) (Phase 5.3) for natural-language queries — would let orchestrators like Claude Code's agent teams query the graph with zero CLI overhead. The RECON agent asks the MCP server "what are the riskiest files?", each Gauntlet agent asks "should this function be decomposed?", and the STATE MACHINE asks "is this change safe?" — all through the same protocol.
 
 ---
 
