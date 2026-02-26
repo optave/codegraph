@@ -1400,8 +1400,17 @@ export function statsData(customDbPath, opts = {}) {
   };
 }
 
-export function stats(customDbPath, opts = {}) {
+export async function stats(customDbPath, opts = {}) {
   const data = statsData(customDbPath, { noTests: opts.noTests });
+
+  // Community detection summary (async import for lazy-loading)
+  try {
+    const { communitySummaryForStats } = await import('./communities.js');
+    data.communities = communitySummaryForStats(customDbPath, { noTests: opts.noTests });
+  } catch {
+    /* graphology may not be available */
+  }
+
   if (opts.json) {
     console.log(JSON.stringify(data, null, 2));
     return;
@@ -1514,6 +1523,14 @@ export function stats(customDbPath, opts = {}) {
     const cx = data.complexity;
     console.log(
       `\nComplexity: ${cx.analyzed} functions | avg cognitive: ${cx.avgCognitive} | avg cyclomatic: ${cx.avgCyclomatic} | max cognitive: ${cx.maxCognitive}`,
+    );
+  }
+
+  // Communities
+  if (data.communities) {
+    const cm = data.communities;
+    console.log(
+      `\nCommunities: ${cm.communityCount} detected | modularity: ${cm.modularity} | drift: ${cm.driftScore}%`,
     );
   }
 

@@ -137,8 +137,8 @@ program
   .option('-T, --no-tests', 'Exclude test/spec files from results')
   .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
   .option('-j, --json', 'Output as JSON')
-  .action((opts) => {
-    stats(opts.db, { noTests: resolveNoTests(opts), json: opts.json });
+  .action(async (opts) => {
+    await stats(opts.db, { noTests: resolveNoTests(opts), json: opts.json });
   });
 
 program
@@ -737,6 +737,27 @@ program
       aboveThreshold: opts.aboveThreshold,
       file: opts.file,
       kind: opts.kind,
+      noTests: resolveNoTests(opts),
+      json: opts.json,
+    });
+  });
+
+program
+  .command('communities')
+  .description('Detect natural module boundaries using Louvain community detection')
+  .option('--functions', 'Function-level instead of file-level')
+  .option('--resolution <n>', 'Louvain resolution parameter (default 1.0)', '1.0')
+  .option('--drift', 'Show only drift analysis')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .option('-T, --no-tests', 'Exclude test/spec files from results')
+  .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (opts) => {
+    const { communities } = await import('./communities.js');
+    communities(opts.db, {
+      functions: opts.functions,
+      resolution: parseFloat(opts.resolution),
+      drift: opts.drift,
       noTests: resolveNoTests(opts),
       json: opts.json,
     });

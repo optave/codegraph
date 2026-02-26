@@ -432,6 +432,32 @@ const BASE_TOOLS = [
       },
     },
   },
+  {
+    name: 'communities',
+    description:
+      'Detect natural module boundaries using Louvain community detection. Compares discovered communities against directory structure and surfaces architectural drift.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        functions: {
+          type: 'boolean',
+          description: 'Function-level instead of file-level',
+          default: false,
+        },
+        resolution: {
+          type: 'number',
+          description: 'Louvain resolution parameter (higher = more communities)',
+          default: 1.0,
+        },
+        drift: {
+          type: 'boolean',
+          description: 'Show only drift analysis (omit community member lists)',
+          default: false,
+        },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+      },
+    },
+  },
 ];
 
 const LIST_REPOS_TOOL = {
@@ -759,6 +785,16 @@ export async function startMCPServer(customDbPath, options = {}) {
             aboveThreshold: args.above_threshold,
             noTests: args.no_tests,
             kind: args.kind,
+          });
+          break;
+        }
+        case 'communities': {
+          const { communitiesData } = await import('./communities.js');
+          result = communitiesData(dbPath, {
+            functions: args.functions,
+            resolution: args.resolution,
+            drift: args.drift,
+            noTests: args.no_tests,
           });
           break;
         }

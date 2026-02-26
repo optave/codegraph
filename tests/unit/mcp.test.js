@@ -31,6 +31,7 @@ const ALL_TOOL_NAMES = [
   'execution_flow',
   'list_entry_points',
   'complexity',
+  'communities',
   'list_repos',
 ];
 

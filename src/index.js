@@ -18,6 +18,8 @@ export {
   computeCoChanges,
   scanGitHistory,
 } from './cochange.js';
+// Community detection
+export { communities, communitiesData, communitySummaryForStats } from './communities.js';
 // Complexity metrics
 export {
   COMPLEXITY_RULES,
