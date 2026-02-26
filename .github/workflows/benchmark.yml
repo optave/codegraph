@@ -54,25 +54,30 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Extract version from result
+        id: version
+        run: echo "version=$(node -p "require('./benchmark-result.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: Commit and push via PR
         if: steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          BRANCH="benchmark/build-$(date +%Y%m%d-%H%M%S)"
+          BRANCH="benchmark/build-v${VERSION}-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$BRANCH"
           git add generated/BUILD-BENCHMARKS.md README.md
-          git commit -m "docs: update build performance benchmarks"
+          git commit -m "docs: update build performance benchmarks (v${VERSION})"
           git push origin "$BRANCH"
 
           gh pr create \
             --base main \
             --head "$BRANCH" \
-            --title "docs: update build performance benchmarks" \
-            --body "Automated build benchmark update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+            --title "docs: update build performance benchmarks (v${VERSION})" \
+            --body "Automated build benchmark update for **v${VERSION}** from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
 
   embedding-benchmark:
     runs-on: ubuntu-latest
@@ -131,25 +136,30 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Extract version from result
+        id: version
+        run: echo "version=$(node -p "require('./embedding-benchmark-result.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: Commit and push via PR
         if: steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          BRANCH="benchmark/embedding-$(date +%Y%m%d-%H%M%S)"
+          BRANCH="benchmark/embedding-v${VERSION}-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$BRANCH"
           git add generated/EMBEDDING-BENCHMARKS.md
-          git commit -m "docs: update embedding benchmarks"
+          git commit -m "docs: update embedding benchmarks (v${VERSION})"
           git push origin "$BRANCH"
 
           gh pr create \
             --base main \
             --head "$BRANCH" \
-            --title "docs: update embedding benchmarks" \
-            --body "Automated embedding benchmark update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+            --title "docs: update embedding benchmarks (v${VERSION})" \
+            --body "Automated embedding benchmark update for **v${VERSION}** from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
 
   query-benchmark:
     runs-on: ubuntu-latest
@@ -196,25 +206,30 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Extract version from result
+        id: version
+        run: echo "version=$(node -p "require('./query-benchmark-result.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: Commit and push via PR
         if: steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          BRANCH="benchmark/query-$(date +%Y%m%d-%H%M%S)"
+          BRANCH="benchmark/query-v${VERSION}-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$BRANCH"
           git add generated/QUERY-BENCHMARKS.md
-          git commit -m "docs: update query benchmarks"
+          git commit -m "docs: update query benchmarks (v${VERSION})"
           git push origin "$BRANCH"
 
           gh pr create \
             --base main \
             --head "$BRANCH" \
-            --title "docs: update query benchmarks" \
-            --body "Automated query benchmark update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+            --title "docs: update query benchmarks (v${VERSION})" \
+            --body "Automated query benchmark update for **v${VERSION}** from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
 
   incremental-benchmark:
     runs-on: ubuntu-latest
@@ -261,22 +276,27 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Extract version from result
+        id: version
+        run: echo "version=$(node -p "require('./incremental-benchmark-result.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: Commit and push via PR
         if: steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          BRANCH="benchmark/incremental-$(date +%Y%m%d-%H%M%S)"
+          BRANCH="benchmark/incremental-v${VERSION}-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$BRANCH"
           git add generated/INCREMENTAL-BENCHMARKS.md
-          git commit -m "docs: update incremental benchmarks"
+          git commit -m "docs: update incremental benchmarks (v${VERSION})"
           git push origin "$BRANCH"
 
           gh pr create \
             --base main \
             --head "$BRANCH" \
-            --title "docs: update incremental benchmarks" \
-            --body "Automated incremental benchmark update from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+            --title "docs: update incremental benchmarks (v${VERSION})" \
+            --body "Automated incremental benchmark update for **v${VERSION}** from workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
