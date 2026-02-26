@@ -40,6 +40,8 @@ Non-breaking, ordered by problem-fit:
 | 6 | Formal code health metrics | Cyclomatic complexity, Maintainability Index, and Halstead metrics per function — we already parse the AST, the data is there. Inspired by code-health-meter (published in ACM TOSEM 2025). | Analysis | Agents can prioritize refactoring targets; `hotspots` becomes richer with quantitative health scores per function | ✓ | ✓ | 2 | No |
 | 7 | OWASP/CWE pattern detection | Security pattern scanning on the existing AST — hardcoded secrets, SQL injection patterns, eval usage, XSS sinks. Lightweight static rules, not full taint analysis. Inspired by narsil-mcp, CKB. | Security | Catches low-hanging security issues during `diff-impact`; agents can flag risky patterns before they're committed | ✓ | ✓ | 2 | No |
 | 11 | Community detection | Leiden/Louvain algorithm to discover natural module boundaries vs actual file organization. Reveals which symbols are tightly coupled and whether the directory structure matches. Inspired by axon, GitNexus, CodeGraphMCPServer. | Intelligence | Surfaces architectural drift — when directory structure no longer matches actual dependency clusters; guides refactoring | ✓ | ✓ | 2 | No |
+| 21 | Cognitive + cyclomatic complexity | Cognitive Complexity (SonarSource) as the primary readability metric — penalizes nesting, so it subsumes nesting depth analysis. Cyclomatic complexity (McCabe) as secondary testability metric. Both computed from existing tree-sitter AST in a single traversal. Cognitive > 15 or cyclomatic > 10 = flag for refactoring. Extends ID 6 with the two most actionable metrics. | Analysis | Agents can flag hard-to-understand and hard-to-test functions in one pass; cognitive complexity captures both decision complexity and nesting depth in a single score | ✓ | ✓ | 2 | No |
+| 22 | Manifesto-driven pass/fail | User-defined rule engine with custom thresholds (e.g. "cognitive > 15 = fail", "cyclomatic > 10 = fail", "imports > 10 = decompose"). Outputs pass/fail per function/file. Generalizes ID 13 (boundary rules) into a generic rule system. | Analysis | Enables autonomous multi-agent audit workflows (GAUNTLET pattern); CI integration for code health gates with configurable thresholds | ✓ | ✓ | 3 | No |
 
 Breaking (penalized to end of tier):
 
@@ -90,3 +92,4 @@ When filling in the assessment columns during a prioritization session:
 - **3** — Useful for developers and agents but doesn't address the core "lost AI" problem
 - **2** — Nice-to-have; improves the tool but tangential to the stated problem
 - **1** — Cool feature, but doesn't help AI agents navigate codebases better
+
