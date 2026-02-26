@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import Database from 'better-sqlite3';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -24,12 +25,48 @@ const dbPath = path.join(root, '.codegraph', 'graph.db');
 
 // Import programmatic API (use file:// URLs for Windows compatibility)
 const { buildGraph } = await import(pathToFileURL(path.join(root, 'src', 'builder.js')).href);
-const { fnDepsData, statsData } = await import(
+const { fnDepsData, fnImpactData, pathData, rolesData, statsData } = await import(
 	pathToFileURL(path.join(root, 'src', 'queries.js')).href
 );
 const { isNativeAvailable } = await import(
 	pathToFileURL(path.join(root, 'src', 'native.js')).href
 );
+
+const INCREMENTAL_RUNS = 3;
+const QUERY_RUNS = 5;
+const PROBE_FILE = path.join(root, 'src', 'queries.js');
+
+function median(arr) {
+	const sorted = [...arr].sort((a, b) => a - b);
+	const mid = Math.floor(sorted.length / 2);
+	return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function round1(n) {
+	return Math.round(n * 10) / 10;
+}
+
+/**
+ * Pick hub (most-connected) and leaf (least-connected) non-test symbols from the DB.
+ */
+function selectTargets() {
+	const db = new Database(dbPath, { readonly: true });
+	const rows = db
+		.prepare(
+			`SELECT n.name, COUNT(e.id) AS cnt
+       FROM nodes n
+       JOIN edges e ON e.source_id = n.id OR e.target_id = n.id
+       WHERE n.file NOT LIKE '%test%' AND n.file NOT LIKE '%spec%'
+       GROUP BY n.id
+       ORDER BY cnt DESC`,
+		)
+		.all();
+	db.close();
+
+	if (rows.length === 0) return { hub: 'buildGraph', leaf: 'median' };
+
+	return { hub: rows[0].name, leaf: rows[rows.length - 1].name };
+}
 
 // Redirect console.log to stderr so only JSON goes to stdout
 const origLog = console.log;
@@ -53,6 +90,55 @@ async function benchmarkEngine(engine) {
 	const totalEdges = stats.edges.total;
 	const dbSizeBytes = fs.statSync(dbPath).size;
 
+	// ── Incremental build tiers (reuse existing DB from full build) ─────
+	console.error(`  [${engine}] Benchmarking no-op rebuild...`);
+	const noopTimings = [];
+	for (let i = 0; i < INCREMENTAL_RUNS; i++) {
+		const start = performance.now();
+		await buildGraph(root, { engine, incremental: true });
+		noopTimings.push(performance.now() - start);
+	}
+	const noopRebuildMs = Math.round(median(noopTimings));
+
+	console.error(`  [${engine}] Benchmarking 1-file rebuild...`);
+	const original = fs.readFileSync(PROBE_FILE, 'utf8');
+	let oneFileRebuildMs;
+	try {
+		const oneFileTimings = [];
+		for (let i = 0; i < INCREMENTAL_RUNS; i++) {
+			fs.writeFileSync(PROBE_FILE, original + `\n// probe-${i}\n`);
+			const start = performance.now();
+			await buildGraph(root, { engine, incremental: true });
+			oneFileTimings.push(performance.now() - start);
+		}
+		oneFileRebuildMs = Math.round(median(oneFileTimings));
+	} finally {
+		fs.writeFileSync(PROBE_FILE, original);
+		await buildGraph(root, { engine, incremental: true });
+	}
+
+	// ── Query benchmarks (median of QUERY_RUNS each) ────────────────────
+	console.error(`  [${engine}] Benchmarking queries...`);
+	const targets = selectTargets();
+	console.error(`    hub=${targets.hub}, leaf=${targets.leaf}`);
+
+	function benchQuery(fn, ...args) {
+		const timings = [];
+		for (let i = 0; i < QUERY_RUNS; i++) {
+			const start = performance.now();
+			fn(...args);
+			timings.push(performance.now() - start);
+		}
+		return round1(median(timings));
+	}
+
+	const queries = {
+		fnDepsMs: benchQuery(fnDepsData, targets.hub, dbPath, { depth: 3, noTests: true }),
+		fnImpactMs: benchQuery(fnImpactData, targets.hub, dbPath, { depth: 3, noTests: true }),
+		pathMs: benchQuery(pathData, targets.hub, targets.leaf, dbPath, { noTests: true }),
+		rolesMs: benchQuery(rolesData, dbPath, { noTests: true }),
+	};
+
 	return {
 		buildTimeMs: Math.round(buildTimeMs),
 		queryTimeMs: Math.round(queryTimeMs * 10) / 10,
@@ -66,6 +152,9 @@ async function benchmarkEngine(engine) {
 			edges: Math.round((totalEdges / totalFiles) * 10) / 10,
 			dbSizeBytes: Math.round(dbSizeBytes / totalFiles),
 		},
+		noopRebuildMs,
+		oneFileRebuildMs,
+		queries,
 	};
 }
 
@@ -93,6 +182,9 @@ const result = {
 		edges: wasm.edges,
 		dbSizeBytes: wasm.dbSizeBytes,
 		perFile: wasm.perFile,
+		noopRebuildMs: wasm.noopRebuildMs,
+		oneFileRebuildMs: wasm.oneFileRebuildMs,
+		queries: wasm.queries,
 	},
 	native: native
 		? {
@@ -102,6 +194,9 @@ const result = {
 				edges: native.edges,
 				dbSizeBytes: native.dbSizeBytes,
 				perFile: native.perFile,
+				noopRebuildMs: native.noopRebuildMs,
+				oneFileRebuildMs: native.oneFileRebuildMs,
+				queries: native.queries,
 			}
 		: null,
 };

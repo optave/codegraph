@@ -148,6 +148,58 @@ md += `| DB size | ${estNative ? formatBytes(estNative.dbSizeBytes * ESTIMATE_FI
 md += `| Nodes | ${estNative ? Math.round(estNative.nodes * ESTIMATE_FILES).toLocaleString() : 'n/a'} | ${Math.round(estWasm.nodes * ESTIMATE_FILES).toLocaleString()} |\n`;
 md += `| Edges | ${estNative ? Math.round(estNative.edges * ESTIMATE_FILES).toLocaleString() : 'n/a'} | ${Math.round(estWasm.edges * ESTIMATE_FILES).toLocaleString()} |\n\n`;
 
+// ── Incremental Rebuilds section ──────────────────────────────────────────
+const hasIncremental = history.some((h) => h.wasm?.noopRebuildMs != null || h.native?.noopRebuildMs != null);
+if (hasIncremental) {
+	md += '### Incremental Rebuilds\n\n';
+	md += '| Version | Engine | No-op (ms) | 1-file (ms) |\n';
+	md += '|---------|--------|----------:|-----------:|\n';
+
+	for (let i = 0; i < history.length; i++) {
+		const h = history[i];
+		const prev = history[i + 1] || null;
+
+		for (const engineKey of ['native', 'wasm']) {
+			const e = h[engineKey];
+			if (!e || e.noopRebuildMs == null) continue;
+			const p = prev?.[engineKey] || null;
+
+			const noopTrend = trend(e.noopRebuildMs, p?.noopRebuildMs);
+			const oneFileTrend = trend(e.oneFileRebuildMs, p?.oneFileRebuildMs);
+
+			md += `| ${h.version} | ${engineKey} | ${e.noopRebuildMs}${noopTrend} | ${e.oneFileRebuildMs}${oneFileTrend} |\n`;
+		}
+	}
+	md += '\n';
+}
+
+// ── Query Latency section ─────────────────────────────────────────────────
+const hasQueries = history.some((h) => h.wasm?.queries != null || h.native?.queries != null);
+if (hasQueries) {
+	md += '### Query Latency\n\n';
+	md += '| Version | Engine | fn-deps (ms) | fn-impact (ms) | path (ms) | roles (ms) |\n';
+	md += '|---------|--------|------------:|--------------:|----------:|----------:|\n';
+
+	for (let i = 0; i < history.length; i++) {
+		const h = history[i];
+		const prev = history[i + 1] || null;
+
+		for (const engineKey of ['native', 'wasm']) {
+			const e = h[engineKey];
+			if (!e?.queries) continue;
+			const p = prev?.[engineKey]?.queries || null;
+
+			const depsTrend = trend(e.queries.fnDepsMs, p?.fnDepsMs);
+			const impactTrend = trend(e.queries.fnImpactMs, p?.fnImpactMs);
+			const pathTrend = trend(e.queries.pathMs, p?.pathMs);
+			const rolesTrend = trend(e.queries.rolesMs, p?.rolesMs);
+
+			md += `| ${h.version} | ${engineKey} | ${e.queries.fnDepsMs}${depsTrend} | ${e.queries.fnImpactMs}${impactTrend} | ${e.queries.pathMs}${pathTrend} | ${e.queries.rolesMs}${rolesTrend} |\n`;
+		}
+	}
+	md += '\n';
+}
+
 md += `<!-- BENCHMARK_DATA\n${JSON.stringify(history, null, 2)}\n-->\n`;
 
 fs.mkdirSync(path.dirname(benchmarkPath), { recursive: true });
@@ -180,6 +232,12 @@ if (prev) {
 		checkRegression(`${tag} Build ms/file`, e.perFile.buildTimeMs, p.perFile.buildTimeMs);
 		checkRegression(`${tag} Query time`, e.queryTimeMs, p.queryTimeMs);
 		checkRegression(`${tag} DB bytes/file`, e.perFile.dbSizeBytes, p.perFile.dbSizeBytes);
+		if (e.noopRebuildMs != null && p.noopRebuildMs != null) {
+			checkRegression(`${tag} No-op rebuild`, e.noopRebuildMs, p.noopRebuildMs);
+		}
+		if (e.oneFileRebuildMs != null && p.oneFileRebuildMs != null) {
+			checkRegression(`${tag} 1-file rebuild`, e.oneFileRebuildMs, p.oneFileRebuildMs);
+		}
 	}
 }
 
@@ -188,6 +246,10 @@ if (fs.existsSync(readmePath)) {
 	let readme = fs.readFileSync(readmePath, 'utf8');
 
 	// Build the table rows — show both engines when native is available
+	// Pick the preferred engine: native when available, WASM as fallback
+	const pref = latest.native || latest.wasm;
+	const prefLabel = latest.native ? ' (native)' : '';
+
 	let rows = '';
 	if (latest.native) {
 		rows += `| Build speed (native) | **${latest.native.perFile.buildTimeMs} ms/file** |\n`;
@@ -196,6 +258,18 @@ if (fs.existsSync(readmePath)) {
 	} else {
 		rows += `| Build speed | **${latest.wasm.perFile.buildTimeMs} ms/file** |\n`;
 		rows += `| Query time | **${formatMs(latest.wasm.queryTimeMs)}** |\n`;
+	}
+
+	// Incremental rebuild rows (prefer native, fallback to WASM)
+	if (pref.noopRebuildMs != null) {
+		rows += `| No-op rebuild${prefLabel} | **${formatMs(pref.noopRebuildMs)}** |\n`;
+		rows += `| 1-file rebuild${prefLabel} | **${formatMs(pref.oneFileRebuildMs)}** |\n`;
+	}
+
+	// Query latency rows (pick two representative queries)
+	if (pref.queries) {
+		rows += `| Query: fn-deps | **${pref.queries.fnDepsMs}ms** |\n`;
+		rows += `| Query: path | **${pref.queries.pathMs}ms** |\n`;
 	}
 
 	// 50k-file estimate
@@ -214,10 +288,9 @@ ${rows}
 Metrics are normalized per file for cross-version comparability. Times above are for a full initial build — incremental rebuilds only re-parse changed files.
 `;
 
-	// Match the performance section from header to next h2 (## ) header or end.
-	// The lookahead must reject h3+ (###) so subsections like "### Lightweight
-	// Footprint" are preserved and not swallowed by the replacement.
-	const perfRegex = /## 📊 Performance\r?\n[\s\S]*?(?=\r?\n## (?!#)|$)/;
+	// Match the performance section from header to the next heading (h2 or h3) or end.
+	// Stops at ### subsections like "Lightweight Footprint" so they are preserved.
+	const perfRegex = /## 📊 Performance\r?\n[\s\S]*?(?=\r?\n##[# ]|$)/;
 	if (perfRegex.test(readme)) {
 		readme = readme.replace(perfRegex, perfSection);
 	} else {
