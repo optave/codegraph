@@ -55,7 +55,7 @@ cd your-project
 codegraph build
 ```
 
-That's it. No config files, no Docker, no JVM, no API keys, no accounts. The graph is ready to query. Add `codegraph mcp` to your AI agent's config and it has full access to your dependency graph through 21 MCP tools (22 in multi-repo mode).
+That's it. No config files, no Docker, no JVM, no API keys, no accounts. The graph is ready to query. Add `codegraph mcp` to your AI agent's config and it has full access to your dependency graph through 24 MCP tools (25 in multi-repo mode).
 
 ### Why it matters
 
@@ -97,7 +97,7 @@ That's it. No config files, no Docker, no JVM, no API keys, no accounts. The gra
 | **🔓** | **Zero-cost core, LLM-enhanced when you want** | Full graph analysis with no API keys, no accounts, no cost. Optionally bring your own LLM provider — your code only goes where you choose |
 | **🔬** | **Function-level, not just files** | Traces `handleAuth()` → `validateToken()` → `decryptJWT()` and shows 14 callers across 9 files break if `decryptJWT` changes |
 | **🏷️** | **Role classification** | Every symbol auto-tagged as `entry`/`core`/`utility`/`adapter`/`dead`/`leaf` — agents instantly know what they're looking at |
-| **🤖** | **Built for AI agents** | 21-tool [MCP server](https://modelcontextprotocol.io/) — AI assistants query your graph directly. Single-repo by default |
+| **🤖** | **Built for AI agents** | 24-tool [MCP server](https://modelcontextprotocol.io/) — AI assistants query your graph directly. Single-repo by default |
 | **🌐** | **Multi-language, one CLI** | JS/TS + Python + Go + Rust + Java + C# + PHP + Ruby + HCL in a single graph |
 | **💥** | **Git diff impact** | `codegraph diff-impact` shows changed functions, their callers, and full blast radius — enriched with historically coupled files from git co-change analysis. Ships with a GitHub Actions workflow |
 | **🧠** | **Semantic search** | Local embeddings by default, LLM-powered when opted in — multi-query with RRF ranking via `"auth; token; JWT"` |
@@ -144,7 +144,7 @@ After modifying code:
 Or connect directly via MCP:
 
 ```bash
-codegraph mcp          # 21-tool MCP server — AI queries the graph directly
+codegraph mcp          # 24-tool MCP server — AI queries the graph directly
 ```
 
 Full agent setup: [AI Agent Guide](docs/guides/ai-agent-guide.md) &middot; [CLAUDE.md template](docs/guides/ai-agent-guide.md#claudemd-template)
@@ -170,8 +170,11 @@ Full agent setup: [AI Agent Guide](docs/guides/ai-agent-guide.md) &middot; [CLAU
 | 📤 | **Export** | DOT (Graphviz), Mermaid, and JSON graph export |
 | 🧠 | **Semantic search** | Embeddings-powered natural language search with multi-query RRF ranking |
 | 👀 | **Watch mode** | Incrementally update the graph as files change |
-| 🤖 | **MCP server** | 21-tool MCP server for AI assistants; single-repo by default, opt-in multi-repo |
+| 🤖 | **MCP server** | 24-tool MCP server for AI assistants; single-repo by default, opt-in multi-repo |
 | ⚡ | **Always fresh** | Three-tier incremental detection — sub-second rebuilds even on large codebases |
+| 🧮 | **Complexity metrics** | Cognitive, cyclomatic, nesting depth, Halstead, and Maintainability Index per function |
+| 🏘️ | **Community detection** | Louvain clustering to discover natural module boundaries and architectural drift |
+| 📜 | **Manifesto rule engine** | Configurable pass/fail rules with warn/fail thresholds for CI gates (exit code 1 on fail) |
 
 See [docs/examples](docs/examples) for real-world CLI and MCP usage examples.
 
@@ -250,6 +253,20 @@ codegraph hotspots             # Files with extreme fan-in, fan-out, or density
 codegraph hotspots --metric coupling --level directory --no-tests
 ```
 
+### Code Health & Architecture
+
+```bash
+codegraph complexity              # Per-function cognitive, cyclomatic, nesting, MI
+codegraph complexity --health -T  # Full Halstead health view (volume, effort, bugs, MI)
+codegraph complexity --sort mi -T # Sort by worst maintainability index
+codegraph complexity --above-threshold -T  # Only functions exceeding warn thresholds
+codegraph communities             # Louvain community detection — natural module boundaries
+codegraph communities --drift -T  # Drift analysis only — split/merge candidates
+codegraph communities --functions # Function-level community detection
+codegraph manifesto               # Pass/fail rule engine (exit code 1 on fail)
+codegraph manifesto -T            # Exclude test files from rule evaluation
+```
+
 ### Export & Visualization
 
 ```bash
@@ -319,7 +336,7 @@ codegraph registry remove <name>  # Unregister
 | Flag | Description |
 |---|---|
 | `-d, --db <path>` | Custom path to `graph.db` |
-| `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files (available on `fn`, `fn-impact`, `path`, `context`, `explain`, `where`, `diff-impact`, `search`, `map`, `hotspots`, `roles`, `co-change`, `deps`, `impact`) |
+| `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files (available on `fn`, `fn-impact`, `path`, `context`, `explain`, `where`, `diff-impact`, `search`, `map`, `hotspots`, `roles`, `co-change`, `deps`, `impact`, `complexity`, `communities`, `manifesto`) |
 | `--depth <n>` | Transitive trace depth (default varies by command) |
 | `-j, --json` | Output as JSON |
 | `-v, --verbose` | Enable debug output |
@@ -431,7 +448,7 @@ Optional: `@huggingface/transformers` (semantic search), `@modelcontextprotocol/
 
 ### MCP Server
 
-Codegraph includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server with 21 tools (22 in multi-repo mode), so AI assistants can query your dependency graph directly:
+Codegraph includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server with 24 tools (25 in multi-repo mode), so AI assistants can query your dependency graph directly:
 
 ```bash
 codegraph mcp                  # Single-repo mode (default) — only local project
@@ -470,6 +487,9 @@ This project uses codegraph. The database is at `.codegraph/graph.db`.
 - `codegraph roles --role dead -T` — find dead code (unreferenced symbols)
 - `codegraph roles --role core -T` — find core symbols (high fan-in)
 - `codegraph co-change <file>` — files that historically change together
+- `codegraph complexity -T` — per-function complexity metrics (cognitive, cyclomatic, MI)
+- `codegraph communities --drift -T` — module boundary drift analysis
+- `codegraph manifesto -T` — pass/fail rule check (CI gate, exit code 1 on fail)
 - `codegraph search "<query>"` — semantic search (requires `codegraph embed`)
 - `codegraph cycles` — check for circular dependencies
 
@@ -549,6 +569,26 @@ Create a `.codegraphrc.json` in your project root to customize behavior:
 ```
 
 > **Tip:** `excludeTests` can also be set at the top level as a shorthand — `{ "excludeTests": true }` is equivalent to nesting it under `query`. If both are present, the nested `query.excludeTests` takes precedence.
+
+### Manifesto rules
+
+Configure pass/fail thresholds for `codegraph manifesto`:
+
+```json
+{
+  "manifesto": {
+    "rules": {
+      "cognitive_complexity": { "warn": 15, "fail": 30 },
+      "cyclomatic_complexity": { "warn": 10, "fail": 20 },
+      "nesting_depth": { "warn": 4, "fail": 6 },
+      "maintainability_index": { "warn": 40, "fail": 20 },
+      "halstead_bugs": { "warn": 0.5, "fail": 1.0 }
+    }
+  }
+}
+```
+
+When any function exceeds a `fail` threshold, `codegraph manifesto` exits with code 1 — perfect for CI gates.
 
 ### LLM credentials
 

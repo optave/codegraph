@@ -56,6 +56,10 @@ JS source is plain JavaScript (ES modules) in `src/`. No transpilation step. The
 | `native.js` | Native napi-rs addon loader with WASM fallback |
 | `registry.js` | Global repo registry (`~/.codegraph/registry.json`) for multi-repo MCP |
 | `resolve.js` | Import resolution (supports native batch mode) |
+| `complexity.js` | Cognitive, cyclomatic, Halstead, MI computation from AST; `complexity` CLI command |
+| `communities.js` | Louvain community detection, drift analysis |
+| `manifesto.js` | Configurable rule engine with warn/fail thresholds; CI gate |
+| `paginate.js` | Pagination helpers for bounded query results |
 | `logger.js` | Structured logging (`warn`, `debug`, `info`, `error`) |
 
 **Key design decisions:**
@@ -71,7 +75,7 @@ JS source is plain JavaScript (ES modules) in `src/`. No transpilation step. The
 - **MCP single-repo isolation:** `startMCPServer` defaults to single-repo mode — tools have no `repo` property and `list_repos` is not exposed. Passing `--multi-repo` or `--repos` to the CLI (or `options.multiRepo` / `options.allowedRepos` programmatically) enables multi-repo access. `buildToolList(multiRepo)` builds the tool list dynamically; the backward-compatible `TOOLS` export equals `buildToolList(true)`
 - **Credential resolution:** `loadConfig` pipeline is `mergeConfig → applyEnvOverrides → resolveSecrets`. The `apiKeyCommand` config field shells out to an external secret manager via `execFileSync` (no shell). Priority: command output > env var > file config > defaults. On failure, warns and falls back gracefully
 
-**Database:** SQLite at `.codegraph/graph.db` with tables: `nodes`, `edges`, `metadata`, `embeddings`
+**Database:** SQLite at `.codegraph/graph.db` with tables: `nodes`, `edges`, `metadata`, `embeddings`, `function_complexity`
 
 ## Test Structure
 
@@ -118,6 +122,9 @@ node src/cli.js stats                # Graph health and quality score
 node src/cli.js fn <name> -T         # Function call chain (callers + callees)
 node src/cli.js deps src/<file>.js   # File-level imports and importers
 node src/cli.js diff-impact main     # Impact of current branch vs main
+node src/cli.js complexity -T         # Per-function complexity metrics
+node src/cli.js communities -T       # Community detection & drift analysis
+node src/cli.js manifesto -T         # Rule engine pass/fail check
 node src/cli.js cycles               # Check for circular dependencies
 node src/cli.js search "<query>"     # Semantic search (requires `embed` first)
 ```
