@@ -714,11 +714,16 @@ program
 
 program
   .command('complexity [target]')
-  .description('Show per-function complexity metrics (cognitive, cyclomatic, nesting depth)')
+  .description('Show per-function complexity metrics (cognitive, cyclomatic, nesting depth, MI)')
   .option('-d, --db <path>', 'Path to graph.db')
   .option('-n, --limit <number>', 'Max results', '20')
-  .option('--sort <metric>', 'Sort by: cognitive | cyclomatic | nesting', 'cognitive')
+  .option(
+    '--sort <metric>',
+    'Sort by: cognitive | cyclomatic | nesting | mi | volume | effort | bugs | loc',
+    'cognitive',
+  )
   .option('--above-threshold', 'Only functions exceeding warn thresholds')
+  .option('--health', 'Show health metrics (Halstead, MI) columns')
   .option('-f, --file <path>', 'Scope to file (partial match)')
   .option('-k, --kind <kind>', 'Filter by symbol kind')
   .option('-T, --no-tests', 'Exclude test/spec files from results')
@@ -735,6 +740,7 @@ program
       limit: parseInt(opts.limit, 10),
       sort: opts.sort,
       aboveThreshold: opts.aboveThreshold,
+      health: opts.health,
       file: opts.file,
       kind: opts.kind,
       noTests: resolveNoTests(opts),

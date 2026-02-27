@@ -406,7 +406,7 @@ const BASE_TOOLS = [
   {
     name: 'complexity',
     description:
-      'Show per-function complexity metrics (cognitive, cyclomatic, max nesting depth). Sorted by most complex first.',
+      'Show per-function complexity metrics (cognitive, cyclomatic, nesting, Halstead, Maintainability Index). Sorted by most complex first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -415,13 +415,18 @@ const BASE_TOOLS = [
         limit: { type: 'number', description: 'Max results', default: 20 },
         sort: {
           type: 'string',
-          enum: ['cognitive', 'cyclomatic', 'nesting'],
+          enum: ['cognitive', 'cyclomatic', 'nesting', 'mi', 'volume', 'effort', 'bugs', 'loc'],
           description: 'Sort metric',
           default: 'cognitive',
         },
         above_threshold: {
           type: 'boolean',
           description: 'Only functions exceeding warn thresholds',
+          default: false,
+        },
+        health: {
+          type: 'boolean',
+          description: 'Include Halstead and Maintainability Index metrics',
           default: false,
         },
         no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
@@ -799,6 +804,7 @@ export async function startMCPServer(customDbPath, options = {}) {
             limit: args.limit,
             sort: args.sort,
             aboveThreshold: args.above_threshold,
+            health: args.health,
             noTests: args.no_tests,
             kind: args.kind,
           });

@@ -26,6 +26,10 @@ export {
   complexity,
   complexityData,
   computeFunctionComplexity,
+  computeHalsteadMetrics,
+  computeLOCMetrics,
+  computeMaintainabilityIndex,
+  HALSTEAD_RULES,
 } from './complexity.js';
 // Configuration
 export { loadConfig } from './config.js';
