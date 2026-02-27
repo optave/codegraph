@@ -12,7 +12,13 @@ import { debug } from './logger.js';
  * defaults: { warn, fail } — null means disabled
  */
 export const RULE_DEFS = [
-  { name: 'cognitive', level: 'function', metric: 'cognitive', defaults: { warn: 15, fail: null }, reportOnly: true },
+  {
+    name: 'cognitive',
+    level: 'function',
+    metric: 'cognitive',
+    defaults: { warn: 15, fail: null },
+    reportOnly: true,
+  },
   {
     name: 'cyclomatic',
     level: 'function',
@@ -69,7 +75,7 @@ function resolveRules(userRules) {
     const user = userRules?.[def.name];
     resolved[def.name] = {
       warn: user?.warn !== undefined ? user.warn : def.defaults.warn,
-      fail: def.reportOnly ? null : (user?.fail !== undefined ? user.fail : def.defaults.fail),
+      fail: def.reportOnly ? null : user?.fail !== undefined ? user.fail : def.defaults.fail,
     };
   }
   return resolved;
