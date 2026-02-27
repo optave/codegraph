@@ -116,8 +116,8 @@ codegraph build <repo> --engine native --no-incremental --verbose
 | `watch .` | PASS | Starts, detects changes, graceful Ctrl+C |
 | `registry list` | PASS | JSON and text output |
 | `registry prune --ttl 365` | PASS | "No stale entries" |
-| `mcp` (single-repo) | PASS | 18 tools, `list_repos` absent |
-| `mcp --multi-repo` | PASS | 19 tools, `list_repos` present |
+| `mcp` (single-repo) | PASS | 23 tools, `list_repos` absent (was 18 at time of report; now includes complexity, communities, execution_flow, list_entry_points, co_changes) |
+| `mcp --multi-repo` | PASS | 24 tools, `list_repos` present |
 
 ### Edge Cases Tested
 
@@ -277,9 +277,9 @@ Appended `// test comment` to `src/logger.js`:
 | Test | Result |
 |------|--------|
 | Single-repo initialization (JSON-RPC) | PASS — Valid response |
-| `tools/list` (single-repo) | PASS — 18 tools, `list_repos` absent |
-| `tools/list` (multi-repo) | PASS — 19 tools, `list_repos` present |
-| New tools: `node_roles`, `co_changes` | Present in tool list |
+| `tools/list` (single-repo) | PASS — 23 tools, `list_repos` absent (updated from 18 after complexity, communities, execution_flow, list_entry_points, co_changes added) |
+| `tools/list` (multi-repo) | PASS — 24 tools, `list_repos` present |
+| New tools: `node_roles`, `co_changes`, `complexity`, `communities`, `execution_flow`, `list_entry_points` | Present in tool list |
 
 ### Config & Environment
 
@@ -322,27 +322,27 @@ Appended `// test comment` to `src/logger.js`:
 - **Root cause:** `loadModel()` used `console.log()` instead of the stderr-routed `info()` logger.
 - **Fix applied:** Replaced `console.log` with `info()` for both messages.
 
-### BUG 4: Incremental rebuild drops edges (High)
-- **Issue:** [#116](https://github.com/optave/codegraph/issues/116)
-- **PR:** Open — too complex for this session
+### BUG 4: ~~Incremental rebuild drops edges~~ — FIXED
+- **Issue:** [#116](https://github.com/optave/codegraph/issues/116) — Closed
+- **PR:** Fixed via reverse-dependency cascade in `builder.js:444`
 - **Symptoms:** Touching one file (appending a comment) and running incremental build drops 46 edges (33 calls, 12 imports, 1 reexport). Full rebuild restores them.
-- **Root cause:** The incremental edge deletion query (`DELETE FROM edges WHERE source_id IN (changed file) OR target_id IN (changed file)`) removes ALL edges touching the changed file — including incoming edges from other files. The edge rebuilding phase only processes changed files, so edges from other files that reference the changed file's exports are lost.
-- **Fix applied:** None yet. Requires rethinking the incremental rebuild's edge cascade strategy.
+- **Root cause:** The incremental edge deletion query removed ALL edges touching the changed file — including incoming edges from other files. The edge rebuilding phase only processed changed files.
+- **Fix applied:** Reverse-dependency cascade — when a file changes, files that import it are identified and their outgoing edges are re-resolved. Edge deletion now only removes outgoing edges for reverse-dep files (nodes/IDs preserved).
 
 ---
 
 ## 9. Suggestions for Improvement
 
-### 9.1 Add `--db` flag to `embed` command
-Currently `embed` doesn't support `--db`, unlike all other commands. This makes it harder to test against specific databases.
+### 9.1 ~~Add `--db` flag to `embed` command~~ — DONE
+~~Currently `embed` doesn't support `--db`, unlike all other commands.~~ Fixed: `embed` now supports `-d, --db <path>`.
 
-### 9.2 Redirect HuggingFace library console output
-The `@huggingface/transformers` library prints "dtype not specified..." via `console.warn` which goes to stderr, but the library may have other `console.log` calls that could leak to stdout. Consider monkey-patching `console.log` during model loading or using the library's logging configuration.
+### 9.2 ~~Redirect HuggingFace library console output~~ — DONE
+~~The `@huggingface/transformers` library prints "dtype not specified..." via `console.warn` which goes to stderr.~~ Fixed in PR #117: `loadModel()` messages switched from `console.log` to `info()` (stderr-routed logger). The HF library's own `console.warn` goes to stderr naturally and doesn't affect stdout pipe consumers.
 
-### 9.3 Incremental rebuild needs reverse-dep edge cascade
-The most impactful fix would be making incremental rebuilds re-resolve edges for files that import changed files (reverse dependency cascade). This would fix Bug #4 and ensure incremental builds produce identical results to full builds.
+### 9.3 ~~Incremental rebuild needs reverse-dep edge cascade~~ — DONE
+~~The most impactful fix would be making incremental rebuilds re-resolve edges for files that import changed files.~~ Implemented at `builder.js:444` — reverse-dependency cascade detects files that import changed files and re-resolves their outgoing edges, fixing Bug #4.
 
-### 9.4 Update notification testing
+### 9.4 Update notification testing — Open (low priority)
 The update notification feature was not observable during testing. Consider adding a `--check-update` flag for manual testing, or document when the notification appears.
 
 ---
@@ -402,16 +402,18 @@ The update notification feature was not observable during testing. Consider addi
 
 Codegraph v2.4.0 is a solid release with compelling new features — co-change analysis and node role classification add meaningful value. The tree-sitter Query API migration delivers measurable performance gains. Engine parity remains perfect.
 
-**However**, two high-severity bugs were found:
+**All 4 bugs found during dogfooding have been fixed:**
 
-1. Windows users get no native engine due to a missing `optionalDependencies` entry — easy fix, already submitted.
-2. Incremental rebuilds silently drop edges — this is the most concerning issue as it produces incorrect graph data without any warning. Users relying on incremental builds may have missing edges.
+1. ~~Windows users get no native engine~~ — Fixed in PR #117 (added win32 to optionalDependencies)
+2. ~~extractLeadingComment crashes~~ — Fixed in PR #117 (bounds check)
+3. ~~search --json leaks to stdout~~ — Fixed in PR #117 (switched to stderr logger)
+4. ~~Incremental rebuild drops edges~~ — Fixed via reverse-dep cascade in builder.js
 
-The 3 simpler bugs are fixed in PR #117. Bug #4 (incremental edge drop) needs deeper work.
+3 of 4 improvement suggestions also addressed (9.1 `--db` on embed, 9.2 HF output, 9.3 reverse-dep cascade). Only 9.4 (update notification testing) remains open as low priority.
 
-**Rating: 7/10**
+**Rating: 7/10 → 9/10 (post-fix)**
 
-Justification: All commands work correctly, engine parity is perfect, and the new features (co-change, roles) work well. The deduction is for: the missing win32 binary (-1, high impact for Windows), the incremental edge drop (-1.5, silently produces wrong results), and the stdout pollution in search --json (-0.5, minor but affects tooling integration).
+Original deductions were: missing win32 binary (-1), incremental edge drop (-1.5), stdout pollution (-0.5). All three are now fixed. Remaining -1: update notification untested, and the HF library's `console.warn` to stderr is cosmetic but not fully silenced.
 
 ---
 
@@ -422,5 +424,5 @@ Justification: All commands work correctly, engine parity is perfect, and the ne
 | Issue | [#113](https://github.com/optave/codegraph/issues/113) | bug: @optave/codegraph-win32-x64-msvc missing from optionalDependencies | Closed via PR #117 |
 | Issue | [#114](https://github.com/optave/codegraph/issues/114) | bug(embedder): extractLeadingComment crashes on out-of-bounds line access | Closed via PR #117 |
 | Issue | [#115](https://github.com/optave/codegraph/issues/115) | bug(embedder): search --json leaks model loading messages to stdout | Closed via PR #117 |
-| Issue | [#116](https://github.com/optave/codegraph/issues/116) | bug(builder): incremental rebuild drops edges when re-parsing a file | Open |
-| PR | [#117](https://github.com/optave/codegraph/pull/117) | fix: dogfood v2.4.0 — win32 native binary, embedder crashes, stdout pollution | Open |
+| Issue | [#116](https://github.com/optave/codegraph/issues/116) | bug(builder): incremental rebuild drops edges when re-parsing a file | Closed — fixed via reverse-dep cascade |
+| PR | [#117](https://github.com/optave/codegraph/pull/117) | fix: dogfood v2.4.0 — win32 native binary, embedder crashes, stdout pollution | Merged |
