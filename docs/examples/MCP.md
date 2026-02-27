@@ -732,6 +732,158 @@ Path: buildGraph → isTestFile (2 hops)
 
 ---
 
+## complexity — Per-function complexity metrics
+
+```json
+{
+  "tool": "complexity",
+  "arguments": { "no_tests": true, "limit": 5 }
+}
+```
+
+```
+# Function Complexity
+
+  Function                                 File                            Cog  Cyc  Nest    MI
+  ──────────────────────────────────────── ────────────────────────────── ──── ──── ───── ─────
+  buildGraph                               src/builder.js                  495  185     9     - !
+  extractJavaSymbols                       src/extractors/java.js          208   64    10  13.9 !
+  extractSymbolsWalk                       src/extractors/javascript.js    197   72    11  11.1 !
+  walkJavaNode                             src/extractors/java.js          161   59     9    16 !
+  walkJavaScriptNode                       src/extractors/javascript.js    160   72    10  11.6 !
+
+  339 functions analyzed | avg cognitive: 18.8 | avg cyclomatic: 10.5 | avg MI: 22 | 106 above threshold
+```
+
+With health view (Halstead metrics):
+
+```json
+{
+  "tool": "complexity",
+  "arguments": { "no_tests": true, "health": true, "limit": 5 }
+}
+```
+
+```
+# Function Complexity
+
+  Function                            File                         MI     Vol   Diff    Effort   Bugs   LOC  SLOC
+  ─────────────────────────────────── ───────────────────────── ───── ─────── ────── ───────── ────── ───── ─────
+  buildGraph                          src/builder.js                0       0      0         0      0     0     0
+  extractJavaSymbols                  src/extractors/java.js     13.9!6673.96  70.52 470637.77 2.2247   225   212
+  extractSymbolsWalk                  …tractors/javascript.js    11.1!7911.66  50.02 395780.68 2.6372   251   239
+  walkJavaNode                        src/extractors/java.js       16!5939.15  65.25 387509.16 1.9797   198   188
+  walkJavaScriptNode                  …tractors/javascript.js    11.6!7624.39  47.67 363429.06 2.5415   240   230
+
+  339 functions analyzed | avg cognitive: 18.8 | avg cyclomatic: 10.5 | avg MI: 22 | 106 above threshold
+```
+
+Scope to a specific file:
+
+```json
+{
+  "tool": "complexity",
+  "arguments": { "file": "src/builder.js", "no_tests": true }
+}
+```
+
+---
+
+## communities — Community detection & drift analysis
+
+```json
+{
+  "tool": "communities",
+  "arguments": { "no_tests": true }
+}
+```
+
+```
+# File-Level Communities
+
+  41 communities | 73 nodes | modularity: 0.4114 | drift: 39%
+
+  Community 34 (16 members): src (16)
+    - src/cochange.js
+    - src/communities.js
+    - src/cycles.js
+    - src/embedder.js
+    - src/logger.js
+    - src/registry.js
+    - src/structure.js
+    - src/update-check.js
+    ... and 8 more
+  Community 35 (12 members): src/extractors (11), src (1)
+    - src/extractors/csharp.js
+    - src/extractors/go.js
+    - src/extractors/helpers.js
+    - src/extractors/javascript.js
+    ... and 8 more
+  Community 33 (6 members): src (6)
+    - src/builder.js
+    - src/constants.js
+    - src/journal.js
+    - src/native.js
+    - src/resolve.js
+    - src/watcher.js
+```
+
+Drift analysis only:
+
+```json
+{
+  "tool": "communities",
+  "arguments": { "drift": true, "no_tests": true }
+}
+```
+
+```
+# Drift Analysis (score: 39%)
+
+  Split candidates (directories spanning multiple communities):
+    - scripts → 13 communities
+    - crates/codegraph-core/src/extractors → 11 communities
+    - src → 4 communities
+  Merge candidates (communities spanning multiple directories):
+    - Community 35 (12 members) → 2 dirs: src/extractors, src
+```
+
+Function-level community detection:
+
+```json
+{
+  "tool": "communities",
+  "arguments": { "functions": true, "no_tests": true }
+}
+```
+
+---
+
+## manifesto — Rule engine pass/fail
+
+```json
+{
+  "tool": "manifesto",
+  "arguments": { "no_tests": true }
+}
+```
+
+```
+# Manifesto Results
+
+  Rule                      Status   Threshold         Violations
+  ────────────────────────── ──────── ──────────────── ──────────
+  cognitive_complexity       FAIL     warn>15 fail>30   84 functions
+  cyclomatic_complexity      FAIL     warn>10 fail>20   42 functions
+  nesting_depth              FAIL     warn>4 fail>6     28 functions
+  maintainability_index      FAIL     warn<40 fail<20   52 functions
+  halstead_bugs              WARN     warn>0.5 fail>1   18 functions
+
+  Result: FAIL (exit code 1)
+```
+
+---
+
 ## list_repos — Multi-repo registry (multi-repo mode only)
 
 Only available when the MCP server is started with `--multi-repo`.

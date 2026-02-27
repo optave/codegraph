@@ -110,6 +110,17 @@ Add a threshold check to your CI pipeline:
     fi
 ```
 
+### Code health gate
+
+Use `manifesto` to enforce code health rules in CI — it exits with code 1 when any function exceeds a fail-level threshold:
+
+```yaml
+- name: Code health gate
+  run: |
+    npx codegraph build
+    npx codegraph manifesto -T  # exits 1 on fail-level breach
+```
+
 ### Caching the graph database
 
 Speed up CI by caching `.codegraph/`:
@@ -143,7 +154,7 @@ By default, the MCP server runs in **single-repo mode** — the AI agent can onl
 
 Enable `--multi-repo` to let the agent query any registered repository, or use `--repos` to restrict access to a specific set of repos.
 
-The server exposes 21 tools (22 in multi-repo mode): `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `symbol_path`, `context`, `explain`, `where`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, `hotspots`, `node_roles`, `co_changes`, `execution_flow`, `list_entry_points`, and `list_repos` (multi-repo only). See the [AI Agent Guide MCP reference](./ai-agent-guide.md#mcp-server-reference) for the full tool-to-CLI mapping table.
+The server exposes 24 tools (25 in multi-repo mode): `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `symbol_path`, `context`, `explain`, `where`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, `hotspots`, `node_roles`, `co_changes`, `execution_flow`, `list_entry_points`, `complexity`, `communities`, `manifesto`, and `list_repos` (multi-repo only). See the [AI Agent Guide MCP reference](./ai-agent-guide.md#mcp-server-reference) for the full tool-to-CLI mapping table.
 
 ### CLAUDE.md for your project
 
@@ -172,6 +183,9 @@ This project uses codegraph. The database is at `.codegraph/graph.db`.
 - `codegraph roles --role dead -T` — find dead code (unreferenced symbols)
 - `codegraph roles --role core -T` — find core symbols (high fan-in)
 - `codegraph co-change <file>` — files that historically change together
+- `codegraph complexity -T` — per-function complexity metrics (cognitive, cyclomatic, MI)
+- `codegraph communities --drift -T` — module boundary drift analysis
+- `codegraph manifesto -T` — pass/fail rule check (CI gate, exit code 1 on fail)
 - `codegraph search "<query>"` — semantic search (requires `codegraph embed`)
 - `codegraph cycles` — check for circular dependencies
 
@@ -290,6 +304,12 @@ codegraph roles --file src/utils/auth.ts # role of every symbol in the file (ent
 codegraph fn myFunction --no-tests       # callers, callees, call chain
 codegraph fn-impact myFunction --no-tests  # what breaks if this changes
 codegraph path myFunction otherFunction -T # how two symbols are connected
+```
+
+Check complexity before refactoring:
+
+```bash
+codegraph complexity --file src/utils/auth.ts -T  # complexity metrics for functions in a file
 ```
 
 Before touching a file:
@@ -549,9 +569,12 @@ cp node_modules/@optave/codegraph/.github/workflows/codegraph-impact.yml .github
 # 6. (Optional) Scan git history for co-change coupling
 codegraph co-change --analyze
 
-# 7. (Optional) Build embeddings for semantic search
+# 7. (Optional) Verify code health rules pass
+codegraph manifesto -T
+
+# 8. (Optional) Build embeddings for semantic search
 codegraph embed
 
-# 8. (Optional) Add CLAUDE.md for AI agents
+# 9. (Optional) Add CLAUDE.md for AI agents
 # See docs/guides/ai-agent-guide.md for the full template
 ```

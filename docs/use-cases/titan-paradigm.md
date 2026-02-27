@@ -47,7 +47,17 @@ codegraph hotspots --no-tests
 codegraph stats
 ```
 
-An orchestrating agent can use `map` and `hotspots` to build a priority queue: audit the most-connected files first, because changes there have the highest blast radius. The `--json` flag on every command makes it trivial to feed results into a state file or orchestration script.
+Use `communities` to discover natural module boundaries and identify architectural drift — where the directory structure no longer matches actual dependency clusters:
+
+```bash
+# Discover natural module boundaries via Louvain clustering
+codegraph communities -T
+
+# Drift analysis: which directories should be split or merged?
+codegraph communities --drift -T
+```
+
+An orchestrating agent can use `map`, `hotspots`, and `communities` to build a priority queue: audit the most-connected files first, because changes there have the highest blast radius. The `--json` flag on every command makes it trivial to feed results into a state file or orchestration script.
 
 ```bash
 # JSON output for programmatic consumption
@@ -87,6 +97,19 @@ codegraph fn-impact wasmExtractSymbols -T
 
 # 4. What's the full call chain?
 codegraph fn wasmExtractSymbols -T --depth 5
+```
+
+Use `complexity` to get quantitative metrics for every function in the file, and `manifesto` to run the full rule engine:
+
+```bash
+# 5. Per-function complexity metrics — cognitive, cyclomatic, nesting, MI
+codegraph complexity --file src/parser.js -T
+
+# 6. Full Halstead health view — volume, effort, estimated bugs, MI
+codegraph complexity --file src/parser.js --health -T
+
+# 7. Pass/fail rule check — does this file meet the manifesto?
+codegraph manifesto -T
 ```
 
 When a sub-agent decides a function needs decomposition (complexity > 7, nesting > 3, 10+ mocks), it needs to know what breaks. `fn-impact` gives the complete blast radius **before** the agent writes a single line of code.
@@ -144,7 +167,14 @@ codegraph diff-impact --staged --format mermaid -T
 codegraph diff-impact --staged -T --json > state/impact-check.json
 ```
 
-The orchestrator can gate every commit: run `diff-impact --staged --json`, check that the blast radius is within acceptable bounds, and auto-rollback if it exceeds thresholds. Combined with `codegraph watch` for real-time graph updates, the state machine always has a current picture of the codebase.
+Use `manifesto` as a CI gate — it exits with code 1 when any function exceeds a fail-level threshold:
+
+```bash
+# Pass/fail rule check — exit code 1 = fail → rollback trigger
+codegraph manifesto -T
+```
+
+The orchestrator can gate every commit: run `diff-impact --staged --json` to check blast radius, and `manifesto -T` to verify code health rules. Auto-rollback if either exceeds thresholds. Combined with `codegraph watch` for real-time graph updates, the state machine always has a current picture of the codebase.
 
 ```bash
 # Watch mode — graph updates automatically as agents edit files
@@ -171,9 +201,10 @@ Several planned features would make codegraph even more powerful for the Titan P
 
 | Feature | Status | How it helps |
 |---------|--------|-------------|
-| **Formal code health metrics** ([Backlog #6](../../roadmap/BACKLOG.md)) | Planned | Cyclomatic complexity, Maintainability Index, and Halstead metrics per function — directly maps to the Gauntlet's "complexity > 7 is a failure" rule. Computed from the AST we already parse |
+| **Formal code health metrics** ([Backlog #6](../../roadmap/BACKLOG.md)) | **Done** | `codegraph complexity` provides cognitive, cyclomatic, nesting depth, Halstead (volume, effort, bugs), and Maintainability Index per function. `--health` for full view, `--sort mi` to rank by MI, `--above-threshold` for flagged functions. Maps directly to the Gauntlet's "complexity > 7 is a failure" rule. PR #130 + #139 |
+| **Manifesto-driven pass/fail** ([Backlog #22](../../roadmap/BACKLOG.md)) | **Done** | `codegraph manifesto` with 9 configurable rules and warn/fail thresholds. Exit code 1 on fail — the Gauntlet gets first-class pass/fail signals without parsing JSON. PR #138 |
+| **Community detection** ([Backlog #11](../../roadmap/BACKLOG.md)) | **Done** | `codegraph communities` with Louvain algorithm discovers natural module boundaries vs actual file organization. `--drift` reveals which directories should be split or merged. `--functions` for function-level clustering. PR #133/#134 |
 | **Build-time semantic metadata** ([Roadmap Phase 4.4](../../roadmap/ROADMAP.md#44--build-time-semantic-metadata)) | Planned | LLM-generated `complexity_notes`, `risk_score`, and `side_effects` per function. A sub-agent could query `codegraph assess <name>` and get "3 responsibilities, low cohesion — consider splitting" without analyzing the code itself |
-| **Community detection** ([Backlog #11](../../roadmap/BACKLOG.md)) | Planned | Leiden/Louvain algorithm to discover natural module boundaries vs actual file organization. Reveals which functions are tightly coupled and whether decomposition should follow the directory structure or propose a new one |
 
 ### For GLOBAL SYNC
 
@@ -259,7 +290,7 @@ After LLM integration, snapshots would also preserve embeddings, descriptions, a
 
 ### 6. MCP-native orchestration
 
-The Titan Paradigm's agents could run entirely through codegraph's [MCP server](../examples/MCP.md) instead of shelling out to the CLI. With 21 tools already exposed, the main gap is the `audit`/`triage`/`check` commands described above. After Phase 4, adding these as MCP tools — alongside [`ask_codebase`](../../roadmap/ROADMAP.md#53--mcp-integration) (Phase 5.3) for natural-language queries — would let orchestrators like Claude Code's agent teams query the graph with zero CLI overhead. The RECON agent asks the MCP server "what are the riskiest files?", each Gauntlet agent asks "should this function be decomposed?", and the STATE MACHINE asks "is this change safe?" — all through the same protocol.
+The Titan Paradigm's agents could run entirely through codegraph's [MCP server](../examples/MCP.md) instead of shelling out to the CLI. With 24 tools already exposed, the main gap is the `audit`/`triage`/`check` commands described above. After Phase 4, adding these as MCP tools — alongside [`ask_codebase`](../../roadmap/ROADMAP.md#53--mcp-integration) (Phase 5.3) for natural-language queries — would let orchestrators like Claude Code's agent teams query the graph with zero CLI overhead. The RECON agent asks the MCP server "what are the riskiest files?", each Gauntlet agent asks "should this function be decomposed?", and the STATE MACHINE asks "is this change safe?" — all through the same protocol.
 
 ---
 
