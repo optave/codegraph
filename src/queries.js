@@ -5,6 +5,7 @@ import { coChangeForFiles } from './cochange.js';
 import { findCycles } from './cycles.js';
 import { findDbPath, openReadonlyOrFail } from './db.js';
 import { debug } from './logger.js';
+import { paginateResult } from './paginate.js';
 import { LANGUAGE_REGISTRY } from './parser.js';
 
 /**
@@ -248,7 +249,8 @@ export function queryNameData(name, customDbPath, opts = {}) {
   });
 
   db.close();
-  return { query: name, results };
+  const base = { query: name, results };
+  return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
 }
 
 export function impactAnalysisData(file, customDbPath, opts = {}) {
@@ -1153,7 +1155,8 @@ export function listFunctionsData(customDbPath, opts = {}) {
   if (noTests) rows = rows.filter((r) => !isTestFile(r.file));
 
   db.close();
-  return { count: rows.length, functions: rows };
+  const base = { count: rows.length, functions: rows };
+  return paginateResult(base, 'functions', { limit: opts.limit, offset: opts.offset });
 }
 
 export function statsData(customDbPath, opts = {}) {
@@ -1544,7 +1547,16 @@ export async function stats(customDbPath, opts = {}) {
 // ─── Human-readable output (original formatting) ───────────────────────
 
 export function queryName(name, customDbPath, opts = {}) {
-  const data = queryNameData(name, customDbPath, { noTests: opts.noTests });
+  const data = queryNameData(name, customDbPath, {
+    noTests: opts.noTests,
+    limit: opts.limit,
+    offset: opts.offset,
+  });
+  if (opts.ndjson) {
+    if (data._pagination) console.log(JSON.stringify({ _meta: data._pagination }));
+    for (const r of data.results) console.log(JSON.stringify(r));
+    return;
+  }
   if (opts.json) {
     console.log(JSON.stringify(data, null, 2));
     return;
@@ -2626,11 +2638,17 @@ export function whereData(target, customDbPath, opts = {}) {
   const results = fileMode ? whereFileImpl(db, target) : whereSymbolImpl(db, target, noTests);
 
   db.close();
-  return { target, mode: fileMode ? 'file' : 'symbol', results };
+  const base = { target, mode: fileMode ? 'file' : 'symbol', results };
+  return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
 }
 
 export function where(target, customDbPath, opts = {}) {
   const data = whereData(target, customDbPath, opts);
+  if (opts.ndjson) {
+    if (data._pagination) console.log(JSON.stringify({ _meta: data._pagination }));
+    for (const r of data.results) console.log(JSON.stringify(r));
+    return;
+  }
   if (opts.json) {
     console.log(JSON.stringify(data, null, 2));
     return;
@@ -2712,11 +2730,17 @@ export function rolesData(customDbPath, opts = {}) {
   }
 
   db.close();
-  return { count: rows.length, summary, symbols: rows };
+  const base = { count: rows.length, summary, symbols: rows };
+  return paginateResult(base, 'symbols', { limit: opts.limit, offset: opts.offset });
 }
 
 export function roles(customDbPath, opts = {}) {
   const data = rolesData(customDbPath, opts);
+  if (opts.ndjson) {
+    if (data._pagination) console.log(JSON.stringify({ _meta: data._pagination }));
+    for (const s of data.symbols) console.log(JSON.stringify(s));
+    return;
+  }
   if (opts.json) {
     console.log(JSON.stringify(data, null, 2));
     return;
