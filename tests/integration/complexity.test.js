@@ -9,9 +9,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { complexityData } from '../../src/complexity.js';
+import { loadConfig } from '../../src/config.js';
 import { initSchema } from '../../src/db.js';
+
+vi.mock('../../src/config.js', () => ({
+  loadConfig: vi.fn(() => ({})),
+}));
 
 // ─── Helpers ───────────────────────────────────────────────────────────
 
@@ -319,5 +324,43 @@ describe('complexityData', () => {
       expect(typeof fn.halstead.bugs).toBe('number');
       expect(typeof fn.maintainabilityIndex).toBe('number');
     }
+  });
+
+  // ─── Threshold sanitization (regression) ────────────────────────────
+
+  test('non-numeric threshold values do not crash SQL query', () => {
+    vi.mocked(loadConfig).mockReturnValueOnce({
+      manifesto: {
+        rules: {
+          cognitive: { warn: 'abc' },
+          cyclomatic: { warn: '123xyz' },
+          maxNesting: { warn: undefined },
+        },
+      },
+    });
+    // Should not throw — invalid thresholds are silently skipped
+    const data = complexityData(dbPath, { aboveThreshold: true });
+    expect(data.functions).toBeDefined();
+    expect(Array.isArray(data.functions)).toBe(true);
+    // With all thresholds invalid, no filtering occurs — all functions returned
+    expect(data.functions.length).toBeGreaterThanOrEqual(4);
+    expect(data.summary.aboveWarn).toBe(0);
+  });
+
+  test('string-numeric thresholds are rejected (strict type check)', () => {
+    vi.mocked(loadConfig).mockReturnValueOnce({
+      manifesto: {
+        rules: {
+          cognitive: { warn: '15' },
+          cyclomatic: { warn: '10' },
+          maxNesting: { warn: '4' },
+        },
+      },
+    });
+    const data = complexityData(dbPath, { aboveThreshold: true });
+    // String thresholds fail typeof === 'number' — treated as no threshold
+    // so all functions are returned (no HAVING filter applied)
+    expect(data.functions.length).toBeGreaterThanOrEqual(4);
+    expect(data.summary.aboveWarn).toBe(0);
   });
 });
