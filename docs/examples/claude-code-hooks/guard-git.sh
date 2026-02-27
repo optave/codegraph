@@ -21,8 +21,8 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-# Act on git and gh commands (may appear after cd "..." &&)
-if ! echo "$COMMAND" | grep -qE '(^|\s|&&\s*)(git|gh)\s+'; then
+# Act on git commands (may appear after cd "..." &&)
+if ! echo "$COMMAND" | grep -qE '(^|\s|&&\s*)git\s+'; then
   exit 0
 fi
 
@@ -41,6 +41,7 @@ deny() {
 }
 
 # --- Block dangerous commands ---
+# Patterns use (^|\s|&&\s*) to catch commands chained after cd/other commands
 
 # git add . / git add -A / git add --all (broad staging)
 if echo "$COMMAND" | grep -qE '(^|\s|&&\s*)git\s+add\s+(\.\s*$|-A|--all)'; then
@@ -72,44 +73,6 @@ fi
 # git stash (hides all changes)
 if echo "$COMMAND" | grep -qE '(^|\s|&&\s*)git\s+stash'; then
   deny "BLOCKED: 'git stash' hides all working tree changes including other sessions' work. In worktree mode, commit your changes directly instead."
-fi
-
-# --- Branch name validation helper ---
-
-validate_branch_name() {
-  # Try to get branch from the working directory where the command runs
-  # Extract cd target if command starts with cd "..." && ...
-  local work_dir=""
-  if echo "$COMMAND" | grep -qE '^\s*cd\s+'; then
-    work_dir=$(echo "$COMMAND" | sed -nE 's/^\s*cd\s+"?([^"&]+)"?\s*&&.*/\1/p')
-  fi
-
-  local BRANCH=""
-  if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
-    BRANCH=$(git -C "$work_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || true
-  fi
-  if [ -z "$BRANCH" ]; then
-    BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
-  fi
-
-  if [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "HEAD" ]; then
-    local PATTERN="^(feat|fix|docs|refactor|test|chore|ci|perf|build|release|dependabot|revert)/"
-    if [[ ! "$BRANCH" =~ $PATTERN ]]; then
-      deny "BLOCKED: Branch '$BRANCH' does not match required pattern. Branch names must start with: feat/, fix/, docs/, refactor/, test/, chore/, ci/, perf/, build/, release/, revert/"
-    fi
-  fi
-}
-
-# --- Branch name validation on push ---
-
-if echo "$COMMAND" | grep -qE '(^|\s|&&\s*)git\s+push'; then
-  validate_branch_name
-fi
-
-# --- Branch name validation on gh pr create ---
-
-if echo "$COMMAND" | grep -qE '(^|\s|&&\s*)gh\s+pr\s+create'; then
-  validate_branch_name
 fi
 
 # --- Commit validation against edit log ---
