@@ -345,6 +345,10 @@ describe('complexityData', () => {
     // With all thresholds invalid, no filtering occurs — all functions returned
     expect(data.functions.length).toBeGreaterThanOrEqual(4);
     expect(data.summary.aboveWarn).toBe(0);
+    // No function should have exceeds when all thresholds are invalid
+    for (const fn of data.functions) {
+      expect(fn.exceeds).toBeUndefined();
+    }
   });
 
   test('string-numeric thresholds are rejected (strict type check)', () => {
@@ -362,5 +366,9 @@ describe('complexityData', () => {
     // so all functions are returned (no HAVING filter applied)
     expect(data.functions.length).toBeGreaterThanOrEqual(4);
     expect(data.summary.aboveWarn).toBe(0);
+    // No exceeds when thresholds are strings
+    for (const fn of data.functions) {
+      expect(fn.exceeds).toBeUndefined();
+    }
   });
 });
