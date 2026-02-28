@@ -999,7 +999,7 @@ pub fn compute_all_metrics(
         cognitive,
         cyclomatic,
         max_nesting,
-        halstead: Some(halstead.unwrap_or(HalsteadMetrics {
+        halstead: halstead.or(Some(HalsteadMetrics {
             n1: 0, n2: 0, big_n1: 0, big_n2: 0,
             vocabulary: 0, length: 0,
             volume: 0.0, difficulty: 0.0, effort: 0.0, bugs: 0.0,
