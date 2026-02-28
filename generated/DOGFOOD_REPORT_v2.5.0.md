@@ -69,7 +69,7 @@ Every command was tested against a non-existent database:
 codegraph build <repo> --engine native --no-incremental --verbose
 ```
 - 123 files parsed, 801 nodes, 1365 edges
-- Time: ~501ms (native), ~700ms (WASM)
+- Time: ~241ms (native), ~1,009ms (WASM)
 - Quality score: 85/100
 
 ### Query Commands
@@ -149,20 +149,22 @@ codegraph build <repo> --engine native --no-incremental --verbose
 | Node count stability | PASS — 801 nodes after both incremental and full rebuilds |
 | Edge count note | Previous graph (from earlier sessions) had 1353 edges; force rebuild produced 1365 — consistent with v2.5.0 fix for "incremental rebuild drops edges from unchanged files" |
 
-### Build Phase Timing (from benchmark)
+### Build Phase Timing (from official v2.5.0 benchmark)
 
 | Phase | Native | WASM |
 |-------|--------|------|
-| Parse | 35.3ms | 326.2ms |
-| Insert | 11.3ms | 15.9ms |
-| Resolve | 17.5ms | 20.5ms |
-| Edges | 31.7ms | 34.9ms |
-| Structure | 2.8ms | 4.8ms |
-| Roles | 3.0ms | 3.2ms |
-| Complexity | 270.9ms | 125.9ms |
-| **Total** | **501ms** | **700ms** |
+| Parse | 133ms | 655.7ms |
+| Insert | 13ms | 18.8ms |
+| Resolve | 9.7ms | 13ms |
+| Edges | 57.4ms | 62.8ms |
+| Structure | 3.8ms | 10.2ms |
+| Roles | 5.3ms | 8.5ms |
+| Complexity | 5.1ms | 240.7ms |
+| **Total** | **241ms** | **1,009ms** |
 
-Native parsing is 9.2x faster, but native complexity is 2.2x slower than WASM. Overall native build is 1.4x faster.
+Native parsing is 4.9x faster, and native complexity is **47x faster** (DB inserts only, since Rust computes metrics during parse). Overall native build is 4.2x faster.
+
+> **Note:** An earlier draft of this report showed native complexity at 270.9ms — slower than WASM. That was caused by running the benchmark with a stale v2.4.0 native binary that lacked Rust-side complexity computation, forcing a WASM fallback during the complexity phase. The numbers above are from the correct v2.5.0 binary.
 
 ---
 
@@ -180,12 +182,12 @@ Native parsing is 9.2x faster, but native complexity is 2.2x slower than WASM. O
 | Call confidence | 97.9% (1006/1027) | 97.9% (1006/1027) | 0 |
 | Quality score | 85/100 | 85/100 | 0 |
 | Roles | core:268, dead:207, utility:145, entry:39 | identical | 0 |
-| Complexity functions | 628 (native), 627 (WASM) | -1 | ~0% |
-| Build time | 501ms | 700ms | -28% (native faster) |
-| Query time | 1.9ms | 2.7ms | -30% (native faster) |
+| Complexity functions | 622 | 622 | 0 |
+| Build time | 241ms | 1,009ms | -76% (native 4.2x faster) |
+| Query time | 2.4ms | 3.5ms | -31% (native faster) |
 | No-op rebuild | 5ms | 6ms | ~same |
 
-**100% engine parity** on nodes, edges, and quality metrics. The 1-function difference in complexity count is negligible (likely a Rust-only function counted differently). Native is 28% faster for builds and 30% faster for queries.
+**100% engine parity** on nodes, edges, quality metrics, and complexity function count. Native is 4.2x faster for builds and 31% faster for queries.
 
 ---
 
@@ -255,23 +257,23 @@ Native parsing is 9.2x faster, but native complexity is 2.2x slower than WASM. O
 
 | Metric | Native | WASM |
 |--------|--------|------|
-| Full build (123 files) | 501ms (4.1ms/file) | 700ms (5.7ms/file) |
+| Full build (123 files) | 241ms (2.0ms/file) | 1,009ms (8.2ms/file) |
 | No-op rebuild | 5ms | 6ms |
 | 1-file rebuild | 384ms | 341ms |
-| Query latency | 1.9ms | 2.7ms |
-| DB size | 688KB | 688KB |
+| Query latency | 2.4ms | 3.5ms |
+| DB size | 672KB | 672KB |
 
 ### Build Phase Breakdown
 
 | Phase | Native | WASM | Speedup |
 |-------|--------|------|---------|
-| Parse | 35.3ms | 326.2ms | **9.2x** |
-| Insert | 11.3ms | 15.9ms | 1.4x |
-| Resolve | 17.5ms | 20.5ms | 1.2x |
-| Edges | 31.7ms | 34.9ms | 1.1x |
-| Structure | 2.8ms | 4.8ms | 1.7x |
-| Roles | 3.0ms | 3.2ms | 1.1x |
-| Complexity | 270.9ms | 125.9ms | **0.5x** (WASM faster) |
+| Parse | 133ms | 655.7ms | **4.9x** |
+| Insert | 13ms | 18.8ms | 1.4x |
+| Resolve | 9.7ms | 13ms | 1.3x |
+| Edges | 57.4ms | 62.8ms | 1.1x |
+| Structure | 3.8ms | 10.2ms | 2.7x |
+| Roles | 5.3ms | 8.5ms | 1.6x |
+| Complexity | 5.1ms | 240.7ms | **47x** |
 
 ### Query Benchmark
 
@@ -297,10 +299,10 @@ Native parsing is 9.2x faster, but native complexity is 2.2x slower than WASM. O
 
 ### Performance Notes
 
-- Native parsing is 9.2x faster than WASM, but native complexity computation is 2x slower — this makes the 1-file rebuild slightly slower for native since complexity dominates
-- All queries are sub-2ms for both engines — no regressions
+- Native parsing is 4.9x faster than WASM, and native complexity is 47x faster (Rust computes all metrics during parse, so the complexity phase is just DB inserts)
+- All queries are sub-4ms for both engines — no regressions
 - No-op rebuild is consistently under 10ms — well within the 10ms target
-- DB size is identical between engines (688KB)
+- DB size is identical between engines (672KB)
 
 ---
 
@@ -317,8 +319,8 @@ The initial dogfood run flagged `branch-compare` as a missing-implementation bug
 ### 10.1 Guard against missing module imports in index.js
 Add a CI check or test that validates all re-exports in `index.js` resolve to existing files. A simple `node --input-type=module -e "import('./src/index.js')"` in CI would catch missing modules before release. (The branch-compare issue was a lost stash, not a missing implementation, but the guard is still valuable.)
 
-### 10.2 Native complexity performance investigation
-Native complexity computation (270.9ms) is 2.2x slower than WASM (125.9ms). Since complexity is a large fraction of build time, improving the native Rust complexity implementation would yield a meaningful overall speedup.
+### 10.2 ~~Native complexity performance~~ (resolved)
+~~Native complexity computation appeared slower than WASM.~~ This was caused by running benchmarks with a stale v2.4.0 native binary. With the correct v2.5.0 binary, native complexity is 47x faster (5.1ms vs 240.7ms) since Rust computes all metrics during parsing and the complexity phase is just DB inserts.
 
 ### 10.3 Add a `--full` flag documentation hint to structure
 The structure command shows "N files omitted. Use --full to show all files" but `--full` is not listed in `--help`. Consider adding it to the help text.
@@ -376,7 +378,7 @@ The structure command shows "N files omitted. Use --full to show all files" but 
 
 v2.5.0 is a substantial feature release that adds a full code quality suite — complexity metrics (cognitive, cyclomatic, Halstead, MI), community detection, execution flow tracing, manifesto rule engine, shortest-path queries, and branch structural comparison. All new features work correctly and produce meaningful output.
 
-Engine parity is **100%** — native and WASM produce identical nodes, edges, and quality metrics. Native parsing remains ~9x faster, and overall native build time is 28% faster.
+Engine parity is **100%** — native and WASM produce identical nodes, edges, and quality metrics. Native is 4.2x faster overall (241ms vs 1,009ms), with parsing 4.9x faster and complexity 47x faster.
 
 All 28 commands work correctly in both cold-start and post-build scenarios. Edge case handling is solid. Incremental rebuild is fast and accurate. The edge-drop bug from previous versions appears to be fixed. The programmatic API (`import('@optave/codegraph')`) loads cleanly with 99 exports.
 
