@@ -5,7 +5,8 @@ Metrics are normalized per file for cross-version comparability.
 
 | Version | Engine | Date | Files | Build (ms/file) | Query (ms) | Nodes/file | Edges/file | DB (bytes/file) |
 |---------|--------|------|------:|----------------:|-----------:|-----------:|-----------:|----------------:|
-| 2.4.0 | wasm | 2026-02-28 | 123 | 5.1 ↓23% | 2.2 ↑5% | 6.5 ↑12% | 10.7 ↑18% | 4695 ↑22% |
+| 2.4.0 | native | 2026-02-28 | 123 | 2.4 ↑26% | 2.2 ↑47% | 6.5 ↑12% | 10.7 ↑18% | 4695 ↑22% |
+| 2.4.0 | wasm | 2026-02-28 | 123 | 7 ↑6% | 3 ↑43% | 6.5 ↑12% | 10.7 ↑18% | 4695 ↑22% |
 | 2.3.0 | native | 2026-02-24 | 99 | 1.9 ~ | 1.5 ↑7% | 5.8 ↑7% | 9.1 ~ | 3848 ~ |
 | 2.3.0 | wasm | 2026-02-24 | 99 | 6.6 ~ | 2.1 ↑11% | 5.8 ~ | 9.1 ↑3% | 3848 ~ |
 | 2.1.0 | native | 2026-02-23 | 92 | 1.9 ↓24% | 1.4 ↑17% | 5.4 ↑6% | 9.1 ↓47% | 3829 ↓14% |
@@ -15,12 +16,23 @@ Metrics are normalized per file for cross-version comparability.
 
 ### Raw totals (latest)
 
+#### Native (Rust)
+
+| Metric | Value |
+|--------|-------|
+| Build time | 298ms |
+| Query time | 2ms |
+| Nodes | 801 |
+| Edges | 1,320 |
+| DB size | 564 KB |
+| Files | 123 |
+
 #### WASM
 
 | Metric | Value |
 |--------|-------|
-| Build time | 630ms |
-| Query time | 2ms |
+| Build time | 857ms |
+| Query time | 3ms |
 | Nodes | 801 |
 | Edges | 1,320 |
 | DB size | 564 KB |
@@ -32,22 +44,24 @@ Extrapolated linearly from per-file metrics above.
 
 | Metric | Native (Rust) | WASM |
 |--------|---:|---:|
-| Build time | n/a | 255.0s |
-| DB size | n/a | 223.9 MB |
-| Nodes | n/a | 325,000 |
-| Edges | n/a | 535,000 |
+| Build time | 120.0s | 350.0s |
+| DB size | 223.9 MB | 223.9 MB |
+| Nodes | 325,000 | 325,000 |
+| Edges | 535,000 | 535,000 |
 
 ### Incremental Rebuilds
 
 | Version | Engine | No-op (ms) | 1-file (ms) |
 |---------|--------|----------:|-----------:|
-| 2.4.0 | wasm | 5 | 192 |
+| 2.4.0 | native | 4 | 67 |
+| 2.4.0 | wasm | 5 | 121 |
 
 ### Query Latency
 
 | Version | Engine | fn-deps (ms) | fn-impact (ms) | path (ms) | roles (ms) |
 |---------|--------|------------:|--------------:|----------:|----------:|
-| 2.4.0 | wasm | 0.5 | 0.5 | null | 0.9 |
+| 2.4.0 | native | 0.6 | 0.6 | null | 1.1 |
+| 2.4.0 | wasm | 0.6 | 0.6 | null | 1.1 |
 
 <!-- NOTES_START -->
 ### Notes
@@ -76,28 +90,49 @@ extractor is needed to recover the regression.
     "date": "2026-02-28",
     "files": 123,
     "wasm": {
-      "buildTimeMs": 630,
-      "queryTimeMs": 2.2,
+      "buildTimeMs": 857,
+      "queryTimeMs": 3,
       "nodes": 801,
       "edges": 1320,
       "dbSizeBytes": 577536,
       "perFile": {
-        "buildTimeMs": 5.1,
+        "buildTimeMs": 7,
         "nodes": 6.5,
         "edges": 10.7,
         "dbSizeBytes": 4695
       },
       "noopRebuildMs": 5,
-      "oneFileRebuildMs": 192,
+      "oneFileRebuildMs": 121,
       "queries": {
-        "fnDepsMs": 0.5,
-        "fnImpactMs": 0.5,
+        "fnDepsMs": 0.6,
+        "fnImpactMs": 0.6,
         "pathMs": null,
-        "rolesMs": 0.9
+        "rolesMs": 1.1
       },
       "phases": null
     },
-    "native": null
+    "native": {
+      "buildTimeMs": 298,
+      "queryTimeMs": 2.2,
+      "nodes": 801,
+      "edges": 1320,
+      "dbSizeBytes": 577536,
+      "perFile": {
+        "buildTimeMs": 2.4,
+        "nodes": 6.5,
+        "edges": 10.7,
+        "dbSizeBytes": 4695
+      },
+      "noopRebuildMs": 4,
+      "oneFileRebuildMs": 67,
+      "queries": {
+        "fnDepsMs": 0.6,
+        "fnImpactMs": 0.6,
+        "pathMs": null,
+        "rolesMs": 1.1
+      },
+      "phases": null
+    }
   },
   {
     "version": "2.3.0",
