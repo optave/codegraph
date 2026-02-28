@@ -70,7 +70,6 @@ export async function resolveBenchmarkSource() {
 				cwd: tmpDir,
 				stdio: 'pipe',
 				timeout: 120_000,
-				shell: true,
 			});
 			break;
 		} catch (err) {
