@@ -1,13 +1,13 @@
 /**
  * Compute the benchmark version string from git state.
  *
- * Uses `git describe --tags --match "v*"` to find the nearest release tag
- * and derive the version from it. This keeps the strategy aligned with
- * publish.yml's compute-version job (both use git describe, not package.json).
+ * Uses the same two-step strategy as publish.yml's compute-version job:
+ *   1. `git describe --tags --match "v*" --abbrev=0` → find nearest release tag
+ *   2. `git rev-list <tag>..HEAD --count` → count commits since that tag
  *
- * - If HEAD is exactly a release tag (v2.5.0): returns "2.5.0"
+ * - If HEAD is exactly tagged (0 commits): returns "2.5.0"
  * - Otherwise: returns "2.5.N-dev.hash" (e.g. "2.5.3-dev.c50f7f5")
- *   where N = commits since last release tag, hash = short commit SHA
+ *   where N = PATCH + commits since tag, hash = short commit SHA
  *
  * This prevents dev/dogfood benchmark runs from overwriting release data
  * in the historical benchmark reports (which deduplicate by version).
@@ -15,26 +15,33 @@
 
 import { execFileSync } from 'node:child_process';
 
+const GIT_OPTS = { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] };
+
 export function getBenchmarkVersion(pkgVersion, cwd) {
 	try {
-		const desc = execFileSync('git', ['describe', '--tags', '--match', 'v*', '--always'], {
+		// Step 1: find the nearest release tag (mirrors publish.yml --abbrev=0)
+		const tag = execFileSync('git', ['describe', '--tags', '--match', 'v*', '--abbrev=0'], {
 			cwd,
-			encoding: 'utf8',
-			stdio: ['pipe', 'pipe', 'pipe'],
+			...GIT_OPTS,
 		}).trim();
 
-		// Exact tag match: "v2.5.0" → "2.5.0"
-		const exact = desc.match(/^v(\d+\.\d+\.\d+)$/);
-		if (exact) return exact[1];
+		// Step 2: count commits since that tag (mirrors publish.yml git rev-list)
+		const commits = Number(
+			execFileSync('git', ['rev-list', `${tag}..HEAD`, '--count'], { cwd, ...GIT_OPTS }).trim(),
+		);
 
-		// Dev build: "v2.5.0-3-gc50f7f5" → "2.5.3-dev.c50f7f5"
-		// Format matches publish.yml: MAJOR.MINOR.(PATCH+COMMITS)-dev.SHORT_SHA
-		const dev = desc.match(/^v(\d+)\.(\d+)\.(\d+)-(\d+)-g([0-9a-f]+)$/);
-		if (dev) {
-			const [, major, minor, patch, commits, hash] = dev;
-			const devPatch = Number(patch) + Number(commits);
-			return `${major}.${minor}.${devPatch}-dev.${hash}`;
-		}
+		const m = tag.match(/^v(\d+)\.(\d+)\.(\d+)$/);
+		if (!m) return `${pkgVersion}-dev`;
+
+		const [, major, minor, patch] = m;
+
+		// Exact tag (0 commits since tag): return clean release version
+		if (commits === 0) return `${major}.${minor}.${patch}`;
+
+		// Dev build: MAJOR.MINOR.(PATCH+COMMITS)-dev.SHORT_SHA
+		const hash = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd, ...GIT_OPTS }).trim();
+		const devPatch = Number(patch) + commits;
+		return `${major}.${minor}.${devPatch}-dev.${hash}`;
 	} catch {
 		/* git not available or no tags */
 	}
