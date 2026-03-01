@@ -78,7 +78,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
-    "@commitlint/cli": "^19.8",
+    "@commitlint/cli": "^20.4",
     "@commitlint/config-conventional": "^19.8",
     "@tree-sitter-grammars/tree-sitter-hcl": "^1.2.0",
     "@vitest/coverage-v8": "^4.0.18",
