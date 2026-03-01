@@ -70,6 +70,8 @@ export { setVerbose } from './logger.js';
 export { manifesto, manifestoData, RULE_DEFS } from './manifesto.js';
 // Native engine
 export { isNativeAvailable } from './native.js';
+// Ownership (CODEOWNERS)
+export { matchOwners, owners, ownersData, ownersForFiles, parseCodeowners } from './owners.js';
 // Pagination utilities
 export { MCP_DEFAULTS, MCP_MAX_LIMIT, paginate, paginateResult } from './paginate.js';
 
@@ -108,6 +110,15 @@ export {
   saveRegistry,
   unregisterRepo,
 } from './registry.js';
+// Snapshot management
+export {
+  snapshotDelete,
+  snapshotList,
+  snapshotRestore,
+  snapshotSave,
+  snapshotsDir,
+  validateSnapshotName,
+} from './snapshot.js';
 // Structure analysis
 export {
   buildStructure,

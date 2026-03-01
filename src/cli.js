@@ -40,6 +40,7 @@ import {
   registerRepo,
   unregisterRepo,
 } from './registry.js';
+import { snapshotDelete, snapshotList, snapshotRestore, snapshotSave } from './snapshot.js';
 import { checkForUpdates, printUpdateNotification } from './update-check.js';
 import { watchProject } from './watcher.js';
 
@@ -81,6 +82,12 @@ function resolveNoTests(opts) {
   if (opts.includeTests) return false;
   if (opts.tests === false) return true;
   return config.query?.excludeTests || false;
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 program
@@ -498,6 +505,81 @@ registry
     }
   });
 
+// ─── Snapshot commands ──────────────────────────────────────────────────
+
+const snapshot = program
+  .command('snapshot')
+  .description('Save and restore graph database snapshots');
+
+snapshot
+  .command('save <name>')
+  .description('Save a snapshot of the current graph database')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .option('--force', 'Overwrite existing snapshot')
+  .action((name, opts) => {
+    try {
+      const result = snapshotSave(name, { dbPath: opts.db, force: opts.force });
+      console.log(`Snapshot saved: ${result.name} (${formatSize(result.size)})`);
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
+  });
+
+snapshot
+  .command('restore <name>')
+  .description('Restore a snapshot over the current graph database')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .action((name, opts) => {
+    try {
+      snapshotRestore(name, { dbPath: opts.db });
+      console.log(`Snapshot "${name}" restored.`);
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
+  });
+
+snapshot
+  .command('list')
+  .description('List all saved snapshots')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .option('-j, --json', 'Output as JSON')
+  .action((opts) => {
+    try {
+      const snapshots = snapshotList({ dbPath: opts.db });
+      if (opts.json) {
+        console.log(JSON.stringify(snapshots, null, 2));
+      } else if (snapshots.length === 0) {
+        console.log('No snapshots found.');
+      } else {
+        console.log(`Snapshots (${snapshots.length}):\n`);
+        for (const s of snapshots) {
+          console.log(
+            `  ${s.name.padEnd(30)} ${formatSize(s.size).padStart(10)}  ${s.createdAt.toISOString()}`,
+          );
+        }
+      }
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
+  });
+
+snapshot
+  .command('delete <name>')
+  .description('Delete a saved snapshot')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .action((name, opts) => {
+    try {
+      snapshotDelete(name, { dbPath: opts.db });
+      console.log(`Snapshot "${name}" deleted.`);
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
+  });
+
 // ─── Embedding commands ─────────────────────────────────────────────────
 
 program
@@ -829,6 +911,29 @@ program
       functions: opts.functions,
       resolution: parseFloat(opts.resolution),
       drift: opts.drift,
+      noTests: resolveNoTests(opts),
+      json: opts.json,
+    });
+  });
+
+program
+  .command('owners [target]')
+  .description('Show CODEOWNERS mapping for files and functions')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .option('--owner <owner>', 'Filter to a specific owner')
+  .option('--boundary', 'Show cross-owner boundary edges')
+  .option('-f, --file <path>', 'Scope to a specific file')
+  .option('-k, --kind <kind>', 'Filter by symbol kind')
+  .option('-T, --no-tests', 'Exclude test/spec files')
+  .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (target, opts) => {
+    const { owners } = await import('./owners.js');
+    owners(opts.db, {
+      owner: opts.owner,
+      boundary: opts.boundary,
+      file: opts.file || target,
+      kind: opts.kind,
       noTests: resolveNoTests(opts),
       json: opts.json,
     });
