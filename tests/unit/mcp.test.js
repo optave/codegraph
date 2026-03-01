@@ -33,6 +33,8 @@ const ALL_TOOL_NAMES = [
   'complexity',
   'manifesto',
   'communities',
+  'code_owners',
+  'branch_compare',
   'list_repos',
 ];
 
