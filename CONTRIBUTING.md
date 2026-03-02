@@ -33,6 +33,9 @@ both you and Optave AI Solutions Inc.
    ```
 4. The check will pass once all PR contributors have signed
 
+If the CLA check needs to be re-evaluated, comment `recheck` on the PR to
+re-trigger it.
+
 Your signature applies to all future contributions — you only need to sign once.
 
 ## Development Environment
