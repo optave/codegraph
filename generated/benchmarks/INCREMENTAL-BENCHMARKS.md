@@ -1,0 +1,68 @@
+# Codegraph Incremental Build Benchmarks
+
+Self-measured on every release by running codegraph on its own codebase.
+Build tiers: full (cold), no-op (nothing changed), 1-file (single file modified).
+Import resolution: native batch vs JS fallback throughput.
+
+| Version | Engine | Files | Full Build | No-op | 1-File | Resolve (native) | Resolve (JS) |
+|---------|--------|------:|-----------:|------:|-------:|------------------:|-------------:|
+| 2.5.1 | native | 142 | 277ms | 6ms | 129ms | 3ms | 3ms |
+| 2.5.1 | wasm | 142 | 888ms | 5ms | 368ms | 3ms | 3ms |
+
+### Latest results
+
+**Version:** 2.5.1 | **Files:** 142 | **Date:** 2026-03-02
+
+#### Native (Rust)
+
+| Metric | Value |
+|--------|------:|
+| Full build | 277ms |
+| No-op rebuild | 6ms |
+| 1-file rebuild | 129ms |
+
+#### WASM
+
+| Metric | Value |
+|--------|------:|
+| Full build | 888ms |
+| No-op rebuild | 5ms |
+| 1-file rebuild | 368ms |
+
+#### Import Resolution
+
+| Metric | Value |
+|--------|------:|
+| Import pairs | 171 |
+| Native batch | 3ms |
+| JS fallback | 3ms |
+| Per-import (native) | 0ms |
+| Per-import (JS) | 0ms |
+| Speedup ratio | 1.2x |
+
+<!-- INCREMENTAL_BENCHMARK_DATA
+[
+  {
+    "version": "2.5.1",
+    "date": "2026-03-02",
+    "files": 142,
+    "wasm": {
+      "fullBuildMs": 888,
+      "noopRebuildMs": 5,
+      "oneFileRebuildMs": 368
+    },
+    "native": {
+      "fullBuildMs": 277,
+      "noopRebuildMs": 6,
+      "oneFileRebuildMs": 129
+    },
+    "resolve": {
+      "imports": 171,
+      "nativeBatchMs": 2.9,
+      "jsFallbackMs": 3.4,
+      "perImportNativeMs": 0,
+      "perImportJsMs": 0
+    }
+  }
+]
+-->
