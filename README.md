@@ -81,6 +81,7 @@ That's it. No config files, no Docker, no JVM, no API keys, no accounts. The gra
 | Graph snapshots | **Yes** | — | — | — | — | — | — | — |
 | MCP / AI agent support | **Yes** | — | **Yes** | **Yes** | **Yes** | **Yes** | **Yes** | — |
 | Git diff impact | **Yes** | — | — | — | — | **Yes** | — | **Yes** |
+| Branch structural diff | **Yes** | — | — | — | — | — | — | **Yes** |
 | Git co-change analysis | **Yes** | — | — | — | — | — | **Yes** | **Yes** |
 | Watch mode | **Yes** | — | **Yes** | — | — | — | — | — |
 | Dead code / role classification | **Yes** | — | **Yes** | — | — | — | — | **Yes** |
@@ -182,6 +183,7 @@ Full agent setup: [AI Agent Guide](docs/guides/ai-agent-guide.md) &middot; [CLAU
 | 💾 | **Graph snapshots** | `snapshot save`/`restore` for instant DB backup and rollback — checkpoint before refactoring, restore without rebuilding |
 | 🔎 | **Hybrid BM25 + semantic search** | FTS5 keyword search + embedding-based semantic search fused via Reciprocal Rank Fusion — `hybrid`, `semantic`, or `keyword` modes |
 | 📄 | **Pagination & NDJSON streaming** | Universal `--limit`/`--offset` pagination on all MCP tools and CLI commands; `--ndjson` for newline-delimited JSON streaming |
+| 🔀 | **Branch structural diff** | Compare code structure between two git refs — added/removed/changed symbols with transitive caller impact |
 
 See [docs/examples](docs/examples) for real-world CLI and MCP usage examples.
 
@@ -234,6 +236,10 @@ codegraph diff-impact          # Impact of unstaged git changes
 codegraph diff-impact --staged # Impact of staged changes
 codegraph diff-impact HEAD~3   # Impact vs a specific ref
 codegraph diff-impact main --format mermaid -T  # Mermaid flowchart of blast radius
+codegraph branch-compare main feature-branch    # Structural diff between two refs
+codegraph branch-compare main HEAD --no-tests   # Symbols added/removed/changed vs main
+codegraph branch-compare v2.4.0 v2.5.0 --json   # JSON output for programmatic use
+codegraph branch-compare main HEAD --format mermaid  # Mermaid diagram of structural changes
 ```
 
 ### Co-Change Analysis
@@ -370,7 +376,7 @@ codegraph registry remove <name>  # Unregister
 | Flag | Description |
 |---|---|
 | `-d, --db <path>` | Custom path to `graph.db` |
-| `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files (available on `fn`, `fn-impact`, `path`, `context`, `explain`, `where`, `diff-impact`, `search`, `map`, `hotspots`, `roles`, `co-change`, `deps`, `impact`, `complexity`, `communities`, `manifesto`) |
+| `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files (available on `fn`, `fn-impact`, `path`, `context`, `explain`, `where`, `diff-impact`, `search`, `map`, `hotspots`, `roles`, `co-change`, `deps`, `impact`, `complexity`, `communities`, `manifesto`, `branch-compare`) |
 | `--depth <n>` | Transitive trace depth (default varies by command) |
 | `-j, --json` | Output as JSON |
 | `-v, --verbose` | Enable debug output |
@@ -534,6 +540,7 @@ This project uses codegraph. The database is at `.codegraph/graph.db`.
 - `codegraph manifesto -T` — pass/fail rule check (CI gate, exit code 1 on fail)
 - `codegraph owners [target]` — CODEOWNERS mapping for symbols
 - `codegraph snapshot save <name>` — checkpoint the graph DB before refactoring
+- `codegraph branch-compare main HEAD -T` — structural diff between two refs (added/removed/changed symbols)
 - `codegraph search "<query>"` — hybrid search (requires `codegraph embed`)
 - `codegraph search "<query>" --mode keyword` — BM25 keyword search
 - `codegraph cycles` — check for circular dependencies
