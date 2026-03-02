@@ -6,8 +6,8 @@ Import resolution: native batch vs JS fallback throughput.
 
 | Version | Engine | Files | Full Build | No-op | 1-File | Resolve (native) | Resolve (JS) |
 |---------|--------|------:|-----------:|------:|-------:|------------------:|-------------:|
-| 2.5.1 | native | 132 | 238ms | 4ms | 111ms | 1ms | 1ms |
-| 2.5.1 | wasm | 132 | 806ms | 4ms | 328ms | 1ms | 1ms |
+| 2.5.1 | native | 132 | 242ms | 4ms | 106ms | 2ms | 3ms |
+| 2.5.1 | wasm | 132 | 835ms | 5ms | 313ms | 2ms | 3ms |
 
 ### Latest results
 
@@ -17,25 +17,25 @@ Import resolution: native batch vs JS fallback throughput.
 
 | Metric | Value |
 |--------|------:|
-| Full build | 238ms |
+| Full build | 242ms |
 | No-op rebuild | 4ms |
-| 1-file rebuild | 111ms |
+| 1-file rebuild | 106ms |
 
 #### WASM
 
 | Metric | Value |
 |--------|------:|
-| Full build | 806ms |
-| No-op rebuild | 4ms |
-| 1-file rebuild | 328ms |
+| Full build | 835ms |
+| No-op rebuild | 5ms |
+| 1-file rebuild | 313ms |
 
 #### Import Resolution
 
 | Metric | Value |
 |--------|------:|
 | Import pairs | 139 |
-| Native batch | 1ms |
-| JS fallback | 1ms |
+| Native batch | 2ms |
+| JS fallback | 3ms |
 | Per-import (native) | 0ms |
 | Per-import (JS) | 0ms |
 | Speedup ratio | 1.1x |
@@ -47,19 +47,19 @@ Import resolution: native batch vs JS fallback throughput.
     "date": "2026-03-02",
     "files": 132,
     "wasm": {
-      "fullBuildMs": 806,
-      "noopRebuildMs": 4,
-      "oneFileRebuildMs": 328
+      "fullBuildMs": 835,
+      "noopRebuildMs": 5,
+      "oneFileRebuildMs": 313
     },
     "native": {
-      "fullBuildMs": 238,
+      "fullBuildMs": 242,
       "noopRebuildMs": 4,
-      "oneFileRebuildMs": 111
+      "oneFileRebuildMs": 106
     },
     "resolve": {
       "imports": 139,
-      "nativeBatchMs": 1.2,
-      "jsFallbackMs": 1.3,
+      "nativeBatchMs": 2.3,
+      "jsFallbackMs": 2.5,
       "perImportNativeMs": 0,
       "perImportJsMs": 0
     }
