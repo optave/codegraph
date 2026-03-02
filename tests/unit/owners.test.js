@@ -223,11 +223,10 @@ describe('parseCodeowners', () => {
     const first = parseCodeowners(tmpDir);
     expect(first.rules[0].owners).toEqual(['@old-team']);
 
-    // Bump mtime by writing new content
-    // Ensure mtime actually differs (some OS have 1s granularity)
-    const origMtime = fs.statSync(filePath).mtimeMs;
-    fs.utimesSync(filePath, new Date(), new Date(origMtime + 2000));
+    // Write new content then force a distinct mtime (NTFS can lazily update mtime)
     fs.writeFileSync(filePath, '* @new-team\n');
+    const afterWrite = fs.statSync(filePath).mtimeMs;
+    fs.utimesSync(filePath, new Date(), new Date(afterWrite + 5000));
 
     const second = parseCodeowners(tmpDir);
     expect(second.rules[0].owners).toEqual(['@new-team']);
