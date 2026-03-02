@@ -490,7 +490,7 @@ Optional: `@huggingface/transformers` (semantic search), `@modelcontextprotocol/
 
 ### MCP Server
 
-Codegraph includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server with 24 tools (25 in multi-repo mode), so AI assistants can query your dependency graph directly:
+Codegraph includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server with 26 tools (27 in multi-repo mode), so AI assistants can query your dependency graph directly:
 
 ```bash
 codegraph mcp                  # Single-repo mode (default) — only local project
