@@ -24,7 +24,7 @@ import {
  *   - 'name'   → dataFn(target, dbPath, opts)
  *   - 'target' → dataFn(target, dbPath, opts)
  *   - 'file'   → dataFn(target, dbPath, opts)
- *   - 'dbOnly' → dataFn(dbPath, { target, ...opts })  (target goes into opts)
+ *   - 'dbOnly' → dataFn(dbPath, { ...opts, target })  (target goes into opts)
  */
 export const BATCH_COMMANDS = {
   'fn-impact': { fn: fnImpactData, sig: 'name' },
@@ -64,7 +64,7 @@ export function batchData(command, targets, customDbPath, opts = {}) {
     try {
       let data;
       if (entry.sig === 'dbOnly') {
-        // complexityData(dbPath, { target, ...opts })
+        // complexityData(dbPath, { ...opts, target })
         data = entry.fn(customDbPath, { ...opts, target });
       } else {
         // All other: dataFn(target, dbPath, opts)
