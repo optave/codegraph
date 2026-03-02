@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file. See [commit
 
 ## [2.6.0](https://github.com/optave/codegraph/compare/v2.5.1...v2.6.0) (2026-03-02)
 
-**CI validation, architecture boundaries, CODEOWNERS, and multi-agent support.** This release adds a `check` command for CI validation predicates (complexity, coverage, staleness gates), architecture boundary enforcement via manifesto rules with an onion-architecture preset, CODEOWNERS integration for ownership queries, `codegraph snapshot` for DB backup/restore, hybrid BM25 + semantic search via FTS5, composite `audit` and `triage` commands for risk-driven workflows, and batch querying for multi-agent dispatch.
+**CI validation, architecture boundaries, CODEOWNERS, multi-agent support, and incremental build reliability.** This release adds a `check` command for CI validation predicates (complexity, coverage, staleness gates), architecture boundary enforcement via manifesto rules with an onion-architecture preset, CODEOWNERS integration for ownership queries, `codegraph snapshot` for DB backup/restore, hybrid BM25 + semantic search via FTS5, composite `audit` and `triage` commands for risk-driven workflows, and batch querying for multi-agent dispatch. It also fixes several incremental rebuild bugs — EISDIR crashes on directory nodes, dropped barrel-file edges, orphaned complexity rows — and adds configurable drift detection to warn when incremental results diverge from full rebuilds.
 
 ### Features
 
@@ -21,11 +21,24 @@ All notable changes to this project will be documented in this file. See [commit
 
 ### Bug Fixes
 
+* **builder:** filter directory nodes from reverse-deps query to prevent EISDIR on incremental rebuilds ([#241](https://github.com/optave/codegraph/pull/241))
+* **builder:** load unchanged barrel files into reexportMap so barrel-resolved edges aren't dropped during incremental rebuilds ([#241](https://github.com/optave/codegraph/pull/241))
+* **builder:** purge `function_complexity` table on full rebuild — prevents orphaned rows accumulating across `--no-incremental` rebuilds ([#239](https://github.com/optave/codegraph/pull/239))
+* **builder:** add node/edge count drift detection after incremental builds — warns when counts drift >20% and suggests `--no-incremental` ([#240](https://github.com/optave/codegraph/pull/240))
+* **builder:** make drift threshold configurable via `build.driftThreshold` config (default 0.2) and include actual percentages in warning ([#240](https://github.com/optave/codegraph/pull/240))
+* **complexity:** improve missing-data message — suggest `--no-incremental` rebuild instead of implying no graph exists ([#240](https://github.com/optave/codegraph/pull/240))
+* **skill:** support dev build tarball installs in dogfood skill — branch Phase 0/4b pre-flight based on `-dev.` version detection ([#233](https://github.com/optave/codegraph/pull/233))
+* **ci:** add `--strip` flag to `sync-native-versions.js` removing platform optionalDependencies in dev builds, fixing `npm install` failures ([#241](https://github.com/optave/codegraph/pull/241))
+* **ci:** sync Cargo.toml version with package.json and automate via version script ([#241](https://github.com/optave/codegraph/pull/241))
 * **owners:** add CODEOWNERS parse cache and tighten email validation ([f35c797](https://github.com/optave/codegraph/commit/f35c797))
 * **bench:** add timeout and remove redundant stdio option ([978b590](https://github.com/optave/codegraph/commit/978b590))
 * **ci:** save all benchmark reports and use git-based dev versioning ([267cabe](https://github.com/optave/codegraph/commit/267cabe))
 * **docs:** correct ~20 inaccurate cells in feature comparison tables ([572268d](https://github.com/optave/codegraph/commit/572268d))
 * **docs:** correct remaining MCP tool count in README (24/25 → 26/27) ([262874a](https://github.com/optave/codegraph/commit/262874a))
+
+### Testing
+
+* add barrel-project fixture and incremental-parity test for edge consistency across rebuild modes ([#241](https://github.com/optave/codegraph/pull/241))
 
 ### Refactoring
 
