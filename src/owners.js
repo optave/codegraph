@@ -1,27 +1,44 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { findDbPath, openReadonlyOrFail } from './db.js';
-
 import { isTestFile } from './queries.js';
 
 // ─── CODEOWNERS Parsing ──────────────────────────────────────────────
 
 const CODEOWNERS_PATHS = ['CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS'];
 
+/** @type {Map<string, { rules: Array, path: string, mtime: number }>} */
+const codeownersCache = new Map();
+
 /**
  * Find and parse a CODEOWNERS file from the standard locations.
+ * Results are cached per rootDir and invalidated when the file's mtime changes.
  * @param {string} rootDir - Repository root directory
  * @returns {{ rules: Array<{pattern: string, owners: string[], regex: RegExp}>, path: string } | null}
  */
 export function parseCodeowners(rootDir) {
+  const cached = codeownersCache.get(rootDir);
+
   for (const rel of CODEOWNERS_PATHS) {
     const fullPath = path.join(rootDir, rel);
     if (fs.existsSync(fullPath)) {
+      const mtime = fs.statSync(fullPath).mtimeMs;
+      if (cached && cached.path === rel && cached.mtime === mtime) {
+        return { rules: cached.rules, path: cached.path };
+      }
       const content = fs.readFileSync(fullPath, 'utf-8');
-      return { rules: parseCodeownersContent(content), path: rel };
+      const rules = parseCodeownersContent(content);
+      codeownersCache.set(rootDir, { rules, path: rel, mtime });
+      return { rules, path: rel };
     }
   }
+  codeownersCache.delete(rootDir);
   return null;
+}
+
+/** Clear the parseCodeowners cache (for testing). */
+export function clearCodeownersCache() {
+  codeownersCache.clear();
 }
 
 /**
@@ -37,7 +54,7 @@ export function parseCodeownersContent(content) {
     const parts = line.split(/\s+/);
     if (parts.length < 2) continue;
     const pattern = parts[0];
-    const owners = parts.slice(1).filter((p) => p.startsWith('@') || p.includes('@'));
+    const owners = parts.slice(1).filter((p) => p.startsWith('@') || /^[^@\s]+@[^@\s]+$/.test(p));
     if (owners.length === 0) continue;
     rules.push({ pattern, owners, regex: patternToRegex(pattern) });
   }
