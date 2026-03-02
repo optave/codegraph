@@ -30,6 +30,7 @@ export {
   computeLOCMetrics,
   computeMaintainabilityIndex,
   HALSTEAD_RULES,
+  iterComplexity,
 } from './complexity.js';
 // Configuration
 export { loadConfig } from './config.js';
@@ -75,7 +76,7 @@ export { isNativeAvailable } from './native.js';
 // Ownership (CODEOWNERS)
 export { matchOwners, owners, ownersData, ownersForFiles, parseCodeowners } from './owners.js';
 // Pagination utilities
-export { MCP_DEFAULTS, MCP_MAX_LIMIT, paginate, paginateResult } from './paginate.js';
+export { MCP_DEFAULTS, MCP_MAX_LIMIT, paginate, paginateResult, printNdjson } from './paginate.js';
 
 // Unified parser API
 export { getActiveEngine, parseFileAuto, parseFilesAuto } from './parser.js';
@@ -92,6 +93,9 @@ export {
   fnDepsData,
   fnImpactData,
   impactAnalysisData,
+  iterListFunctions,
+  iterRoles,
+  iterWhere,
   kindIcon,
   moduleMapData,
   pathData,
