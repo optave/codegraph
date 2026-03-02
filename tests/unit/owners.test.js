@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  clearCodeownersCache,
   matchOwners,
   parseCodeowners,
   parseCodeownersContent,
@@ -34,6 +35,22 @@ describe('parseCodeownersContent', () => {
     const rules = parseCodeownersContent('*.py dev@example.com @python-team');
     expect(rules).toHaveLength(1);
     expect(rules[0].owners).toEqual(['dev@example.com', '@python-team']);
+  });
+
+  it('rejects malformed email-style owners', () => {
+    // foo@ has no domain — rejected by the email regex
+    // @bar passes as a GitHub handle (startsWith('@'))
+    const rules = parseCodeownersContent('*.js foo@ @bar');
+    expect(rules).toHaveLength(1);
+    expect(rules[0].owners).toEqual(['@bar']);
+  });
+
+  it('rejects @bar-only-at as email (no local part)', () => {
+    // Standalone token that looks like @domain but not a handle check
+    // This tests the email path: '@bar' would pass startsWith('@'), which is fine
+    // But 'nothandle' without @ is rejected, and 'a@' without domain is rejected
+    const rules = parseCodeownersContent('*.js a@ nothandle');
+    expect(rules).toHaveLength(0);
   });
 
   it('skips lines with no owners', () => {
@@ -146,6 +163,7 @@ describe('parseCodeowners', () => {
   let tmpDir;
 
   beforeEach(() => {
+    clearCodeownersCache();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeowners-test-'));
   });
 
@@ -188,5 +206,31 @@ describe('parseCodeowners', () => {
     const result = parseCodeowners(tmpDir);
     expect(result.path).toBe('CODEOWNERS');
     expect(result.rules[0].owners).toEqual(['@root']);
+  });
+
+  it('returns cached result on repeated calls', () => {
+    fs.writeFileSync(path.join(tmpDir, 'CODEOWNERS'), '* @team\n');
+    const first = parseCodeowners(tmpDir);
+    const second = parseCodeowners(tmpDir);
+    expect(second).toEqual(first);
+    // Same rule array reference means cache was hit
+    expect(second.rules).toBe(first.rules);
+  });
+
+  it('invalidates cache when file mtime changes', () => {
+    const filePath = path.join(tmpDir, 'CODEOWNERS');
+    fs.writeFileSync(filePath, '* @old-team\n');
+    const first = parseCodeowners(tmpDir);
+    expect(first.rules[0].owners).toEqual(['@old-team']);
+
+    // Bump mtime by writing new content
+    // Ensure mtime actually differs (some OS have 1s granularity)
+    const origMtime = fs.statSync(filePath).mtimeMs;
+    fs.utimesSync(filePath, new Date(), new Date(origMtime + 2000));
+    fs.writeFileSync(filePath, '* @new-team\n');
+
+    const second = parseCodeowners(tmpDir);
+    expect(second.rules[0].owners).toEqual(['@new-team']);
+    expect(second.rules).not.toBe(first.rules);
   });
 });
