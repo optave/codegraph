@@ -78,6 +78,7 @@ That's it. No config files, no Docker, no JVM, no API keys, no accounts. The gra
 | Semantic search | **Yes** | — | **Yes** | **Yes** | — | **Yes** | — | — |
 | MCP / AI agent support | **Yes** | — | **Yes** | **Yes** | **Yes** | **Yes** | **Yes** | — |
 | Git diff impact | **Yes** | — | — | — | — | **Yes** | — | **Yes** |
+| Branch structural diff | **Yes** | — | — | — | — | — | — | **Yes** |
 | Git co-change analysis | **Yes** | — | — | — | — | — | **Yes** | **Yes** |
 | Watch mode | **Yes** | — | **Yes** | — | — | — | — | — |
 | Dead code / role classification | **Yes** | — | **Yes** | — | — | — | — | **Yes** |
@@ -175,6 +176,7 @@ Full agent setup: [AI Agent Guide](docs/guides/ai-agent-guide.md) &middot; [CLAU
 | 🧮 | **Complexity metrics** | Cognitive, cyclomatic, nesting depth, Halstead, and Maintainability Index per function |
 | 🏘️ | **Community detection** | Louvain clustering to discover natural module boundaries and architectural drift |
 | 📜 | **Manifesto rule engine** | Configurable pass/fail rules with warn/fail thresholds for CI gates (exit code 1 on fail) |
+| 🔀 | **Branch structural diff** | Compare code structure between two git refs — added/removed/changed symbols with transitive caller impact |
 
 See [docs/examples](docs/examples) for real-world CLI and MCP usage examples.
 
@@ -227,6 +229,10 @@ codegraph diff-impact          # Impact of unstaged git changes
 codegraph diff-impact --staged # Impact of staged changes
 codegraph diff-impact HEAD~3   # Impact vs a specific ref
 codegraph diff-impact main --format mermaid -T  # Mermaid flowchart of blast radius
+codegraph branch-compare main feature-branch    # Structural diff between two refs
+codegraph branch-compare main HEAD --no-tests   # Symbols added/removed/changed vs main
+codegraph branch-compare v2.4.0 v2.5.0 --json   # JSON output for programmatic use
+codegraph branch-compare main HEAD --format mermaid  # Mermaid diagram of structural changes
 ```
 
 ### Co-Change Analysis
@@ -336,7 +342,7 @@ codegraph registry remove <name>  # Unregister
 | Flag | Description |
 |---|---|
 | `-d, --db <path>` | Custom path to `graph.db` |
-| `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files (available on `fn`, `fn-impact`, `path`, `context`, `explain`, `where`, `diff-impact`, `search`, `map`, `hotspots`, `roles`, `co-change`, `deps`, `impact`, `complexity`, `communities`, `manifesto`) |
+| `-T, --no-tests` | Exclude `.test.`, `.spec.`, `__test__` files (available on `fn`, `fn-impact`, `path`, `context`, `explain`, `where`, `diff-impact`, `search`, `map`, `hotspots`, `roles`, `co-change`, `deps`, `impact`, `complexity`, `communities`, `manifesto`, `branch-compare`) |
 | `--depth <n>` | Transitive trace depth (default varies by command) |
 | `-j, --json` | Output as JSON |
 | `-v, --verbose` | Enable debug output |
@@ -494,6 +500,7 @@ This project uses codegraph. The database is at `.codegraph/graph.db`.
 - `codegraph complexity -T` — per-function complexity metrics (cognitive, cyclomatic, MI)
 - `codegraph communities --drift -T` — module boundary drift analysis
 - `codegraph manifesto -T` — pass/fail rule check (CI gate, exit code 1 on fail)
+- `codegraph branch-compare main HEAD -T` — structural diff between two refs (added/removed/changed symbols)
 - `codegraph search "<query>"` — semantic search (requires `codegraph embed`)
 - `codegraph cycles` — check for circular dependencies
 
@@ -671,6 +678,7 @@ const { results: fused } = await multiSearchData(
 | Incremental rebuilds | **O(changed)** | — | O(n) Merkle | — | — | — |
 | MCP / AI agent support | **Yes** | — | **Yes** | **Yes** | **Yes** | **Yes** |
 | Git diff impact | **Yes** | — | — | — | — | **Yes** |
+| Branch structural diff | **Yes** | — | — | — | — | — |
 | Git co-change analysis | **Yes** | — | — | — | — | — |
 | Dead code / role classification | **Yes** | — | **Yes** | — | — | — |
 | Semantic search | **Yes** | — | **Yes** | **Yes** | — | **Yes** |
