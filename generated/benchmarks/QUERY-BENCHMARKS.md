@@ -5,8 +5,8 @@ Latencies are median over 5 runs. Hub target = most-connected node.
 
 | Version | Engine | fnDeps d1 | fnDeps d3 | fnDeps d5 | fnImpact d1 | fnImpact d3 | fnImpact d5 | diffImpact |
 |---------|--------|----------:|----------:|----------:|------------:|------------:|------------:|-----------:|
-| 2.6.0 | native | 1.2 ↑100% | 1.3 ↑117% | 1.3 ↑117% | 1.2 ↑100% | 1.2 ↑100% | 1.2 ↑100% | 6.2ms ↑5% |
-| 2.6.0 | wasm | 1.3 ↑86% | 1.4 ↑133% | 1.3 ↑117% | 1.2 ↑100% | 1.2 ↑100% | 1.2 ↑100% | 6.1ms ↑13% |
+| 2.6.0 | native | 1 ↑67% | 1 ↑67% | 1 ↑67% | 0.9 ↑50% | 1 ↑67% | 1 ↑67% | 4.9ms ↓17% |
+| 2.6.0 | wasm | 1.1 ↑57% | 1.1 ↑83% | 1.1 ↑83% | 1 ↑67% | 1 ↑67% | 1 ↑67% | 5.5ms ~ |
 | 2.5.1 | native | 0.6 | 0.6 | 0.6 | 0.6 | 0.6 | 0.6 | 5.9ms |
 | 2.5.1 | wasm | 0.7 | 0.6 | 0.6 | 0.6 | 0.6 | 0.6 | 5.4ms |
 
@@ -20,13 +20,13 @@ Latencies are median over 5 runs. Hub target = most-connected node.
 
 | Metric | Value |
 |--------|------:|
-| fnDeps depth 1 | 1.2ms |
-| fnDeps depth 3 | 1.3ms |
-| fnDeps depth 5 | 1.3ms |
-| fnImpact depth 1 | 1.2ms |
-| fnImpact depth 3 | 1.2ms |
-| fnImpact depth 5 | 1.2ms |
-| diffImpact latency | 6.2ms |
+| fnDeps depth 1 | 1ms |
+| fnDeps depth 3 | 1ms |
+| fnDeps depth 5 | 1ms |
+| fnImpact depth 1 | 0.9ms |
+| fnImpact depth 3 | 1ms |
+| fnImpact depth 5 | 1ms |
+| diffImpact latency | 4.9ms |
 | diffImpact affected functions | 0 |
 | diffImpact affected files | 0 |
 
@@ -36,13 +36,13 @@ Latencies are median over 5 runs. Hub target = most-connected node.
 
 | Metric | Value |
 |--------|------:|
-| fnDeps depth 1 | 1.3ms |
-| fnDeps depth 3 | 1.4ms |
-| fnDeps depth 5 | 1.3ms |
-| fnImpact depth 1 | 1.2ms |
-| fnImpact depth 3 | 1.2ms |
-| fnImpact depth 5 | 1.2ms |
-| diffImpact latency | 6.1ms |
+| fnDeps depth 1 | 1.1ms |
+| fnDeps depth 3 | 1.1ms |
+| fnDeps depth 5 | 1.1ms |
+| fnImpact depth 1 | 1ms |
+| fnImpact depth 3 | 1ms |
+| fnImpact depth 5 | 1ms |
+| diffImpact latency | 5.5ms |
 | diffImpact affected functions | 0 |
 | diffImpact affected files | 0 |
 
@@ -58,17 +58,17 @@ Latencies are median over 5 runs. Hub target = most-connected node.
         "leaf": "crates"
       },
       "fnDeps": {
-        "depth1Ms": 1.3,
-        "depth3Ms": 1.4,
-        "depth5Ms": 1.3
+        "depth1Ms": 1.1,
+        "depth3Ms": 1.1,
+        "depth5Ms": 1.1
       },
       "fnImpact": {
-        "depth1Ms": 1.2,
-        "depth3Ms": 1.2,
-        "depth5Ms": 1.2
+        "depth1Ms": 1,
+        "depth3Ms": 1,
+        "depth5Ms": 1
       },
       "diffImpact": {
-        "latencyMs": 6.1,
+        "latencyMs": 5.5,
         "affectedFunctions": 0,
         "affectedFiles": 0
       }
@@ -80,17 +80,17 @@ Latencies are median over 5 runs. Hub target = most-connected node.
         "leaf": "crates"
       },
       "fnDeps": {
-        "depth1Ms": 1.2,
-        "depth3Ms": 1.3,
-        "depth5Ms": 1.3
+        "depth1Ms": 1,
+        "depth3Ms": 1,
+        "depth5Ms": 1
       },
       "fnImpact": {
-        "depth1Ms": 1.2,
-        "depth3Ms": 1.2,
-        "depth5Ms": 1.2
+        "depth1Ms": 0.9,
+        "depth3Ms": 1,
+        "depth5Ms": 1
       },
       "diffImpact": {
-        "latencyMs": 6.2,
+        "latencyMs": 4.9,
         "affectedFunctions": 0,
         "affectedFiles": 0
       }
