@@ -460,7 +460,7 @@ export async function buildGraph(rootDir, opts = {}) {
         SELECT DISTINCT n_src.file FROM edges e
         JOIN nodes n_src ON e.source_id = n_src.id
         JOIN nodes n_tgt ON e.target_id = n_tgt.id
-        WHERE n_tgt.file = ? AND n_src.file != n_tgt.file
+        WHERE n_tgt.file = ? AND n_src.file != n_tgt.file AND n_src.kind != 'directory'
       `);
       for (const relPath of changedRelPaths) {
         for (const row of findReverseDeps.all(relPath)) {
@@ -684,6 +684,42 @@ export async function buildGraph(rootDir, opts = {}) {
           wildcardReexport: imp.wildcardReexport || false,
         })),
       );
+    }
+  }
+
+  // For incremental builds, load unchanged barrel files into reexportMap
+  // so barrel-resolved import/call edges aren't dropped for reverse-dep files
+  if (!isFullBuild) {
+    const barrelCandidates = db
+      .prepare(
+        `SELECT DISTINCT n1.file FROM edges e
+         JOIN nodes n1 ON e.source_id = n1.id
+         WHERE e.kind = 'reexports' AND n1.kind = 'file'`,
+      )
+      .all();
+    for (const { file: relPath } of barrelCandidates) {
+      if (fileSymbols.has(relPath)) continue;
+      const absPath = path.join(rootDir, relPath);
+      try {
+        const symbols = await parseFilesAuto([absPath], rootDir, engineOpts);
+        const fileSym = symbols.get(relPath);
+        if (fileSym) {
+          fileSymbols.set(relPath, fileSym);
+          const reexports = fileSym.imports.filter((imp) => imp.reexport);
+          if (reexports.length > 0) {
+            reexportMap.set(
+              relPath,
+              reexports.map((imp) => ({
+                source: getResolved(absPath, imp.source),
+                names: imp.names,
+                wildcardReexport: imp.wildcardReexport || false,
+              })),
+            );
+          }
+        }
+      } catch {
+        /* skip if unreadable */
+      }
     }
   }
 
@@ -1056,9 +1092,10 @@ export async function buildGraph(rootDir, opts = {}) {
       if (prevN > 0) {
         const nodeDrift = Math.abs(nodeCount - prevN) / prevN;
         const edgeDrift = prevE > 0 ? Math.abs(edgeCount - prevE) / prevE : 0;
-        if (nodeDrift > 0.2 || edgeDrift > 0.2) {
+        const driftThreshold = config.build?.driftThreshold ?? 0.2;
+        if (nodeDrift > driftThreshold || edgeDrift > driftThreshold) {
           warn(
-            `Incremental build diverged significantly from previous counts (nodes: ${prevN}→${nodeCount}, edges: ${prevE}→${edgeCount}). Consider rebuilding with --no-incremental.`,
+            `Incremental build diverged significantly from previous counts (nodes: ${prevN}→${nodeCount} [${(nodeDrift * 100).toFixed(1)}%], edges: ${prevE}→${edgeCount} [${(edgeDrift * 100).toFixed(1)}%], threshold: ${(driftThreshold * 100).toFixed(0)}%). Consider rebuilding with --no-incremental.`,
           );
         }
       }
