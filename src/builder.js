@@ -688,7 +688,10 @@ export async function buildGraph(rootDir, opts = {}) {
   }
 
   // For incremental builds, load unchanged barrel files into reexportMap
-  // so barrel-resolved import/call edges aren't dropped for reverse-dep files
+  // so barrel-resolved import/call edges aren't dropped for reverse-dep files.
+  // These files are loaded only for resolution — they must NOT be iterated
+  // in the edge-building loop (their existing edges are still in the DB).
+  const barrelOnlyFiles = new Set();
   if (!isFullBuild) {
     const barrelCandidates = db
       .prepare(
@@ -705,6 +708,7 @@ export async function buildGraph(rootDir, opts = {}) {
         const fileSym = symbols.get(relPath);
         if (fileSym) {
           fileSymbols.set(relPath, fileSym);
+          barrelOnlyFiles.add(relPath);
           const reexports = fileSym.imports.filter((imp) => imp.reexport);
           if (reexports.length > 0) {
             reexportMap.set(
@@ -788,6 +792,8 @@ export async function buildGraph(rootDir, opts = {}) {
   let edgeCount = 0;
   const buildEdges = db.transaction(() => {
     for (const [relPath, symbols] of fileSymbols) {
+      // Skip barrel-only files — loaded for resolution, edges already in DB
+      if (barrelOnlyFiles.has(relPath)) continue;
       const fileNodeRow = getNodeId.get(relPath, 'file', relPath, 0);
       if (!fileNodeRow) continue;
       const fileNodeId = fileNodeRow.id;
