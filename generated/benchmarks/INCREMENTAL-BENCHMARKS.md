@@ -6,8 +6,8 @@ Import resolution: native batch vs JS fallback throughput.
 
 | Version | Engine | Files | Full Build | No-op | 1-File | Resolve (native) | Resolve (JS) |
 |---------|--------|------:|-----------:|------:|-------:|------------------:|-------------:|
-| 2.6.0 | native | 146 | 286ms ↑3% | 4ms ↓33% | 135ms ↑5% | 3ms ~ | 3ms ↓3% |
-| 2.6.0 | wasm | 146 | 899ms ~ | 4ms ↓20% | 503ms ↑37% | 3ms ~ | 3ms ↓3% |
+| 2.6.0 | native | 146 | 282ms ~ | 4ms ↓33% | 132ms ↑2% | 3ms ~ | 4ms ↑6% |
+| 2.6.0 | wasm | 146 | 924ms ↑4% | 5ms ~ | 504ms ↑37% | 3ms ~ | 4ms ↑6% |
 | 2.5.1 | native | 142 | 277ms | 6ms | 129ms | 3ms | 3ms |
 | 2.5.1 | wasm | 142 | 888ms | 5ms | 368ms | 3ms | 3ms |
 
@@ -19,17 +19,17 @@ Import resolution: native batch vs JS fallback throughput.
 
 | Metric | Value |
 |--------|------:|
-| Full build | 286ms |
+| Full build | 282ms |
 | No-op rebuild | 4ms |
-| 1-file rebuild | 135ms |
+| 1-file rebuild | 132ms |
 
 #### WASM
 
 | Metric | Value |
 |--------|------:|
-| Full build | 899ms |
-| No-op rebuild | 4ms |
-| 1-file rebuild | 503ms |
+| Full build | 924ms |
+| No-op rebuild | 5ms |
+| 1-file rebuild | 504ms |
 
 #### Import Resolution
 
@@ -37,10 +37,10 @@ Import resolution: native batch vs JS fallback throughput.
 |--------|------:|
 | Import pairs | 171 |
 | Native batch | 3ms |
-| JS fallback | 3ms |
+| JS fallback | 4ms |
 | Per-import (native) | 0ms |
 | Per-import (JS) | 0ms |
-| Speedup ratio | 1.1x |
+| Speedup ratio | 1.2x |
 
 <!-- INCREMENTAL_BENCHMARK_DATA
 [
@@ -49,19 +49,19 @@ Import resolution: native batch vs JS fallback throughput.
     "date": "2026-03-02",
     "files": 146,
     "wasm": {
-      "fullBuildMs": 899,
-      "noopRebuildMs": 4,
-      "oneFileRebuildMs": 503
+      "fullBuildMs": 924,
+      "noopRebuildMs": 5,
+      "oneFileRebuildMs": 504
     },
     "native": {
-      "fullBuildMs": 286,
+      "fullBuildMs": 282,
       "noopRebuildMs": 4,
-      "oneFileRebuildMs": 135
+      "oneFileRebuildMs": 132
     },
     "resolve": {
       "imports": 171,
       "nativeBatchMs": 2.9,
-      "jsFallbackMs": 3.3,
+      "jsFallbackMs": 3.6,
       "perImportNativeMs": 0,
       "perImportJsMs": 0
     }
