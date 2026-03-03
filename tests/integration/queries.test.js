@@ -32,9 +32,11 @@ import {
   fnDepsData,
   fnImpactData,
   impactAnalysisData,
+  listFunctionsData,
   moduleMapData,
   pathData,
   queryNameData,
+  rolesData,
   statsData,
   whereData,
 } from '../../src/queries.js';
@@ -105,7 +107,7 @@ beforeAll(() => {
   for (const f of ['auth.js', 'middleware.js', 'routes.js', 'utils.js', 'auth.test.js']) {
     db.prepare('INSERT INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)').run(
       f,
-      'hash_' + f.replace('.', '_'),
+      `hash_${f.replace('.', '_')}`,
       Date.now(),
       100,
     );
