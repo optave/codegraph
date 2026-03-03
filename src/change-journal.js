@@ -116,7 +116,9 @@ export function rotateIfNeeded(filePath, maxBytes = DEFAULT_MAX_BYTES) {
     const mid = Math.floor(content.length / 2);
     const newlineIdx = content.indexOf('\n', mid);
     if (newlineIdx === -1) {
-      warn(`Change events file exceeds ${maxBytes} bytes but contains no line breaks; skipping rotation`);
+      warn(
+        `Change events file exceeds ${maxBytes} bytes but contains no line breaks; skipping rotation`,
+      );
       return;
     }
     fs.writeFileSync(filePath, content.slice(newlineIdx + 1));
