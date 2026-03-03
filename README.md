@@ -31,19 +31,24 @@
 
 ## The Problem
 
-AI coding assistants are incredible — until your codebase gets big enough. Then they get lost.
+Large codebases are opaque. The structure lives in people's heads, not in tools.
 
-On a large codebase, a great portion of your AI budget isn't going toward solving tasks. It's going toward the AI re-orienting itself in your code. Every session. Over and over. It burns tokens on tool calls — `grep`, `find`, `cat` — just to figure out what calls what. It loses context. It hallucinates dependencies. It modifies a function without realizing 14 callers across 9 files depend on it.
+A developer inherits a project and spends days grepping to understand what calls what. An AI agent burns half its token budget on `grep`, `find`, `cat` — re-discovering the same structure every session. An architect draws boundary rules on a whiteboard that erode within weeks because nothing enforces them. A CI pipeline catches test failures but can't tell you _"this change silently affects 14 callers across 9 files."_
 
-When the AI catches these mistakes, you waste time and tokens on corrections. When it doesn't catch them, your codebase starts degrading with silent bugs until things stop working.
-
-And when you hit `/clear` or run out of context? It starts from scratch.
+The information exists — it's in the code itself. But without a structured map, everyone is navigating blind: developers guess, AI agents hallucinate, and architecture degrades one unreviewed change at a time.
 
 ## What Codegraph Does
 
-Codegraph gives your AI a pre-built, always-current map of your entire codebase — every function, every caller, every dependency — so it stops guessing and starts knowing.
+Codegraph builds a function-level dependency graph of your entire codebase — every function, every caller, every dependency — and keeps it current with sub-second incremental rebuilds.
 
-It parses your code with [tree-sitter](https://tree-sitter.github.io/) (native Rust or WASM), builds a function-level dependency graph in SQLite, and keeps it current with sub-second incremental rebuilds. Your AI gets answers like _"this function has 14 callers across 9 files"_ instantly, instead of spending 30 tool calls to maybe discover half of them.
+It parses your code with [tree-sitter](https://tree-sitter.github.io/) (native Rust or WASM), stores the graph in SQLite, and gives you multiple ways to consume it:
+
+- **CLI** — developers explore, query, and audit their code from the terminal
+- **MCP server** — AI agents query the graph directly through 30 tools
+- **CI gates** — `check` and `manifesto` commands enforce quality thresholds with exit codes
+- **Programmatic API** — embed codegraph in your own tools via `npm install`
+
+Instead of 30 tool calls to maybe discover half your dependencies, you get _"this function has 14 callers across 9 files"_ instantly. Instead of hoping architecture rules are followed, you enforce them. Instead of finding breakage in production, `diff-impact --staged` catches it before you commit.
 
 **Free. Open source. Fully local.** Zero network calls, zero telemetry. Your code stays on your machine. When you want deeper intelligence, bring your own LLM provider — your code only goes where you choose to send it.
 
@@ -55,17 +60,18 @@ cd your-project
 codegraph build
 ```
 
-That's it. No config files, no Docker, no JVM, no API keys, no accounts. The graph is ready to query. Add `codegraph mcp` to your AI agent's config and it has full access to your dependency graph through 30 MCP tools (31 in multi-repo mode).
+That's it. No config files, no Docker, no JVM, no API keys, no accounts. The graph is ready to query.
 
 ### Why it matters
 
-| Without codegraph | With codegraph |
-|---|---|
-| AI spends 20+ tool calls per session re-discovering your code structure | AI gets full dependency context in one call |
-| Modifies `parseConfig()` without knowing 9 files import it | `fn-impact parseConfig` shows every caller before the edit |
-| Hallucinates that `auth.js` imports from `db.js` | `deps src/auth.js` shows the real import graph |
-| After `/clear`, starts from scratch | Graph persists — next session picks up where this one left off |
-| Suggests renaming a function, breaks 14 call sites silently | `diff-impact --staged` catches the breakage before you commit |
+| | Without codegraph | With codegraph |
+|---|---|---|
+| **AI agents** | Spend 20+ tool calls per session re-discovering code structure | Get full dependency context in one MCP call |
+| **AI agents** | Modify `parseConfig()` without knowing 9 files import it | `fn-impact parseConfig` shows every caller before the edit |
+| **Developers** | Inherit a codebase and grep for hours to understand what calls what | `context handleAuth -T` gives source, deps, callers, and tests in one command |
+| **Developers** | Rename a function, break 14 call sites silently | `diff-impact --staged` catches breakage before you commit |
+| **CI pipelines** | Catch test failures but miss structural degradation | `check --staged` fails the build when blast radius or complexity thresholds are exceeded |
+| **Architects** | Draw boundary rules that erode within weeks | `manifesto` and `boundaries` enforce architecture rules on every commit |
 
 ### Feature comparison
 
@@ -761,11 +767,11 @@ See **[ROADMAP.md](docs/roadmap/ROADMAP.md)** for the full development roadmap a
 
 1. ~~**Rust Core**~~ — **Complete** (v1.3.0) — native tree-sitter parsing via napi-rs, parallel multi-core parsing, incremental re-parsing, import resolution & cycle detection in Rust
 2. ~~**Foundation Hardening**~~ — **Complete** (v1.4.0) — parser registry, 12-tool MCP server with multi-repo support, test coverage 62%→75%, `apiKeyCommand` secret resolution, global repo registry
-3. **Architectural Refactoring** — parser plugin system, repository pattern, pipeline builder, engine strategy, domain errors, curated API
-4. **Intelligent Embeddings** — LLM-generated descriptions, hybrid search
-5. **Natural Language Queries** — `codegraph ask` command, conversational sessions
-6. **Expanded Language Support** — 8 new languages (12 → 20)
-7. **GitHub Integration & CI** — reusable GitHub Action, PR review, SARIF output
+3. ~~**Analysis Expansion**~~ — **Complete** (v2.6.0) — complexity metrics, community detection, co-change analysis, manifesto rule engine, architecture boundaries, CI `check` command, triage, audit, batch querying, hybrid BM25 + semantic search
+4. **Architectural Refactoring** — command/query separation, repository pattern, `queries.js` decomposition, domain errors, curated programmatic API
+5. **TypeScript Migration** — core type definitions, leaf-to-core module migration
+6. **Natural Language Queries** — `codegraph ask` command, conversational sessions
+7. **Expanded Language Support** — additional languages beyond the current 11
 8. **Visualization & Advanced** — web UI, monorepo support, agentic search
 
 ## 🤝 Contributing
