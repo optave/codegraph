@@ -30,7 +30,7 @@
 | Test files | 59 | 70 | +11 |
 | Node kinds | 10 | 13 | +3 (parameter, property, constant) |
 | Edge kinds | 6 | 9 | +3 (contains, parameter_of, receiver) |
-| Extractor modules | 0 (inline in parser.js) | 11 files, 2,299 lines | New directory |
+| Extractor modules | 0 (inline in parser.js) | 11 files, 3,023 lines | New directory |
 
 **Key patterns observed in this burst:**
 
@@ -209,19 +209,19 @@ Both complexity and CFG analysis walk the same AST trees with language-specific 
 
 **Previous state:** parser.js at 404 lines with inline extractors.
 
-**Current state:** `src/extractors/` directory with 11 files totaling 2,299 lines:
+**Current state:** `src/extractors/` directory with 11 files totaling 3,023 lines:
 
 | File | Lines | Language |
 |------|-------|----------|
-| `javascript.js` | 750 | JS/TS/TSX |
-| `csharp.js` | 248 | C# |
-| `php.js` | 243 | PHP |
-| `java.js` | 230 | Java |
-| `rust.js` | 225 | Rust |
-| `ruby.js` | 188 | Ruby |
-| `go.js` | 172 | Go |
-| `python.js` | 150 | Python |
-| `hcl.js` | 73 | Terraform/HCL |
+| `javascript.js` | 892 | JS/TS/TSX |
+| `csharp.js` | 311 | C# |
+| `php.js` | 322 | PHP |
+| `java.js` | 290 | Java |
+| `rust.js` | 295 | Rust |
+| `ruby.js` | 277 | Ruby |
+| `go.js` | 237 | Go |
+| `python.js` | 284 | Python |
+| `hcl.js` | 95 | Terraform/HCL |
 | `helpers.js` | 11 | Shared utilities |
 | `index.js` | 9 | Barrel export |
 

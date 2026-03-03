@@ -439,8 +439,8 @@ Persist and query selected AST node types for pattern-based codebase exploration
 
 Split per-language extractors from monolithic `parser.js` into dedicated modules.
 
-- ✅ New `src/extractors/` directory with 11 files (2,299 lines total)
-- ✅ One file per language: `javascript.js` (750), `csharp.js` (248), `php.js` (243), `java.js` (230), `rust.js` (225), `ruby.js` (188), `go.js` (172), `python.js` (150), `hcl.js` (73)
+- ✅ New `src/extractors/` directory with 11 files (3,023 lines total)
+- ✅ One file per language: `javascript.js` (892), `csharp.js` (311), `php.js` (322), `java.js` (290), `rust.js` (295), `ruby.js` (277), `go.js` (237), `python.js` (284), `hcl.js` (95)
 - ✅ Shared utilities in `helpers.js` (`nodeEndLine()`, `findChild()`)
 - ✅ Barrel export via `index.js`
 - ✅ Consistent return schema: `{ definitions, calls, imports, classes, exports }`
@@ -705,9 +705,7 @@ Export only `*Data()` functions (the command execute functions). Never export CL
 
 **Affected files:** `src/index.js`, `package.json`
 
-### ~~3.8~~ -- ~~Decompose complexity.js~~ Subsumed by 3.1
-
-> The standalone complexity decomposition from the previous revision is now part of the unified AST analysis framework (3.1). The `complexity.js` per-language rules become `ast-analysis/rules/complexity/{lang}.js` alongside CFG and dataflow rules.
+> **Removed: Decompose complexity.js** — Subsumed by 3.1. The standalone complexity decomposition from the previous revision is now part of the unified AST analysis framework (3.1). The `complexity.js` per-language rules become `ast-analysis/rules/complexity/{lang}.js` alongside CFG and dataflow rules.
 
 ### 3.8 -- Domain Error Hierarchy
 
