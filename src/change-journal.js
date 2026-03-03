@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { warn } from './logger.js';
+import { debug, warn } from './logger.js';
 
 export const CHANGE_EVENTS_FILENAME = 'change-events.ndjson';
 export const DEFAULT_MAX_BYTES = 1024 * 1024; // 1 MB
@@ -84,6 +84,7 @@ export function appendChangeEvents(rootDir, events) {
     }
     const lines = `${events.map((e) => JSON.stringify(e)).join('\n')}\n`;
     fs.appendFileSync(filePath, lines);
+    debug(`Appended ${events.length} change event(s) to ${filePath}`);
   } catch (err) {
     warn(`Failed to append change events: ${err.message}`);
     return;
@@ -114,8 +115,12 @@ export function rotateIfNeeded(filePath, maxBytes = DEFAULT_MAX_BYTES) {
     const content = fs.readFileSync(filePath, 'utf-8');
     const mid = Math.floor(content.length / 2);
     const newlineIdx = content.indexOf('\n', mid);
-    if (newlineIdx === -1) return; // single huge line, can't split
+    if (newlineIdx === -1) {
+      warn(`Change events file exceeds ${maxBytes} bytes but contains no line breaks; skipping rotation`);
+      return;
+    }
     fs.writeFileSync(filePath, content.slice(newlineIdx + 1));
+    debug(`Rotated change events: ${stat.size} → ${content.length - newlineIdx - 1} bytes`);
   } catch (err) {
     warn(`Failed to rotate change events: ${err.message}`);
   }
