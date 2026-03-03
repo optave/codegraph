@@ -180,9 +180,6 @@ program
   .option('-T, --no-tests', 'Exclude test/spec files from results')
   .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
   .option('-j, --json', 'Output as JSON')
-  .option('--limit <number>', 'Max results to return')
-  .option('--offset <number>', 'Skip N results (default: 0)')
-  .option('--ndjson', 'Newline-delimited JSON output')
   .action((from, to, opts) => {
     if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
       console.error(`Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
