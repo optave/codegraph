@@ -8,7 +8,14 @@
 // Audit (composite report)
 export { audit, auditData } from './audit.js';
 // Batch querying
-export { BATCH_COMMANDS, batch, batchData } from './batch.js';
+export {
+  BATCH_COMMANDS,
+  batch,
+  batchData,
+  batchQuery,
+  multiBatchData,
+  splitTargets,
+} from './batch.js';
 // Architecture boundary rules
 export { evaluateBoundaries, PRESETS, validateBoundaryConfig } from './boundaries.js';
 // Branch comparison
