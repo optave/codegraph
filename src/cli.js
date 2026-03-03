@@ -98,10 +98,16 @@ program
   .description('Parse repo and build graph in .codegraph/graph.db')
   .option('--no-incremental', 'Force full rebuild (ignore file hashes)')
   .option('--dataflow', 'Extract data flow edges (flows_to, returns, mutates)')
+  .option('--cfg', 'Build intraprocedural control flow graphs')
   .action(async (dir, opts) => {
     const root = path.resolve(dir || '.');
     const engine = program.opts().engine;
-    await buildGraph(root, { incremental: opts.incremental, engine, dataflow: opts.dataflow });
+    await buildGraph(root, {
+      incremental: opts.incremental,
+      engine,
+      dataflow: opts.dataflow,
+      cfg: opts.cfg,
+    });
   });
 
 program
@@ -991,6 +997,37 @@ program
       offset: opts.offset ? parseInt(opts.offset, 10) : undefined,
       impact: opts.impact,
       depth: opts.depth,
+    });
+  });
+
+program
+  .command('cfg <name>')
+  .description('Show control flow graph for a function')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .option('--format <fmt>', 'Output format: text, dot, mermaid', 'text')
+  .option('-f, --file <path>', 'Scope to file (partial match)')
+  .option('-k, --kind <kind>', 'Filter by symbol kind')
+  .option('-T, --no-tests', 'Exclude test/spec files from results')
+  .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
+  .option('-j, --json', 'Output as JSON')
+  .option('--ndjson', 'Newline-delimited JSON output')
+  .option('--limit <number>', 'Max results to return')
+  .option('--offset <number>', 'Skip N results (default: 0)')
+  .action(async (name, opts) => {
+    if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
+      console.error(`Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
+      process.exit(1);
+    }
+    const { cfg } = await import('./cfg.js');
+    cfg(name, opts.db, {
+      format: opts.format,
+      file: opts.file,
+      kind: opts.kind,
+      noTests: resolveNoTests(opts),
+      json: opts.json,
+      ndjson: opts.ndjson,
+      limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
+      offset: opts.offset ? parseInt(opts.offset, 10) : undefined,
     });
   });
 

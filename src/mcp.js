@@ -642,6 +642,26 @@ const BASE_TOOLS = [
     },
   },
   {
+    name: 'cfg',
+    description: 'Show intraprocedural control flow graph for a function. Requires build --cfg.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Function/method name (partial match)' },
+        format: {
+          type: 'string',
+          enum: ['json', 'dot', 'mermaid'],
+          description: 'Output format (default: json)',
+        },
+        file: { type: 'string', description: 'Scope to file (partial match)' },
+        kind: { type: 'string', enum: EVERY_SYMBOL_KIND, description: 'Filter by symbol kind' },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+        ...PAGINATION_PROPS,
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'dataflow',
     description: 'Show data flow edges or data-dependent blast radius. Requires build --dataflow.',
     inputSchema: {
@@ -1190,6 +1210,24 @@ export async function startMCPServer(customDbPath, options = {}) {
             noTests: args.no_tests,
           });
           result = args.format === 'mermaid' ? branchCompareMermaid(bcData) : bcData;
+          break;
+        }
+        case 'cfg': {
+          const { cfgData, cfgToDOT, cfgToMermaid } = await import('./cfg.js');
+          const cfgResult = cfgData(args.name, dbPath, {
+            file: args.file,
+            kind: args.kind,
+            noTests: args.no_tests,
+            limit: Math.min(args.limit ?? MCP_DEFAULTS.query, MCP_MAX_LIMIT),
+            offset: args.offset ?? 0,
+          });
+          if (args.format === 'dot') {
+            result = { text: cfgToDOT(cfgResult) };
+          } else if (args.format === 'mermaid') {
+            result = { text: cfgToMermaid(cfgResult) };
+          } else {
+            result = cfgResult;
+          }
           break;
         }
         case 'dataflow': {

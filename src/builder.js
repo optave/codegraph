@@ -1139,6 +1139,18 @@ export async function buildGraph(rootDir, opts = {}) {
   }
   _t.complexityMs = performance.now() - _t.complexity0;
 
+  // Opt-in CFG analysis (--cfg)
+  if (opts.cfg) {
+    _t.cfg0 = performance.now();
+    try {
+      const { buildCFGData } = await import('./cfg.js');
+      await buildCFGData(db, allSymbols, rootDir, engineOpts);
+    } catch (err) {
+      debug(`CFG analysis failed: ${err.message}`);
+    }
+    _t.cfgMs = performance.now() - _t.cfg0;
+  }
+
   // Opt-in dataflow analysis (--dataflow)
   if (opts.dataflow) {
     _t.dataflow0 = performance.now();
@@ -1241,6 +1253,7 @@ export async function buildGraph(rootDir, opts = {}) {
       structureMs: +_t.structureMs.toFixed(1),
       rolesMs: +_t.rolesMs.toFixed(1),
       complexityMs: +_t.complexityMs.toFixed(1),
+      ...(_t.cfgMs != null && { cfgMs: +_t.cfgMs.toFixed(1) }),
     },
   };
 }
