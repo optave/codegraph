@@ -165,6 +165,32 @@ codegraph mcp --repos a,b      # Multi-repo with allowlist
 
 By default, the MCP server runs in **single-repo mode** — the AI agent can only query the current project's graph. The `repo` parameter and `list_repos` tool are not exposed, preventing agents from silently accessing other codebases.
 
+#### Register with Claude Code
+
+To give Claude Code direct access to codegraph tools (no Bash needed), register the MCP server:
+
+```bash
+# Linux / macOS
+claude mcp add --transport stdio codegraph -- codegraph mcp
+
+# Windows
+claude mcp add --transport stdio codegraph -- cmd /c codegraph mcp
+```
+
+This saves the server to your local Claude Code config. Once registered, Claude can call codegraph tools (`where`, `explain`, `fn_impact`, `diff_impact`, etc.) natively — including from custom subagents.
+
+Use `--scope project` to check it into `.mcp.json` so the whole team gets it:
+
+```bash
+claude mcp add --transport stdio codegraph --scope project -- codegraph mcp
+```
+
+Verify with:
+
+```bash
+claude mcp list
+```
+
 Enable `--multi-repo` to let the agent query any registered repository, or use `--repos` to restrict access to a specific set of repos.
 
 The server exposes 30 tools (31 in multi-repo mode): `query_function`, `file_deps`, `impact_analysis`, `find_cycles`, `module_map`, `fn_deps`, `fn_impact`, `symbol_path`, `context`, `explain`, `where`, `diff_impact`, `semantic_search`, `export_graph`, `list_functions`, `structure`, `hotspots`, `node_roles`, `co_changes`, `execution_flow`, `list_entry_points`, `complexity`, `communities`, `manifesto`, `code_owners`, `audit`, `batch_query`, `triage`, `check`, `branch_compare`, and `list_repos` (multi-repo only). See the [AI Agent Guide MCP reference](./ai-agent-guide.md#mcp-server-reference) for the full tool-to-CLI mapping table.
@@ -228,6 +254,16 @@ You can configure [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-readme.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Read|Grep",
         "hooks": [
           {
@@ -288,6 +324,8 @@ You can configure [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-
 > }
 > ```
 
+**Doc check hook** (PreToolUse on Bash): when Claude runs `git commit` with source files staged (anything under `src/`, `cli.js`, `constants.js`, `parser.js`, `package.json`, or `grammars/`), the hook checks whether `README.md`, `CLAUDE.md`, and `ROADMAP.md` are also staged. If any are missing, it blocks the commit with a `deny` decision listing which docs weren't staged and what to review in each (language support tables, architecture docs, roadmap phases, etc.). Non-source-only commits (tests, docs, config) pass through without checks.
+
 **Edit reminder hook** (PreToolUse on Edit/Write): before the agent writes code, a reminder is injected via `additionalContext` prompting it to check `where`, `explain`, `context`, and `fn-impact` first. Only fires once per file per session (tracks in `.claude/codegraph-checked.log`, gitignored). Non-blocking — it nudges but never prevents the edit. Skips non-source files like `.md`, `.json`, `.yml`.
 
 **Graph update hook** (PostToolUse on Edit/Write): keeps the graph incrementally updated after each file edit. Only changed files are re-parsed.
@@ -301,6 +339,7 @@ You can configure [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-
 - `remind-codegraph.sh` — pre-edit reminder to check context/impact
 - `update-graph.sh` — incremental graph updates after edits
 - `post-git-ops.sh` — graph rebuild + edit tracking after rebase/revert/merge
+- `check-readme.sh` — blocks commits when source changes may require doc updates
 - `guard-git.sh` — blocks dangerous git commands + validates commits
 - `track-edits.sh` — logs edited files for commit validation
 - `track-moves.sh` — logs file moves/copies for commit validation
@@ -628,6 +667,10 @@ codegraph manifesto -T
 # 9. (Optional) Build embeddings for semantic search
 codegraph embed
 
-# 10. (Optional) Add CLAUDE.md for AI agents
+# 10. (Optional) Register MCP server with Claude Code
+claude mcp add --transport stdio codegraph -- codegraph mcp
+# On Windows: claude mcp add --transport stdio codegraph -- cmd /c codegraph mcp
+
+# 11. (Optional) Add CLAUDE.md for AI agents
 # See docs/guides/ai-agent-guide.md for the full template
 ```
