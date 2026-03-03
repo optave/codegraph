@@ -1257,9 +1257,7 @@ export async function startMCPServer(customDbPath, options = {}) {
             break;
           }
           const path = await import('node:path');
-          const rootDir = dbPath
-            ? path.dirname(path.dirname(dbPath))
-            : process.cwd();
+          const rootDir = dbPath ? path.dirname(path.dirname(dbPath)) : process.cwd();
           const { buildGraph } = await import('./builder.js');
           await buildGraph(rootDir, {
             scope: args.files,
