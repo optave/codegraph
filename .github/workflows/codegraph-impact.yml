@@ -11,6 +11,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install dependencies
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             npm install && break
