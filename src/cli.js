@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
 import { audit } from './audit.js';
-import { BATCH_COMMANDS, batch } from './batch.js';
+import { BATCH_COMMANDS, batch, batchQuery, multiBatchData, splitTargets } from './batch.js';
 import { buildGraph } from './builder.js';
 import { loadConfig } from './config.js';
 import { findCycles, formatCycles } from './cycles.js';
@@ -97,10 +97,11 @@ program
   .command('build [dir]')
   .description('Parse repo and build graph in .codegraph/graph.db')
   .option('--no-incremental', 'Force full rebuild (ignore file hashes)')
+  .option('--dataflow', 'Extract data flow edges (flows_to, returns, mutates)')
   .action(async (dir, opts) => {
     const root = path.resolve(dir || '.');
     const engine = program.opts().engine;
-    await buildGraph(root, { incremental: opts.incremental, engine });
+    await buildGraph(root, { incremental: opts.incremental, engine, dataflow: opts.dataflow });
   });
 
 program
@@ -968,6 +969,41 @@ program
   });
 
 program
+  .command('dataflow <name>')
+  .description('Show data flow for a function: parameters, return consumers, mutations')
+  .option('-d, --db <path>', 'Path to graph.db')
+  .option('-f, --file <path>', 'Scope to file (partial match)')
+  .option('-k, --kind <kind>', 'Filter by symbol kind')
+  .option('-T, --no-tests', 'Exclude test/spec files from results')
+  .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
+  .option('-j, --json', 'Output as JSON')
+  .option('--ndjson', 'Newline-delimited JSON output')
+  .option('--limit <number>', 'Max results to return')
+  .option('--offset <number>', 'Skip N results (default: 0)')
+  .option('--path <target>', 'Find data flow path to <target>')
+  .option('--impact', 'Show data-dependent blast radius')
+  .option('--depth <n>', 'Max traversal depth', '5')
+  .action(async (name, opts) => {
+    if (opts.kind && !ALL_SYMBOL_KINDS.includes(opts.kind)) {
+      console.error(`Invalid kind "${opts.kind}". Valid: ${ALL_SYMBOL_KINDS.join(', ')}`);
+      process.exit(1);
+    }
+    const { dataflow } = await import('./dataflow.js');
+    dataflow(name, opts.db, {
+      file: opts.file,
+      kind: opts.kind,
+      noTests: resolveNoTests(opts),
+      json: opts.json,
+      ndjson: opts.ndjson,
+      limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
+      offset: opts.offset ? parseInt(opts.offset, 10) : undefined,
+      path: opts.path,
+      impact: opts.impact,
+      depth: opts.depth,
+    });
+  });
+
+program
   .command('complexity [target]')
   .description('Show per-function complexity metrics (cognitive, cyclomatic, nesting depth, MI)')
   .option('-d, --db <path>', 'Path to graph.db')
@@ -1251,20 +1287,25 @@ program
     }
 
     let targets;
-    if (opts.fromFile) {
-      const raw = fs.readFileSync(opts.fromFile, 'utf-8').trim();
-      if (raw.startsWith('[')) {
-        targets = JSON.parse(raw);
+    try {
+      if (opts.fromFile) {
+        const raw = fs.readFileSync(opts.fromFile, 'utf-8').trim();
+        if (raw.startsWith('[')) {
+          targets = JSON.parse(raw);
+        } else {
+          targets = raw.split(/\r?\n/).filter(Boolean);
+        }
+      } else if (opts.stdin) {
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        const raw = Buffer.concat(chunks).toString('utf-8').trim();
+        targets = raw.startsWith('[') ? JSON.parse(raw) : raw.split(/\r?\n/).filter(Boolean);
       } else {
-        targets = raw.split(/\r?\n/).filter(Boolean);
+        targets = splitTargets(positionalTargets);
       }
-    } else if (opts.stdin) {
-      const chunks = [];
-      for await (const chunk of process.stdin) chunks.push(chunk);
-      const raw = Buffer.concat(chunks).toString('utf-8').trim();
-      targets = raw.startsWith('[') ? JSON.parse(raw) : raw.split(/\r?\n/).filter(Boolean);
-    } else {
-      targets = positionalTargets;
+    } catch (err) {
+      console.error(`Failed to parse targets: ${err.message}`);
+      process.exit(1);
     }
 
     if (!targets || targets.length === 0) {
@@ -1279,7 +1320,72 @@ program
       noTests: resolveNoTests(opts),
     };
 
-    batch(command, targets, opts.db, batchOpts);
+    // Multi-command mode: items from --from-file / --stdin may be objects with { command, target }
+    const isMulti = targets.length > 0 && typeof targets[0] === 'object' && targets[0].command;
+    if (isMulti) {
+      const data = multiBatchData(targets, opts.db, batchOpts);
+      console.log(JSON.stringify(data, null, 2));
+    } else {
+      batch(command, targets, opts.db, batchOpts);
+    }
+  });
+
+program
+  .command('batch-query [targets...]')
+  .description(
+    `Batch symbol lookup — resolve multiple references in one call.\nDefaults to 'where' command. Accepts comma-separated targets.\nValid commands: ${Object.keys(BATCH_COMMANDS).join(', ')}`,
+  )
+  .option('-d, --db <path>', 'Path to graph.db')
+  .option('-c, --command <cmd>', 'Query command to run (default: where)', 'where')
+  .option('--from-file <path>', 'Read targets from file (JSON array or newline-delimited)')
+  .option('--stdin', 'Read targets from stdin (JSON array)')
+  .option('--depth <n>', 'Traversal depth passed to underlying command')
+  .option('-f, --file <path>', 'Scope to file (partial match)')
+  .option('-k, --kind <kind>', 'Filter by symbol kind')
+  .option('-T, --no-tests', 'Exclude test/spec files from results')
+  .option('--include-tests', 'Include test/spec files (overrides excludeTests config)')
+  .action(async (positionalTargets, opts) => {
+    if (opts.kind && !ALL_SYMBOL_KINDS.includes(opts.kind)) {
+      console.error(`Invalid kind "${opts.kind}". Valid: ${ALL_SYMBOL_KINDS.join(', ')}`);
+      process.exit(1);
+    }
+
+    let targets;
+    try {
+      if (opts.fromFile) {
+        const raw = fs.readFileSync(opts.fromFile, 'utf-8').trim();
+        if (raw.startsWith('[')) {
+          targets = JSON.parse(raw);
+        } else {
+          targets = raw.split(/\r?\n/).filter(Boolean);
+        }
+      } else if (opts.stdin) {
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        const raw = Buffer.concat(chunks).toString('utf-8').trim();
+        targets = raw.startsWith('[') ? JSON.parse(raw) : raw.split(/\r?\n/).filter(Boolean);
+      } else {
+        targets = splitTargets(positionalTargets);
+      }
+    } catch (err) {
+      console.error(`Failed to parse targets: ${err.message}`);
+      process.exit(1);
+    }
+
+    if (!targets || targets.length === 0) {
+      console.error('No targets provided. Pass targets as arguments, --from-file, or --stdin.');
+      process.exit(1);
+    }
+
+    const batchOpts = {
+      command: opts.command,
+      depth: opts.depth ? parseInt(opts.depth, 10) : undefined,
+      file: opts.file,
+      kind: opts.kind,
+      noTests: resolveNoTests(opts),
+    };
+
+    batchQuery(targets, opts.db, batchOpts);
   });
 
 program.parse();
