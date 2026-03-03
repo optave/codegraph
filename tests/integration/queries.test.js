@@ -32,6 +32,7 @@ import {
   fnDepsData,
   fnImpactData,
   impactAnalysisData,
+  listFunctionsData,
   moduleMapData,
   pathData,
   queryNameData,
@@ -100,6 +101,16 @@ beforeAll(() => {
   insertEdge(db, testAuth, authenticate, 'calls');
   // Low-confidence call edge for quality tests
   insertEdge(db, formatResponse, validateToken, 'calls', 0.3);
+
+  // File hashes (for fileHash exposure)
+  for (const f of ['auth.js', 'middleware.js', 'routes.js', 'utils.js', 'auth.test.js']) {
+    db.prepare('INSERT INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)').run(
+      f,
+      `hash_${f.replace('.', '_')}`,
+      Date.now(),
+      100,
+    );
+  }
 
   db.close();
 });
@@ -643,5 +654,79 @@ describe('noTests filtering', () => {
 
     expect(allFiles).toContain('auth.test.js');
     expect(filteredFiles).not.toContain('auth.test.js');
+  });
+});
+
+// ─── Stable symbol schema conformance ──────────────────────────────────
+
+const STABLE_FIELDS = ['name', 'kind', 'file', 'line', 'endLine', 'role', 'fileHash'];
+
+function expectStableSymbol(sym) {
+  for (const field of STABLE_FIELDS) {
+    expect(sym).toHaveProperty(field);
+  }
+  expect(typeof sym.name).toBe('string');
+  expect(typeof sym.kind).toBe('string');
+  expect(typeof sym.file).toBe('string');
+  expect(typeof sym.line).toBe('number');
+  // endLine, role, fileHash may be null
+  expect(sym.endLine === null || typeof sym.endLine === 'number').toBe(true);
+  expect(sym.role === null || typeof sym.role === 'string').toBe(true);
+  expect(sym.fileHash === null || typeof sym.fileHash === 'string').toBe(true);
+}
+
+describe('stable symbol schema', () => {
+  test('queryNameData results have all 7 stable fields', () => {
+    const data = queryNameData('authenticate', dbPath);
+    expect(data.results.length).toBeGreaterThan(0);
+    for (const r of data.results) {
+      expectStableSymbol(r);
+    }
+  });
+
+  test('fnDepsData results have all 7 stable fields', () => {
+    const data = fnDepsData('handleRoute', dbPath);
+    expect(data.results.length).toBeGreaterThan(0);
+    for (const r of data.results) {
+      expectStableSymbol(r);
+    }
+  });
+
+  test('fnImpactData results have all 7 stable fields', () => {
+    const data = fnImpactData('authenticate', dbPath);
+    expect(data.results.length).toBeGreaterThan(0);
+    for (const r of data.results) {
+      expectStableSymbol(r);
+    }
+  });
+
+  test('whereData (symbol) results have all 7 stable fields', () => {
+    const data = whereData('authMiddleware', dbPath);
+    expect(data.results.length).toBeGreaterThan(0);
+    for (const r of data.results) {
+      expectStableSymbol(r);
+    }
+  });
+
+  test('explainData (function) results have all 7 stable fields', () => {
+    const data = explainData('authMiddleware', dbPath);
+    expect(data.results.length).toBeGreaterThan(0);
+    for (const r of data.results) {
+      expectStableSymbol(r);
+    }
+  });
+
+  test('listFunctionsData results have all 7 stable fields', () => {
+    const data = listFunctionsData(dbPath);
+    expect(data.functions.length).toBeGreaterThan(0);
+    for (const r of data.functions) {
+      expectStableSymbol(r);
+    }
+  });
+
+  test('fileHash values match expected hashes', () => {
+    const data = queryNameData('authenticate', dbPath);
+    const fn = data.results.find((r) => r.name === 'authenticate' && r.kind === 'function');
+    expect(fn.fileHash).toBe('hash_auth_js');
   });
 });
