@@ -598,20 +598,32 @@ export async function buildGraph(rootDir, opts = {}) {
       fileSymbols.set(relPath, symbols);
 
       insertNode.run(relPath, 'file', relPath, 0, null, null);
+      const fileRow = getNodeId.get(relPath, 'file', relPath, 0);
       for (const def of symbols.definitions) {
         insertNode.run(def.name, def.kind, relPath, def.line, def.endLine || null, null);
-        if (def.children?.length) {
-          const parentRow = getNodeId.get(def.name, def.kind, relPath, def.line);
-          if (parentRow) {
-            for (const child of def.children) {
-              insertNode.run(
-                child.name,
-                child.kind,
-                relPath,
-                child.line,
-                child.endLine || null,
-                parentRow.id,
-              );
+        const defRow = getNodeId.get(def.name, def.kind, relPath, def.line);
+        // File → top-level definition contains edge
+        if (fileRow && defRow) {
+          insertEdge.run(fileRow.id, defRow.id, 'contains', 1.0, 0);
+        }
+        if (def.children?.length && defRow) {
+          for (const child of def.children) {
+            insertNode.run(
+              child.name,
+              child.kind,
+              relPath,
+              child.line,
+              child.endLine || null,
+              defRow.id,
+            );
+            // Parent → child contains edge
+            const childRow = getNodeId.get(child.name, child.kind, relPath, child.line);
+            if (childRow) {
+              insertEdge.run(defRow.id, childRow.id, 'contains', 1.0, 0);
+              // Parameter → parent parameter_of edge (inverse direction)
+              if (child.kind === 'parameter') {
+                insertEdge.run(childRow.id, defRow.id, 'parameter_of', 1.0, 0);
+              }
             }
           }
         }
@@ -797,7 +809,7 @@ export async function buildGraph(rootDir, opts = {}) {
   // N+1 optimization: pre-load all nodes into a lookup map for edge building
   const allNodes = db
     .prepare(
-      `SELECT id, name, kind, file FROM nodes WHERE kind IN ('function','method','class','interface')`,
+      `SELECT id, name, kind, file FROM nodes WHERE kind IN ('function','method','class','interface','struct','type','module','enum','trait')`,
     )
     .all();
   const nodesByName = new Map();
@@ -954,6 +966,30 @@ export async function buildGraph(rootDir, opts = {}) {
             const confidence = computeConfidence(relPath, t.file, importedFrom);
             insertEdge.run(caller.id, t.id, 'calls', confidence, isDynamic);
             edgeCount++;
+          }
+        }
+
+        // Receiver edge: caller → receiver type node
+        if (
+          call.receiver &&
+          !BUILTIN_RECEIVERS.has(call.receiver) &&
+          call.receiver !== 'this' &&
+          call.receiver !== 'self' &&
+          call.receiver !== 'super'
+        ) {
+          const receiverKinds = new Set(['class', 'struct', 'interface', 'type', 'module']);
+          // Same-file first, then global
+          const samefile = nodesByNameAndFile.get(`${call.receiver}|${relPath}`) || [];
+          const candidates = samefile.length > 0 ? samefile : nodesByName.get(call.receiver) || [];
+          const receiverNodes = candidates.filter((n) => receiverKinds.has(n.kind));
+          if (receiverNodes.length > 0 && caller) {
+            const recvTarget = receiverNodes[0];
+            const recvKey = `recv|${caller.id}|${recvTarget.id}`;
+            if (!seenCallEdges.has(recvKey)) {
+              seenCallEdges.add(recvKey);
+              insertEdge.run(caller.id, recvTarget.id, 'receiver', 0.7, 0);
+              edgeCount++;
+            }
           }
         }
       }

@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { findCycles } from './cycles.js';
 import { findDbPath } from './db.js';
 import { MCP_DEFAULTS, MCP_MAX_LIMIT } from './paginate.js';
-import { diffImpactMermaid, EVERY_SYMBOL_KIND, VALID_ROLES } from './queries.js';
+import { diffImpactMermaid, EVERY_EDGE_KIND, EVERY_SYMBOL_KIND, VALID_ROLES } from './queries.js';
 
 const REPO_PROP = {
   repo: {
@@ -53,7 +53,7 @@ const BASE_TOOLS = [
         to: { type: 'string', description: 'Target symbol for path mode (required in path mode)' },
         edge_kinds: {
           type: 'array',
-          items: { type: 'string' },
+          items: { type: 'string', enum: EVERY_EDGE_KIND },
           description: 'Edge kinds to follow in path mode (default: ["calls"])',
         },
         reverse: {
