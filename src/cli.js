@@ -528,6 +528,12 @@ program
   .option('-o, --output <file>', 'Write HTML to file')
   .option('-c, --config <path>', 'Path to .plotDotCfg config file')
   .option('--no-open', 'Do not open in browser')
+  .option('--cluster <mode>', 'Cluster nodes: none | community | directory')
+  .option('--overlay <list>', 'Comma-separated overlays: complexity,risk')
+  .option('--seed <strategy>', 'Seed strategy: all | top-fanin | entry')
+  .option('--seed-count <n>', 'Number of seed nodes (default: 30)')
+  .option('--size-by <metric>', 'Size nodes by: uniform | fan-in | fan-out | complexity')
+  .option('--color-by <mode>', 'Color nodes by: kind | role | community | complexity')
   .action(async (opts) => {
     const { generatePlotHTML, loadPlotConfig } = await import('./viewer.js');
     const { exec } = await import('node:child_process');
@@ -546,6 +552,19 @@ program
       }
     } else {
       plotCfg = loadPlotConfig(process.cwd());
+    }
+
+    // Merge CLI flags into config
+    if (opts.cluster) plotCfg.clusterBy = opts.cluster;
+    if (opts.colorBy) plotCfg.colorBy = opts.colorBy;
+    if (opts.sizeBy) plotCfg.sizeBy = opts.sizeBy;
+    if (opts.seed) plotCfg.seedStrategy = opts.seed;
+    if (opts.seedCount) plotCfg.seedCount = parseInt(opts.seedCount, 10);
+    if (opts.overlay) {
+      const parts = opts.overlay.split(',').map((s) => s.trim());
+      if (!plotCfg.overlays) plotCfg.overlays = {};
+      if (parts.includes('complexity')) plotCfg.overlays.complexity = true;
+      if (parts.includes('risk')) plotCfg.overlays.risk = true;
     }
 
     const html = generatePlotHTML(db, {
