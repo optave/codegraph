@@ -89,6 +89,24 @@ export const EVERY_SYMBOL_KIND = [...CORE_SYMBOL_KINDS, ...EXTENDED_SYMBOL_KINDS
 // Backward compat: ALL_SYMBOL_KINDS stays as the core 10
 export const ALL_SYMBOL_KINDS = CORE_SYMBOL_KINDS;
 
+// ── Edge kind constants ─────────────────────────────────────────────
+// Core edge kinds — coupling and dependency relationships
+export const CORE_EDGE_KINDS = [
+  'imports',
+  'imports-type',
+  'reexports',
+  'calls',
+  'extends',
+  'implements',
+  'contains',
+];
+
+// Structural edge kinds — parent/child and type relationships
+export const STRUCTURAL_EDGE_KINDS = ['parameter_of', 'receiver'];
+
+// Full set for MCP enum and validation
+export const EVERY_EDGE_KIND = [...CORE_EDGE_KINDS, ...STRUCTURAL_EDGE_KINDS];
+
 export const VALID_ROLES = ['entry', 'core', 'utility', 'adapter', 'dead', 'leaf'];
 
 /**
@@ -348,12 +366,12 @@ export function moduleMapData(customDbPath, limit = 20, opts = {}) {
   const nodes = db
     .prepare(`
     SELECT n.*,
-      (SELECT COUNT(*) FROM edges WHERE source_id = n.id AND kind != 'contains') as out_edges,
-      (SELECT COUNT(*) FROM edges WHERE target_id = n.id AND kind != 'contains') as in_edges
+      (SELECT COUNT(*) FROM edges WHERE source_id = n.id AND kind NOT IN ('contains', 'parameter_of', 'receiver')) as out_edges,
+      (SELECT COUNT(*) FROM edges WHERE target_id = n.id AND kind NOT IN ('contains', 'parameter_of', 'receiver')) as in_edges
     FROM nodes n
     WHERE n.kind = 'file'
       ${testFilter}
-    ORDER BY (SELECT COUNT(*) FROM edges WHERE target_id = n.id AND kind != 'contains') DESC
+    ORDER BY (SELECT COUNT(*) FROM edges WHERE target_id = n.id AND kind NOT IN ('contains', 'parameter_of', 'receiver')) DESC
     LIMIT ?
   `)
     .all(limit);
