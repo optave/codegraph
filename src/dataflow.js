@@ -145,7 +145,15 @@ function resolveCalleeName(callNode) {
   const fn = callNode.childForFieldName('function');
   if (!fn) return null;
   if (fn.type === 'identifier') return fn.text;
-  if (fn.type === 'member_expression') {
+  if (fn.type === 'member_expression' || fn.type === 'optional_chain_expression') {
+    // Handle optional chaining: foo?.bar() or foo?.()
+    const target = fn.type === 'optional_chain_expression' ? fn.namedChildren[0] : fn;
+    if (!target) return null;
+    if (target.type === 'member_expression') {
+      const prop = target.childForFieldName('property');
+      return prop ? prop.text : null;
+    }
+    if (target.type === 'identifier') return target.text;
     const prop = fn.childForFieldName('property');
     return prop ? prop.text : null;
   }
@@ -343,8 +351,15 @@ export function extractDataflow(tree, _filePath, _definitions) {
       if (callee && argsNode && scope?.funcName) {
         let argIndex = 0;
         for (const arg of argsNode.namedChildren) {
-          const argName = arg.type === 'identifier' ? arg.text : null;
-          const argMember = arg.type === 'member_expression' ? memberReceiver(arg) : null;
+          // Handle spread arguments: foo(...args)
+          const unwrapped = arg.type === 'spread_element' ? arg.namedChildren[0] : arg;
+          if (!unwrapped) {
+            argIndex++;
+            continue;
+          }
+          const argName = unwrapped.type === 'identifier' ? unwrapped.text : null;
+          const argMember =
+            unwrapped.type === 'member_expression' ? memberReceiver(unwrapped) : null;
           const trackedName = argName || argMember;
 
           if (trackedName) {
@@ -372,26 +387,55 @@ export function extractDataflow(tree, _filePath, _definitions) {
       return;
     }
 
-    // Mutation detection: assignment to member expression
+    // Assignment expressions: mutation detection + non-declaration call captures
     if (t === 'assignment_expression') {
       const left = node.childForFieldName('left');
+      const right = node.childForFieldName('right');
       const scope = currentScope();
 
-      if (left?.type === 'member_expression' && scope?.funcName) {
-        const receiver = memberReceiver(left);
-        if (receiver) {
-          const binding = findBinding(receiver);
-          if (binding) {
-            mutations.push({
-              funcName: scope.funcName,
-              receiverName: receiver,
-              binding,
-              mutatingExpr: truncate(node.text),
-              line: node.startPosition.row + 1,
-            });
+      if (scope?.funcName) {
+        // Mutation: obj.prop = value
+        if (left?.type === 'member_expression') {
+          const receiver = memberReceiver(left);
+          if (receiver) {
+            const binding = findBinding(receiver);
+            if (binding) {
+              mutations.push({
+                funcName: scope.funcName,
+                receiverName: receiver,
+                binding,
+                mutatingExpr: truncate(node.text),
+                line: node.startPosition.row + 1,
+              });
+            }
+          }
+        }
+
+        // Non-declaration assignment: x = foo() (without const/let/var)
+        if (left?.type === 'identifier' && right) {
+          let callExpr = null;
+          if (right.type === 'call_expression') {
+            callExpr = right;
+          } else if (right.type === 'await_expression') {
+            const awaitChild = right.namedChildren[0];
+            if (awaitChild?.type === 'call_expression') callExpr = awaitChild;
+          }
+          if (callExpr) {
+            const callee = resolveCalleeName(callExpr);
+            if (callee) {
+              assignments.push({
+                varName: left.text,
+                callerFunc: scope.funcName,
+                sourceCallName: callee,
+                expression: truncate(node.text),
+                line: node.startPosition.row + 1,
+              });
+              scope.locals.set(left.text, { type: 'call_return', callee });
+            }
           }
         }
       }
+
       // Visit children
       for (const child of node.namedChildren) {
         visit(child);

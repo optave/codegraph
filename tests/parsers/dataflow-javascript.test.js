@@ -301,4 +301,69 @@ describe('extractDataflow — JavaScript', () => {
       );
     });
   });
+
+  // ── Spread arguments ──────────────────────────────────────────────────
+
+  describe('spread arguments', () => {
+    it('tracks spread argument flow', () => {
+      const data = parseAndExtract(`
+        function forward(items) {
+          process(...items);
+        }
+      `);
+      expect(data.argFlows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            callerFunc: 'forward',
+            calleeName: 'process',
+            argName: 'items',
+          }),
+        ]),
+      );
+    });
+  });
+
+  // ── Non-declaration assignments ───────────────────────────────────────
+
+  describe('non-declaration assignments', () => {
+    it('tracks x = foo() without const/let/var', () => {
+      const data = parseAndExtract(`
+        function update() {
+          let result;
+          result = compute();
+          return result;
+        }
+      `);
+      expect(data.assignments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            varName: 'result',
+            callerFunc: 'update',
+            sourceCallName: 'compute',
+          }),
+        ]),
+      );
+    });
+  });
+
+  // ── Optional chaining ─────────────────────────────────────────────────
+
+  describe('optional chaining', () => {
+    it('resolves callee name through optional chain', () => {
+      const data = parseAndExtract(`
+        function safeFetch(client) {
+          client?.fetch(client);
+        }
+      `);
+      expect(data.argFlows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            callerFunc: 'safeFetch',
+            calleeName: 'fetch',
+            argName: 'client',
+          }),
+        ]),
+      );
+    });
+  });
 });
