@@ -1234,7 +1234,13 @@ export async function startMCPServer(customDbPath, options = {}) {
         case 'triage': {
           if (args.level === 'file' || args.level === 'directory') {
             const { hotspotsData } = await import('./structure.js');
-            const metric = args.sort === 'risk' ? 'fan-in' : args.sort;
+            const TRIAGE_TO_HOTSPOT = {
+              risk: 'fan-in',
+              complexity: 'density',
+              churn: 'coupling',
+              mi: 'fan-in',
+            };
+            const metric = TRIAGE_TO_HOTSPOT[args.sort] ?? args.sort;
             result = hotspotsData(dbPath, {
               metric,
               level: args.level,
