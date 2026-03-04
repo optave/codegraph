@@ -12,9 +12,25 @@ import os from 'node:os';
 let _cached; // undefined = not yet tried, null = failed, object = module
 let _loadError = null;
 
-/** Map of (platform-arch) → npm package name. */
+/**
+ * Detect whether the current Linux environment uses glibc or musl.
+ * Returns 'gnu' for glibc, 'musl' for musl, 'gnu' as fallback.
+ */
+function detectLibc() {
+  try {
+    const report = process.report.getReport();
+    const glibcVersion = report?.header?.glibcVersionRuntime;
+    return glibcVersion ? 'gnu' : 'musl';
+  } catch {
+    return 'gnu';
+  }
+}
+
+/** Map of (platform-arch[-libc]) → npm package name. */
 const PLATFORM_PACKAGES = {
-  'linux-x64': '@optave/codegraph-linux-x64-gnu',
+  'linux-x64-gnu': '@optave/codegraph-linux-x64-gnu',
+  'linux-x64-musl': '@optave/codegraph-linux-x64-musl',
+  'linux-arm64-gnu': '@optave/codegraph-linux-arm64-gnu',
   'darwin-arm64': '@optave/codegraph-darwin-arm64',
   'darwin-x64': '@optave/codegraph-darwin-x64',
   'win32-x64': '@optave/codegraph-win32-x64-msvc',
@@ -29,7 +45,9 @@ export function loadNative() {
 
   const require = createRequire(import.meta.url);
 
-  const key = `${os.platform()}-${os.arch()}`;
+  const platform = os.platform();
+  const arch = os.arch();
+  const key = platform === 'linux' ? `${platform}-${arch}-${detectLibc()}` : `${platform}-${arch}`;
   const pkg = PLATFORM_PACKAGES[key];
   if (pkg) {
     try {
