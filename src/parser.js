@@ -205,6 +205,22 @@ function normalizeNativeSymbols(result) {
             maintainabilityIndex: d.complexity.maintainabilityIndex ?? null,
           }
         : null,
+      cfg: d.cfg?.blocks?.length
+        ? {
+            blocks: d.cfg.blocks.map((b) => ({
+              index: b.index,
+              type: b.type,
+              startLine: b.startLine,
+              endLine: b.endLine,
+              label: b.label ?? null,
+            })),
+            edges: d.cfg.edges.map((e) => ({
+              sourceIndex: e.sourceIndex,
+              targetIndex: e.targetIndex,
+              kind: e.kind,
+            })),
+          }
+        : null,
       children: d.children?.length
         ? d.children.map((c) => ({
             name: c.name,

@@ -6,6 +6,7 @@ pub mod import_resolution;
 pub mod cycles;
 pub mod incremental;
 pub mod complexity;
+pub mod cfg;
 
 use napi_derive::napi;
 use types::*;

@@ -57,6 +57,36 @@ impl ComplexityMetrics {
 
 #[napi(object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CfgBlock {
+    pub index: u32,
+    #[napi(js_name = "type")]
+    pub block_type: String,
+    #[napi(js_name = "startLine")]
+    pub start_line: Option<u32>,
+    #[napi(js_name = "endLine")]
+    pub end_line: Option<u32>,
+    pub label: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CfgEdge {
+    #[napi(js_name = "sourceIndex")]
+    pub source_index: u32,
+    #[napi(js_name = "targetIndex")]
+    pub target_index: u32,
+    pub kind: String,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CfgData {
+    pub blocks: Vec<CfgBlock>,
+    pub edges: Vec<CfgEdge>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Definition {
     pub name: String,
     pub kind: String,
@@ -65,6 +95,7 @@ pub struct Definition {
     #[napi(ts_type = "string[] | undefined")]
     pub decorators: Option<Vec<String>>,
     pub complexity: Option<ComplexityMetrics>,
+    pub cfg: Option<CfgData>,
     #[napi(ts_type = "Definition[] | undefined")]
     pub children: Option<Vec<Definition>>,
 }
