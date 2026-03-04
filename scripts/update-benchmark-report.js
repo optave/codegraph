@@ -152,15 +152,19 @@ for (const engineKey of ['native', 'wasm']) {
 const hasPhases = latest.native?.phases || latest.wasm?.phases;
 if (hasPhases) {
 	md += '### Build Phase Breakdown (latest)\n\n';
-	const phaseKeys = ['parseMs', 'insertMs', 'resolveMs', 'edgesMs', 'structureMs', 'rolesMs', 'complexityMs'];
+	const phaseKeys = ['parseMs', 'wasmPreMs', 'insertMs', 'resolveMs', 'edgesMs', 'structureMs', 'rolesMs', 'astMs', 'complexityMs', 'cfgMs', 'dataflowMs'];
 	const phaseLabels = {
 		parseMs: 'Parse',
+		wasmPreMs: 'WASM pre-parse',
 		insertMs: 'Insert nodes',
 		resolveMs: 'Resolve imports',
 		edgesMs: 'Build edges',
 		structureMs: 'Structure',
 		rolesMs: 'Roles',
+		astMs: 'AST nodes',
 		complexityMs: 'Complexity',
+		cfgMs: 'CFG',
+		dataflowMs: 'Dataflow',
 	};
 
 	md += '| Phase | Native | WASM |\n';
