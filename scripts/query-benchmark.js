@@ -167,12 +167,14 @@ if (!hasWasm && !hasNative) {
 	process.exit(1);
 }
 
+// Build with first available engine to select targets, then reuse for both
+let targets = null;
 let wasm = null;
 if (hasWasm) {
 	if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 	await buildGraph(root, { engine: 'wasm', incremental: false });
 
-	const targets = selectTargets();
+	targets = selectTargets();
 	console.error(`Targets: hub=${targets.hub}, mid=${targets.mid}, leaf=${targets.leaf}`);
 	wasm = benchmarkQueries(targets);
 } else {
@@ -184,8 +186,8 @@ if (hasNative) {
 	if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 	await buildGraph(root, { engine: 'native', incremental: false });
 
-	const targets = selectTargets();
-	if (!hasWasm) {
+	if (!targets) {
+		targets = selectTargets();
 		console.error(`Targets: hub=${targets.hub}, mid=${targets.mid}, leaf=${targets.leaf}`);
 	}
 	native = benchmarkQueries(targets);
