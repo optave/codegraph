@@ -17,7 +17,7 @@ import { isTestFile } from './queries.js';
  * @param {Map<string, number>} lineCountMap - Map of relPath → line count
  * @param {Set<string>} directories - Set of relative directory paths
  */
-export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, directories) {
+export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, directories, changedFiles) {
   const insertNode = db.prepare(
     'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line) VALUES (?, ?, ?, ?, ?)',
   );
@@ -33,15 +33,49 @@ export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, director
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  // Clean previous directory nodes/edges (idempotent rebuild)
-  // Scope contains-edge delete to directory-sourced edges only,
-  // preserving symbol-level contains edges (file→def, class→method, etc.)
-  db.exec(`
-    DELETE FROM edges WHERE kind = 'contains'
-      AND source_id IN (SELECT id FROM nodes WHERE kind = 'directory');
-    DELETE FROM node_metrics;
-    DELETE FROM nodes WHERE kind = 'directory';
-  `);
+  const isIncremental = changedFiles != null && changedFiles.length > 0;
+
+  if (isIncremental) {
+    // Incremental: only clean up data for changed files and their ancestor directories
+    const affectedDirs = new Set();
+    for (const f of changedFiles) {
+      let d = normalizePath(path.dirname(f));
+      while (d && d !== '.') {
+        affectedDirs.add(d);
+        d = normalizePath(path.dirname(d));
+      }
+    }
+    const deleteContainsForDir = db.prepare(
+      "DELETE FROM edges WHERE kind = 'contains' AND source_id IN (SELECT id FROM nodes WHERE name = ? AND kind = 'directory')",
+    );
+    const deleteMetricForNode = db.prepare('DELETE FROM node_metrics WHERE node_id = ?');
+    db.transaction(() => {
+      // Delete contains edges only from affected directories
+      for (const dir of affectedDirs) {
+        deleteContainsForDir.run(dir);
+      }
+      // Delete metrics for changed files
+      for (const f of changedFiles) {
+        const fileRow = getNodeId.get(f, 'file', f, 0);
+        if (fileRow) deleteMetricForNode.run(fileRow.id);
+      }
+      // Delete metrics for affected directories
+      for (const dir of affectedDirs) {
+        const dirRow = getNodeId.get(dir, 'directory', dir, 0);
+        if (dirRow) deleteMetricForNode.run(dirRow.id);
+      }
+    })();
+  } else {
+    // Full rebuild: clean previous directory nodes/edges (idempotent)
+    // Scope contains-edge delete to directory-sourced edges only,
+    // preserving symbol-level contains edges (file→def, class→method, etc.)
+    db.exec(`
+      DELETE FROM edges WHERE kind = 'contains'
+        AND source_id IN (SELECT id FROM nodes WHERE kind = 'directory');
+      DELETE FROM node_metrics;
+      DELETE FROM nodes WHERE kind = 'directory';
+    `);
+  }
 
   // Step 1: Ensure all directories are represented (including intermediate parents)
   const allDirs = new Set();
@@ -61,7 +95,7 @@ export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, director
     }
   }
 
-  // Step 2: Insert directory nodes
+  // Step 2: Insert directory nodes (INSERT OR IGNORE — safe for incremental)
   const insertDirs = db.transaction(() => {
     for (const dir of allDirs) {
       insertNode.run(dir, 'directory', dir, 0, null);
@@ -70,11 +104,28 @@ export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, director
   insertDirs();
 
   // Step 3: Insert 'contains' edges (dir → file, dir → subdirectory)
+  // On incremental, only re-insert for affected directories (others are intact)
+  const affectedDirs = isIncremental
+    ? (() => {
+        const dirs = new Set();
+        for (const f of changedFiles) {
+          let d = normalizePath(path.dirname(f));
+          while (d && d !== '.') {
+            dirs.add(d);
+            d = normalizePath(path.dirname(d));
+          }
+        }
+        return dirs;
+      })()
+    : null;
+
   const insertContains = db.transaction(() => {
     // dir → file
     for (const relPath of fileSymbols.keys()) {
       const dir = normalizePath(path.dirname(relPath));
       if (!dir || dir === '.') continue;
+      // On incremental, skip dirs whose contains edges are intact
+      if (affectedDirs && !affectedDirs.has(dir)) continue;
       const dirRow = getNodeId.get(dir, 'directory', dir, 0);
       const fileRow = getNodeId.get(relPath, 'file', relPath, 0);
       if (dirRow && fileRow) {
@@ -85,6 +136,8 @@ export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, director
     for (const dir of allDirs) {
       const parent = normalizePath(path.dirname(dir));
       if (!parent || parent === '.' || parent === dir) continue;
+      // On incremental, skip parent dirs whose contains edges are intact
+      if (affectedDirs && !affectedDirs.has(parent)) continue;
       const parentRow = getNodeId.get(parent, 'directory', parent, 0);
       const childRow = getNodeId.get(dir, 'directory', dir, 0);
       if (parentRow && childRow) {

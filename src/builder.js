@@ -4,7 +4,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { loadConfig } from './config.js';
 import { EXTENSIONS, IGNORE_DIRS, normalizePath } from './constants.js';
-import { closeDb, getBuildMeta, initSchema, openDb, setBuildMeta } from './db.js';
+import { closeDb, getBuildMeta, initSchema, MIGRATIONS, openDb, setBuildMeta } from './db.js';
 import { readJournal, writeJournalHeader } from './journal.js';
 import { debug, info, warn } from './logger.js';
 import { getActiveEngine, parseFilesAuto } from './parser.js';
@@ -448,17 +448,21 @@ export async function buildGraph(rootDir, opts = {}) {
   const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
   info(`Using ${engineName} engine${engineVersion ? ` (v${engineVersion})` : ''}`);
 
-  // Check for engine/version mismatch — auto-promote to full rebuild
+  // Check for engine/schema mismatch — auto-promote to full rebuild
+  // Only trigger on engine change or schema version change (not every patch/minor bump)
+  const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
   let forceFullRebuild = false;
   if (incremental) {
     const prevEngine = getBuildMeta(db, 'engine');
-    const prevVersion = getBuildMeta(db, 'codegraph_version');
     if (prevEngine && prevEngine !== engineName) {
       info(`Engine changed (${prevEngine} → ${engineName}), promoting to full rebuild.`);
       forceFullRebuild = true;
     }
-    if (prevVersion && prevVersion !== CODEGRAPH_VERSION) {
-      info(`Version changed (${prevVersion} → ${CODEGRAPH_VERSION}), promoting to full rebuild.`);
+    const prevSchema = getBuildMeta(db, 'schema_version');
+    if (prevSchema && Number(prevSchema) !== CURRENT_SCHEMA_VERSION) {
+      info(
+        `Schema version changed (${prevSchema} → ${CURRENT_SCHEMA_VERSION}), promoting to full rebuild.`,
+      );
       forceFullRebuild = true;
     }
   }
@@ -715,43 +719,65 @@ export async function buildGraph(rootDir, opts = {}) {
     }
   }
 
+  // Bulk-fetch all node IDs for a file in one query (replaces per-node getNodeId calls)
+  const bulkGetNodeIds = db.prepare('SELECT id, name, kind, line FROM nodes WHERE file = ?');
+
   const insertAll = db.transaction(() => {
     for (const [relPath, symbols] of allSymbols) {
       fileSymbols.set(relPath, symbols);
 
+      // Phase 1: Insert file node + definitions + exports (no children yet)
       insertNode.run(relPath, 'file', relPath, 0, null, null);
-      const fileRow = getNodeId.get(relPath, 'file', relPath, 0);
       for (const def of symbols.definitions) {
         insertNode.run(def.name, def.kind, relPath, def.line, def.endLine || null, null);
-        const defRow = getNodeId.get(def.name, def.kind, relPath, def.line);
-        // File → top-level definition contains edge
-        if (fileRow && defRow) {
-          insertEdge.run(fileRow.id, defRow.id, 'contains', 1.0, 0);
+      }
+      for (const exp of symbols.exports) {
+        insertNode.run(exp.name, exp.kind, relPath, exp.line, null, null);
+      }
+
+      // Phase 2: Bulk-fetch IDs for file + definitions
+      const nodeIdMap = new Map();
+      for (const row of bulkGetNodeIds.all(relPath)) {
+        nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
+      }
+
+      // Phase 3: Insert children with parent_id from the map
+      for (const def of symbols.definitions) {
+        if (!def.children?.length) continue;
+        const defId = nodeIdMap.get(`${def.name}|${def.kind}|${def.line}`);
+        if (!defId) continue;
+        for (const child of def.children) {
+          insertNode.run(child.name, child.kind, relPath, child.line, child.endLine || null, defId);
         }
-        if (def.children?.length && defRow) {
+      }
+
+      // Phase 4: Re-fetch to include children IDs
+      nodeIdMap.clear();
+      for (const row of bulkGetNodeIds.all(relPath)) {
+        nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
+      }
+
+      // Phase 5: Insert edges using the cached ID map
+      const fileId = nodeIdMap.get(`${relPath}|file|0`);
+      for (const def of symbols.definitions) {
+        const defId = nodeIdMap.get(`${def.name}|${def.kind}|${def.line}`);
+        // File → top-level definition contains edge
+        if (fileId && defId) {
+          insertEdge.run(fileId, defId, 'contains', 1.0, 0);
+        }
+        if (def.children?.length && defId) {
           for (const child of def.children) {
-            insertNode.run(
-              child.name,
-              child.kind,
-              relPath,
-              child.line,
-              child.endLine || null,
-              defRow.id,
-            );
-            // Parent → child contains edge
-            const childRow = getNodeId.get(child.name, child.kind, relPath, child.line);
-            if (childRow) {
-              insertEdge.run(defRow.id, childRow.id, 'contains', 1.0, 0);
+            const childId = nodeIdMap.get(`${child.name}|${child.kind}|${child.line}`);
+            if (childId) {
+              // Parent → child contains edge
+              insertEdge.run(defId, childId, 'contains', 1.0, 0);
               // Parameter → parent parameter_of edge (inverse direction)
               if (child.kind === 'parameter') {
-                insertEdge.run(childRow.id, defRow.id, 'parameter_of', 1.0, 0);
+                insertEdge.run(childId, defId, 'parameter_of', 1.0, 0);
               }
             }
           }
         }
-      }
-      for (const exp of symbols.exports) {
-        insertNode.run(exp.name, exp.kind, relPath, exp.line, null, null);
       }
 
       // Update file hash with real mtime+size for incremental builds
@@ -1223,7 +1249,9 @@ export async function buildGraph(rootDir, opts = {}) {
   }
   try {
     const { buildStructure } = await import('./structure.js');
-    buildStructure(db, fileSymbols, rootDir, lineCountMap, relDirs);
+    // Pass changed file paths so incremental builds can scope the rebuild
+    const changedFilePaths = isFullBuild ? null : [...allSymbols.keys()];
+    buildStructure(db, fileSymbols, rootDir, lineCountMap, relDirs, changedFilePaths);
   } catch (err) {
     debug(`Structure analysis failed: ${err.message}`);
   }
@@ -1244,24 +1272,48 @@ export async function buildGraph(rootDir, opts = {}) {
   }
   _t.rolesMs = performance.now() - _t.roles0;
 
-  // Always-on AST node extraction (calls, new, string, regex, throw, await)
+  // For incremental builds, filter out reverse-dep-only files from AST/complexity
+  // — their content didn't change, so existing ast_nodes/function_complexity rows are valid.
+  let astComplexitySymbols = allSymbols;
+  if (!isFullBuild) {
+    const reverseDepFiles = new Set(
+      filesToParse.filter((item) => item._reverseDepOnly).map((item) => item.relPath),
+    );
+    if (reverseDepFiles.size > 0) {
+      astComplexitySymbols = new Map();
+      for (const [relPath, symbols] of allSymbols) {
+        if (!reverseDepFiles.has(relPath)) {
+          astComplexitySymbols.set(relPath, symbols);
+        }
+      }
+      debug(
+        `AST/complexity: processing ${astComplexitySymbols.size} changed files (skipping ${reverseDepFiles.size} reverse-deps)`,
+      );
+    }
+  }
+
+  // AST node extraction (calls, new, string, regex, throw, await)
   // Must run before complexity which releases _tree references
   _t.ast0 = performance.now();
-  try {
-    const { buildAstNodes } = await import('./ast.js');
-    await buildAstNodes(db, allSymbols, rootDir, engineOpts);
-  } catch (err) {
-    debug(`AST node extraction failed: ${err.message}`);
+  if (opts.ast !== false) {
+    try {
+      const { buildAstNodes } = await import('./ast.js');
+      await buildAstNodes(db, astComplexitySymbols, rootDir, engineOpts);
+    } catch (err) {
+      debug(`AST node extraction failed: ${err.message}`);
+    }
   }
   _t.astMs = performance.now() - _t.ast0;
 
   // Compute per-function complexity metrics (cognitive, cyclomatic, nesting)
   _t.complexity0 = performance.now();
-  try {
-    const { buildComplexityMetrics } = await import('./complexity.js');
-    await buildComplexityMetrics(db, allSymbols, rootDir, engineOpts);
-  } catch (err) {
-    debug(`Complexity analysis failed: ${err.message}`);
+  if (opts.complexity !== false) {
+    try {
+      const { buildComplexityMetrics } = await import('./complexity.js');
+      await buildComplexityMetrics(db, astComplexitySymbols, rootDir, engineOpts);
+    } catch (err) {
+      debug(`Complexity analysis failed: ${err.message}`);
+    }
   }
   _t.complexityMs = performance.now() - _t.complexity0;
 
@@ -1342,6 +1394,7 @@ export async function buildGraph(rootDir, opts = {}) {
       engine: engineName,
       engine_version: engineVersion || '',
       codegraph_version: CODEGRAPH_VERSION,
+      schema_version: String(CURRENT_SCHEMA_VERSION),
       built_at: new Date().toISOString(),
       node_count: nodeCount,
       edge_count: actualEdgeCount,
@@ -1379,6 +1432,7 @@ export async function buildGraph(rootDir, opts = {}) {
       edgesMs: +_t.edgesMs.toFixed(1),
       structureMs: +_t.structureMs.toFixed(1),
       rolesMs: +_t.rolesMs.toFixed(1),
+      astMs: +_t.astMs.toFixed(1),
       complexityMs: +_t.complexityMs.toFixed(1),
       ...(_t.cfgMs != null && { cfgMs: +_t.cfgMs.toFixed(1) }),
       ...(_t.dataflowMs != null && { dataflowMs: +_t.dataflowMs.toFixed(1) }),

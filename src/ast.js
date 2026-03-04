@@ -156,9 +156,8 @@ export async function buildAstNodes(db, fileSymbols, _rootDir, _engineOpts) {
     return;
   }
 
-  const getNodeId = db.prepare(
-    'SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? AND line = ?',
-  );
+  // Bulk-fetch all node IDs per file (replaces per-def getNodeId calls)
+  const bulkGetNodeIds = db.prepare('SELECT id, name, kind, line FROM nodes WHERE file = ?');
 
   const tx = db.transaction((rows) => {
     for (const r of rows) {
@@ -172,14 +171,20 @@ export async function buildAstNodes(db, fileSymbols, _rootDir, _engineOpts) {
     const rows = [];
     const defs = symbols.definitions || [];
 
+    // Pre-load all node IDs for this file into a map
+    const nodeIdMap = new Map();
+    for (const row of bulkGetNodeIds.all(relPath)) {
+      nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
+    }
+
     // 1. Call nodes from symbols.calls (all languages)
     if (symbols.calls) {
       for (const call of symbols.calls) {
         const parentDef = findParentDef(defs, call.line);
         let parentNodeId = null;
         if (parentDef) {
-          const row = getNodeId.get(parentDef.name, parentDef.kind, relPath, parentDef.line);
-          if (row) parentNodeId = row.id;
+          parentNodeId =
+            nodeIdMap.get(`${parentDef.name}|${parentDef.kind}|${parentDef.line}`) || null;
         }
         rows.push({
           file: relPath,
@@ -199,7 +204,7 @@ export async function buildAstNodes(db, fileSymbols, _rootDir, _engineOpts) {
       if (symbols._tree) {
         // WASM path: walk the tree-sitter AST
         const astRows = [];
-        walkAst(symbols._tree.rootNode, defs, relPath, astRows, getNodeId);
+        walkAst(symbols._tree.rootNode, defs, relPath, astRows, nodeIdMap);
         rows.push(...astRows);
       } else if (symbols.astNodes?.length) {
         // Native path: use pre-extracted AST nodes from Rust
@@ -207,8 +212,8 @@ export async function buildAstNodes(db, fileSymbols, _rootDir, _engineOpts) {
           const parentDef = findParentDef(defs, n.line);
           let parentNodeId = null;
           if (parentDef) {
-            const row = getNodeId.get(parentDef.name, parentDef.kind, relPath, parentDef.line);
-            if (row) parentNodeId = row.id;
+            parentNodeId =
+              nodeIdMap.get(`${parentDef.name}|${parentDef.kind}|${parentDef.line}`) || null;
           }
           rows.push({
             file: relPath,
@@ -235,7 +240,7 @@ export async function buildAstNodes(db, fileSymbols, _rootDir, _engineOpts) {
 /**
  * Walk a tree-sitter AST and collect new/throw/await/string/regex nodes.
  */
-function walkAst(node, defs, relPath, rows, getNodeId) {
+function walkAst(node, defs, relPath, rows, nodeIdMap) {
   const kind = JS_TS_AST_TYPES[node.type];
   if (kind) {
     // tree-sitter lines are 0-indexed, our DB uses 1-indexed
@@ -259,7 +264,7 @@ function walkAst(node, defs, relPath, rows, getNodeId) {
       if (content.length < 2) {
         // Still recurse children
         for (let i = 0; i < node.childCount; i++) {
-          walkAst(node.child(i), defs, relPath, rows, getNodeId);
+          walkAst(node.child(i), defs, relPath, rows, nodeIdMap);
         }
         return;
       }
@@ -273,8 +278,7 @@ function walkAst(node, defs, relPath, rows, getNodeId) {
     const parentDef = findParentDef(defs, line);
     let parentNodeId = null;
     if (parentDef) {
-      const row = getNodeId.get(parentDef.name, parentDef.kind, relPath, parentDef.line);
-      if (row) parentNodeId = row.id;
+      parentNodeId = nodeIdMap.get(`${parentDef.name}|${parentDef.kind}|${parentDef.line}`) || null;
     }
 
     rows.push({
@@ -293,7 +297,7 @@ function walkAst(node, defs, relPath, rows, getNodeId) {
   }
 
   for (let i = 0; i < node.childCount; i++) {
-    walkAst(node.child(i), defs, relPath, rows, getNodeId);
+    walkAst(node.child(i), defs, relPath, rows, nodeIdMap);
   }
 }
 
