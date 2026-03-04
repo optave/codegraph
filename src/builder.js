@@ -522,9 +522,9 @@ export async function buildGraph(rootDir, opts = {}) {
   }
 
   if (!isFullBuild && parseChanges.length === 0 && removed.length === 0) {
-    // Check if optional analysis was requested but never computed
+    // Check if default analyses were never computed (e.g. legacy DB)
     const needsCfg =
-      opts.cfg &&
+      opts.cfg !== false &&
       (() => {
         try {
           return db.prepare('SELECT COUNT(*) as c FROM cfg_blocks').get().c === 0;
@@ -533,7 +533,7 @@ export async function buildGraph(rootDir, opts = {}) {
         }
       })();
     const needsDataflow =
-      opts.dataflow &&
+      opts.dataflow !== false &&
       (() => {
         try {
           return (
