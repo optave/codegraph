@@ -421,9 +421,9 @@ describe('version/engine mismatch auto-promotes to full rebuild', () => {
   });
 
   test('version mismatch triggers full rebuild', async () => {
-    // Tamper the stored version to simulate an upgrade
+    // Tamper the stored schema version to simulate a schema upgrade
     const db = openDb(promoDbPath);
-    setBuildMeta(db, { codegraph_version: '0.0.0' });
+    setBuildMeta(db, { schema_version: '0' });
     closeDb(db);
 
     const stderrSpy = [];
@@ -444,13 +444,13 @@ describe('version/engine mismatch auto-promotes to full rebuild', () => {
     // Should NOT say "No changes detected" (that would mean incremental ran)
     expect(output).not.toContain('No changes detected');
 
-    // Verify the stored version is now updated
+    // Verify the stored schema version is now updated
     const db2 = new Database(promoDbPath, { readonly: true });
-    const version = db2
-      .prepare("SELECT value FROM build_meta WHERE key = 'codegraph_version'")
+    const schemaVersion = db2
+      .prepare("SELECT value FROM build_meta WHERE key = 'schema_version'")
       .get();
     db2.close();
-    expect(version.value).not.toBe('0.0.0');
+    expect(schemaVersion.value).not.toBe('0');
   });
 
   test('engine mismatch triggers full rebuild', async () => {

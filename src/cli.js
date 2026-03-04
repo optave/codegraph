@@ -105,6 +105,8 @@ program
   .command('build [dir]')
   .description('Parse repo and build graph in .codegraph/graph.db')
   .option('--no-incremental', 'Force full rebuild (ignore file hashes)')
+  .option('--no-ast', 'Skip AST node extraction (calls, new, string, regex, throw, await)')
+  .option('--no-complexity', 'Skip complexity metrics computation')
   .option('--no-dataflow', 'Skip data flow edge extraction')
   .option('--no-cfg', 'Skip control flow graph building')
   .action(async (dir, opts) => {
@@ -112,6 +114,8 @@ program
     const engine = program.opts().engine;
     await buildGraph(root, {
       incremental: opts.incremental,
+      ast: opts.ast,
+      complexity: opts.complexity,
       engine,
       dataflow: opts.dataflow,
       cfg: opts.cfg,
