@@ -301,7 +301,7 @@ pub fn get_cfg_rules(lang_id: &str) -> Option<&'static CfgRules> {
         "go" => Some(&GO_CFG),
         "rust" => Some(&RUST_CFG),
         "java" => Some(&JAVA_CFG),
-        "c_sharp" => Some(&CSHARP_CFG),
+        "csharp" => Some(&CSHARP_CFG),
         "ruby" => Some(&RUBY_CFG),
         "php" => Some(&PHP_CFG),
         _ => None,

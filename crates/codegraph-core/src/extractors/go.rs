@@ -126,7 +126,7 @@ fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                                                     end_line: Some(end_line(&member)),
                                                     decorators: None,
                                                     complexity: None,
-                                                    cfg: build_function_cfg(&member, "go"),
+                                                    cfg: None,
                                                     children: None,
                                                 });
                                             }

@@ -115,8 +115,8 @@ fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                                         line: start_line(&child),
                                         end_line: Some(end_line(&child)),
                                         decorators: None,
-                                        complexity: compute_all_metrics(&child, source, "c_sharp"),
-                                        cfg: build_function_cfg(&child, "c_sharp"),
+                                        complexity: compute_all_metrics(&child, source, "csharp"),
+                                        cfg: build_function_cfg(&child, "csharp"),
                                         children: None,
                                     });
                                 }
@@ -159,8 +159,8 @@ fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     line: start_line(node),
                     end_line: Some(end_line(node)),
                     decorators: None,
-                    complexity: compute_all_metrics(node, source, "c_sharp"),
-                    cfg: build_function_cfg(node, "c_sharp"),
+                    complexity: compute_all_metrics(node, source, "csharp"),
+                    cfg: build_function_cfg(node, "csharp"),
                     children: opt_children(children),
                 });
             }
@@ -181,8 +181,8 @@ fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     line: start_line(node),
                     end_line: Some(end_line(node)),
                     decorators: None,
-                    complexity: compute_all_metrics(node, source, "c_sharp"),
-                    cfg: build_function_cfg(node, "c_sharp"),
+                    complexity: compute_all_metrics(node, source, "csharp"),
+                    cfg: build_function_cfg(node, "csharp"),
                     children: opt_children(children),
                 });
             }
@@ -202,8 +202,8 @@ fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     line: start_line(node),
                     end_line: Some(end_line(node)),
                     decorators: None,
-                    complexity: compute_all_metrics(node, source, "c_sharp"),
-                    cfg: build_function_cfg(node, "c_sharp"),
+                    complexity: compute_all_metrics(node, source, "csharp"),
+                    cfg: build_function_cfg(node, "csharp"),
                     children: None,
                 });
             }
