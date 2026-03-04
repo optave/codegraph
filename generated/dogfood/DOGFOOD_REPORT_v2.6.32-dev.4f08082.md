@@ -311,8 +311,10 @@ When the build metadata version doesn't match the current CLI version, suggest o
 
 > v3.0.0 added `auto-promote full rebuild` feature (#294) — when build metadata version mismatches, automatically promotes to a full rebuild.
 
-### 10.3 Extend native engine with parameter/property/constant support
+### 10.3 Extend native engine with parameter/property/constant support — RESOLVED post-v3.0.0
 The native engine doesn't extract parameter, property, or constant nodes. While core function/method/class parity is perfect, these extended types are useful for the `children` command and containment analysis.
+
+> Fixed in commits `52d6dcc` (#309) and `6101b5e` (#314) — native engine parity gap closed for extended node types and AST node kinds.
 
 ## 11. Testing Plan
 

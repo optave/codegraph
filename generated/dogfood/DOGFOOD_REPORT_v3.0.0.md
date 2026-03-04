@@ -226,19 +226,23 @@ Build: `npx codegraph build <repo> --no-incremental --verbose`
 
 ## 8. Bugs Found
 
-### BUG 1: Native engine reports version 2.6.0 (Low)
+### BUG 1: Native engine reports version 2.6.0 (Low) — RESOLVED post-v3.0.0
 - **Issue:** [#305](https://github.com/optave/codegraph/issues/305)
-- **PR:** Open — cosmetic, requires Cargo.toml version bump + native binary rebuild
+- **PR:** [#310](https://github.com/optave/codegraph/pull/310)
 - **Symptoms:** `codegraph info` shows "Native version: 2.6.0" when package is v3.0.0. Build metadata shows version mismatch warning.
 - **Root cause:** `Cargo.toml` version not bumped to 3.0.0 before release build.
 - **Impact:** Cosmetic, but may trigger unnecessary full rebuilds due to version mismatch detection in `buildGraph()`.
 
-### BUG 2: Native engine only stores 'call' AST nodes (Medium)
+> Fixed in commit `8b96f7c` — Cargo.toml version bumped to 3.0.0, CI now includes Cargo.toml in publish version bump commit (#315).
+
+### BUG 2: Native engine only stores 'call' AST nodes (Medium) — RESOLVED post-v3.0.0
 - **Issue:** [#306](https://github.com/optave/codegraph/issues/306)
-- **PR:** Open — requires extending Rust extractors or documenting limitation
+- **PR:** [#314](https://github.com/optave/codegraph/pull/314)
 - **Symptoms:** `ast --kind new/string/regex/throw/await` all return "No AST nodes found" when graph built with native engine.
 - **Root cause:** Native Rust engine extracts only `call_expression` nodes. It doesn't preserve the parse tree, so the JavaScript-side AST walk in `ast.js` cannot extract the 5 additional node kinds. WASM engine works correctly.
 - **Impact:** Users relying on native engine (default) get incomplete AST query results. 24716 nodes stored vs 40612 with WASM for the same codebase.
+
+> Fixed in commit `6101b5e` — native engine now extracts all 6 AST node kinds (call, new, throw, await, string, regex).
 
 ---
 
@@ -249,13 +253,17 @@ Currently these are opt-in flags. Users discovering the `cfg` and `dataflow` com
 - Making them default (with `--no-cfg`/`--no-dataflow` to opt out)
 - Or showing a more prominent hint in the `cfg`/`dataflow` commands
 
-### 9.2 Document AST node kind limitations per engine
+### 9.2 Document AST node kind limitations per engine — RESOLVED post-v3.0.0
 The `ast` command help should note that non-call kinds require the WASM engine, or the native engine should be extended for parity.
 
-### 9.3 Benchmark scripts should handle missing WASM grammars
+> Fixed in commit `6101b5e` (#314) — native engine now extracts all 6 AST node kinds, eliminating the parity gap entirely.
+
+### 9.3 Benchmark scripts should handle missing WASM grammars — RESOLVED post-v3.0.0
 All 4 benchmark scripts crash if WASM grammars aren't built. They should either:
 - Fall back to native-only benchmarking
 - Or print a helpful error message instead of crashing
+
+> Fixed in commit `189cefb` (#311) — all 4 benchmark scripts now handle missing WASM grammars gracefully.
 
 ### 9.4 `flow --list` should work after build — RESOLVED post-v3.0.0
 `flow --list` returns "No entry points found" after a standard build. Entry point classification happens during build (50 entry points detected in roles), but `flow --list` doesn't find them. These may need to be stored explicitly.
@@ -334,5 +342,5 @@ Justification: Solid feature delivery with comprehensive CLI and MCP coverage. T
 
 | Type | Number | Title | Status |
 |------|--------|-------|--------|
-| Issue | [#305](https://github.com/optave/codegraph/issues/305) | bug: native engine reports version 2.6.0 in codegraph v3.0.0 | open |
-| Issue | [#306](https://github.com/optave/codegraph/issues/306) | bug: native engine only stores 'call' AST nodes, missing 5 other kinds | open |
+| Issue | [#305](https://github.com/optave/codegraph/issues/305) | bug: native engine reports version 2.6.0 in codegraph v3.0.0 | Closed — fixed post-v3.0.0 (#310) |
+| Issue | [#306](https://github.com/optave/codegraph/issues/306) | bug: native engine only stores 'call' AST nodes, missing 5 other kinds | Closed — fixed post-v3.0.0 (#314) |
