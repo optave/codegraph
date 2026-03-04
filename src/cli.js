@@ -105,8 +105,8 @@ program
   .command('build [dir]')
   .description('Parse repo and build graph in .codegraph/graph.db')
   .option('--no-incremental', 'Force full rebuild (ignore file hashes)')
-  .option('--dataflow', 'Extract data flow edges (flows_to, returns, mutates)')
-  .option('--cfg', 'Build intraprocedural control flow graphs')
+  .option('--no-dataflow', 'Skip data flow edge extraction')
+  .option('--no-cfg', 'Skip control flow graph building')
   .action(async (dir, opts) => {
     const root = path.resolve(dir || '.');
     const engine = program.opts().engine;

@@ -638,7 +638,7 @@ const BASE_TOOLS = [
   },
   {
     name: 'cfg',
-    description: 'Show intraprocedural control flow graph for a function. Requires build --cfg.',
+    description: 'Show intraprocedural control flow graph for a function.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -658,7 +658,7 @@ const BASE_TOOLS = [
   },
   {
     name: 'dataflow',
-    description: 'Show data flow edges or data-dependent blast radius. Requires build --dataflow.',
+    description: 'Show data flow edges or data-dependent blast radius.',
     inputSchema: {
       type: 'object',
       properties: {

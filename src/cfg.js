@@ -1241,7 +1241,7 @@ export function cfgData(name, customDbPath, opts = {}) {
     return {
       name,
       results: [],
-      warning: 'No CFG data found. Run `codegraph build --cfg` first.',
+      warning: 'No CFG data found. Rebuild with `codegraph build` (CFG is now included by default).',
     };
   }
 
