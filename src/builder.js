@@ -1272,7 +1272,7 @@ export async function buildGraph(rootDir, opts = {}) {
   _t.complexityMs = performance.now() - _t.complexity0;
 
   // CFG analysis (skip with --no-cfg)
-  if (opts.cfg) {
+  if (opts.cfg !== false) {
     _t.cfg0 = performance.now();
     try {
       const { buildCFGData } = await import('./cfg.js');
@@ -1284,7 +1284,7 @@ export async function buildGraph(rootDir, opts = {}) {
   }
 
   // Dataflow analysis (skip with --no-dataflow)
-  if (opts.dataflow) {
+  if (opts.dataflow !== false) {
     _t.dataflow0 = performance.now();
     try {
       const { buildDataflowEdges } = await import('./dataflow.js');
