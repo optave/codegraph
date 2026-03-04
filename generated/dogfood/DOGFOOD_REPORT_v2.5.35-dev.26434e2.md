@@ -325,8 +325,10 @@ Add an assertion or warning in the build process that compares the post-incremen
 
 > v2.6.0 added node/edge count drift detection after incremental builds — warns when counts drift >20% and suggests `--no-incremental`. Threshold is configurable via `build.driftThreshold`.
 
-### 9.2 Embedding benchmark should declare `@huggingface/transformers` as a devDependency
+### 9.2 Embedding benchmark should declare `@huggingface/transformers` as a devDependency — SUPERSEDED in v2.5.0
 The embedding benchmark script fails because `@huggingface/transformers` is an optional dep that doesn't auto-install. Consider making it a devDependency so benchmark scripts work out of the box.
+
+> Superseded: v2.5.0 added an interactive install prompt in `embedder.js` when the package is missing, and the optional-dep design is intentional to avoid bloating installs for contributors who don't need ML models.
 
 ### 9.3 `complexity` should warn when data is missing — RESOLVED in v2.6.0
 When `complexity` returns "No complexity data found" but a graph exists, it should suggest `build --no-incremental` to populate the data, rather than implying no graph exists.
