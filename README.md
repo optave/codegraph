@@ -208,8 +208,8 @@ Full agent setup: [AI Agent Guide](docs/guides/ai-agent-guide.md) &middot; [CLAU
 | 📋 | **Composite audit** | Single `audit` command combining explain + impact + health metrics per function — one call instead of 3-4 |
 | 🚦 | **Triage queue** | `triage` merges connectivity, hotspots, roles, and complexity into a ranked audit priority queue |
 | 📦 | **Batch querying** | Accept a list of targets and return all results in one JSON payload — enables multi-agent parallel dispatch |
-| 🔬 | **Dataflow analysis** | Track how data moves through functions with `flows_to`, `returns`, and `mutates` edges — opt-in via `build --dataflow` (JS/TS) |
-| 🧩 | **Control flow graph** | Intraprocedural CFG construction for all 11 languages — `cfg` command with text/DOT/Mermaid output, opt-in via `build --cfg` |
+| 🔬 | **Dataflow analysis** | Track how data moves through functions with `flows_to`, `returns`, and `mutates` edges — included by default (JS/TS), skip with `--no-dataflow` |
+| 🧩 | **Control flow graph** | Intraprocedural CFG construction for all 11 languages — `cfg` command with text/DOT/Mermaid output, included by default, skip with `--no-cfg` |
 | 🔎 | **AST node querying** | Stored queryable AST nodes (calls, `new`, string, regex, throw, await) — `ast` command with SQL GLOB pattern matching |
 | 🧬 | **Expanded node/edge types** | `parameter`, `property`, `constant` node kinds with `parent_id` for sub-declaration queries; `contains`, `parameter_of`, `receiver` edge kinds |
 | 📊 | **Exports analysis** | `exports <file>` shows all exported symbols with per-symbol consumers, re-export detection, and counts |
@@ -327,7 +327,7 @@ codegraph ast -k call                 # Filter by kind: call, new, string, regex
 codegraph ast -k throw --file src/    # Combine kind and file filters
 ```
 
-> **Note:** Dataflow requires `codegraph build --dataflow` (JS/TS only). CFG requires `codegraph build --cfg`. Both are opt-in to keep default builds fast.
+> **Note:** Dataflow (JS/TS only) and CFG are included by default. Use `--no-dataflow` / `--no-cfg` for faster builds.
 
 ### Audit, Triage & Batch
 
