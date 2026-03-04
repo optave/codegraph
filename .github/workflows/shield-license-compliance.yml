@@ -32,12 +32,12 @@ jobs:
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            npm ci --prefer-offline --no-audit --no-fund --ignore-scripts && break
+            npm install --prefer-offline --no-audit --no-fund --ignore-scripts && break
             if [ "$attempt" -lt 3 ]; then
-              echo "::warning::npm ci attempt $attempt failed, retrying in 15s..."
+              echo "::warning::npm install attempt $attempt failed, retrying in 15s..."
               sleep 15
             else
-              echo "::error::npm ci failed after 3 attempts"
+              echo "::error::npm install failed after 3 attempts"
               exit 1
             fi
           done
