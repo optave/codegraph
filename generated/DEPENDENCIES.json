@@ -1,8 +1,8 @@
 {
-  "version": "3.0.0",
+  "version": "3.0.1",
   "name": "@optave/codegraph",
   "problems": [
-    "invalid: @optave/codegraph-linux-x64-gnu@2.6.0 /home/runner/work/codegraph/codegraph/node_modules/@optave/codegraph-linux-x64-gnu"
+    "invalid: @optave/codegraph-linux-x64-gnu@3.0.0 /home/runner/work/codegraph/codegraph/node_modules/@optave/codegraph-linux-x64-gnu"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": {
@@ -740,12 +740,12 @@
     "@optave/codegraph-darwin-arm64": {},
     "@optave/codegraph-darwin-x64": {},
     "@optave/codegraph-linux-x64-gnu": {
-      "version": "2.6.0",
-      "resolved": "https://registry.npmjs.org/@optave/codegraph-linux-x64-gnu/-/codegraph-linux-x64-gnu-2.6.0.tgz",
+      "version": "3.0.0",
+      "resolved": "https://registry.npmjs.org/@optave/codegraph-linux-x64-gnu/-/codegraph-linux-x64-gnu-3.0.0.tgz",
       "overridden": false,
-      "invalid": "\"3.0.0\" from the root project",
+      "invalid": "\"3.0.1\" from the root project",
       "problems": [
-        "invalid: @optave/codegraph-linux-x64-gnu@2.6.0 /home/runner/work/codegraph/codegraph/node_modules/@optave/codegraph-linux-x64-gnu"
+        "invalid: @optave/codegraph-linux-x64-gnu@3.0.0 /home/runner/work/codegraph/codegraph/node_modules/@optave/codegraph-linux-x64-gnu"
       ]
     },
     "@optave/codegraph-win32-x64-msvc": {},
@@ -1083,7 +1083,7 @@
   },
   "error": {
     "code": "ELSPROBLEMS",
-    "summary": "invalid: @optave/codegraph-linux-x64-gnu@2.6.0 /home/runner/work/codegraph/codegraph/node_modules/@optave/codegraph-linux-x64-gnu",
+    "summary": "invalid: @optave/codegraph-linux-x64-gnu@3.0.0 /home/runner/work/codegraph/codegraph/node_modules/@optave/codegraph-linux-x64-gnu",
     "detail": ""
   }
 }
