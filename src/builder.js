@@ -548,7 +548,11 @@ export async function buildGraph(rootDir, opts = {}) {
 
     if (needsCfg || needsDataflow) {
       info('No file changes. Running pending analysis pass...');
-      const analysisSymbols = await parseFilesAuto(files, rootDir, engineOpts);
+      const analysisOpts = {
+        ...engineOpts,
+        dataflow: needsDataflow && opts.dataflow !== false,
+      };
+      const analysisSymbols = await parseFilesAuto(files, rootDir, analysisOpts);
       if (needsCfg) {
         const { buildCFGData } = await import('./cfg.js');
         await buildCFGData(db, analysisSymbols, rootDir, engineOpts);
