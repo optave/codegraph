@@ -718,11 +718,11 @@ impl<'a> CfgBuilder<'a> {
 
     /// Update label map with loop context (for newly created loops inside labeled stmts).
     fn update_label_map(&mut self, header_idx: u32, exit_idx: u32) {
-        for (_, ctx) in self.label_map.iter_mut() {
-            if ctx.header_idx.is_none() {
-                ctx.header_idx = Some(header_idx);
-                ctx.exit_idx = Some(exit_idx);
-            }
+        if let Some((_, ctx)) = self.label_map.iter_mut().rev()
+            .find(|(_, ctx)| ctx.header_idx.is_none())
+        {
+            ctx.header_idx = Some(header_idx);
+            ctx.exit_idx = Some(exit_idx);
         }
     }
 
@@ -934,38 +934,45 @@ impl<'a> CfgBuilder<'a> {
         let try_end = self.process_statements(&try_stmts, try_block);
 
         // Find catch and finally handlers
-        let mut catch_handler: Option<Node> = None;
+        let mut catch_handlers: Vec<Node> = Vec::new();
         let mut finally_handler: Option<Node> = None;
         let cursor = &mut try_stmt.walk();
         for child in try_stmt.named_children(cursor) {
             if matches_opt(child.kind(), self.rules.catch_node) {
-                catch_handler = Some(child);
+                catch_handlers.push(child);
             }
             if matches_opt(child.kind(), self.rules.finally_node) {
                 finally_handler = Some(child);
             }
         }
 
-        if let Some(catch_node) = catch_handler {
-            let catch_block = self.make_block("catch", Some(node_line(&catch_node)), None, Some("catch"));
-            self.add_edge(try_block, catch_block, "exception");
+        if !catch_handlers.is_empty() {
+            let mut catch_ends: Vec<Option<u32>> = Vec::new();
 
-            let catch_body_node = catch_node.child_by_field_name("body");
-            let catch_stmts: Vec<Node> = if let Some(body) = catch_body_node {
-                self.get_statements(&body)
-            } else {
-                let cursor2 = &mut catch_node.walk();
-                catch_node.named_children(cursor2).collect()
-            };
-            let catch_end = self.process_statements(&catch_stmts, catch_block);
+            for catch_node in &catch_handlers {
+                let catch_block = self.make_block("catch", Some(node_line(catch_node)), None, Some("catch"));
+                self.add_edge(try_block, catch_block, "exception");
+
+                let catch_body_node = catch_node.child_by_field_name("body");
+                let catch_stmts: Vec<Node> = if let Some(body) = catch_body_node {
+                    self.get_statements(&body)
+                } else {
+                    let cursor2 = &mut catch_node.walk();
+                    catch_node.named_children(cursor2).collect()
+                };
+                let catch_end = self.process_statements(&catch_stmts, catch_block);
+                catch_ends.push(catch_end);
+            }
 
             if let Some(finally_node) = finally_handler {
                 let finally_block = self.make_block("finally", Some(node_line(&finally_node)), None, Some("finally"));
                 if let Some(te) = try_end {
                     self.add_edge(te, finally_block, "fallthrough");
                 }
-                if let Some(ce) = catch_end {
-                    self.add_edge(ce, finally_block, "fallthrough");
+                for catch_end in &catch_ends {
+                    if let Some(ce) = *catch_end {
+                        self.add_edge(ce, finally_block, "fallthrough");
+                    }
                 }
                 let finally_body = finally_node.child_by_field_name("body");
                 let finally_stmts: Vec<Node> = if let Some(body) = finally_body {
@@ -981,8 +988,10 @@ impl<'a> CfgBuilder<'a> {
                 if let Some(te) = try_end {
                     self.add_edge(te, join_block, "fallthrough");
                 }
-                if let Some(ce) = catch_end {
-                    self.add_edge(ce, join_block, "fallthrough");
+                for catch_end in &catch_ends {
+                    if let Some(ce) = *catch_end {
+                        self.add_edge(ce, join_block, "fallthrough");
+                    }
                 }
             }
         } else if let Some(finally_node) = finally_handler {
