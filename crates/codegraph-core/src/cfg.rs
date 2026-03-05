@@ -314,6 +314,7 @@ pub fn get_cfg_rules(lang_id: &str) -> Option<&'static CfgRules> {
 struct LoopCtx {
     header_idx: u32,
     exit_idx: u32,
+    is_loop: bool,
 }
 
 /// Label context for labeled break/continue.
@@ -548,7 +549,10 @@ impl<'a> CfgBuilder<'a> {
                     .find(|(n, _)| n == name)
                     .and_then(|(_, ctx)| ctx.header_idx)
             } else {
-                self.loop_stack.last().map(|ctx| ctx.header_idx)
+                // Walk back to find the nearest actual loop (skip switch entries)
+                self.loop_stack.iter().rev()
+                    .find(|ctx| ctx.is_loop)
+                    .map(|ctx| ctx.header_idx)
             };
 
             if let Some(target) = target {
@@ -728,7 +732,7 @@ impl<'a> CfgBuilder<'a> {
 
         let exit = self.make_block("body", None, None, None);
 
-        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit });
+        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit, is_loop: true });
         self.update_label_map(header, exit);
 
         let body = for_stmt.child_by_field_name("body");
@@ -754,7 +758,7 @@ impl<'a> CfgBuilder<'a> {
 
         let exit = self.make_block("body", None, None, None);
 
-        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit });
+        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit, is_loop: true });
         self.update_label_map(header, exit);
 
         let body = while_stmt.child_by_field_name("body");
@@ -781,7 +785,7 @@ impl<'a> CfgBuilder<'a> {
         let cond_block = self.make_block("loop_header", None, None, Some("do-while"));
         let exit = self.make_block("body", None, None, None);
 
-        self.loop_stack.push(LoopCtx { header_idx: cond_block, exit_idx: exit });
+        self.loop_stack.push(LoopCtx { header_idx: cond_block, exit_idx: exit, is_loop: true });
         self.update_label_map(cond_block, exit);
 
         let body = do_stmt.child_by_field_name("body");
@@ -806,7 +810,7 @@ impl<'a> CfgBuilder<'a> {
 
         let exit = self.make_block("body", None, None, None);
 
-        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit });
+        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit, is_loop: true });
         self.update_label_map(header, exit);
 
         let body = loop_stmt.child_by_field_name("body");
@@ -823,7 +827,14 @@ impl<'a> CfgBuilder<'a> {
 
         // No loop_exit from header — only exit via break
         self.loop_stack.pop();
-        Some(exit)
+
+        // If no break targeted the exit block, subsequent code is unreachable
+        let has_break_to_exit = self.edges.iter().any(|e| e.target_index == exit);
+        if has_break_to_exit {
+            Some(exit)
+        } else {
+            None
+        }
     }
 
     fn process_switch(&mut self, switch_stmt: &Node, current: u32) -> Option<u32> {
@@ -834,8 +845,8 @@ impl<'a> CfgBuilder<'a> {
 
         let join_block = self.make_block("body", None, None, None);
 
-        // Switch acts like a break target
-        self.loop_stack.push(LoopCtx { header_idx: switch_header, exit_idx: join_block });
+        // Switch acts like a break target but not a continue target
+        self.loop_stack.push(LoopCtx { header_idx: switch_header, exit_idx: join_block, is_loop: false });
 
         // Get case children from body field or direct children
         let container = switch_stmt.child_by_field_name("body").unwrap_or(*switch_stmt);
@@ -869,13 +880,14 @@ impl<'a> CfgBuilder<'a> {
 
             let case_stmts: Vec<Node> = if let Some(body_node) = case_body_node {
                 self.get_statements(&body_node)
+            } else if let Some(value_node) = case_clause.child_by_field_name("value") {
+                // Rust match_arm: the `value` field is the arm expression body
+                vec![value_node]
             } else {
-                let value_node = case_clause.child_by_field_name("value");
                 let pattern_node = case_clause.child_by_field_name("pattern");
                 let cursor2 = &mut case_clause.walk();
                 case_clause.named_children(cursor2)
                     .filter(|child| {
-                        if let Some(ref v) = value_node { if child.id() == v.id() { return false; } }
                         if let Some(ref p) = pattern_node { if child.id() == p.id() { return false; } }
                         child.kind() != "switch_label"
                     })

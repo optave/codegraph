@@ -712,7 +712,7 @@ fn extract_interface_methods(
                         end_line: Some(end_line(&child)),
                         decorators: None,
                         complexity: None,
-                        cfg: build_function_cfg(&child, "javascript", source),
+                        cfg: None,
                         children: None,
                     });
                 }

@@ -1111,7 +1111,7 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
       // Check if all defs already have native CFG — skip WASM parse if so
       const allNative = symbols.definitions
         .filter((d) => (d.kind === 'function' || d.kind === 'method') && d.line)
-        .every((d) => d.cfg?.blocks?.length);
+        .every((d) => d.cfg === null || d.cfg?.blocks?.length);
 
       // WASM fallback if no cached tree and not all native
       if (!tree && !allNative) {
@@ -1161,7 +1161,7 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
           cfg = def.cfg;
         } else {
           // WASM fallback: compute CFG from tree-sitter AST
-          if (!tree) continue;
+          if (!tree || !complexityRules) continue;
           const funcNode = findFunctionNode(tree.rootNode, def.line, def.endLine, complexityRules);
           if (!funcNode) continue;
           cfg = buildFunctionCFG(funcNode, langId);
