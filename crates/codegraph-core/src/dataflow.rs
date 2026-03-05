@@ -6,6 +6,10 @@ use crate::types::{
     DataflowReturn,
 };
 
+/// Maximum recursion depth for AST traversal to prevent stack overflow
+/// on deeply nested trees. Matches the approach used in cfg.rs.
+const MAX_VISIT_DEPTH: usize = 200;
+
 // ─── Param Strategy ──────────────────────────────────────────────────────
 
 /// Per-language parameter extraction strategy.
@@ -80,6 +84,10 @@ pub struct DataflowRules {
     expression_stmt_node: &'static str,
     call_object_field: Option<&'static str>,
 
+    // Method call name extraction (for languages where method_call uses a different
+    // field than call_function_field, e.g. Rust's method_call_expression has "name")
+    method_call_name_field: Option<&'static str>,
+
     // Structural wrappers
     expression_list_type: Option<&'static str>,
     equals_clause_type: Option<&'static str>,
@@ -135,6 +143,7 @@ static JS_TS_DATAFLOW: DataflowRules = DataflowRules {
     ],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
+    method_call_name_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -181,6 +190,7 @@ static PYTHON_DATAFLOW: DataflowRules = DataflowRules {
     ],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
+    method_call_name_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -226,6 +236,7 @@ static GO_DATAFLOW: DataflowRules = DataflowRules {
     mutating_methods: &[],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
+    method_call_name_field: None,
     expression_list_type: Some("expression_list"),
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -269,6 +280,7 @@ static RUST_DATAFLOW: DataflowRules = DataflowRules {
     mutating_methods: &["push", "pop", "insert", "remove", "clear", "sort", "reverse"],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
+    method_call_name_field: Some("name"),
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -316,6 +328,7 @@ static JAVA_DATAFLOW: DataflowRules = DataflowRules {
     mutating_methods: &["add", "remove", "clear", "put", "set", "push", "pop", "sort"],
     expression_stmt_node: "expression_statement",
     call_object_field: Some("object"),
+    method_call_name_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: Some("argument"),
@@ -364,6 +377,7 @@ static CSHARP_DATAFLOW: DataflowRules = DataflowRules {
     mutating_methods: &["Add", "Remove", "Clear", "Insert", "Sort", "Reverse", "Push", "Pop"],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
+    method_call_name_field: None,
     expression_list_type: None,
     equals_clause_type: Some("equals_value_clause"),
     argument_wrapper_type: Some("argument"),
@@ -416,6 +430,7 @@ static PHP_DATAFLOW: DataflowRules = DataflowRules {
     mutating_methods: &["push", "pop", "shift", "unshift", "splice", "sort", "reverse"],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
+    method_call_name_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: Some("argument"),
@@ -462,6 +477,7 @@ static RUBY_DATAFLOW: DataflowRules = DataflowRules {
     ],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
+    method_call_name_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -504,17 +520,16 @@ fn is_ident(rules: &DataflowRules, kind: &str) -> bool {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        let mut result = String::with_capacity(max + 3);
-        // Take at most `max` bytes, but don't split a char
-        for ch in s.chars() {
-            if result.len() + ch.len_utf8() > max {
-                break;
-            }
-            result.push(ch);
-        }
+        // Find the byte offset of the max-th character
+        let byte_offset = s
+            .char_indices()
+            .nth(max)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        let mut result = s[..byte_offset].to_string();
         result.push('…');
         result
     }
@@ -908,6 +923,7 @@ pub fn extract_dataflow(tree: &Tree, source: &[u8], lang_id: &str) -> Option<Dat
         &mut assignments,
         &mut arg_flows,
         &mut mutations,
+        0,
     );
 
     Some(DataflowResult {
@@ -930,7 +946,12 @@ fn visit(
     assignments: &mut Vec<DataflowAssignment>,
     arg_flows: &mut Vec<DataflowArgFlow>,
     mutations: &mut Vec<DataflowMutation>,
+    depth: usize,
 ) {
+    if depth >= MAX_VISIT_DEPTH {
+        return;
+    }
+
     let t = node.kind();
 
     // Enter function scope
@@ -938,7 +959,7 @@ fn visit(
         enter_scope(node, rules, source, scope_stack, parameters);
         let cursor = &mut node.walk();
         for child in node.named_children(cursor) {
-            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations);
+            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations, depth + 1);
         }
         scope_stack.pop();
         return;
@@ -966,7 +987,7 @@ fn visit(
         }
         let cursor = &mut node.walk();
         for child in node.named_children(cursor) {
-            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations);
+            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations, depth + 1);
         }
         return;
     }
@@ -976,7 +997,7 @@ fn visit(
         handle_var_declarator(node, rules, source, scope_stack, assignments);
         let cursor = &mut node.walk();
         for child in node.named_children(cursor) {
-            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations);
+            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations, depth + 1);
         }
         return;
     }
@@ -986,7 +1007,7 @@ fn visit(
         handle_var_declarator(node, rules, source, scope_stack, assignments);
         let cursor = &mut node.walk();
         for child in node.named_children(cursor) {
-            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations);
+            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations, depth + 1);
         }
         return;
     }
@@ -996,7 +1017,7 @@ fn visit(
         handle_call_expr(node, rules, source, scope_stack, arg_flows);
         let cursor = &mut node.walk();
         for child in node.named_children(cursor) {
-            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations);
+            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations, depth + 1);
         }
         return;
     }
@@ -1006,7 +1027,7 @@ fn visit(
         handle_assignment(node, rules, source, scope_stack, assignments, mutations);
         let cursor = &mut node.walk();
         for child in node.named_children(cursor) {
-            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations);
+            visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations, depth + 1);
         }
         return;
     }
@@ -1019,7 +1040,7 @@ fn visit(
     // Default: visit children
     let cursor = &mut node.walk();
     for child in node.named_children(cursor) {
-        visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations);
+        visit(&child, rules, source, scope_stack, parameters, returns, assignments, arg_flows, mutations, depth + 1);
     }
 }
 
@@ -1341,6 +1362,25 @@ fn handle_expr_stmt_mutation(
                 method_name = Some(node_text(&prop, source).to_string());
             }
             receiver = member_receiver(&fn_node, rules, source);
+        }
+    }
+
+    // Method call pattern: call node has a dedicated name field distinct from
+    // call_function_field (e.g. Rust method_call_expression has "name" + receiver via
+    // member_object_field "value")
+    if method_name.is_none() {
+        if let Some(name_field) = rules.method_call_name_field {
+            if let Some(name_n) = expr.child_by_field_name(name_field) {
+                method_name = Some(node_text(&name_n, source).to_string());
+                // Extract receiver: try member_object_field on the call expr itself
+                if let Some(recv_node) = expr.child_by_field_name(rules.member_object_field) {
+                    if is_ident(rules, recv_node.kind()) {
+                        receiver = Some(node_text(&recv_node, source).to_string());
+                    } else if rules.member_node.is_some_and(|m| m == recv_node.kind()) {
+                        receiver = member_receiver(&recv_node, rules, source);
+                    }
+                }
+            }
         }
     }
 

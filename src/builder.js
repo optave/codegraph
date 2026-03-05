@@ -444,7 +444,7 @@ export async function buildGraph(rootDir, opts = {}) {
     opts.incremental !== false && config.build && config.build.incremental !== false;
 
   // Engine selection: 'native', 'wasm', or 'auto' (default)
-  const engineOpts = { engine: opts.engine || 'auto' };
+  const engineOpts = { engine: opts.engine || 'auto', dataflow: opts.dataflow !== false };
   const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
   info(`Using ${engineName} engine${engineVersion ? ` (v${engineVersion})` : ''}`);
 

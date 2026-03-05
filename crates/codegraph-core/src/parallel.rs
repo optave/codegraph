@@ -10,7 +10,12 @@ use crate::types::FileSymbols;
 /// Parse multiple files in parallel using rayon.
 /// Each thread creates its own Parser (cheap; Language objects are Send+Sync).
 /// Failed files are silently skipped (matches WASM behavior).
-pub fn parse_files_parallel(file_paths: &[String], _root_dir: &str) -> Vec<FileSymbols> {
+/// When `include_dataflow` is false, dataflow extraction is skipped for performance.
+pub fn parse_files_parallel(
+    file_paths: &[String],
+    _root_dir: &str,
+    include_dataflow: bool,
+) -> Vec<FileSymbols> {
     file_paths
         .par_iter()
         .filter_map(|file_path| {
@@ -25,7 +30,9 @@ pub fn parse_files_parallel(file_paths: &[String], _root_dir: &str) -> Vec<FileS
 
             let tree = parser.parse(&source, None)?;
             let mut symbols = extract_symbols(lang, &tree, &source, file_path);
-            symbols.dataflow = extract_dataflow(&tree, &source, lang.lang_id_str());
+            if include_dataflow {
+                symbols.dataflow = extract_dataflow(&tree, &source, lang.lang_id_str());
+            }
             symbols.line_count = Some(line_count);
             Some(symbols)
         })
@@ -33,7 +40,8 @@ pub fn parse_files_parallel(file_paths: &[String], _root_dir: &str) -> Vec<FileS
 }
 
 /// Parse a single file and return its symbols.
-pub fn parse_file(file_path: &str, source: &str) -> Option<FileSymbols> {
+/// When `include_dataflow` is false, dataflow extraction is skipped for performance.
+pub fn parse_file(file_path: &str, source: &str, include_dataflow: bool) -> Option<FileSymbols> {
     let lang = LanguageKind::from_extension(file_path)?;
     let source_bytes = source.as_bytes();
 
@@ -45,7 +53,9 @@ pub fn parse_file(file_path: &str, source: &str) -> Option<FileSymbols> {
     let tree = parser.parse(source_bytes, None)?;
     let line_count = source_bytes.iter().filter(|&&b| b == b'\n').count() as u32 + 1;
     let mut symbols = extract_symbols(lang, &tree, source_bytes, file_path);
-    symbols.dataflow = extract_dataflow(&tree, source_bytes, lang.lang_id_str());
+    if include_dataflow {
+        symbols.dataflow = extract_dataflow(&tree, source_bytes, lang.lang_id_str());
+    }
     symbols.line_count = Some(line_count);
     Some(symbols)
 }
