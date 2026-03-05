@@ -852,7 +852,7 @@ fn member_receiver(member_expr: &Node, rules: &DataflowRules, source: &[u8]) -> 
 
 /// Collect all identifier names referenced within a node.
 fn collect_identifiers(node: &Node, out: &mut Vec<String>, rules: &DataflowRules, source: &[u8], depth: usize) {
-    if depth > MAX_VISIT_DEPTH {
+    if depth >= MAX_VISIT_DEPTH {
         return;
     }
     if is_ident(rules, node.kind()) {
