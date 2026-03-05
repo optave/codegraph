@@ -12,6 +12,7 @@ pub struct CfgRules {
     pub else_via_alternative: bool,
     pub if_consequent_field: Option<&'static str>,
     pub for_nodes: &'static [&'static str],
+    pub condition_field: Option<&'static str>,
     pub while_node: Option<&'static str>,
     pub while_nodes: &'static [&'static str],
     pub do_node: Option<&'static str>,
@@ -23,9 +24,12 @@ pub struct CfgRules {
     pub case_node: Option<&'static str>,
     pub case_nodes: &'static [&'static str],
     pub default_node: Option<&'static str>,
+    pub wildcard_pattern_node: Option<&'static str>,
     pub try_node: Option<&'static str>,
+    pub try_nodes: &'static [&'static str],
     pub catch_node: Option<&'static str>,
     pub finally_node: Option<&'static str>,
+    pub else_node: Option<&'static str>,
     pub return_node: Option<&'static str>,
     pub throw_node: Option<&'static str>,
     pub break_node: Option<&'static str>,
@@ -53,6 +57,7 @@ pub static JS_TS_CFG: CfgRules = CfgRules {
     else_via_alternative: false,
     if_consequent_field: None,
     for_nodes: &["for_statement", "for_in_statement"],
+    condition_field: Some("condition"),
     while_node: Some("while_statement"),
     while_nodes: &[],
     do_node: Some("do_statement"),
@@ -64,9 +69,12 @@ pub static JS_TS_CFG: CfgRules = CfgRules {
     case_node: Some("switch_case"),
     case_nodes: &[],
     default_node: Some("switch_default"),
+    wildcard_pattern_node: None,
     try_node: Some("try_statement"),
+    try_nodes: &[],
     catch_node: Some("catch_clause"),
     finally_node: Some("finally_clause"),
+    else_node: None,
     return_node: Some("return_statement"),
     throw_node: Some("throw_statement"),
     break_node: Some("break_statement"),
@@ -84,6 +92,7 @@ pub static PYTHON_CFG: CfgRules = CfgRules {
     else_via_alternative: false,
     if_consequent_field: None,
     for_nodes: &["for_statement"],
+    condition_field: Some("condition"),
     while_node: Some("while_statement"),
     while_nodes: &[],
     do_node: None,
@@ -95,9 +104,12 @@ pub static PYTHON_CFG: CfgRules = CfgRules {
     case_node: Some("case_clause"),
     case_nodes: &[],
     default_node: None,
+    wildcard_pattern_node: Some("wildcard_pattern"),
     try_node: Some("try_statement"),
+    try_nodes: &[],
     catch_node: Some("except_clause"),
     finally_node: Some("finally_clause"),
+    else_node: Some("else_clause"),
     return_node: Some("return_statement"),
     throw_node: Some("raise_statement"),
     break_node: Some("break_statement"),
@@ -115,6 +127,7 @@ pub static GO_CFG: CfgRules = CfgRules {
     else_via_alternative: true,
     if_consequent_field: None,
     for_nodes: &["for_statement"],
+    condition_field: Some("condition"),
     while_node: None,
     while_nodes: &[],
     do_node: None,
@@ -126,9 +139,12 @@ pub static GO_CFG: CfgRules = CfgRules {
     case_node: Some("expression_case"),
     case_nodes: &["type_case", "communication_case"],
     default_node: Some("default_case"),
+    wildcard_pattern_node: None,
     try_node: None,
+    try_nodes: &[],
     catch_node: None,
     finally_node: None,
+    else_node: None,
     return_node: Some("return_statement"),
     throw_node: None,
     break_node: Some("break_statement"),
@@ -146,6 +162,7 @@ pub static RUST_CFG: CfgRules = CfgRules {
     else_via_alternative: false,
     if_consequent_field: None,
     for_nodes: &["for_expression"],
+    condition_field: None,
     while_node: Some("while_expression"),
     while_nodes: &["while_let_expression"],
     do_node: None,
@@ -157,9 +174,12 @@ pub static RUST_CFG: CfgRules = CfgRules {
     case_node: Some("match_arm"),
     case_nodes: &[],
     default_node: None,
+    wildcard_pattern_node: None,
     try_node: None,
+    try_nodes: &[],
     catch_node: None,
     finally_node: None,
+    else_node: None,
     return_node: Some("return_expression"),
     throw_node: None,
     break_node: Some("break_expression"),
@@ -177,6 +197,7 @@ pub static JAVA_CFG: CfgRules = CfgRules {
     else_via_alternative: true,
     if_consequent_field: None,
     for_nodes: &["for_statement", "enhanced_for_statement"],
+    condition_field: Some("condition"),
     while_node: Some("while_statement"),
     while_nodes: &[],
     do_node: Some("do_statement"),
@@ -188,9 +209,12 @@ pub static JAVA_CFG: CfgRules = CfgRules {
     case_node: Some("switch_block_statement_group"),
     case_nodes: &["switch_rule"],
     default_node: None,
+    wildcard_pattern_node: None,
     try_node: Some("try_statement"),
+    try_nodes: &[],
     catch_node: Some("catch_clause"),
     finally_node: Some("finally_clause"),
+    else_node: None,
     return_node: Some("return_statement"),
     throw_node: Some("throw_statement"),
     break_node: Some("break_statement"),
@@ -208,6 +232,7 @@ pub static CSHARP_CFG: CfgRules = CfgRules {
     else_via_alternative: true,
     if_consequent_field: None,
     for_nodes: &["for_statement", "foreach_statement"],
+    condition_field: Some("condition"),
     while_node: Some("while_statement"),
     while_nodes: &[],
     do_node: Some("do_statement"),
@@ -215,13 +240,16 @@ pub static CSHARP_CFG: CfgRules = CfgRules {
     unless_node: None,
     until_node: None,
     switch_node: Some("switch_statement"),
-    switch_nodes: &[],
+    switch_nodes: &["switch_expression"],
     case_node: Some("switch_section"),
-    case_nodes: &[],
+    case_nodes: &["switch_expression_arm"],
     default_node: None,
+    wildcard_pattern_node: None,
     try_node: Some("try_statement"),
+    try_nodes: &[],
     catch_node: Some("catch_clause"),
     finally_node: Some("finally_clause"),
+    else_node: None,
     return_node: Some("return_statement"),
     throw_node: Some("throw_statement"),
     break_node: Some("break_statement"),
@@ -239,6 +267,7 @@ pub static RUBY_CFG: CfgRules = CfgRules {
     else_via_alternative: false,
     if_consequent_field: None,
     for_nodes: &["for"],
+    condition_field: Some("condition"),
     while_node: Some("while"),
     while_nodes: &[],
     do_node: None,
@@ -250,9 +279,12 @@ pub static RUBY_CFG: CfgRules = CfgRules {
     case_node: Some("when"),
     case_nodes: &[],
     default_node: Some("else"),
+    wildcard_pattern_node: None,
     try_node: Some("begin"),
+    try_nodes: &["body_statement"],
     catch_node: Some("rescue"),
     finally_node: Some("ensure"),
+    else_node: None,
     return_node: Some("return"),
     throw_node: None,
     break_node: Some("break"),
@@ -270,6 +302,7 @@ pub static PHP_CFG: CfgRules = CfgRules {
     else_via_alternative: false,
     if_consequent_field: Some("body"),
     for_nodes: &["for_statement", "foreach_statement"],
+    condition_field: Some("condition"),
     while_node: Some("while_statement"),
     while_nodes: &[],
     do_node: Some("do_statement"),
@@ -281,9 +314,12 @@ pub static PHP_CFG: CfgRules = CfgRules {
     case_node: Some("case_statement"),
     case_nodes: &[],
     default_node: Some("default_statement"),
+    wildcard_pattern_node: None,
     try_node: Some("try_statement"),
+    try_nodes: &[],
     catch_node: Some("catch_clause"),
     finally_node: Some("finally_clause"),
+    else_node: None,
     return_node: Some("return_statement"),
     throw_node: Some("throw_expression"),
     break_node: Some("break_statement"),
@@ -502,6 +538,16 @@ impl<'a> CfgBuilder<'a> {
         // Try/catch/finally
         if matches_opt(kind, self.rules.try_node) {
             return self.process_try_catch(stmt, current);
+        }
+        // Additional try nodes (e.g. Ruby body_statement with rescue)
+        if matches_slice(kind, self.rules.try_nodes) {
+            // Only treat as try if it actually contains a catch/rescue child
+            let cursor = &mut stmt.walk();
+            let has_rescue = stmt.named_children(cursor)
+                .any(|c| matches_opt(c.kind(), self.rules.catch_node));
+            if has_rescue {
+                return self.process_try_catch(stmt, current);
+            }
         }
 
         // Return
@@ -735,9 +781,15 @@ impl<'a> CfgBuilder<'a> {
         self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit, is_loop: true });
         self.update_label_map(header, exit);
 
+        // Check if this for loop has a condition — if not (e.g. Go `for {}`), treat as infinite loop
+        let has_condition = self.rules.condition_field
+            .and_then(|f| for_stmt.child_by_field_name(f))
+            .is_some();
+
         let body = for_stmt.child_by_field_name("body");
         let body_block = self.make_block("loop_body", None, None, None);
-        self.add_edge(header, body_block, "branch_true");
+        let body_edge = if has_condition { "branch_true" } else { "fallthrough" };
+        self.add_edge(header, body_block, body_edge);
 
         if let Some(body) = body {
             let stmts = self.get_statements(&body);
@@ -747,9 +799,21 @@ impl<'a> CfgBuilder<'a> {
             }
         }
 
-        self.add_edge(header, exit, "loop_exit");
         self.loop_stack.pop();
-        Some(exit)
+
+        if has_condition {
+            // Normal for loop with condition — always emit loop_exit edge
+            self.add_edge(header, exit, "loop_exit");
+            Some(exit)
+        } else {
+            // Infinite loop (no condition) — only exit via break
+            let has_break_to_exit = self.edges.iter().any(|e| e.target_index == exit);
+            if has_break_to_exit {
+                Some(exit)
+            } else {
+                None
+            }
+        }
     }
 
     fn process_while_loop(&mut self, while_stmt: &Node, current: u32) -> Option<u32> {
@@ -857,7 +921,11 @@ impl<'a> CfgBuilder<'a> {
 
         for case_clause in &case_children {
             let cc_kind = case_clause.kind();
-            let is_default = matches_opt(cc_kind, self.rules.default_node);
+            let is_default = matches_opt(cc_kind, self.rules.default_node)
+                || (self.rules.wildcard_pattern_node.is_some()
+                    && (matches_opt(cc_kind, self.rules.case_node) || matches_slice(cc_kind, self.rules.case_nodes))
+                    && case_clause.named_child(0)
+                        .is_some_and(|c| matches_opt(c.kind(), self.rules.wildcard_pattern_node)));
             let is_case = is_default
                 || matches_opt(cc_kind, self.rules.case_node)
                 || matches_slice(cc_kind, self.rules.case_nodes);
@@ -924,6 +992,7 @@ impl<'a> CfgBuilder<'a> {
                     let ck = child.kind();
                     !matches_opt(ck, self.rules.catch_node)
                         && !matches_opt(ck, self.rules.finally_node)
+                        && !matches_opt(ck, self.rules.else_node)
                 })
                 .collect();
             (node_line(try_stmt), stmts)
@@ -933,9 +1002,10 @@ impl<'a> CfgBuilder<'a> {
         self.add_edge(current, try_block, "fallthrough");
         let try_end = self.process_statements(&try_stmts, try_block);
 
-        // Find catch and finally handlers
+        // Find catch, finally, and else handlers
         let mut catch_handlers: Vec<Node> = Vec::new();
         let mut finally_handler: Option<Node> = None;
+        let mut else_handler: Option<Node> = None;
         let cursor = &mut try_stmt.walk();
         for child in try_stmt.named_children(cursor) {
             if matches_opt(child.kind(), self.rules.catch_node) {
@@ -944,7 +1014,24 @@ impl<'a> CfgBuilder<'a> {
             if matches_opt(child.kind(), self.rules.finally_node) {
                 finally_handler = Some(child);
             }
+            if matches_opt(child.kind(), self.rules.else_node) {
+                // Only treat as try-else if it's a direct child of the try statement
+                // (not the else_clause of an if inside the try body)
+                else_handler = Some(child);
+            }
         }
+
+        // Process else clause (Python try...except...else): runs when try succeeds
+        let success_end = if let Some(else_node) = else_handler {
+            let else_block = self.make_block("body", Some(node_line(&else_node)), None, Some("else"));
+            if let Some(te) = try_end {
+                self.add_edge(te, else_block, "fallthrough");
+            }
+            let else_stmts = self.get_statements(&else_node);
+            self.process_statements(&else_stmts, else_block)
+        } else {
+            try_end
+        };
 
         if !catch_handlers.is_empty() {
             let mut catch_ends: Vec<Option<u32>> = Vec::new();
@@ -966,8 +1053,8 @@ impl<'a> CfgBuilder<'a> {
 
             if let Some(finally_node) = finally_handler {
                 let finally_block = self.make_block("finally", Some(node_line(&finally_node)), None, Some("finally"));
-                if let Some(te) = try_end {
-                    self.add_edge(te, finally_block, "fallthrough");
+                if let Some(se) = success_end {
+                    self.add_edge(se, finally_block, "fallthrough");
                 }
                 for catch_end in &catch_ends {
                     if let Some(ce) = *catch_end {
@@ -985,8 +1072,8 @@ impl<'a> CfgBuilder<'a> {
                     self.add_edge(fe, join_block, "fallthrough");
                 }
             } else {
-                if let Some(te) = try_end {
-                    self.add_edge(te, join_block, "fallthrough");
+                if let Some(se) = success_end {
+                    self.add_edge(se, join_block, "fallthrough");
                 }
                 for catch_end in &catch_ends {
                     if let Some(ce) = *catch_end {
@@ -996,8 +1083,8 @@ impl<'a> CfgBuilder<'a> {
             }
         } else if let Some(finally_node) = finally_handler {
             let finally_block = self.make_block("finally", Some(node_line(&finally_node)), None, Some("finally"));
-            if let Some(te) = try_end {
-                self.add_edge(te, finally_block, "fallthrough");
+            if let Some(se) = success_end {
+                self.add_edge(se, finally_block, "fallthrough");
             }
             let finally_body = finally_node.child_by_field_name("body");
             let finally_stmts: Vec<Node> = if let Some(body) = finally_body {
@@ -1010,8 +1097,8 @@ impl<'a> CfgBuilder<'a> {
                 self.add_edge(fe, join_block, "fallthrough");
             }
         } else {
-            if let Some(te) = try_end {
-                self.add_edge(te, join_block, "fallthrough");
+            if let Some(se) = success_end {
+                self.add_edge(se, join_block, "fallthrough");
             }
         }
 

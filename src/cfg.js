@@ -1056,7 +1056,7 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
         // Check if all function/method defs already have native CFG data
         const hasNativeCfg = symbols.definitions
           .filter((d) => (d.kind === 'function' || d.kind === 'method') && d.line)
-          .every((d) => d.cfg?.blocks?.length);
+          .every((d) => d.cfg === null || d.cfg?.blocks?.length);
         if (!hasNativeCfg) {
           needsFallback = true;
           break;
