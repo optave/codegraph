@@ -88,6 +88,11 @@ pub struct DataflowRules {
     // field than call_function_field, e.g. Rust's method_call_expression has "name")
     method_call_name_field: Option<&'static str>,
 
+    // Method call receiver extraction (for languages where the method call receiver
+    // uses a different field than member_object_field, e.g. Rust's
+    // method_call_expression exposes "receiver" not "value")
+    method_call_receiver_field: Option<&'static str>,
+
     // Structural wrappers
     expression_list_type: Option<&'static str>,
     equals_clause_type: Option<&'static str>,
@@ -144,6 +149,7 @@ static JS_TS_DATAFLOW: DataflowRules = DataflowRules {
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: None,
+    method_call_receiver_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -191,6 +197,7 @@ static PYTHON_DATAFLOW: DataflowRules = DataflowRules {
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: None,
+    method_call_receiver_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -237,6 +244,7 @@ static GO_DATAFLOW: DataflowRules = DataflowRules {
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: None,
+    method_call_receiver_field: None,
     expression_list_type: Some("expression_list"),
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -281,6 +289,7 @@ static RUST_DATAFLOW: DataflowRules = DataflowRules {
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: Some("name"),
+    method_call_receiver_field: Some("receiver"),
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -329,6 +338,7 @@ static JAVA_DATAFLOW: DataflowRules = DataflowRules {
     expression_stmt_node: "expression_statement",
     call_object_field: Some("object"),
     method_call_name_field: None,
+    method_call_receiver_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: Some("argument"),
@@ -378,6 +388,7 @@ static CSHARP_DATAFLOW: DataflowRules = DataflowRules {
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: None,
+    method_call_receiver_field: None,
     expression_list_type: None,
     equals_clause_type: Some("equals_value_clause"),
     argument_wrapper_type: Some("argument"),
@@ -431,6 +442,7 @@ static PHP_DATAFLOW: DataflowRules = DataflowRules {
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: None,
+    method_call_receiver_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: Some("argument"),
@@ -478,6 +490,7 @@ static RUBY_DATAFLOW: DataflowRules = DataflowRules {
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: None,
+    method_call_receiver_field: None,
     expression_list_type: None,
     equals_clause_type: None,
     argument_wrapper_type: None,
@@ -1366,14 +1379,17 @@ fn handle_expr_stmt_mutation(
     }
 
     // Method call pattern: call node has a dedicated name field distinct from
-    // call_function_field (e.g. Rust method_call_expression has "name" + receiver via
-    // member_object_field "value")
+    // call_function_field (e.g. Rust method_call_expression has "name" + "receiver")
     if method_name.is_none() {
         if let Some(name_field) = rules.method_call_name_field {
             if let Some(name_n) = expr.child_by_field_name(name_field) {
                 method_name = Some(node_text(&name_n, source).to_string());
-                // Extract receiver: try member_object_field on the call expr itself
-                if let Some(recv_node) = expr.child_by_field_name(rules.member_object_field) {
+                // Extract receiver: prefer method_call_receiver_field if set,
+                // otherwise fall back to member_object_field
+                let recv_field = rules
+                    .method_call_receiver_field
+                    .unwrap_or(rules.member_object_field);
+                if let Some(recv_node) = expr.child_by_field_name(recv_field) {
                     if is_ident(rules, recv_node.kind()) {
                         receiver = Some(node_text(&recv_node, source).to_string());
                     } else if rules.member_node.is_some_and(|m| m == recv_node.kind()) {
