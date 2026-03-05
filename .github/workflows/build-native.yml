@@ -90,8 +90,10 @@ jobs:
           echo 'INPUT(-lgcc)' | sudo tee "${MUSL_LIB_DIR}/libgcc_s.so" > /dev/null
           echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
-          # Force host build scripts to use gcc (bypasses rust-lld libgcc_s issue)
-          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker=gcc" >> "$GITHUB_ENV"
+          # Symlink libgcc_s into Rust sysroot so rust-lld can find it for host builds
+          GNU_LIB="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/lib"
+          sudo ln -sf /lib/x86_64-linux-gnu/libgcc_s.so.1 "${GNU_LIB}/libgcc_s.so"
+          sudo ln -sf /lib/x86_64-linux-gnu/libgcc_s.so.1 "${GNU_LIB}/libgcc_s.so.1"
 
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli@3
