@@ -194,17 +194,17 @@ export function sequenceData(name, dbPath, opts = {}) {
   idToNode.set(matchNode.id, matchNode);
   let truncated = false;
 
+  const getCallees = db.prepare(
+    `SELECT DISTINCT n.id, n.name, n.kind, n.file, n.line
+     FROM edges e JOIN nodes n ON e.target_id = n.id
+     WHERE e.source_id = ? AND e.kind = 'calls'`,
+  );
+
   for (let d = 1; d <= maxDepth; d++) {
     const nextFrontier = [];
 
     for (const fid of frontier) {
-      const callees = db
-        .prepare(
-          `SELECT DISTINCT n.id, n.name, n.kind, n.file, n.line
-           FROM edges e JOIN nodes n ON e.target_id = n.id
-           WHERE e.source_id = ? AND e.kind = 'calls'`,
-        )
-        .all(fid);
+      const callees = getCallees.all(fid);
 
       const caller = idToNode.get(fid);
 
@@ -244,24 +244,33 @@ export function sequenceData(name, dbPath, opts = {}) {
       .get();
 
     if (hasTable) {
+      // Build name|file lookup for O(1) target node access
+      const nodeByNameFile = new Map();
+      for (const n of idToNode.values()) {
+        nodeByNameFile.set(`${n.name}|${n.file}`, n);
+      }
+
+      const getReturns = db.prepare(
+        `SELECT d.expression FROM dataflow d
+         WHERE d.source_id = ? AND d.kind = 'returns'`,
+      );
+      const getFlowsTo = db.prepare(
+        `SELECT d.expression FROM dataflow d
+         WHERE d.target_id = ? AND d.kind = 'flows_to'
+         ORDER BY d.param_index`,
+      );
+
       // For each called function, check if it has return edges
       const seenReturns = new Set();
       for (const msg of [...messages]) {
         if (msg.type !== 'call') continue;
-        const targetNode = [...idToNode.values()].find(
-          (n) => n.name === msg.label && n.file === msg.to,
-        );
+        const targetNode = nodeByNameFile.get(`${msg.label}|${msg.to}`);
         if (!targetNode) continue;
 
         const returnKey = `${msg.to}->${msg.from}:${msg.label}`;
         if (seenReturns.has(returnKey)) continue;
 
-        const returns = db
-          .prepare(
-            `SELECT d.expression FROM dataflow d
-             WHERE d.source_id = ? AND d.kind = 'returns'`,
-          )
-          .all(targetNode.id);
+        const returns = getReturns.all(targetNode.id);
 
         if (returns.length > 0) {
           seenReturns.add(returnKey);
@@ -279,18 +288,10 @@ export function sequenceData(name, dbPath, opts = {}) {
       // Annotate call messages with parameter names
       for (const msg of messages) {
         if (msg.type !== 'call') continue;
-        const targetNode = [...idToNode.values()].find(
-          (n) => n.name === msg.label && n.file === msg.to,
-        );
+        const targetNode = nodeByNameFile.get(`${msg.label}|${msg.to}`);
         if (!targetNode) continue;
 
-        const params = db
-          .prepare(
-            `SELECT d.expression FROM dataflow d
-             WHERE d.target_id = ? AND d.kind = 'flows_to'
-             ORDER BY d.param_index`,
-          )
-          .all(targetNode.id);
+        const params = getFlowsTo.all(targetNode.id);
 
         if (params.length > 0) {
           const paramNames = params
