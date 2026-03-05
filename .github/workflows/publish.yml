@@ -165,7 +165,8 @@ jobs:
           # Create linker script so -lgcc_s resolves to static libgcc
           MUSL_LIB_DIR="$(dirname "$(musl-gcc -print-libgcc-file-name)")"
           echo 'INPUT(-lgcc)' | sudo tee "${MUSL_LIB_DIR}/libgcc_s.so" > /dev/null
-          echo "CC=musl-gcc" >> "$GITHUB_ENV"
+          # Use target-specific env vars to avoid affecting host build scripts
+          echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
 
       - name: Install napi-rs CLI
