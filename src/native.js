@@ -18,12 +18,13 @@ let _loadError = null;
  */
 function detectLibc() {
   try {
-    const report = process.report.getReport();
-    const glibcVersion = report?.header?.glibcVersionRuntime;
-    return glibcVersion ? 'gnu' : 'musl';
-  } catch {
-    return 'gnu';
-  }
+    const { readdirSync } = require('fs');
+    const files = readdirSync('/lib');
+    if (files.some(f => f.startsWith('ld-musl-') && f.endsWith('.so.1'))) {
+      return 'musl';
+    }
+  } catch {}
+  return 'gnu';
 }
 
 /** Map of (platform-arch[-libc]) → npm package name. */
