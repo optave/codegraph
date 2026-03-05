@@ -164,6 +164,9 @@ def process(data):
 async def fetch():
     result = await get_data()
     url = "https://api.example.com/data"
+    pattern = r"^[a-z]+\\d{3}$"
+    greeting = f"hello {data}"
+    raw_bytes = rb"raw bytes value"
     return result
 `,
   'fixture.go': `
@@ -332,6 +335,25 @@ describe.skipIf(!canTestMultiLang)('native AST nodes — multi-language', () => 
     expect(
       strings.some((n) => n.name.includes('bad input') || n.name.includes('api.example.com')),
     ).toBe(true);
+  });
+
+  test('Python: strips r/f/rb prefixes from string names', () => {
+    const strings = db
+      .prepare("SELECT * FROM ast_nodes WHERE kind = 'string' AND file LIKE '%fixture.py'")
+      .all();
+    // r"..." prefix should be stripped — name should not start with 'r'
+    const rawStr = strings.find((n) => n.name.includes('^[a-z]+'));
+    expect(rawStr).toBeDefined();
+    expect(rawStr.name.startsWith('r')).toBe(false);
+    // f"..." prefix should be stripped
+    const fStr = strings.find((n) => n.name.includes('hello'));
+    expect(fStr).toBeDefined();
+    expect(fStr.name.startsWith('f')).toBe(false);
+    // rb"..." prefix should be stripped
+    const rbStr = strings.find((n) => n.name.includes('raw bytes'));
+    expect(rbStr).toBeDefined();
+    expect(rbStr.name.startsWith('r')).toBe(false);
+    expect(rbStr.name.startsWith('b')).toBe(false);
   });
 
   // ── Go ──

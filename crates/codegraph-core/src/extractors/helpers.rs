@@ -108,6 +108,9 @@ pub struct LangAstConfig {
     pub regex_types: &'static [&'static str],
     /// Characters to strip from string delimiters when extracting content.
     pub quote_chars: &'static [char],
+    /// Single-char prefixes that can appear before string quotes (e.g. `r`, `b`, `f`, `u` for Python).
+    /// Multi-char combos like `rb`, `fr` are handled by stripping each char in sequence.
+    pub string_prefixes: &'static [char],
 }
 
 // ── Per-language configs ─────────────────────────────────────────────────────
@@ -119,6 +122,7 @@ pub const PYTHON_AST_CONFIG: LangAstConfig = LangAstConfig {
     string_types: &["string"],
     regex_types: &[],
     quote_chars: &['\'', '"'],
+    string_prefixes: &['r', 'b', 'f', 'u', 'R', 'B', 'F', 'U'],
 };
 
 pub const GO_AST_CONFIG: LangAstConfig = LangAstConfig {
@@ -128,6 +132,7 @@ pub const GO_AST_CONFIG: LangAstConfig = LangAstConfig {
     string_types: &["interpreted_string_literal", "raw_string_literal"],
     regex_types: &[],
     quote_chars: &['"', '`'],
+    string_prefixes: &[],
 };
 
 pub const RUST_AST_CONFIG: LangAstConfig = LangAstConfig {
@@ -137,6 +142,7 @@ pub const RUST_AST_CONFIG: LangAstConfig = LangAstConfig {
     string_types: &["string_literal", "raw_string_literal"],
     regex_types: &[],
     quote_chars: &['"'],
+    string_prefixes: &[],
 };
 
 pub const JAVA_AST_CONFIG: LangAstConfig = LangAstConfig {
@@ -146,6 +152,7 @@ pub const JAVA_AST_CONFIG: LangAstConfig = LangAstConfig {
     string_types: &["string_literal"],
     regex_types: &[],
     quote_chars: &['"'],
+    string_prefixes: &[],
 };
 
 pub const CSHARP_AST_CONFIG: LangAstConfig = LangAstConfig {
@@ -155,6 +162,7 @@ pub const CSHARP_AST_CONFIG: LangAstConfig = LangAstConfig {
     string_types: &["string_literal", "verbatim_string_literal"],
     regex_types: &[],
     quote_chars: &['"'],
+    string_prefixes: &[],
 };
 
 pub const RUBY_AST_CONFIG: LangAstConfig = LangAstConfig {
@@ -164,6 +172,7 @@ pub const RUBY_AST_CONFIG: LangAstConfig = LangAstConfig {
     string_types: &["string"],
     regex_types: &["regex"],
     quote_chars: &['\'', '"'],
+    string_prefixes: &[],
 };
 
 pub const PHP_AST_CONFIG: LangAstConfig = LangAstConfig {
@@ -173,6 +182,7 @@ pub const PHP_AST_CONFIG: LangAstConfig = LangAstConfig {
     string_types: &["string", "encapsed_string"],
     regex_types: &[],
     quote_chars: &['\'', '"'],
+    string_prefixes: &[],
 };
 
 // ── Generic AST node walker ──────────────────────────────────────────────────
@@ -237,17 +247,30 @@ pub fn walk_ast_nodes_with_config(
         // Fall through to recurse children
     } else if config.string_types.contains(&kind) {
         let raw = node_text(node, source);
+        let is_raw_string = kind.contains("raw_string");
         // Strip language prefix modifiers before quote chars:
         // - C# verbatim `@"..."`
         // - Rust raw strings `r"..."`, `r#"..."#`
+        // - Python prefixes: r, b, f, u and combos like rb, fr
         let without_prefix = raw.trim_start_matches('@')
-            .trim_start_matches('r')
-            .trim_start_matches('#');
+            .trim_start_matches(|c: char| config.string_prefixes.contains(&c))
+            .trim_start_matches('r');
+        // Only strip `#` delimiters for raw string node types (e.g. Rust `r#"..."#`)
+        let without_prefix = if is_raw_string {
+            without_prefix.trim_start_matches('#')
+        } else {
+            without_prefix
+        };
         let content = without_prefix
-            .trim_start_matches(|c: char| config.quote_chars.contains(&c))
-            .trim_end_matches('#')
+            .trim_start_matches(|c: char| config.quote_chars.contains(&c));
+        let content = if is_raw_string {
+            content.trim_end_matches('#')
+        } else {
+            content
+        };
+        let content = content
             .trim_end_matches(|c: char| config.quote_chars.contains(&c));
-        if content.len() < 2 {
+        if content.chars().count() < 2 {
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
                     walk_ast_nodes_with_config(&child, source, ast_nodes, config);
