@@ -4,11 +4,7 @@ All notable changes to this project will be documented in this file. See [commit
 
 ## [3.0.4](https://github.com/optave/codegraph/compare/v3.0.3...v3.0.4) (2026-03-05)
 
-**Native engine goes full-stack: CFG, AST nodes, and WASM double-parse elimination.** This release completes the native engine migration — CFG computation and AST node extraction now run in Rust for all supported languages, eliminating the redundant WASM pre-parse on native builds. Two new Linux platform packages add ARM64 (Graviton, Docker on Apple Silicon) and Alpine/musl support.
-
-### Features
-
-* **platform:** add `linux-arm64-gnu` and `linux-x64-musl` native binary packages with `detectLibc()` auto-selection and npm `libc` field support ([#341](https://github.com/optave/codegraph/pull/341))
+**Native engine goes full-stack: CFG, AST nodes, and WASM double-parse elimination.** This release completes the native engine migration — CFG computation and AST node extraction now run in Rust for 8 languages, eliminating the redundant WASM pre-parse on native builds.
 
 ### Performance
 
@@ -27,12 +23,6 @@ All notable changes to this project will be documented in this file. See [commit
 ### Performance
 
 * **ast:** use single transaction for AST node insertion — astMs drops from ~3600ms to ~350ms (native) and ~547ms (WASM), reducing overall native build from 24.9 to 8.5 ms/file ([#333](https://github.com/optave/codegraph/pull/333))
-* **builder:** skip `ensureWasmTrees` when native engine provides complete CFG + dataflow data ([#344](https://github.com/optave/codegraph/pull/344))
-
-### Bug Fixes
-
-* **native:** fix function-scoped `const` declarations being incorrectly extracted as top-level constants ([#344](https://github.com/optave/codegraph/pull/344))
-
 
 ## [3.0.2](https://github.com/optave/codegraph/compare/v3.0.1...v3.0.2) (2026-03-04)
 
