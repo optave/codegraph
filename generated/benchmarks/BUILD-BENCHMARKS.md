@@ -5,6 +5,7 @@ Metrics are normalized per file for cross-version comparability.
 
 | Version | Engine | Date | Files | Build (ms/file) | Query (ms) | Nodes/file | Edges/file | DB (bytes/file) |
 |---------|--------|------|------:|----------------:|-----------:|-----------:|-----------:|----------------:|
+| 3.0.4 | wasm | 2026-03-06 | 177 | 17.3 ↑6% | 4.6 ~ | 20.6 ↑10% | 44.7 ↑7% | 77037 ↑4% |
 | 3.0.3 | native | 2026-03-04 | 172 | 12.3 ↑7% | 3.4 ↑3% | 18.8 ~ | 41.6 ~ | 74133 ~ |
 | 3.0.3 | wasm | 2026-03-04 | 172 | 16.3 ↓8% | 4.6 ↑5% | 18.7 ~ | 41.6 ~ | 74300 ~ |
 | 3.0.2 | native | 2026-03-04 | 172 | 11.5 ↓18% | 3.3 ↓3% | 18.8 ↓29% | 41.6 ↓17% | 74109 ↓5% |
@@ -29,39 +30,32 @@ Metrics are normalized per file for cross-version comparability.
 
 ### Raw totals (latest)
 
-#### Native (Rust)
-
-| Metric | Value |
-|--------|-------|
-| Build time | 2.1s |
-| Query time | 3ms |
-| Nodes | 3,234 |
-| Edges | 7,158 |
-| DB size | 12.2 MB |
-| Files | 172 |
-
 #### WASM
 
 | Metric | Value |
 |--------|-------|
-| Build time | 2.8s |
+| Build time | 3.1s |
 | Query time | 5ms |
-| Nodes | 3,223 |
-| Edges | 7,161 |
-| DB size | 12.2 MB |
-| Files | 172 |
+| Nodes | 3,652 |
+| Edges | 7,906 |
+| DB size | 13.0 MB |
+| Files | 177 |
 
 ### Build Phase Breakdown (latest)
 
 | Phase | Native | WASM |
 |-------|-------:|-----:|
-| Parse | 266.8 ms | 991.6 ms |
-| Insert nodes | 68.5 ms | 73 ms |
-| Resolve imports | 14.8 ms | 18.8 ms |
-| Build edges | 125.5 ms | 138 ms |
-| Structure | 6.9 ms | 10.3 ms |
-| Roles | 28.8 ms | 29 ms |
-| Complexity | 8.9 ms | 342.7 ms |
+| Parse | n/a | 982.2 ms |
+| WASM pre-parse | n/a | 0 ms |
+| Insert nodes | n/a | 79.2 ms |
+| Resolve imports | n/a | 1.4 ms |
+| Build edges | n/a | 175.5 ms |
+| Structure | n/a | 17.3 ms |
+| Roles | n/a | 21.1 ms |
+| AST nodes | n/a | 607.6 ms |
+| Complexity | n/a | 380.8 ms |
+| CFG | n/a | 195.6 ms |
+| Dataflow | n/a | 443.3 ms |
 
 ### Estimated performance at 50,000 files
 
@@ -69,15 +63,16 @@ Extrapolated linearly from per-file metrics above.
 
 | Metric | Native (Rust) | WASM |
 |--------|---:|---:|
-| Build time | 615.0s | 815.0s |
-| DB size | 3534.9 MB | 3542.9 MB |
-| Nodes | 940,000 | 935,000 |
-| Edges | 2,080,000 | 2,080,000 |
+| Build time | n/a | 865.0s |
+| DB size | n/a | 3673.4 MB |
+| Nodes | n/a | 1,030,000 |
+| Edges | n/a | 2,235,000 |
 
 ### Incremental Rebuilds
 
 | Version | Engine | No-op (ms) | 1-file (ms) |
 |---------|--------|----------:|-----------:|
+| 3.0.4 | wasm | 5 ↓29% | 559 ~ |
 | 3.0.3 | native | 5 ~ | 375 ↓2% |
 | 3.0.3 | wasm | 7 ↑40% | 567 ↓3% |
 | 3.0.2 | native | 5 ~ | 384 ↓58% |
@@ -98,6 +93,7 @@ Extrapolated linearly from per-file metrics above.
 
 | Version | Engine | fn-deps (ms) | fn-impact (ms) | path (ms) | roles (ms) |
 |---------|--------|------------:|--------------:|----------:|----------:|
+| 3.0.4 | wasm | 0.8 ~ | 0.8 ~ | 0.8 ~ | 5.7 ↓7% |
 | 3.0.3 | native | 0.8 ~ | 0.8 ~ | 0.8 ~ | 5.5 ↑6% |
 | 3.0.3 | wasm | 0.8 ~ | 0.8 ~ | 0.8 ~ | 6.1 ~ |
 | 3.0.2 | native | 0.8 ↓11% | 0.8 ~ | 0.8 ~ | 5.2 ↓26% |
@@ -146,6 +142,46 @@ CFG/dataflow in Rust, or having the native engine expose tree-sitter trees to JS
 
 <!-- BENCHMARK_DATA
 [
+  {
+    "version": "3.0.4",
+    "date": "2026-03-06",
+    "files": 177,
+    "wasm": {
+      "buildTimeMs": 3071,
+      "queryTimeMs": 4.6,
+      "nodes": 3652,
+      "edges": 7906,
+      "dbSizeBytes": 13635584,
+      "perFile": {
+        "buildTimeMs": 17.3,
+        "nodes": 20.6,
+        "edges": 44.7,
+        "dbSizeBytes": 77037
+      },
+      "noopRebuildMs": 5,
+      "oneFileRebuildMs": 559,
+      "queries": {
+        "fnDepsMs": 0.8,
+        "fnImpactMs": 0.8,
+        "pathMs": 0.8,
+        "rolesMs": 5.7
+      },
+      "phases": {
+        "parseMs": 982.2,
+        "insertMs": 79.2,
+        "resolveMs": 1.4,
+        "edgesMs": 175.5,
+        "structureMs": 17.3,
+        "rolesMs": 21.1,
+        "astMs": 607.6,
+        "complexityMs": 380.8,
+        "wasmPreMs": 0,
+        "cfgMs": 195.6,
+        "dataflowMs": 443.3
+      }
+    },
+    "native": null
+  },
   {
     "version": "3.0.3",
     "date": "2026-03-04",
