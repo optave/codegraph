@@ -184,6 +184,18 @@ describe('sequenceToMermaid', () => {
     expect(mermaid).toContain('Truncated at depth');
   });
 
+  test('no truncation note when participants empty (offset past all messages)', () => {
+    const mockData = {
+      participants: [],
+      messages: [],
+      truncated: true,
+      depth: 5,
+    };
+    const mermaid = sequenceToMermaid(mockData);
+    expect(mermaid).not.toContain('note right of');
+    expect(mermaid).not.toContain('undefined');
+  });
+
   test('escapes colons in labels', () => {
     const mockData = {
       participants: [{ id: 'a', label: 'a.js' }],
@@ -193,5 +205,75 @@ describe('sequenceToMermaid', () => {
     const mermaid = sequenceToMermaid(mockData);
     expect(mermaid).toContain('#colon;');
     expect(mermaid).not.toContain('route:');
+  });
+});
+
+// ─── Dataflow annotations ───────────────────────────────────────────────
+
+describe('dataflow annotations', () => {
+  let dfTmpDir, dfDbPath;
+
+  beforeAll(() => {
+    dfTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-seq-df-'));
+    fs.mkdirSync(path.join(dfTmpDir, '.codegraph'));
+    dfDbPath = path.join(dfTmpDir, '.codegraph', 'graph.db');
+
+    const db = new Database(dfDbPath);
+    db.pragma('journal_mode = WAL');
+    initSchema(db);
+
+    // caller → callee (cross-file)
+    const caller = insertNode(db, 'handleRequest', 'function', 'src/handler.js', 1);
+    const callee = insertNode(db, 'fetchData', 'function', 'src/service.js', 10);
+    insertEdge(db, caller, callee, 'calls');
+
+    // dataflow: fetchData returns 'Promise<User[]>' and receives param 'userId'
+    db.prepare(
+      'INSERT INTO dataflow (source_id, target_id, kind, param_index, expression) VALUES (?, ?, ?, ?, ?)',
+    ).run(callee, caller, 'returns', null, 'Promise<User[]>');
+    db.prepare(
+      'INSERT INTO dataflow (source_id, target_id, kind, param_index, expression) VALUES (?, ?, ?, ?, ?)',
+    ).run(caller, callee, 'flows_to', 0, 'userId');
+
+    db.close();
+  });
+
+  afterAll(() => {
+    if (dfTmpDir) fs.rmSync(dfTmpDir, { recursive: true, force: true });
+  });
+
+  test('return arrows appear with dataflow enabled', () => {
+    const data = sequenceData('handleRequest', dfDbPath, { noTests: true, dataflow: true });
+    expect(data.entry).not.toBeNull();
+
+    const returnMsgs = data.messages.filter((m) => m.type === 'return');
+    expect(returnMsgs.length).toBe(1);
+    expect(returnMsgs[0].label).toBe('Promise<User[]>');
+    // Return goes from callee file back to caller file
+    expect(returnMsgs[0].from).not.toBe(returnMsgs[0].to);
+  });
+
+  test('call labels annotated with parameter names', () => {
+    const data = sequenceData('handleRequest', dfDbPath, { noTests: true, dataflow: true });
+
+    const callMsgs = data.messages.filter((m) => m.type === 'call');
+    expect(callMsgs.length).toBe(1);
+    expect(callMsgs[0].label).toBe('fetchData(userId)');
+  });
+
+  test('without dataflow flag, no return arrows or param annotations', () => {
+    const data = sequenceData('handleRequest', dfDbPath, { noTests: true, dataflow: false });
+
+    const returnMsgs = data.messages.filter((m) => m.type === 'return');
+    expect(returnMsgs).toHaveLength(0);
+
+    const callMsgs = data.messages.filter((m) => m.type === 'call');
+    expect(callMsgs[0].label).toBe('fetchData');
+  });
+
+  test('mermaid output has dashed return arrow', () => {
+    const data = sequenceData('handleRequest', dfDbPath, { noTests: true, dataflow: true });
+    const mermaid = sequenceToMermaid(data);
+    expect(mermaid).toContain('-->>');
   });
 });
