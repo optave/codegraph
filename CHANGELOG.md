@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file. See [commit
 
 ### Bug Fixes
 
+* **native:** fix function-scoped `const` declarations being incorrectly extracted as top-level constants ([#344](https://github.com/optave/codegraph/pull/344))
 * **benchmark:** show all build phases (astMs, cfgMs, dataflowMs, wasmPreMs) in benchmark report and document v3.0.0→v3.0.3 native regression cause ([#339](https://github.com/optave/codegraph/pull/339))
 
 ## [3.0.3](https://github.com/optave/codegraph/compare/v3.0.2...v3.0.3) (2026-03-04)
