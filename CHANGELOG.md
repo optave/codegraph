@@ -4,11 +4,10 @@ All notable changes to this project will be documented in this file. See [commit
 
 ## [3.0.4](https://github.com/optave/codegraph/compare/v3.0.3...v3.0.4) (2026-03-05)
 
-**Native engine goes full-stack: CFG, AST nodes, and WASM double-parse elimination.** This release completes the native engine migration — CFG computation and AST node extraction now run in Rust for all 11 languages, eliminating the redundant WASM pre-parse on native builds. Two new Linux platform packages add ARM64 (Graviton, Docker on Apple Silicon) and Alpine/musl support. A new `sequence` command generates Mermaid sequence diagrams from the call graph.
+**Native engine goes full-stack: CFG, AST nodes, and WASM double-parse elimination.** This release completes the native engine migration — CFG computation and AST node extraction now run in Rust for all supported languages, eliminating the redundant WASM pre-parse on native builds. Two new Linux platform packages add ARM64 (Graviton, Docker on Apple Silicon) and Alpine/musl support.
 
 ### Features
 
-* **sequence:** add `codegraph sequence <name>` command for Mermaid sequence diagram generation from call graph edges — participants are files, BFS forward from entry point, optional `--dataflow` flag for parameter/return annotations; exposed via CLI, MCP tool, and programmatic API ([#345](https://github.com/optave/codegraph/pull/345))
 * **platform:** add `linux-arm64-gnu` and `linux-x64-musl` native binary packages with `detectLibc()` auto-selection and npm `libc` field support ([#341](https://github.com/optave/codegraph/pull/341))
 
 ### Performance
