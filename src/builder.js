@@ -786,9 +786,6 @@ export async function buildGraph(rootDir, opts = {}) {
       for (const row of bulkGetNodeIds.all(relPath)) {
         nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
       }
-      // Stash for Phase 5
-      symbols._nodeIdMap = nodeIdMap;
-
       for (const def of symbols.definitions) {
         if (!def.children?.length) continue;
         const defId = nodeIdMap.get(`${def.name}|${def.kind}|${def.line}`);
@@ -815,8 +812,6 @@ export async function buildGraph(rootDir, opts = {}) {
       for (const row of bulkGetNodeIds.all(relPath)) {
         nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
       }
-      symbols._nodeIdMap = nodeIdMap;
-
       const fileId = nodeIdMap.get(`${relPath}|file|0`);
       for (const def of symbols.definitions) {
         const defId = nodeIdMap.get(`${def.name}|${def.kind}|${def.line}`);
@@ -901,7 +896,7 @@ export async function buildGraph(rootDir, opts = {}) {
       batchInputs.push({ fromFile: absFile, importSource: imp.source });
     }
   }
-  const batchResolved = resolveImportsBatch(batchInputs, rootDir, aliases, filePaths);
+  const batchResolved = resolveImportsBatch(batchInputs, rootDir, aliases, files);
   _t.resolveMs = performance.now() - _t.resolve0;
 
   function getResolved(absFile, importSource) {
