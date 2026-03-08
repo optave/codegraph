@@ -5,7 +5,14 @@ import { evaluateBoundaries } from './boundaries.js';
 import { coChangeForFiles } from './cochange.js';
 import { loadConfig } from './config.js';
 import { findCycles } from './cycles.js';
-import { findDbPath, openReadonlyOrFail } from './db.js';
+import {
+  findDbPath,
+  findNodesWithFanIn,
+  iterateFunctionNodes,
+  listFunctionNodes,
+  openReadonlyOrFail,
+  testFilterSQL,
+} from './db.js';
 import { debug } from './logger.js';
 import { ownersForFiles } from './owners.js';
 import { paginateResult, printNdjson } from './paginate.js';
@@ -165,25 +172,8 @@ function resolveMethodViaHierarchy(db, methodName) {
  */
 export function findMatchingNodes(db, name, opts = {}) {
   const kinds = opts.kind ? [opts.kind] : FUNCTION_KINDS;
-  const placeholders = kinds.map(() => '?').join(', ');
-  const params = [`%${name}%`, ...kinds];
 
-  let fileCondition = '';
-  if (opts.file) {
-    fileCondition = ' AND n.file LIKE ?';
-    params.push(`%${opts.file}%`);
-  }
-
-  const rows = db
-    .prepare(`
-      SELECT n.*, COALESCE(fi.cnt, 0) AS fan_in
-      FROM nodes n
-      LEFT JOIN (
-        SELECT target_id, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target_id
-      ) fi ON fi.target_id = n.id
-      WHERE n.name LIKE ? AND n.kind IN (${placeholders})${fileCondition}
-    `)
-    .all(...params);
+  const rows = findNodesWithFanIn(db, `%${name}%`, { kinds, file: opts.file });
 
   const nodes = opts.noTests ? rows.filter((n) => !isTestFile(n.file)) : rows;
 
@@ -355,13 +345,7 @@ export function moduleMapData(customDbPath, limit = 20, opts = {}) {
   const db = openReadonlyOrFail(customDbPath);
   const noTests = opts.noTests || false;
 
-  const testFilter = noTests
-    ? `AND n.file NOT LIKE '%.test.%'
-      AND n.file NOT LIKE '%.spec.%'
-      AND n.file NOT LIKE '%__test__%'
-      AND n.file NOT LIKE '%__tests__%'
-      AND n.file NOT LIKE '%.stories.%'`
-    : '';
+  const testFilter = testFilterSQL('n.file', noTests);
 
   const nodes = db
     .prepare(`
@@ -1212,26 +1196,8 @@ export function diffImpactMermaid(customDbPath, opts = {}) {
 export function listFunctionsData(customDbPath, opts = {}) {
   const db = openReadonlyOrFail(customDbPath);
   const noTests = opts.noTests || false;
-  const kinds = ['function', 'method', 'class'];
-  const placeholders = kinds.map(() => '?').join(', ');
 
-  const conditions = [`kind IN (${placeholders})`];
-  const params = [...kinds];
-
-  if (opts.file) {
-    conditions.push('file LIKE ?');
-    params.push(`%${opts.file}%`);
-  }
-  if (opts.pattern) {
-    conditions.push('name LIKE ?');
-    params.push(`%${opts.pattern}%`);
-  }
-
-  let rows = db
-    .prepare(
-      `SELECT name, kind, file, line, end_line, role FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY file, line`,
-    )
-    .all(...params);
+  let rows = listFunctionNodes(db, { file: opts.file, pattern: opts.pattern });
 
   if (noTests) rows = rows.filter((r) => !isTestFile(r.file));
 
@@ -1255,25 +1221,8 @@ export function* iterListFunctions(customDbPath, opts = {}) {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;
-    const kinds = ['function', 'method', 'class'];
-    const placeholders = kinds.map(() => '?').join(', ');
 
-    const conditions = [`kind IN (${placeholders})`];
-    const params = [...kinds];
-
-    if (opts.file) {
-      conditions.push('file LIKE ?');
-      params.push(`%${opts.file}%`);
-    }
-    if (opts.pattern) {
-      conditions.push('name LIKE ?');
-      params.push(`%${opts.pattern}%`);
-    }
-
-    const stmt = db.prepare(
-      `SELECT name, kind, file, line, end_line, role FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY file, line`,
-    );
-    for (const row of stmt.iterate(...params)) {
+    for (const row of iterateFunctionNodes(db, { file: opts.file, pattern: opts.pattern })) {
       if (noTests && isTestFile(row.file)) continue;
       yield {
         name: row.name,
@@ -1464,13 +1413,7 @@ export function statsData(customDbPath, opts = {}) {
   const fnCycles = findCycles(db, { fileLevel: false, noTests });
 
   // Top 5 coupling hotspots (fan-in + fan-out, file nodes)
-  const testFilter = noTests
-    ? `AND n.file NOT LIKE '%.test.%'
-       AND n.file NOT LIKE '%.spec.%'
-       AND n.file NOT LIKE '%__test__%'
-       AND n.file NOT LIKE '%__tests__%'
-       AND n.file NOT LIKE '%.stories.%'`
-    : '';
+  const testFilter = testFilterSQL('n.file', noTests);
   const hotspotRows = db
     .prepare(`
     SELECT n.file,
