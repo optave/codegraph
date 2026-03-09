@@ -186,6 +186,7 @@ method.bind(ctx);
     file: 'test.js',
     code: `
 const { readFile } = await import('fs/promises');
+const { readFile: rf } = await import('node:fs/promises');
 const mod = await import('./utils.js');
 import('./side-effect.js');
 `,

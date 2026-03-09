@@ -1056,6 +1056,10 @@ function extractDynamicImportNames(callNode) {
     for (let i = 0; i < nameNode.childCount; i++) {
       const child = nameNode.child(i);
       if (child.type === 'identifier') names.push(child.text);
+      else if (child.type === 'rest_pattern') {
+        const inner = child.child(0) || child.childForFieldName('name');
+        if (inner && inner.type === 'identifier') names.push(inner.text);
+      }
     }
     return names;
   }
