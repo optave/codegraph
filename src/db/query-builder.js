@@ -12,7 +12,9 @@ function validateAlias(alias) {
 
 function validateEdgeKind(edgeKind) {
   if (!EVERY_EDGE_KIND.includes(edgeKind)) {
-    throw new Error(`Invalid edge kind: ${edgeKind} (expected one of ${EVERY_EDGE_KIND.join(', ')})`);
+    throw new Error(
+      `Invalid edge kind: ${edgeKind} (expected one of ${EVERY_EDGE_KIND.join(', ')})`,
+    );
   }
 }
 

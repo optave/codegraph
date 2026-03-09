@@ -1,5 +1,5 @@
-import { NodeQuery } from './query-builder.js';
 import { EVERY_SYMBOL_KIND } from '../queries.js';
+import { NodeQuery } from './query-builder.js';
 
 /**
  * Find nodes matching a name pattern, with fan-in count.
