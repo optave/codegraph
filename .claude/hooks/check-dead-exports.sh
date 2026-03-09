@@ -49,11 +49,10 @@ EDITED_FILES=$(awk '{print $2}' "$LOG_FILE" | sort -u)
 DEAD_EXPORTS=""
 
 while IFS= read -r file; do
-  # Only check source files
-  case "$file" in
-    src/*.js|src/*.ts|src/*.tsx) ;;
-    *) continue ;;
-  esac
+  # Only check source files (regex crosses subdirectories unlike glob)
+  if [[ ! "$file" =~ ^src/.*\.(js|ts|tsx)$ ]]; then
+    continue
+  fi
 
   # Only check files edited in this session
   if ! echo "$EDITED_FILES" | grep -qxF "$file"; then

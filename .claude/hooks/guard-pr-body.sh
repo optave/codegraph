@@ -22,8 +22,33 @@ fi
 # Only check gh pr create commands
 echo "$COMMAND" | grep -qi 'gh pr create' || exit 0
 
-# Block if body contains "generated with"
+# Check inline --body for "generated with"
 if echo "$COMMAND" | grep -qi 'generated with'; then
-  echo "BLOCK: Remove any 'Generated with ...' line from the PR body." >&2
-  exit 2
+  node -e "
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: \"Remove any 'Generated with ...' line from the PR body.\"
+      }
+    }));
+  "
+  exit 0
+fi
+
+# Check --body-file content for "generated with"
+BODY_FILE=$(echo "$COMMAND" | grep -oP '(?<=--body-file\s)[^\s]+' 2>/dev/null) || true
+if [ -n "$BODY_FILE" ] && [ -f "$BODY_FILE" ]; then
+  if grep -qi 'generated with' "$BODY_FILE"; then
+    node -e "
+      console.log(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: \"Remove any 'Generated with ...' line from the PR body.\"
+        }
+      }));
+    "
+    exit 0
+  fi
 fi
