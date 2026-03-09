@@ -1,4 +1,5 @@
 import { findChild, nodeEndLine } from './helpers.js';
+import { debug } from '../logger.js';
 
 /**
  * Extract symbols from a JS/TS parsed AST.
@@ -248,6 +249,8 @@ function extractDynamicImportsWalk(node, imports) {
             line: node.startPosition.row + 1,
             dynamicImport: true,
           });
+        } else {
+          debug(`Skipping non-static dynamic import() at line ${node.startPosition.row + 1} (template literal or variable)`);
         }
       }
       return; // no need to recurse into import() children
@@ -498,7 +501,7 @@ function extractSymbolsWalk(tree) {
                 const modPath = strArg.text.replace(/['"]/g, '');
                 // Extract destructured names from parent context:
                 //   const { a, b } = await import('./foo.js')
-                //   import('./foo.js').then(({ a, b }) => ...)
+                // (standalone import('./foo.js').then(...) calls produce an edge with empty names)
                 const names = extractDynamicImportNames(node);
                 imports.push({
                   source: modPath,
@@ -506,6 +509,8 @@ function extractSymbolsWalk(tree) {
                   line: node.startPosition.row + 1,
                   dynamicImport: true,
                 });
+              } else {
+                debug(`Skipping non-static dynamic import() at line ${node.startPosition.row + 1} (template literal or variable)`);
               }
             }
           } else {
