@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-dead-exports.sh — PreToolUse hook for Bash (git commit)
-# Blocks commits that introduce NEW unused exports in staged files.
-# Compares against the pre-change state so pre-existing dead exports are ignored.
+# Blocks commits if any src/ file edited in THIS SESSION has exports with zero consumers.
+# Uses the session edit log to scope checks to files you actually touched.
 
 set -euo pipefail
 
@@ -38,9 +38,15 @@ if [ -z "$STAGED" ]; then
   exit 0
 fi
 
-# For each staged src/ file, compare current unused count against the
-# count from the staged diff's added lines. Only flag truly new dead exports.
-NEW_DEAD=""
+# Load session edit log to scope checks to files we actually edited
+LOG_FILE="$WORK_ROOT/.claude/session-edits.log"
+if [ ! -f "$LOG_FILE" ] || [ ! -s "$LOG_FILE" ]; then
+  exit 0
+fi
+EDITED_FILES=$(awk '{print $2}' "$LOG_FILE" | sort -u)
+
+# Check each staged source file that was edited in this session
+DEAD_EXPORTS=""
 
 while IFS= read -r file; do
   # Only check source files
@@ -49,44 +55,38 @@ while IFS= read -r file; do
     *) continue ;;
   esac
 
-  # Get current unused exports for this file
-  RESULT=$(node "$WORK_ROOT/src/cli.js" exports "$file" --json -T 2>/dev/null) || true
+  # Only check files edited in this session
+  if ! echo "$EDITED_FILES" | grep -qxF "$file"; then
+    continue
+  fi
+
+  RESULT=$(node "$WORK_ROOT/src/cli.js" exports "$file" --unused --json -T 2>/dev/null) || true
   if [ -z "$RESULT" ]; then
     continue
   fi
 
-  # Get names of new functions added in the staged diff for this file
-  ADDED_NAMES=$(git diff --cached -U0 "$file" 2>/dev/null | grep -E '^\+.*(export\s+(function|const|class|async\s+function)|module\.exports)' | grep -oP '(?:function|const|class)\s+\K\w+' 2>/dev/null) || true
-
-  # If no new exports were added in the diff, skip this file
-  if [ -z "$ADDED_NAMES" ]; then
-    continue
-  fi
-
-  # Check if any of the newly added exports have zero consumers
-  NEWLY_DEAD=$(echo "$RESULT" | node -e "
-    const added=new Set(process.argv.slice(2));
+  # Extract unused export names
+  UNUSED=$(echo "$RESULT" | node -e "
     let d='';
     process.stdin.on('data',c=>d+=c);
     process.stdin.on('end',()=>{
       try {
         const data=JSON.parse(d);
-        const dead=(data.results||[])
-          .filter(r=>r.consumerCount===0 && added.has(r.name));
-        if(dead.length>0){
-          process.stdout.write(dead.map(u=>u.name+' ('+data.file+':'+u.line+')').join(', '));
+        const unused=(data.results||[]).filter(r=>r.consumerCount===0);
+        if(unused.length>0){
+          process.stdout.write(unused.map(u=>u.name+' ('+data.file+':'+u.line+')').join(', '));
         }
       }catch{}
     });
-  " -- $ADDED_NAMES 2>/dev/null) || true
+  " 2>/dev/null) || true
 
-  if [ -n "$NEWLY_DEAD" ]; then
-    NEW_DEAD="${NEW_DEAD:+$NEW_DEAD; }$NEWLY_DEAD"
+  if [ -n "$UNUSED" ]; then
+    DEAD_EXPORTS="${DEAD_EXPORTS:+$DEAD_EXPORTS; }$UNUSED"
   fi
 done <<< "$STAGED"
 
-if [ -n "$NEW_DEAD" ]; then
-  REASON="BLOCKED: Newly added exports with zero consumers detected: $NEW_DEAD. Either add consumers, remove the exports, or verify these are intentionally public API."
+if [ -n "$DEAD_EXPORTS" ]; then
+  REASON="BLOCKED: Dead exports (zero consumers) detected in files you edited: $DEAD_EXPORTS. Either add consumers, remove the exports, or verify these are intentionally public API."
 
   node -e "
     console.log(JSON.stringify({

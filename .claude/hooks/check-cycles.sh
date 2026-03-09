@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # check-cycles.sh — PreToolUse hook for Bash (git commit)
-# Blocks commits that introduce NEW circular dependencies (compares HEAD baseline).
+# Blocks commits if circular dependencies involve files edited in this session.
 
 set -euo pipefail
 
@@ -37,14 +37,23 @@ if [ -z "$STAGED" ]; then
   exit 0
 fi
 
-# Count current cycles involving staged files
+# Load session edit log
+LOG_FILE="$WORK_ROOT/.claude/session-edits.log"
+if [ ! -f "$LOG_FILE" ] || [ ! -s "$LOG_FILE" ]; then
+  exit 0
+fi
+EDITED_FILES=$(awk '{print $2}' "$LOG_FILE" | sort -u)
+
+# Run check with cycles predicate on staged changes
 RESULT=$(node "$WORK_ROOT/src/cli.js" check --staged --json -T 2>/dev/null) || true
+
 if [ -z "$RESULT" ]; then
   exit 0
 fi
 
-# Extract cycle count and details; compare against HEAD baseline
-NEW_CYCLES=$(echo "$RESULT" | node -e "
+# Check if cycles predicate failed — but only block if a cycle involves
+# a file that was edited in this session
+CYCLES_FAILED=$(echo "$RESULT" | EDITED="$EDITED_FILES" node -e "
   let d='';
   process.stdin.on('data',c=>d+=c);
   process.stdin.on('end',()=>{
@@ -52,53 +61,23 @@ NEW_CYCLES=$(echo "$RESULT" | node -e "
       const data=JSON.parse(d);
       const cyclesPred=(data.predicates||[]).find(p=>p.name==='cycles');
       if(!cyclesPred || cyclesPred.passed) return;
-      const cycles=cyclesPred.cycles||[];
-      // Compare with HEAD: run cycles on HEAD to get baseline count
-      // Since we can't run two builds, check if cycles involve NEW files
-      const newFiles=new Set((data.summary?.newFiles > 0) ?
-        [...(data._newFiles||[])] : []);
-      // If all cycles existed before (no new files involved), skip
-      // For now, report cycle count — the predicate already scopes to changed files
-      // so any cycle here involves a file the user touched
-      const summary=cycles.slice(0,5).map(c=>c.join(' -> ')).join('\\n  ');
-      const extra=cycles.length>5?'\\n  ... and '+(cycles.length-5)+' more':'';
+      const edited=new Set(process.env.EDITED.split('\\n').filter(Boolean));
+      // Filter to cycles that involve at least one file we edited
+      const relevant=(cyclesPred.cycles||[]).filter(
+        cycle=>cycle.some(f=>edited.has(f))
+      );
+      if(relevant.length===0) return;
+      const summary=relevant.slice(0,5).map(c=>c.join(' -> ')).join('\\n  ');
+      const extra=relevant.length>5?'\\n  ... and '+(relevant.length-5)+' more':'';
       process.stdout.write(summary+extra);
     }catch{}
   });
 " 2>/dev/null) || true
 
-# For diff-awareness: get baseline cycle count from HEAD
-# The check --staged predicate uses the *current* graph DB which reflects the working tree.
-# If cycles exist in the DB before our changes, they're pre-existing.
-# We compare: cycles on HEAD (via diff against HEAD~1) vs cycles on staged.
-BASELINE_COUNT=$(node -e "
-  const {findCycles}=require('./src/cycles.js');
-  const {openReadonlyOrFail}=require('./src/db.js');
-  try {
-    const db=openReadonlyOrFail();
-    const cycles=findCycles(db,{fileLevel:true,noTests:true});
-    process.stdout.write(String(cycles.length));
-    db.close();
-  }catch{process.stdout.write('0');}
-" 2>/dev/null) || echo "0"
-
-CURRENT_COUNT=$(echo "$RESULT" | node -e "
-  let d='';
-  process.stdin.on('data',c=>d+=c);
-  process.stdin.on('end',()=>{
-    try {
-      const data=JSON.parse(d);
-      const cyclesPred=(data.predicates||[]).find(p=>p.name==='cycles');
-      process.stdout.write(String((cyclesPred?.cycles||[]).length));
-    }catch{process.stdout.write('0');}
-  });
-" 2>/dev/null) || echo "0"
-
-# Only block if cycle count increased (new cycles introduced)
-if [ "$CURRENT_COUNT" -gt "$BASELINE_COUNT" ] 2>/dev/null; then
-  REASON="BLOCKED: New circular dependencies introduced (was $BASELINE_COUNT, now $CURRENT_COUNT):
-  $NEW_CYCLES
-Fix the new cycles before committing."
+if [ -n "$CYCLES_FAILED" ]; then
+  REASON="BLOCKED: Circular dependencies detected involving files you edited:
+  $CYCLES_FAILED
+Fix the cycles before committing."
 
   node -e "
     console.log(JSON.stringify({
