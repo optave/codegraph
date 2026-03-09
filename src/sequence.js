@@ -132,8 +132,8 @@ export function sequenceData(name, dbPath, opts = {}) {
 
     const getCallees = db.prepare(
       `SELECT DISTINCT n.id, n.name, n.kind, n.file, n.line
-       FROM edges e JOIN nodes n ON e.target_id = n.id
-       WHERE e.source_id = ? AND e.kind = 'calls'`,
+     FROM edges e JOIN nodes n ON e.target_id = n.id
+     WHERE e.source_id = ? AND e.kind = 'calls'`,
     );
 
     for (let d = 1; d <= maxDepth; d++) {
@@ -146,6 +146,7 @@ export function sequenceData(name, dbPath, opts = {}) {
 
         for (const c of callees) {
           if (noTests && isTestFile(c.file)) continue;
+
 
           // Always record the message (even for visited nodes — different caller path)
           fileSet.add(c.file);
@@ -190,12 +191,12 @@ export function sequenceData(name, dbPath, opts = {}) {
 
         const getReturns = db.prepare(
           `SELECT d.expression FROM dataflow d
-           WHERE d.source_id = ? AND d.kind = 'returns'`,
+         WHERE d.source_id = ? AND d.kind = 'returns'`,
         );
         const getFlowsTo = db.prepare(
           `SELECT d.expression FROM dataflow d
-           WHERE d.target_id = ? AND d.kind = 'flows_to'
-           ORDER BY d.param_index`,
+         WHERE d.target_id = ? AND d.kind = 'flows_to'
+         ORDER BY d.param_index`,
         );
 
         // For each called function, check if it has return edges
