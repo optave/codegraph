@@ -270,10 +270,6 @@ export function createDataflowVisitor(rules) {
     }
   }
 
-  // Track which nodes we've already processed to avoid double-handling
-  // when the unified walker visits all children (including unnamed ones)
-  const processed = new Set();
-
   return {
     name: 'dataflow',
     functionNodeTypes: rules.functionNodes,
@@ -302,7 +298,6 @@ export function createDataflowVisitor(rules) {
     },
 
     enterNode(node, _context) {
-      if (processed.has(node.id)) return;
       const t = node.type;
 
       // Skip function nodes — handled by enterFunction/exitFunction
@@ -312,7 +307,7 @@ export function createDataflowVisitor(rules) {
       // `return` node nests a `return` keyword child with the same type string)
       if (rules.returnNode && t === rules.returnNode) {
         if (node.parent?.type === rules.returnNode) return; // keyword token, not statement
-        processed.add(node.id);
+
         const scope = currentScope();
         if (scope?.funcName) {
           const expr = node.namedChildren[0];
@@ -330,26 +325,22 @@ export function createDataflowVisitor(rules) {
 
       // Variable declarations
       if (rules.varDeclaratorNode && t === rules.varDeclaratorNode) {
-        processed.add(node.id);
         handleVarDeclarator(node);
         return;
       }
       if (rules.varDeclaratorNodes?.has(t)) {
-        processed.add(node.id);
         handleVarDeclarator(node);
         return;
       }
 
       // Call expressions
       if (isCallNode(t)) {
-        processed.add(node.id);
         handleCallExpr(node);
         return;
       }
 
       // Assignment expressions
       if (rules.assignmentNode && t === rules.assignmentNode) {
-        processed.add(node.id);
         handleAssignment(node);
         return;
       }

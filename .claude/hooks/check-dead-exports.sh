@@ -93,16 +93,16 @@ DEAD_EXPORTS=$(node -e "
       if (!ent.name.endsWith('.js')) continue;
       try {
         const src = fs.readFileSync(path.join(dir, ent.name), 'utf8');
-        for (const m of src.matchAll(/import\(['\"]([^'\"]+)['\"]\)/g)) {
-          // Extract imported names from destructuring: const { X } = await import(...)
-          const line = src.substring(Math.max(0, src.lastIndexOf('\n', m.index) + 1), src.indexOf('\n', m.index + m[0].length));
-          const destructure = line.match(/\{\s*([^}]+)\s*\}/);
-          if (destructure) {
-            for (const part of destructure[1].split(',')) {
-              const name = part.trim().split(/\s+as\s+/).pop().trim();
-              if (name && /^\w+$/.test(name)) publicAPI.add(name);
-            }
+        // Multi-line-safe: match const { ... } = [await] import('...')
+        for (const m of src.matchAll(/const\s*\{([^}]+)\}\s*=\s*(?:await\s+)?import\s*\(['"]/gs)) {
+          for (const part of m[1].split(',')) {
+            const name = part.trim().split(/\s+as\s+/).pop().trim().split('\n').pop().trim();
+            if (name && /^\w+$/.test(name)) publicAPI.add(name);
           }
+        }
+        // Also match single-binding: const X = [await] import('...')  (default import)
+        for (const m of src.matchAll(/const\s+(\w+)\s*=\s*(?:await\s+)?import\s*\(['"]/g)) {
+          publicAPI.add(m[1]);
         }
       } catch {}
     }
