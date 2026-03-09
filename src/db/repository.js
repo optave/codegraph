@@ -1,4 +1,4 @@
-import { EVERY_SYMBOL_KIND } from '../queries.js';
+import { EVERY_SYMBOL_KIND } from '../kinds.js';
 import { NodeQuery } from './query-builder.js';
 
 /**

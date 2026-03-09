@@ -208,6 +208,34 @@ describe('NodeQuery', () => {
     expect(sql).toContain('ORDER BY n.file, n.line');
   });
 
+  it('.orderBy() accepts ASC/DESC modifiers', () => {
+    const { sql } = new NodeQuery().orderBy('n.file ASC, n.line DESC').build();
+    expect(sql).toContain('ORDER BY n.file ASC, n.line DESC');
+  });
+
+  it('.orderBy() rejects SQL injection', () => {
+    expect(() => new NodeQuery().orderBy('n.file; DROP TABLE nodes --')).toThrow(
+      'Invalid ORDER BY term',
+    );
+    expect(() => new NodeQuery().orderBy('1=1 --')).toThrow('Invalid ORDER BY term');
+  });
+
+  it('.select() rejects SQL injection', () => {
+    expect(() => new NodeQuery().select('*; DROP TABLE nodes --')).toThrow(
+      'Invalid SELECT expression',
+    );
+    expect(() => new NodeQuery().select('1 UNION SELECT * FROM edges')).toThrow(
+      'Invalid SELECT expression',
+    );
+  });
+
+  it('.select() accepts COALESCE expressions', () => {
+    const { sql } = new NodeQuery()
+      .select('n.name, COALESCE(fi.cnt, 0) AS fan_in')
+      .build();
+    expect(sql).toContain('SELECT n.name, COALESCE(fi.cnt, 0) AS fan_in');
+  });
+
   it('.limit() adds LIMIT param', () => {
     const { sql, params } = new NodeQuery().limit(10).build();
     expect(sql).toContain('LIMIT ?');

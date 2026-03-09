@@ -1,9 +1,14 @@
-import { EVERY_EDGE_KIND } from '../queries.js';
+import { EVERY_EDGE_KIND } from '../kinds.js';
 
 // ─── Validation Helpers ─────────────────────────────────────────────
 
 const SAFE_ALIAS_RE = /^[a-z_][a-z0-9_]*$/i;
 const SAFE_COLUMN_RE = /^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?$/i;
+// Matches: column, table.column, column ASC, table.column DESC
+const SAFE_ORDER_TERM_RE = /^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?\s*(?:asc|desc)?$/i;
+// Matches safe SELECT expressions: column refs, *, table.*, COALESCE(...) AS alias
+const SAFE_SELECT_TOKEN_RE =
+  /^(?:[a-z_][a-z0-9_]*(?:\.[a-z_*][a-z0-9_]*)?\s*(?:as\s+[a-z_][a-z0-9_]*)?|[a-z_]+\([^)]*\)\s*(?:as\s+[a-z_][a-z0-9_]*)?)$/i;
 
 function validateAlias(alias) {
   if (!SAFE_ALIAS_RE.test(alias)) {
@@ -14,6 +19,40 @@ function validateAlias(alias) {
 function validateColumn(column) {
   if (!SAFE_COLUMN_RE.test(column)) {
     throw new Error(`Invalid SQL column: ${column}`);
+  }
+}
+
+function validateOrderBy(clause) {
+  const terms = clause.split(',').map((t) => t.trim());
+  for (const term of terms) {
+    if (!SAFE_ORDER_TERM_RE.test(term)) {
+      throw new Error(`Invalid ORDER BY term: ${term}`);
+    }
+  }
+}
+
+function splitTopLevelCommas(str) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === '(') depth++;
+    else if (str[i] === ')') depth--;
+    else if (str[i] === ',' && depth === 0) {
+      parts.push(str.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(str.slice(start).trim());
+  return parts;
+}
+
+function validateSelectCols(cols) {
+  const tokens = splitTopLevelCommas(cols);
+  for (const token of tokens) {
+    if (!SAFE_SELECT_TOKEN_RE.test(token)) {
+      throw new Error(`Invalid SELECT expression: ${token}`);
+    }
   }
 }
 
@@ -97,6 +136,7 @@ export class NodeQuery {
 
   /** Set SELECT columns (default: `n.*`). */
   select(cols) {
+    validateSelectCols(cols);
     this.#selectCols = cols;
     return this;
   }
@@ -194,6 +234,7 @@ export class NodeQuery {
 
   /** ORDER BY clause. */
   orderBy(clause) {
+    validateOrderBy(clause);
     this.#orderByClause = clause;
     return this;
   }
