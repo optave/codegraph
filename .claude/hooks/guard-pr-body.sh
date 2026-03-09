@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # Block PR creation if the body contains "generated with" (case-insensitive)
 
-input="$CLAUDE_TOOL_INPUT"
+set -euo pipefail
 
-# Only check gh pr create commands — extract just the command field to avoid
-# false positives on the description field (greptile review feedback)
-cmd=$(echo "$input" | jq -r '.command // ""')
+INPUT=$(cat)
+
+# Extract just the command field to avoid false positives on the description field
+cmd=$(echo "$INPUT" | node -e "
+  let d='';
+  process.stdin.on('data',c=>d+=c);
+  process.stdin.on('end',()=>{
+    const p=JSON.parse(d).tool_input?.command||'';
+    if(p)process.stdout.write(p);
+  });
+" 2>/dev/null) || true
+
 echo "$cmd" | grep -qi 'gh pr create' || exit 0
 
 # Block if body contains "generated with"
