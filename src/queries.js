@@ -3140,25 +3140,43 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused) {
     .all(`%${target}%`);
   if (fileNodes.length === 0) return [];
 
+  // Detect whether exported column exists
+  let hasExportedCol = false;
+  try {
+    db.prepare('SELECT exported FROM nodes LIMIT 0').raw();
+    hasExportedCol = true;
+  } catch {
+    /* old DB without exported column */
+  }
+
   return fileNodes.map((fn) => {
     const symbols = db
       .prepare(`SELECT * FROM nodes WHERE file = ? AND kind != 'file' ORDER BY line`)
       .all(fn.file);
 
-    // IDs of symbols that have incoming calls from other files (exported)
-    const exportedIds = new Set(
-      db
+    let exported;
+    if (hasExportedCol) {
+      // Use the exported column populated during build
+      exported = db
         .prepare(
-          `SELECT DISTINCT e.target_id FROM edges e
-           JOIN nodes caller ON e.source_id = caller.id
-           JOIN nodes target ON e.target_id = target.id
-           WHERE target.file = ? AND caller.file != ? AND e.kind = 'calls'`,
+          "SELECT * FROM nodes WHERE file = ? AND kind != 'file' AND exported = 1 ORDER BY line",
         )
-        .all(fn.file, fn.file)
-        .map((r) => r.target_id),
-    );
-
-    const exported = symbols.filter((s) => exportedIds.has(s.id));
+        .all(fn.file);
+    } else {
+      // Fallback: symbols that have incoming calls from other files
+      const exportedIds = new Set(
+        db
+          .prepare(
+            `SELECT DISTINCT e.target_id FROM edges e
+             JOIN nodes caller ON e.source_id = caller.id
+             JOIN nodes target ON e.target_id = target.id
+             WHERE target.file = ? AND caller.file != ? AND e.kind = 'calls'`,
+          )
+          .all(fn.file, fn.file)
+          .map((r) => r.target_id),
+      );
+      exported = symbols.filter((s) => exportedIds.has(s.id));
+    }
     const internalCount = symbols.length - exported.length;
 
     const results = exported.map((s) => {
@@ -3185,6 +3203,8 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused) {
       };
     });
 
+    const totalUnused = results.filter((r) => r.consumerCount === 0).length;
+
     // Files that re-export this file (barrel → this file)
     const reexports = db
       .prepare(
@@ -3193,8 +3213,6 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused) {
       )
       .all(fn.id)
       .map((r) => ({ file: r.file }));
-
-    const totalUnused = results.filter((r) => r.consumerCount === 0).length;
 
     let filteredResults = results;
     if (unused) {
@@ -3274,14 +3292,24 @@ export function fileExports(file, customDbPath, opts = {}) {
   }
 
   if (data.results.length === 0) {
-    console.log(`No exported symbols found for "${file}". Run "codegraph build" first.`);
+    if (opts.unused) {
+      console.log(`No unused exports found for "${file}".`);
+    } else {
+      console.log(`No exported symbols found for "${file}". Run "codegraph build" first.`);
+    }
     return;
   }
 
-  const unusedNote = data.totalUnused > 0 ? `, ${data.totalUnused} unused` : '';
-  console.log(
-    `\n# ${data.file} — ${data.totalExported} exported, ${data.totalInternal} internal${unusedNote}\n`,
-  );
+  if (opts.unused) {
+    console.log(
+      `\n# ${data.file} — ${data.totalUnused} unused export${data.totalUnused !== 1 ? 's' : ''} (of ${data.totalExported} exported)\n`,
+    );
+  } else {
+    const unusedNote = data.totalUnused > 0 ? ` (${data.totalUnused} unused)` : '';
+    console.log(
+      `\n# ${data.file} — ${data.totalExported} exported${unusedNote}, ${data.totalInternal} internal\n`,
+    );
+  }
 
   for (const sym of data.results) {
     const icon = kindIcon(sym.kind);
