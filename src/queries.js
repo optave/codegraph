@@ -3214,8 +3214,6 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused) {
       .all(fn.id)
       .map((r) => ({ file: r.file }));
 
-    const totalUnused = results.filter((r) => r.consumerCount === 0).length;
-
     let filteredResults = results;
     if (unused) {
       filteredResults = results.filter((r) => r.consumerCount === 0);
