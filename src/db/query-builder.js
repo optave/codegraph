@@ -1,3 +1,21 @@
+import { EVERY_EDGE_KIND } from '../queries.js';
+
+// ─── Validation Helpers ─────────────────────────────────────────────
+
+const SAFE_ALIAS_RE = /^[a-z_][a-z0-9_]*$/i;
+
+function validateAlias(alias) {
+  if (!SAFE_ALIAS_RE.test(alias)) {
+    throw new Error(`Invalid SQL alias: ${alias}`);
+  }
+}
+
+function validateEdgeKind(edgeKind) {
+  if (!EVERY_EDGE_KIND.includes(edgeKind)) {
+    throw new Error(`Invalid edge kind: ${edgeKind} (expected one of ${EVERY_EDGE_KIND.join(', ')})`);
+  }
+}
+
 // ─── Standalone Helpers ──────────────────────────────────────────────
 
 /**
@@ -33,6 +51,8 @@ export function kindInClause(kinds) {
  * @param {string} [alias='fi'] - Subquery alias
  */
 export function fanInJoinSQL(edgeKind = 'calls', alias = 'fi') {
+  validateEdgeKind(edgeKind);
+  validateAlias(alias);
   return `LEFT JOIN (
     SELECT target_id, COUNT(*) AS cnt FROM edges WHERE kind = '${edgeKind}' GROUP BY target_id
   ) ${alias} ON ${alias}.target_id = n.id`;
@@ -44,6 +64,8 @@ export function fanInJoinSQL(edgeKind = 'calls', alias = 'fi') {
  * @param {string} [alias='fo'] - Subquery alias
  */
 export function fanOutJoinSQL(edgeKind = 'calls', alias = 'fo') {
+  validateEdgeKind(edgeKind);
+  validateAlias(alias);
   return `LEFT JOIN (
     SELECT source_id, COUNT(*) AS cnt FROM edges WHERE kind = '${edgeKind}' GROUP BY source_id
   ) ${alias} ON ${alias}.source_id = n.id`;

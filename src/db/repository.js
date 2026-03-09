@@ -1,4 +1,5 @@
 import { NodeQuery } from './query-builder.js';
+import { EVERY_SYMBOL_KIND } from '../queries.js';
 
 /**
  * Find nodes matching a name pattern, with fan-in count.
@@ -36,6 +37,11 @@ export function findNodesWithFanIn(db, namePattern, opts = {}) {
  * @returns {object[]}
  */
 export function findNodesForTriage(db, opts = {}) {
+  if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
+    throw new Error(`Invalid kind: ${opts.kind} (expected one of ${EVERY_SYMBOL_KIND.join(', ')})`);
+  }
+
+  const kindsToUse = opts.kind ? [opts.kind] : ['function', 'method', 'class'];
   const q = new NodeQuery()
     .select(
       `n.id, n.name, n.kind, n.file, n.line, n.end_line, n.role,
@@ -46,17 +52,30 @@ export function findNodesForTriage(db, opts = {}) {
               COALESCE(fc.max_nesting, 0) AS max_nesting,
               COALESCE(fcc.commit_count, 0) AS churn`,
     )
-    .kinds(['function', 'method', 'class'])
+    .kinds(kindsToUse)
     .withFanIn()
     .withComplexity()
     .withChurn()
     .excludeTests(opts.noTests)
     .fileFilter(opts.file)
-    .kindFilter(opts.kind)
     .roleFilter(opts.role)
     .orderBy('n.file, n.line');
 
   return q.all(db);
+}
+
+/**
+ * Shared query builder for function/method/class node listing.
+ * @param {object} [opts]
+ * @returns {NodeQuery}
+ */
+function _functionNodeQuery(opts = {}) {
+  return new NodeQuery()
+    .select('name, kind, file, line, end_line, role')
+    .kinds(['function', 'method', 'class'])
+    .fileFilter(opts.file)
+    .nameLike(opts.pattern)
+    .orderBy('file, line');
 }
 
 /**
@@ -68,14 +87,7 @@ export function findNodesForTriage(db, opts = {}) {
  * @returns {object[]}
  */
 export function listFunctionNodes(db, opts = {}) {
-  const q = new NodeQuery()
-    .select('name, kind, file, line, end_line, role')
-    .kinds(['function', 'method', 'class'])
-    .fileFilter(opts.file)
-    .nameLike(opts.pattern)
-    .orderBy('file, line');
-
-  return q.all(db);
+  return _functionNodeQuery(opts).all(db);
 }
 
 /**
@@ -87,14 +99,7 @@ export function listFunctionNodes(db, opts = {}) {
  * @returns {IterableIterator}
  */
 export function iterateFunctionNodes(db, opts = {}) {
-  const q = new NodeQuery()
-    .select('name, kind, file, line, end_line, role')
-    .kinds(['function', 'method', 'class'])
-    .fileFilter(opts.file)
-    .nameLike(opts.pattern)
-    .orderBy('file, line');
-
-  return q.iterate(db);
+  return _functionNodeQuery(opts).iterate(db);
 }
 
 /**
