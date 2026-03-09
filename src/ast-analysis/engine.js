@@ -163,8 +163,11 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, _engineOpts) {
         visitors.push(complexityVisitor);
 
         // Merge nesting nodes for complexity tracking
+        // NOTE: do NOT add functionNodes here — funcDepth in the complexity
+        // visitor already tracks function-level nesting.  Adding them to
+        // nestingNodeTypes would inflate context.nestingLevel by +1 inside
+        // every function body, double-counting in cognitive += 1 + nestingLevel.
         for (const t of cRules.nestingNodes) walkerOpts.nestingNodeTypes.add(t);
-        for (const t of cRules.functionNodes) walkerOpts.nestingNodeTypes.add(t);
 
         // Provide getFunctionName for complexity visitor
         const dfRules = DATAFLOW_RULES.get(langId);
@@ -205,22 +208,20 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, _engineOpts) {
     if (complexityVisitor) {
       const complexityResults = results.complexity || [];
       // Match results back to definitions by function start line
+      // Store the full result (metrics + funcNode) for O(1) lookup
       const resultByLine = new Map();
       for (const r of complexityResults) {
         if (r.funcNode) {
           const line = r.funcNode.startPosition.row + 1;
-          resultByLine.set(line, r.metrics);
+          resultByLine.set(line, r);
         }
       }
       for (const def of defs) {
         if ((def.kind === 'function' || def.kind === 'method') && def.line && !def.complexity) {
-          const metrics = resultByLine.get(def.line);
-          if (metrics) {
-            // Compute LOC + MI from the actual function node text
-            const funcResult = complexityResults.find(
-              (r) => r.funcNode && r.funcNode.startPosition.row + 1 === def.line,
-            );
-            const loc = funcResult ? computeLOCMetrics(funcResult.funcNode, langId) : metrics.loc;
+          const funcResult = resultByLine.get(def.line);
+          if (funcResult) {
+            const { metrics } = funcResult;
+            const loc = computeLOCMetrics(funcResult.funcNode, langId);
             const volume = metrics.halstead ? metrics.halstead.volume : 0;
             const commentRatio = loc.loc > 0 ? loc.commentLines / loc.loc : 0;
             const mi = computeMaintainabilityIndex(
