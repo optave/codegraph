@@ -105,6 +105,7 @@ export function triageData(customDbPath, opts = {}) {
     return {
       items: [],
       summary: { total: 0, analyzed: 0, avgScore: 0, maxScore: 0, weights, signalCoverage: {} },
+      error: err.message,
     };
   }
 
@@ -222,7 +223,9 @@ export function triage(customDbPath, opts = {}) {
   if (outputResult(data, 'items', opts)) return;
 
   if (data.items.length === 0) {
-    if (data.summary.total === 0) {
+    if (data.error) {
+      console.error(`\nError: ${data.error}\n`);
+    } else if (data.summary.total === 0) {
       console.log('\nNo symbols found. Run "codegraph build" first.\n');
     } else {
       console.log('\nNo symbols match the given filters.\n');

@@ -303,6 +303,38 @@ describe('triage', () => {
     fs.rmSync(sparseDir, { recursive: true, force: true });
   });
 
+  test('query error propagates error field instead of misleading "no symbols" message', async () => {
+    // Create a DB missing the function_complexity table to trigger a query error
+    const brokenDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-triage-broken-'));
+    fs.mkdirSync(path.join(brokenDir, '.codegraph'));
+    const brokenDbPath = path.join(brokenDir, '.codegraph', 'graph.db');
+
+    const db = new Database(brokenDbPath);
+    db.pragma('journal_mode = WAL');
+    // Create only the nodes table — omit function_complexity and file_commit_counts
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS nodes (
+        id INTEGER PRIMARY KEY,
+        name TEXT, kind TEXT, file TEXT, line INTEGER, end_line INTEGER, role TEXT
+      );
+      CREATE TABLE IF NOT EXISTS edges (
+        source_id INTEGER, target_id INTEGER, kind TEXT
+      );
+    `);
+    insertNode(db, 'foo', 'function', 'src/foo.js', 1, { role: 'core' });
+    db.close();
+
+    const result = triageData(brokenDbPath, { limit: 100 });
+    // Should have error field with the real error message
+    expect(result.error).toBeDefined();
+    expect(result.error).toMatch(/function_complexity/i);
+    // Should still return empty items
+    expect(result.items).toEqual([]);
+    expect(result.summary.total).toBe(0);
+
+    fs.rmSync(brokenDir, { recursive: true, force: true });
+  });
+
   test('role weights applied correctly', () => {
     const result = triageData(dbPath, {
       limit: 100,
