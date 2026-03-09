@@ -81,6 +81,9 @@ export function createComplexityVisitor(cRules, hRules, options = {}) {
           // Nested function: increase nesting for complexity
           funcDepth++;
         }
+      } else {
+        // Function-level mode: track nested functions for correct nesting depth
+        funcDepth++;
       }
     },
 
@@ -98,6 +101,8 @@ export function createComplexityVisitor(cRules, hRules, options = {}) {
         } else {
           funcDepth--;
         }
+      } else {
+        funcDepth--;
       }
     },
 

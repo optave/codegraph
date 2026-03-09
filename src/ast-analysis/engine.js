@@ -61,7 +61,7 @@ async function getParserModule() {
  * @param {object} [engineOpts] - engine options
  * @returns {Promise<{ astMs: number, complexityMs: number, cfgMs: number, dataflowMs: number }>}
  */
-export async function runAnalyses(db, fileSymbols, rootDir, opts, _engineOpts) {
+export async function runAnalyses(db, fileSymbols, rootDir, opts, engineOpts) {
   const timing = { astMs: 0, complexityMs: 0, cfgMs: 0, dataflowMs: 0 };
 
   const doAst = opts.ast !== false;
@@ -263,7 +263,7 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, _engineOpts) {
     const t0 = performance.now();
     try {
       const { buildAstNodes } = await import('../ast.js');
-      await buildAstNodes(db, fileSymbols, rootDir, _engineOpts);
+      await buildAstNodes(db, fileSymbols, rootDir, engineOpts);
     } catch (err) {
       debug(`buildAstNodes failed: ${err.message}`);
     }
@@ -274,7 +274,7 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, _engineOpts) {
     const t0 = performance.now();
     try {
       const { buildComplexityMetrics } = await import('../complexity.js');
-      await buildComplexityMetrics(db, fileSymbols, rootDir, _engineOpts);
+      await buildComplexityMetrics(db, fileSymbols, rootDir, engineOpts);
     } catch (err) {
       debug(`buildComplexityMetrics failed: ${err.message}`);
     }
@@ -285,7 +285,7 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, _engineOpts) {
     const t0 = performance.now();
     try {
       const { buildCFGData } = await import('../cfg.js');
-      await buildCFGData(db, fileSymbols, rootDir, _engineOpts);
+      await buildCFGData(db, fileSymbols, rootDir, engineOpts);
     } catch (err) {
       debug(`buildCFGData failed: ${err.message}`);
     }
@@ -296,7 +296,7 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, _engineOpts) {
     const t0 = performance.now();
     try {
       const { buildDataflowEdges } = await import('../dataflow.js');
-      await buildDataflowEdges(db, fileSymbols, rootDir, _engineOpts);
+      await buildDataflowEdges(db, fileSymbols, rootDir, engineOpts);
     } catch (err) {
       debug(`buildDataflowEdges failed: ${err.message}`);
     }

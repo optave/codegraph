@@ -1407,11 +1407,15 @@ export async function buildGraph(rootDir, opts = {}) {
   // Replaces 4 sequential buildXxx calls with one coordinated pass.
   {
     const { runAnalyses } = await import('./ast-analysis/engine.js');
-    const analysisTiming = await runAnalyses(db, astComplexitySymbols, rootDir, opts, engineOpts);
-    _t.astMs = analysisTiming.astMs;
-    _t.complexityMs = analysisTiming.complexityMs;
-    _t.cfgMs = analysisTiming.cfgMs;
-    _t.dataflowMs = analysisTiming.dataflowMs;
+    try {
+      const analysisTiming = await runAnalyses(db, astComplexitySymbols, rootDir, opts, engineOpts);
+      _t.astMs = analysisTiming.astMs;
+      _t.complexityMs = analysisTiming.complexityMs;
+      _t.cfgMs = analysisTiming.cfgMs;
+      _t.dataflowMs = analysisTiming.dataflowMs;
+    } catch (err) {
+      debug(`Unified analysis engine failed: ${err.message}`);
+    }
   }
 
   // Release any remaining cached WASM trees for GC
