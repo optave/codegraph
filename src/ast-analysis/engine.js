@@ -159,7 +159,10 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, _engineOpts) {
         (d) => (d.kind === 'function' || d.kind === 'method') && d.line && !d.complexity,
       );
       if (needsWasmComplexity) {
-        complexityVisitor = createComplexityVisitor(cRules, hRules, { fileLevelWalk: true });
+        complexityVisitor = createComplexityVisitor(cRules, hRules, {
+          fileLevelWalk: true,
+          langId,
+        });
         visitors.push(complexityVisitor);
 
         // Merge nesting nodes for complexity tracking

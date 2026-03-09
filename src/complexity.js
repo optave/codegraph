@@ -295,11 +295,12 @@ export function computeAllMetrics(functionNode, langId) {
   if (!cRules) return null;
   const hRules = HALSTEAD_RULES.get(langId);
 
-  const visitor = createComplexityVisitor(cRules, hRules);
+  const visitor = createComplexityVisitor(cRules, hRules, { langId });
 
   const nestingNodes = new Set(cRules.nestingNodes);
-  // Add function nodes as nesting nodes (nested functions increase nesting)
-  for (const t of cRules.functionNodes) nestingNodes.add(t);
+  // NOTE: do NOT add functionNodes here — in function-level mode the walker
+  // walks a single function node, and adding it to nestingNodeTypes would
+  // inflate context.nestingLevel by +1 for the entire body.
 
   const results = walkWithVisitors(functionNode, [visitor], langId, {
     nestingNodeTypes: nestingNodes,

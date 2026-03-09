@@ -26,7 +26,7 @@ import {
  * @returns {Visitor}
  */
 export function createComplexityVisitor(cRules, hRules, options = {}) {
-  const { fileLevelWalk = false } = options;
+  const { fileLevelWalk = false, langId = null } = options;
 
   // Per-function accumulators
   let cognitive = 0;
@@ -57,7 +57,7 @@ export function createComplexityVisitor(cRules, hRules, options = {}) {
   function collectResult(funcNode) {
     const halstead =
       hRules && operators && operands ? computeHalsteadDerived(operators, operands) : null;
-    const loc = computeLOCMetrics(funcNode, null);
+    const loc = computeLOCMetrics(funcNode, langId);
     const volume = halstead ? halstead.volume : 0;
     const commentRatio = loc.loc > 0 ? loc.commentLines / loc.loc : 0;
     const mi = computeMaintainabilityIndex(volume, cyclomatic, loc.sloc, commentRatio);
