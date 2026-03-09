@@ -896,7 +896,7 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
       if (!tree && !allNative) {
         if (!getParserFn) continue;
         langId = extToLang.get(ext);
-        if (!langId || !CFG_LANG_IDS.has(langId)) continue;
+        if (!langId || !CFG_RULES.has(langId)) continue;
 
         const absPath = path.join(rootDir, relPath);
         let code;
