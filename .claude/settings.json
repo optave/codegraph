@@ -23,6 +23,16 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/show-diff-impact.sh\"",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-cycles.sh\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-dead-exports.sh\"",
+            "timeout": 30
           }
         ]
       },

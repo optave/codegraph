@@ -3134,7 +3134,7 @@ export function roles(customDbPath, opts = {}) {
 
 // ─── exportsData ─────────────────────────────────────────────────────
 
-function exportsFileImpl(db, target, noTests, getFileLines) {
+function exportsFileImpl(db, target, noTests, getFileLines, unused) {
   const fileNodes = db
     .prepare(`SELECT * FROM nodes WHERE file LIKE ? AND kind = 'file'`)
     .all(`%${target}%`);
@@ -3194,12 +3194,20 @@ function exportsFileImpl(db, target, noTests, getFileLines) {
       .all(fn.id)
       .map((r) => ({ file: r.file }));
 
+    const totalUnused = results.filter((r) => r.consumerCount === 0).length;
+
+    let filteredResults = results;
+    if (unused) {
+      filteredResults = results.filter((r) => r.consumerCount === 0);
+    }
+
     return {
       file: fn.file,
-      results,
+      results: filteredResults,
       reexports,
       totalExported: exported.length,
       totalInternal: internalCount,
+      totalUnused,
     };
   });
 }
@@ -3229,12 +3237,13 @@ export function exportsData(file, customDbPath, opts = {}) {
     }
   }
 
-  const fileResults = exportsFileImpl(db, file, noTests, getFileLines);
+  const unused = opts.unused || false;
+  const fileResults = exportsFileImpl(db, file, noTests, getFileLines, unused);
   db.close();
 
   if (fileResults.length === 0) {
     return paginateResult(
-      { file, results: [], reexports: [], totalExported: 0, totalInternal: 0 },
+      { file, results: [], reexports: [], totalExported: 0, totalInternal: 0, totalUnused: 0 },
       'results',
       { limit: opts.limit, offset: opts.offset },
     );
@@ -3248,6 +3257,7 @@ export function exportsData(file, customDbPath, opts = {}) {
     reexports: first.reexports,
     totalExported: first.totalExported,
     totalInternal: first.totalInternal,
+    totalUnused: first.totalUnused,
   };
   return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
 }
@@ -3268,8 +3278,9 @@ export function fileExports(file, customDbPath, opts = {}) {
     return;
   }
 
+  const unusedNote = data.totalUnused > 0 ? `, ${data.totalUnused} unused` : '';
   console.log(
-    `\n# ${data.file} — ${data.totalExported} exported, ${data.totalInternal} internal\n`,
+    `\n# ${data.file} — ${data.totalExported} exported, ${data.totalInternal} internal${unusedNote}\n`,
   );
 
   for (const sym of data.results) {
