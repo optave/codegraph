@@ -109,7 +109,6 @@ export function createComplexityVisitor(cRules, hRules, options = {}) {
       const nestingLevel = fileLevelWalk ? context.nestingLevel + funcDepth : context.nestingLevel;
 
       // ── Halstead classification ──
-      const _wasSkipping = halsteadSkip;
       if (hRules) {
         if (hRules.skipTypes.has(type)) halsteadSkip = true;
         if (!halsteadSkip) {
