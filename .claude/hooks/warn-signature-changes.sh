@@ -54,28 +54,25 @@ WARNING=$(node -e "
   const db = openReadonlyOrFail();
   const lines = [];
 
+  const stmtNode = db.prepare(
+    'SELECT id, role FROM nodes WHERE name = ? AND file = ? AND line = ?'
+  );
+  const stmtCallers = db.prepare(
+    'SELECT DISTINCT n.id FROM edges e JOIN nodes n ON e.source_id = n.id WHERE e.target_id = ? AND e.kind = \\'calls\\''
+  );
+
   for (const v of sigPred.violations) {
-    // Get role from DB
-    const node = db.prepare(
-      'SELECT role FROM nodes WHERE name = ? AND file = ? AND line = ?'
-    ).get(v.name, v.file, v.line);
+    const node = stmtNode.get(v.name, v.file, v.line);
     const role = node?.role || 'unknown';
 
-    // Count transitive callers (BFS, depth 3)
-    const defNode = db.prepare(
-      'SELECT id FROM nodes WHERE name = ? AND file = ? AND line = ?'
-    ).get(v.name, v.file, v.line);
-
     let callerCount = 0;
-    if (defNode) {
-      const visited = new Set([defNode.id]);
-      let frontier = [defNode.id];
+    if (node) {
+      const visited = new Set([node.id]);
+      let frontier = [node.id];
       for (let d = 0; d < 3; d++) {
         const next = [];
         for (const fid of frontier) {
-          const callers = db.prepare(
-            'SELECT DISTINCT n.id FROM edges e JOIN nodes n ON e.source_id = n.id WHERE e.target_id = ? AND e.kind = \\'calls\\''
-          ).all(fid);
+          const callers = stmtCallers.all(fid);
           for (const c of callers) {
             if (!visited.has(c.id)) {
               visited.add(c.id);
