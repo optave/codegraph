@@ -48,10 +48,9 @@ EDITED_FILES=$(awk '{print $2}' "$LOG_FILE" | sort -u)
 # Filter staged files to src/*.js that were edited in this session
 FILES_TO_CHECK=""
 while IFS= read -r file; do
-  case "$file" in
-    src/*.js|src/*.ts|src/*.tsx) ;;
-    *) continue ;;
-  esac
+  if ! echo "$file" | grep -qE '^src/.*\.(js|ts|tsx)$'; then
+    continue
+  fi
   if echo "$EDITED_FILES" | grep -qxF "$file"; then
     FILES_TO_CHECK="${FILES_TO_CHECK:+$FILES_TO_CHECK
 }$file"

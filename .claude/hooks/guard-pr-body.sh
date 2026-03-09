@@ -19,6 +19,16 @@ echo "$cmd" | grep -qi 'gh pr create' || exit 0
 
 # Block if body contains "generated with"
 if echo "$cmd" | grep -qi 'generated with'; then
-  echo "BLOCK: Remove any 'Generated with ...' line from the PR body." >&2
-  exit 2
+  node -e "
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'BLOCKED: Remove any \'Generated with ...\' line from the PR body.'
+      }
+    }));
+  "
+  exit 0
 fi
+
+exit 0

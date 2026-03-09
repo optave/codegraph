@@ -88,42 +88,45 @@ RESULT=$(node -e "
   if (sigPred && !sigPred.passed && sigPred.violations?.length) {
     // Enrich with role + transitive caller count using a single DB connection
     const db = openReadonlyOrFail();
-    const stmtNode = db.prepare(
-      'SELECT id, role FROM nodes WHERE name = ? AND file = ? AND line = ?'
-    );
-    const stmtCallers = db.prepare(
-      'SELECT DISTINCT n.id FROM edges e JOIN nodes n ON e.source_id = n.id WHERE e.target_id = ? AND e.kind = \\'calls\\''
-    );
-
     const lines = [];
-    for (const v of sigPred.violations) {
-      const node = stmtNode.get(v.name, v.file, v.line);
-      const role = node?.role || 'unknown';
+    try {
+      const stmtNode = db.prepare(
+        'SELECT id, role FROM nodes WHERE name = ? AND file = ? AND line = ?'
+      );
+      const stmtCallers = db.prepare(
+        'SELECT DISTINCT n.id FROM edges e JOIN nodes n ON e.source_id = n.id WHERE e.target_id = ? AND e.kind = \\'calls\\''
+      );
 
-      let callerCount = 0;
-      if (node) {
-        const visited = new Set([node.id]);
-        let frontier = [node.id];
-        for (let d = 0; d < 3; d++) {
-          const next = [];
-          for (const fid of frontier) {
-            for (const c of stmtCallers.all(fid)) {
-              if (!visited.has(c.id)) {
-                visited.add(c.id);
-                next.push(c.id);
-                callerCount++;
+      for (const v of sigPred.violations) {
+        const node = stmtNode.get(v.name, v.file, v.line);
+        const role = node?.role || 'unknown';
+
+        let callerCount = 0;
+        if (node) {
+          const visited = new Set([node.id]);
+          let frontier = [node.id];
+          for (let d = 0; d < 3; d++) {
+            const next = [];
+            for (const fid of frontier) {
+              for (const c of stmtCallers.all(fid)) {
+                if (!visited.has(c.id)) {
+                  visited.add(c.id);
+                  next.push(c.id);
+                  callerCount++;
+                }
               }
             }
+            frontier = next;
+            if (!frontier.length) break;
           }
-          frontier = next;
-          if (!frontier.length) break;
         }
-      }
 
-      const risk = role === 'core' ? 'HIGH' : role === 'utility' ? 'MEDIUM' : 'low';
-      lines.push(risk + ': ' + v.name + ' (' + v.kind + ') [' + role + '] at ' + v.file + ':' + v.line + ' — ' + callerCount + ' transitive callers');
+        const risk = role === 'core' ? 'HIGH' : role === 'utility' ? 'MEDIUM' : 'LOW';
+        lines.push(risk + ': ' + v.name + ' (' + v.kind + ') [' + role + '] at ' + v.file + ':' + v.line + ' — ' + callerCount + ' transitive callers');
+      }
+    } finally {
+      db.close();
     }
-    db.close();
 
     if (lines.length > 0) {
       output.sigWarning = lines.join('\n');

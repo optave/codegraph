@@ -27,7 +27,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-commit.sh\"",
-            "timeout": 20
+            "timeout": 30
           },
           {
             "type": "command",
