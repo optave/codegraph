@@ -29,8 +29,6 @@ import { isTestFile } from './test-filter.js';
 export { DATAFLOW_RULES };
 export { _makeDataflowRules as makeDataflowRules };
 
-const DATAFLOW_LANG_IDS = new Set(DATAFLOW_RULES.keys());
-
 export const DATAFLOW_EXTENSIONS = buildExtensionSet(DATAFLOW_RULES);
 
 // ── AST helpers ──────────────────────────────────────────────────────────────
@@ -668,7 +666,7 @@ export async function buildDataflowEdges(db, fileSymbols, rootDir, _engineOpts) 
         if (!tree) {
           if (!getParserFn) continue;
           langId = extToLang.get(ext);
-          if (!langId || !DATAFLOW_LANG_IDS.has(langId)) continue;
+          if (!langId || !DATAFLOW_RULES.has(langId)) continue;
 
           const absPath = path.join(rootDir, relPath);
           let code;
