@@ -87,6 +87,7 @@ function buildAliases(files) {
  */
 export function sequenceData(name, dbPath, opts = {}) {
   const db = openReadonlyOrFail(dbPath);
+  try {
   const maxDepth = opts.depth || 10;
   const noTests = opts.noTests || false;
   const withDataflow = opts.dataflow || false;
@@ -103,7 +104,6 @@ export function sequenceData(name, dbPath, opts = {}) {
   }
 
   if (!matchNode) {
-    db.close();
     return {
       entry: null,
       participants: [],
@@ -273,8 +273,6 @@ export function sequenceData(name, dbPath, opts = {}) {
     msg.to = aliases.get(msg.to);
   }
 
-  db.close();
-
   const base = {
     entry,
     participants,
@@ -289,6 +287,9 @@ export function sequenceData(name, dbPath, opts = {}) {
     result.participants = result.participants.filter((p) => activeFiles.has(p.id));
   }
   return result;
+  } finally {
+    db.close();
+  }
 }
 
 // ─── Mermaid formatter ───────────────────────────────────────────────
