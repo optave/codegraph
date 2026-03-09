@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-commit.sh — PreToolUse hook for Bash (git commit)
 # Combined cycle-detection (blocking) + signature-change warning (informational).
-# Runs checkData() ONCE with both predicates, single DB connection.
+# Runs checkData() ONCE with both predicates, single Node.js process.
 
 set -euo pipefail
 

@@ -31,4 +31,21 @@ if echo "$cmd" | grep -qi 'generated with'; then
   exit 0
 fi
 
+# Also check --body-file path
+BODY_FILE=$(echo "$cmd" | grep -oP '(?<=--body-file\s)\S+' || true)
+if [ -n "$BODY_FILE" ] && [ -f "$BODY_FILE" ]; then
+  if grep -qi 'generated with' "$BODY_FILE"; then
+    node -e "
+      console.log(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'BLOCKED: Remove any \'Generated with ...\' line from the PR body file.'
+        }
+      }));
+    "
+    exit 0
+  fi
+fi
+
 exit 0

@@ -75,9 +75,7 @@ DEAD_EXPORTS=$(node -e "
       const data = exportsData(file, undefined, { noTests: true, unused: true });
       if (data && data.results) {
         for (const r of data.results) {
-          if (r.consumerCount === 0) {
-            dead.push(r.name + ' (' + data.file + ':' + r.line + ')');
-          }
+          dead.push(r.name + ' (' + data.file + ':' + r.line + ')');
         }
       }
     } catch {}
