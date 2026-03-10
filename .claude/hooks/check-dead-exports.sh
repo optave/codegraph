@@ -67,10 +67,11 @@ fi
 DEAD_EXPORTS=$(node --input-type=module -e "
   import fs from 'node:fs';
   import path from 'node:path';
-  const root = process.argv[1];
-  const files = process.argv[2].split('\n').filter(Boolean);
+  const root = process.argv[2];
+  const files = process.argv[3].split('\n').filter(Boolean);
 
-  const fileUrl = 'file:///' + path.join(root, 'src/queries.js').replace(/\\\\/g, '/');
+  const { pathToFileURL } = await import('node:url');
+  const fileUrl = pathToFileURL(path.join(root, 'src/queries.js')).href;
   const { exportsData } = await import(fileUrl);
 
   // Build set of names exported from index.js (public API surface)
