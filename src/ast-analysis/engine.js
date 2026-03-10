@@ -223,12 +223,21 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, engineOpts) {
       for (const r of complexityResults) {
         if (r.funcNode) {
           const line = r.funcNode.startPosition.row + 1;
-          resultByLine.set(line, r);
+          if (!resultByLine.has(line)) resultByLine.set(line, []);
+          resultByLine.get(line).push(r);
         }
       }
       for (const def of defs) {
         if ((def.kind === 'function' || def.kind === 'method') && def.line && !def.complexity) {
-          const funcResult = resultByLine.get(def.line);
+          const candidates = resultByLine.get(def.line);
+          const funcResult = !candidates
+            ? undefined
+            : candidates.length === 1
+              ? candidates[0]
+              : (candidates.find((r) => {
+                  const n = r.funcNode.childForFieldName('name');
+                  return n && n.text === def.name;
+                }) ?? candidates[0]);
           if (funcResult) {
             const { metrics } = funcResult;
             const loc = computeLOCMetrics(funcResult.funcNode, langId);
@@ -261,7 +270,8 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, engineOpts) {
       for (const r of cfgResults) {
         if (r.funcNode) {
           const line = r.funcNode.startPosition.row + 1;
-          cfgByLine.set(line, r);
+          if (!cfgByLine.has(line)) cfgByLine.set(line, []);
+          cfgByLine.get(line).push(r);
         }
       }
       for (const def of defs) {
@@ -270,7 +280,15 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, engineOpts) {
           def.line &&
           !def.cfg?.blocks?.length
         ) {
-          const cfgResult = cfgByLine.get(def.line);
+          const candidates = cfgByLine.get(def.line);
+          const cfgResult = !candidates
+            ? undefined
+            : candidates.length === 1
+              ? candidates[0]
+              : (candidates.find((r) => {
+                  const n = r.funcNode.childForFieldName('name');
+                  return n && n.text === def.name;
+                }) ?? candidates[0]);
           if (cfgResult) {
             def.cfg = { blocks: cfgResult.blocks, edges: cfgResult.edges };
 

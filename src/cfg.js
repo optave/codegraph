@@ -59,7 +59,8 @@ export function buildFunctionCFG(functionNode, langId) {
   const cfgResults = results.cfg || [];
   if (cfgResults.length === 0) return { blocks: [], edges: [], cyclomatic: 0 };
 
-  const r = cfgResults[0];
+  const r = cfgResults.find((result) => result.funcNode === functionNode);
+  if (!r) return { blocks: [], edges: [], cyclomatic: 0 };
   return { blocks: r.blocks, edges: r.edges, cyclomatic: r.cyclomatic };
 }
 
