@@ -67,10 +67,10 @@ fi
 DEAD_EXPORTS=$(node --input-type=module -e "
   import fs from 'node:fs';
   import path from 'node:path';
+  import { pathToFileURL } from 'node:url';
   const root = process.argv[2];
   const files = process.argv[3].split('\n').filter(Boolean);
 
-  const { pathToFileURL } = await import('node:url');
   const fileUrl = pathToFileURL(path.join(root, 'src/queries.js')).href;
   const { exportsData } = await import(fileUrl);
 
