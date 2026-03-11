@@ -1,6 +1,6 @@
 # Codegraph Feature Backlog
 
-**Last updated:** 2026-03-03
+**Last updated:** 2026-03-11
 **Source:** Features derived from [COMPETITIVE_ANALYSIS.md](../../generated/competitive/COMPETITIVE_ANALYSIS.md) and internal roadmap discussions.
 
 ---
@@ -134,6 +134,7 @@ Six commands already produce Mermaid/DOT output: `export`, `diff-impact -f merma
 | 68 | Symbol-level messages in `sequence` | Use 60's `edge_symbols` data to label sequence diagram messages with the specific exports being called between participants. | Visualization | Sequence diagrams show which symbols drive each file-to-file interaction | ✓ | ✓ | 3 | No | 60 |
 | 69 | Node annotations in `diff-impact` / `branch-compare` / `communities` | Use 61's annotation formatter to show top exports on file nodes in `diff-impact -f mermaid`, `branch-compare --format mermaid`, and `communities` output. | Visualization | All visual tools show file API surfaces inline, not just in `export` | ✓ | ✓ | 3 | No | 61 |
 | 70 | Drift/risk subgraph labels in `communities` and `triage` | Use 62's semantic label system to annotate `communities` subgraphs with drift status (`**(drifted)**` / `**(cohesive)**`) and add a new `--format mermaid` to `triage` with risk-severity group labels. | Intelligence | Community and triage diagrams communicate structural health directly in the layout | ✓ | ✓ | 3 | No | 62 |
+| 84 | Call-count annotations on `sequence` diagram arrows | `sequence` currently deduplicates caller→callee pairs with `SELECT DISTINCT`, silently hiding multi-site calls. Instead, count how many times each caller→callee pair appears in the edges table and annotate the Mermaid arrow with the count when > 1 (e.g., `CallerFile ->> CalleeFile: fnName (×3)`). Requires grouping by `(source_id, target_id)` and emitting the count alongside the edge. | Visualization | Sequence diagrams reveal call intensity — a file calling another 8 times is architecturally different from one that calls it once; agents and reviewers can immediately spot hot paths and coupling strength | ✓ | ✓ | 3 | No | — |
 
 ### Tier 1h — Core accuracy improvements (resolve known analysis gaps)
 
