@@ -562,36 +562,48 @@ Plus updated enums on existing tools (edge_kinds, symbol kinds).
 
 **Context:** Phases 2.5 and 2.7 added 38 modules and grew the codebase from 5K to 26,277 lines without introducing shared abstractions. The dual-function anti-pattern was replicated across 19 modules. Three independent AST analysis engines (complexity, CFG, dataflow) totaling 4,801 lines share the same fundamental pattern but no infrastructure. Raw SQL is scattered across 25+ modules touching 13 tables. The priority ordering has been revised based on actual growth patterns -- the new #1 priority is the unified AST analysis framework.
 
-### 3.1 -- Unified AST Analysis Framework ★ Critical (New)
+### 3.1 -- Unified AST Analysis Framework ★ Critical 🔄
 
-Unify the three independent AST analysis engines (complexity, CFG, dataflow) plus AST node storage into a shared visitor framework. These four modules total 5,193 lines and independently implement the same pattern: per-language rules map → AST walk → collect data → write to DB → query → format.
+Unify the independent AST analysis engines (complexity, CFG, dataflow) plus AST node storage into a shared visitor framework. These four modules independently implement the same pattern: per-language rules map → AST walk → collect data → write to DB → query → format.
 
-| Module | Lines | Languages | Pattern |
-|--------|-------|-----------|---------|
-| `complexity.js` | 2,163 | 8 | Per-language rules → AST walk → collect metrics |
-| `cfg.js` | 1,451 | 9 | Per-language rules → AST walk → build basic blocks |
-| `dataflow.js` | 1,187 | 1 (JS/TS) | Scope stack → AST walk → collect flows |
-| `ast.js` | 392 | 1 (JS/TS) | AST walk → extract stored nodes |
-
-The extractors refactoring (Phase 2.7.6) proved the pattern: split per-language rules into files, share the engine. Apply it to all four AST analysis passes.
+**Completed:** Phases 1-7 implemented a pluggable visitor framework with a shared DFS walker (`walkWithVisitors`), an analysis engine orchestrator (`runAnalyses`), and three visitors (complexity, dataflow, AST-store) that share a single tree traversal per file. `builder.js` collapsed from 4 sequential `buildXxx` blocks into one `runAnalyses` call.
 
 ```
 src/
   ast-analysis/
-    visitor.js                 # Shared AST visitor with hook points
-    engine.js                  # Single-pass or multi-pass orchestrator
-    metrics.js                 # Halstead, MI, LOC/SLOC (language-agnostic)
-    cfg-builder.js             # Basic-block + edge construction
-    rules/
-      complexity/{lang}.js     # Cognitive/cyclomatic rules per language
-      cfg/{lang}.js            # Basic-block rules per language
-      dataflow/{lang}.js       # Define-use chain rules per language
-      ast-store/{lang}.js      # Node extraction rules per language
+    visitor.js                 # Shared DFS walker with pluggable visitor hooks
+    engine.js                  # Orchestrates all analyses in one coordinated pass
+    metrics.js                 # Halstead, MI, LOC/SLOC (extracted from complexity.js)
+    visitor-utils.js           # Shared helpers (functionName, extractParams, etc.)
+    visitors/
+      complexity-visitor.js    # Cognitive/cyclomatic/nesting + Halstead
+      ast-store-visitor.js     # new/throw/await/string/regex extraction
+      dataflow-visitor.js      # Scope stack + define-use chains
+    shared.js                  # findFunctionNode, rule factories, ext mapping
+    rules/                     # Per-language rule files (unchanged)
 ```
 
-A single AST walk with pluggable visitors eliminates 3 redundant tree traversals per function, shares language-specific node type mappings, and allows new analyses to plug in without creating another 1K+ line module.
+- ✅ Shared DFS walker with `enterNode`/`exitNode`/`enterFunction`/`exitFunction` hooks, `skipChildren` per-visitor, nesting/scope tracking
+- ✅ Complexity visitor (cognitive, cyclomatic, max nesting, Halstead) — file-level and function-level modes
+- ✅ AST-store visitor (new/throw/await/string/regex extraction)
+- ✅ Dataflow visitor (define-use chains, arg flows, mutations, scope stack)
+- ✅ Engine orchestrator: unified pre-walk stores results as pre-computed data on `symbols`, then delegates to existing `buildXxx` for DB writes
+- ✅ `builder.js` → single `runAnalyses` call replaces 4 sequential blocks + WASM pre-parse
+- ✅ Extracted pure computations to `metrics.js` (Halstead derived math, LOC, MI)
+- ✅ Extracted shared helpers to `visitor-utils.js` (from dataflow.js)
+- ✅ **CFG visitor rewrite** — `createCfgVisitor` in `ast-analysis/visitors/cfg-visitor.js`, integrated into engine.js unified walk, Mode A/B split eliminated
 
-**Affected files:** `src/complexity.js`, `src/cfg.js`, `src/dataflow.js`, `src/ast.js` -> split into `src/ast-analysis/`
+**Remaining: CFG visitor rewrite.** `buildFunctionCFG` (813 lines) uses a statement-level traversal (`getStatements` + `processStatement` with `loopStack`, `labelMap`, `blockIndex`) that is fundamentally incompatible with the node-level DFS used by `walkWithVisitors`. This is why the engine runs CFG as a separate Mode B pass — the only analysis that can't participate in the shared single-DFS walk.
+
+Rewrite the CFG algorithm as a node-level visitor that builds basic blocks and edges incrementally via `enterNode`/`exitNode` hooks, tracking block boundaries at branch/loop/return nodes the same way the complexity visitor tracks nesting. This eliminates the last redundant tree traversal during build and lets CFG share the exact same DFS pass as complexity, dataflow, and AST extraction. The statement-level `getStatements` helper and per-language `CFG_RULES.statementTypes` can be replaced by detecting block-terminating node types in `enterNode`. Also simplifies `engine.js` by removing the Mode A/B split and WASM pre-parse special-casing for CFG.
+
+**Remaining: Derive cyclomatic complexity from CFG.** Once CFG participates in the unified walk, cyclomatic complexity can be derived directly from CFG edge/block counts (`edges - nodes + 2`) rather than independently computed by the complexity visitor. This creates a single source of truth for control flow metrics and eliminates redundant computation. Can also be done as a simpler SQL-only approach against stored `cfg_blocks`/`cfg_edges` tables (see backlog ID 45).
+
+**Follow-up tasks (post CFG visitor rewrite):**
+- ✅ **Derive cyclomatic complexity from CFG** — CFG visitor computes `E - N + 2` per function; engine.js overrides complexity visitor's cyclomatic with CFG-derived value (single source of truth)
+- ✅ **Remove `buildFunctionCFG` implementation** — 813-line standalone implementation replaced with thin visitor wrapper (~15 lines); `buildCFGData` WASM fallback uses file-level visitor walk instead of per-function `findFunctionNode` calls
+
+**Affected files:** `src/complexity.js`, `src/cfg.js`, `src/dataflow.js`, `src/ast.js` → split into `src/ast-analysis/`
 
 ### 3.2 -- Command/Query Separation ★ Critical 🔄
 
@@ -600,9 +612,10 @@ A single AST walk with pluggable visitors eliminates 3 redundant tree traversals
 - ✅ `queries.js` CLI wrappers → `queries-cli.js` (15 functions)
 - ✅ Shared `result-formatter.js` (`outputResult` for JSON/NDJSON dispatch)
 - ✅ Shared `test-filter.js` (`isTestFile` predicate)
-- 🔲 Extract CLI wrappers from remaining modules (audit, batch, check, cochange, communities, complexity, cfg, dataflow, flow, manifesto, owners, structure, triage, branch-compare)
-- 🔲 Introduce `CommandRunner` shared lifecycle
-- 🔲 Per-command `src/commands/` directory structure
+- ✅ Extract CLI wrappers from remaining modules (audit, batch, check, cochange, communities, complexity, cfg, dataflow, flow, manifesto, owners, structure, triage, branch-compare, sequence)
+- ✅ Per-command `src/commands/` directory structure (16 command files)
+- ✅ Move shared utilities to `src/infrastructure/` (result-formatter.js, test-filter.js)
+- 🔲 Introduce `CommandRunner` shared lifecycle (command files vary too much for a single pattern today — revisit once commands stabilize)
 
 Eliminate the `*Data()` / `*()` dual-function pattern replicated across 19 modules. Every analysis module (queries, audit, batch, check, cochange, communities, complexity, cfg, dataflow, ast, flow, manifesto, owners, structure, triage, branch-compare, viewer) currently implements both data extraction AND CLI formatting.
 

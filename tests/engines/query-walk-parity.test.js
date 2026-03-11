@@ -46,6 +46,7 @@ function normalize(symbols) {
         ...(i.reexport ? { reexport: true } : {}),
         ...(i.wildcardReexport ? { wildcardReexport: true } : {}),
         ...(i.typeOnly ? { typeOnly: true } : {}),
+        ...(i.dynamicImport ? { dynamicImport: true } : {}),
       }))
       .sort((a, b) => a.line - b.line),
     classes: (symbols.classes || [])
@@ -178,6 +179,16 @@ export class Server {
 fn.call(null, arg);
 obj.apply(undefined, args);
 method.bind(ctx);
+`,
+  },
+  {
+    name: 'dynamic import() expressions',
+    file: 'test.js',
+    code: `
+const { readFile } = await import('fs/promises');
+const { readFile: rf } = await import('node:fs/promises');
+const mod = await import('./utils.js');
+import('./side-effect.js');
 `,
   },
   // TypeScript-specific
