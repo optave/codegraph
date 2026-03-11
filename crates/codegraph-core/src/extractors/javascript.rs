@@ -1056,6 +1056,11 @@ fn extract_dynamic_import_names(call_node: &Node, source: &[u8]) -> Vec<String> 
                         } else if let Some(key) = child.child_by_field_name("key") {
                             names.push(node_text(&key, source).to_string());
                         }
+                    } else if child.kind() == "object_assignment_pattern" {
+                        // Handle `{ a = 'default' }` — extract the left-hand binding
+                        if let Some(left) = child.child_by_field_name("left") {
+                            names.push(node_text(&left, source).to_string());
+                        }
                     }
                 }
             }
