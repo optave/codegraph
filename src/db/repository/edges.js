@@ -1,3 +1,9 @@
+// ─── Statement caches (one prepared statement per db instance) ────────────
+// WeakMap keys on the db object so statements are GC'd when the db closes.
+const _findCalleesStmt = new WeakMap();
+const _findCallersStmt = new WeakMap();
+const _findDistinctCallersStmt = new WeakMap();
+
 // ─── Call-edge queries ──────────────────────────────────────────────────
 
 /**
@@ -8,13 +14,16 @@
  * @returns {{ id: number, name: string, kind: string, file: string, line: number, end_line: number|null }[]}
  */
 export function findCallees(db, nodeId) {
-  return db
-    .prepare(
+  let stmt = _findCalleesStmt.get(db);
+  if (!stmt) {
+    stmt = db.prepare(
       `SELECT DISTINCT n.id, n.name, n.kind, n.file, n.line, n.end_line
        FROM edges e JOIN nodes n ON e.target_id = n.id
        WHERE e.source_id = ? AND e.kind = 'calls'`,
-    )
-    .all(nodeId);
+    );
+    _findCalleesStmt.set(db, stmt);
+  }
+  return stmt.all(nodeId);
 }
 
 /**
@@ -24,13 +33,16 @@ export function findCallees(db, nodeId) {
  * @returns {{ id: number, name: string, kind: string, file: string, line: number }[]}
  */
 export function findCallers(db, nodeId) {
-  return db
-    .prepare(
+  let stmt = _findCallersStmt.get(db);
+  if (!stmt) {
+    stmt = db.prepare(
       `SELECT n.id, n.name, n.kind, n.file, n.line
        FROM edges e JOIN nodes n ON e.source_id = n.id
        WHERE e.target_id = ? AND e.kind = 'calls'`,
-    )
-    .all(nodeId);
+    );
+    _findCallersStmt.set(db, stmt);
+  }
+  return stmt.all(nodeId);
 }
 
 /**
@@ -40,13 +52,16 @@ export function findCallers(db, nodeId) {
  * @returns {{ id: number, name: string, kind: string, file: string, line: number }[]}
  */
 export function findDistinctCallers(db, nodeId) {
-  return db
-    .prepare(
+  let stmt = _findDistinctCallersStmt.get(db);
+  if (!stmt) {
+    stmt = db.prepare(
       `SELECT DISTINCT n.id, n.name, n.kind, n.file, n.line
        FROM edges e JOIN nodes n ON e.source_id = n.id
        WHERE e.target_id = ? AND e.kind = 'calls'`,
-    )
-    .all(nodeId);
+    );
+    _findDistinctCallersStmt.set(db, stmt);
+  }
+  return stmt.all(nodeId);
 }
 
 // ─── All-edge queries (no kind filter) ─────────────────────────────────
