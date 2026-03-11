@@ -6,7 +6,7 @@
  * sequence-diagram conventions.
  */
 
-import { openReadonlyOrFail } from './db.js';
+import { findCallees, openReadonlyOrFail } from './db.js';
 import { isTestFile } from './infrastructure/test-filter.js';
 import { paginateResult } from './paginate.js';
 import { findMatchingNodes } from './queries.js';
@@ -129,17 +129,11 @@ export function sequenceData(name, dbPath, opts = {}) {
     idToNode.set(matchNode.id, matchNode);
     let truncated = false;
 
-    const getCallees = db.prepare(
-      `SELECT DISTINCT n.id, n.name, n.kind, n.file, n.line
-     FROM edges e JOIN nodes n ON e.target_id = n.id
-     WHERE e.source_id = ? AND e.kind = 'calls'`,
-    );
-
     for (let d = 1; d <= maxDepth; d++) {
       const nextFrontier = [];
 
       for (const fid of frontier) {
-        const callees = getCallees.all(fid);
+        const callees = findCallees(db, fid);
 
         const caller = idToNode.get(fid);
 
@@ -169,7 +163,7 @@ export function sequenceData(name, dbPath, opts = {}) {
 
       if (d === maxDepth && frontier.length > 0) {
         // Only mark truncated if at least one frontier node has further callees
-        const hasMoreCalls = frontier.some((fid) => getCallees.all(fid).length > 0);
+        const hasMoreCalls = frontier.some((fid) => findCallees(db, fid).length > 0);
         if (hasMoreCalls) truncated = true;
       }
     }
