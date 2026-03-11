@@ -300,7 +300,7 @@ All 15 key exports verified via ESM import:
 
 ### BUG 5: WASM complexity fails — findFunctionNode is not defined (High)
 - **Issue:** [#413](https://github.com/optave/codegraph/issues/413)
-- **PR:** Included in this PR — one-line fix in `src/complexity.js:457`
+- **PR:** Fixed in [#414](https://github.com/optave/codegraph/pull/414) — one-line fix in `src/complexity.js:457`
 - **Symptoms:** WASM builds produce 0 complexity rows. `--verbose` shows: `buildComplexityMetrics failed: findFunctionNode is not defined`. The `complexity` command reports "No complexity data found" after a WASM build.
 - **Root cause:** `src/complexity.js` line 9 imports `findFunctionNode as _findFunctionNode`, but line 457 calls the bare `findFunctionNode` which is only a re-export name, not a local binding. Native builds never hit this path because `def.complexity` is pre-computed in Rust (line 425).
 - **Fix applied:** Changed `findFunctionNode(...)` to `_findFunctionNode(...)` at line 457. Verified: WASM now produces 1192 complexity rows (vs native's 1193). The 1-function gap is `SymbolExtractor.extract` (Rust `impl` method at `crates/codegraph-core/src/extractors/mod.rs:18`) — the WASM parser's `_findFunctionNode` can't locate the AST node for Rust `impl` method blocks. See parity gap #5. 120 tests pass (94 unit + 26 integration).
