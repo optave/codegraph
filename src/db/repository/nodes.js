@@ -1,5 +1,11 @@
 import { EVERY_SYMBOL_KIND, VALID_ROLES } from '../../kinds.js';
 import { NodeQuery } from '../query-builder.js';
+import { cachedStmt } from './cached-stmt.js';
+
+// ─── Statement caches (one prepared statement per db instance) ────────────
+const _getNodeIdStmt = new WeakMap();
+const _getFunctionNodeIdStmt = new WeakMap();
+const _bulkNodeIdsByFileStmt = new WeakMap();
 
 // ─── Query-builder based lookups (moved from src/db/repository.js) ─────
 
@@ -172,10 +178,11 @@ export function findFileNodes(db, fileLike) {
  * @returns {number|undefined}
  */
 export function getNodeId(db, name, kind, file, line) {
-  const row = db
-    .prepare('SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? AND line = ?')
-    .get(name, kind, file, line);
-  return row?.id;
+  return cachedStmt(
+    _getNodeIdStmt,
+    db,
+    'SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? AND line = ?',
+  ).get(name, kind, file, line)?.id;
 }
 
 /**
@@ -188,12 +195,11 @@ export function getNodeId(db, name, kind, file, line) {
  * @returns {number|undefined}
  */
 export function getFunctionNodeId(db, name, file, line) {
-  const row = db
-    .prepare(
-      "SELECT id FROM nodes WHERE name = ? AND kind IN ('function','method') AND file = ? AND line = ?",
-    )
-    .get(name, file, line);
-  return row?.id;
+  return cachedStmt(
+    _getFunctionNodeIdStmt,
+    db,
+    "SELECT id FROM nodes WHERE name = ? AND kind IN ('function','method') AND file = ? AND line = ?",
+  ).get(name, file, line)?.id;
 }
 
 /**
@@ -205,7 +211,11 @@ export function getFunctionNodeId(db, name, file, line) {
  * @returns {{ id: number, name: string, kind: string, line: number }[]}
  */
 export function bulkNodeIdsByFile(db, file) {
-  return db.prepare('SELECT id, name, kind, line FROM nodes WHERE file = ?').all(file);
+  return cachedStmt(
+    _bulkNodeIdsByFileStmt,
+    db,
+    'SELECT id, name, kind, line FROM nodes WHERE file = ?',
+  ).all(file);
 }
 
 /**
