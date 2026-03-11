@@ -209,9 +209,11 @@ fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     if let Some(args) = node.child_by_field_name("arguments")
                         .or_else(|| find_child(node, "arguments"))
                     {
-                        if let Some(str_node) = find_child(&args, "string") {
+                        if let Some(str_node) = find_child(&args, "string")
+                            .or_else(|| find_child(&args, "template_string"))
+                        {
                             let mod_path = node_text(&str_node, source)
-                                .replace(&['\'', '"'][..], "");
+                                .replace(&['\'', '"', '`'][..], "");
                             let names = extract_dynamic_import_names(node, source);
                             let mut imp = Import::new(mod_path, names, start_line(node));
                             imp.dynamic_import = Some(true);

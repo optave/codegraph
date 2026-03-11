@@ -1409,10 +1409,13 @@ program
       const binaryVersion =
         typeof native.engineVersion === 'function' ? native.engineVersion() : 'unknown';
       const pkgVersion = getNativePackageVersion();
-      if (pkgVersion && pkgVersion !== binaryVersion) {
-        console.log(`  Native version: ${pkgVersion} (binary reports ${binaryVersion} — stale)`);
+      const knownBinaryVersion = binaryVersion !== 'unknown' ? binaryVersion : null;
+      if (pkgVersion && knownBinaryVersion && pkgVersion !== knownBinaryVersion) {
+        console.log(
+          `  Native version: ${pkgVersion} (binary reports ${knownBinaryVersion} — stale)`,
+        );
       } else {
-        console.log(`  Native version: ${binaryVersion}`);
+        console.log(`  Native version: ${pkgVersion ?? binaryVersion}`);
       }
     }
     console.log(`  Engine flag   : --engine ${engine}`);
