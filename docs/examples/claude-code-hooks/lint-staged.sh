@@ -57,9 +57,12 @@ if [ -z "$FILES_TO_LINT" ]; then
   exit 0
 fi
 
-# Run biome check on the specific files
+# Run biome check on the specific files.
+# Intentional fail-open: if biome crashes or OOMs (non-zero exit with no output),
+# the commit is allowed through. We only block when there is actionable lint output.
+cd "$WORK_ROOT" || exit 0
 # shellcheck disable=SC2086
-LINT_OUTPUT=$(cd "$WORK_ROOT" && npx biome check --no-errors-on-unmatched $FILES_TO_LINT 2>&1) || LINT_EXIT=$?
+LINT_OUTPUT=$(npx biome check --no-errors-on-unmatched $FILES_TO_LINT 2>&1) || LINT_EXIT=$?
 
 if [ "${LINT_EXIT:-0}" -ne 0 ] && [ -n "$LINT_OUTPUT" ]; then
   # Truncate output to first 30 lines to keep denial message readable

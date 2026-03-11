@@ -22,7 +22,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-commit.sh\"",
-            "timeout": 30
+            "timeout": 60
           },
           {
             "type": "command",

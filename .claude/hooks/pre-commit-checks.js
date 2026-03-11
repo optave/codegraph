@@ -7,10 +7,9 @@
  * Output JSON: { action: "deny"|"allow", reason?: string, context?: string[] }
  *
  * Checks (in order):
- *   1. Cycles (blocking) — blocks if cycles involve session-edited files
+ *   1. Cycles + Signatures (via checkData) — cycles block; signatures warn with risk level + caller count
  *   2. Dead exports (blocking) — blocks if edited src/ files have unused exports
- *   3. Signature changes (informational) — warns with risk level + caller count
- *   4. Diff-impact (informational) — shows blast radius of staged changes
+ *   3. Diff-impact (informational) — shows blast radius of staged changes
  */
 
 const fs = require('fs');
