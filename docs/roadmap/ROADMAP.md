@@ -566,14 +566,14 @@ Plus updated enums on existing tools (edge_kinds, symbol kinds).
 src/
   commands/              # Thin CLI entry points (one per command)
   domain/                # Core logic grouped by feature
-    graph/               # builder, resolve, cycles
+    graph/               # builder, resolve, cycles, watcher
     analysis/            # symbol-lookup, impact, dependencies, module-map, context, exports, roles
     search/              # embedder, semantic search, hybrid
   ast-analysis/          # Unified visitor framework (already in place)
   db/                    # Repository, migrations, query-builder, connection
   extractors/            # Per-language tree-sitter extractors (already in place)
   mcp/                   # MCP server, tool registry, per-tool handlers
-  presentation/          # Output formatting: viewer, export (DOT/Mermaid/JSON), result-formatter
+  presentation/          # Output formatting: viewer, export (DOT/Mermaid/JSON), result-formatter, table, sequence-renderer
   infrastructure/        # Config, logger, native loader, pagination, test-filter, errors
   shared/                # Constants, normalize, generators
 ```
@@ -923,6 +923,7 @@ src/
     export.js              # DOT, Mermaid, JSON, SVG graph serialization
     table.js               # Tabular CLI output (used by complexity, stats, etc.)
     sequence-renderer.js   # Mermaid sequence diagram formatting (from sequence.js)
+    result-formatter.js    # Structured result formatting (moved from infrastructure/)
 ```
 
 - 🔲 Extract rendering logic from `viewer.js` — keep graph data loading in domain, move formatting to presentation
