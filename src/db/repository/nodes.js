@@ -1,5 +1,6 @@
 import { EVERY_SYMBOL_KIND, VALID_ROLES } from '../../kinds.js';
 import { NodeQuery } from '../query-builder.js';
+import { cachedStmt } from './cached-stmt.js';
 
 // ─── Query-builder based lookups (moved from src/db/repository.js) ─────
 
@@ -178,12 +179,11 @@ const _bulkNodeIdsByFileStmt = new WeakMap();
  * @returns {number|undefined}
  */
 export function getNodeId(db, name, kind, file, line) {
-  let stmt = _getNodeIdStmt.get(db);
-  if (!stmt) {
-    stmt = db.prepare('SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? AND line = ?');
-    _getNodeIdStmt.set(db, stmt);
-  }
-  return stmt.get(name, kind, file, line)?.id;
+  return cachedStmt(
+    _getNodeIdStmt,
+    db,
+    'SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? AND line = ?',
+  ).get(name, kind, file, line)?.id;
 }
 
 /**
@@ -196,14 +196,11 @@ export function getNodeId(db, name, kind, file, line) {
  * @returns {number|undefined}
  */
 export function getFunctionNodeId(db, name, file, line) {
-  let stmt = _getFunctionNodeIdStmt.get(db);
-  if (!stmt) {
-    stmt = db.prepare(
-      "SELECT id FROM nodes WHERE name = ? AND kind IN ('function','method') AND file = ? AND line = ?",
-    );
-    _getFunctionNodeIdStmt.set(db, stmt);
-  }
-  return stmt.get(name, file, line)?.id;
+  return cachedStmt(
+    _getFunctionNodeIdStmt,
+    db,
+    "SELECT id FROM nodes WHERE name = ? AND kind IN ('function','method') AND file = ? AND line = ?",
+  ).get(name, file, line)?.id;
 }
 
 /**
@@ -215,12 +212,11 @@ export function getFunctionNodeId(db, name, file, line) {
  * @returns {{ id: number, name: string, kind: string, line: number }[]}
  */
 export function bulkNodeIdsByFile(db, file) {
-  let stmt = _bulkNodeIdsByFileStmt.get(db);
-  if (!stmt) {
-    stmt = db.prepare('SELECT id, name, kind, line FROM nodes WHERE file = ?');
-    _bulkNodeIdsByFileStmt.set(db, stmt);
-  }
-  return stmt.all(file);
+  return cachedStmt(
+    _bulkNodeIdsByFileStmt,
+    db,
+    'SELECT id, name, kind, line FROM nodes WHERE file = ?',
+  ).all(file);
 }
 
 /**
