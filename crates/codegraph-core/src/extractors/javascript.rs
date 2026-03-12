@@ -1090,6 +1090,13 @@ fn extract_dynamic_import_names(call_node: &Node, source: &[u8]) -> Vec<String> 
                         if let Some(left) = child.child_by_field_name("left") {
                             names.push(node_text(&left, source).to_string());
                         }
+                    } else if child.kind() == "rest_pattern" || child.kind() == "rest_element" {
+                        // Handle `[a, ...rest]` — extract the identifier inside the spread
+                        if let Some(inner) = child.child(0) {
+                            if inner.kind() == "identifier" {
+                                names.push(node_text(&inner, source).to_string());
+                            }
+                        }
                     }
                 }
             }
