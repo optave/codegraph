@@ -12,44 +12,46 @@ export async function handler(args, ctx) {
   const exportLimit = args.limit ? Math.min(args.limit, MCP_MAX_LIMIT) : MCP_DEFAULTS.export_graph;
 
   let result;
-  switch (args.format) {
-    case 'dot':
-      result = exportDOT(db, { fileLevel, limit: exportLimit });
-      break;
-    case 'mermaid':
-      result = exportMermaid(db, { fileLevel, limit: exportLimit });
-      break;
-    case 'json':
-      result = exportJSON(db, {
-        limit: exportLimit,
-        offset: effectiveOffset(args),
-      });
-      break;
-    case 'graphml':
-      result = exportGraphML(db, { fileLevel, limit: exportLimit });
-      break;
-    case 'graphson':
-      result = exportGraphSON(db, {
-        fileLevel,
-        limit: exportLimit,
-        offset: effectiveOffset(args),
-      });
-      break;
-    case 'neo4j':
-      result = exportNeo4jCSV(db, { fileLevel, limit: exportLimit });
-      break;
-    default:
-      db.close();
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Unknown format: ${args.format}. Use dot, mermaid, json, graphml, graphson, or neo4j.`,
-          },
-        ],
-        isError: true,
-      };
+  try {
+    switch (args.format) {
+      case 'dot':
+        result = exportDOT(db, { fileLevel, limit: exportLimit });
+        break;
+      case 'mermaid':
+        result = exportMermaid(db, { fileLevel, limit: exportLimit });
+        break;
+      case 'json':
+        result = exportJSON(db, {
+          limit: exportLimit,
+          offset: effectiveOffset(args),
+        });
+        break;
+      case 'graphml':
+        result = exportGraphML(db, { fileLevel, limit: exportLimit });
+        break;
+      case 'graphson':
+        result = exportGraphSON(db, {
+          fileLevel,
+          limit: exportLimit,
+          offset: effectiveOffset(args),
+        });
+        break;
+      case 'neo4j':
+        result = exportNeo4jCSV(db, { fileLevel, limit: exportLimit });
+        break;
+      default:
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Unknown format: ${args.format}. Use dot, mermaid, json, graphml, graphson, or neo4j.`,
+            },
+          ],
+          isError: true,
+        };
+    }
+  } finally {
+    db.close();
   }
-  db.close();
   return result;
 }
