@@ -1,6 +1,6 @@
 # Codegraph Roadmap
 
-> **Current version:** 3.1.2 | **Status:** Active development | **Updated:** March 2026
+> **Current version:** 3.1.3 | **Status:** Active development | **Updated:** March 2026
 
 Codegraph is a strong local-first code graph CLI. This roadmap describes planned improvements across ten phases -- closing gaps with commercial code intelligence platforms while preserving codegraph's core strengths: fully local, open source, zero cloud dependency by default.
 
@@ -16,7 +16,7 @@ Codegraph is a strong local-first code graph CLI. This roadmap describes planned
 | [**2**](#phase-2--foundation-hardening) | Foundation Hardening | Parser registry, complete MCP, test coverage, enhanced config, multi-repo MCP | **Complete** (v1.4.0) |
 | [**2.5**](#phase-25--analysis-expansion) | Analysis Expansion | Complexity metrics, community detection, flow tracing, co-change, manifesto, boundary rules, check, triage, audit, batch, hybrid search | **Complete** (v2.6.0) |
 | [**2.7**](#phase-27--deep-analysis--graph-enrichment) | Deep Analysis & Graph Enrichment | Dataflow analysis, intraprocedural CFG, AST node storage, expanded node/edge types, extractors refactoring, CLI consolidation, interactive viewer, exports command, normalizeSymbol | **Complete** (v3.0.0) |
-| [**3**](#phase-3--architectural-refactoring) | Architectural Refactoring (Vertical Slice) | Unified AST analysis framework, command/query separation, repository pattern, queries.js decomposition, composable MCP, CLI commands, domain errors, presentation layer, domain grouping, curated API, unified graph model | **In Progress** (v3.1.2) |
+| [**3**](#phase-3--architectural-refactoring) | Architectural Refactoring (Vertical Slice) | Unified AST analysis framework, command/query separation, repository pattern, queries.js decomposition, composable MCP, CLI commands, domain errors, presentation layer, domain grouping, curated API, unified graph model | **In Progress** (v3.1.3) |
 | [**4**](#phase-4--typescript-migration) | TypeScript Migration | Project setup, core type definitions, leaf -> core -> orchestration module migration, test migration | Planned |
 | [**5**](#phase-5--intelligent-embeddings) | Intelligent Embeddings | LLM-generated descriptions, enhanced embeddings, build-time semantic metadata, module summaries | Planned |
 | [**6**](#phase-6--natural-language-queries) | Natural Language Queries | `ask` command, conversational sessions, LLM-narrated graph queries, onboarding tools | Planned |
@@ -652,6 +652,8 @@ src/
 > **v3.1.1 progress:** `src/db/` directory created with `repository.js` (134 lines), `query-builder.js` (280 lines), and `migrations.js` (312 lines). All db usage across the codebase wrapped in try/finally for reliable `db.close()` ([#371](https://github.com/optave/codegraph/pull/371), [#384](https://github.com/optave/codegraph/pull/384), [#383](https://github.com/optave/codegraph/pull/383)).
 >
 > **v3.1.2 progress:** `repository.js` split into `src/db/repository/` directory with 10 domain files (nodes, edges, build-stmts, complexity, cfg, dataflow, cochange, embeddings, graph-read, barrel). Raw SQL migrated from 14 src/ modules into repository layer. `connection.js` already complete (89 lines handling open/close/WAL/pragma/locks/readonly).
+>
+> **v3.1.3 progress:** Extracted `cachedStmt` utility into `src/db/repository/cached-stmt.js` — reusable prepared statement caching for hot-path repository functions ([#417](https://github.com/optave/codegraph/pull/417), [#402](https://github.com/optave/codegraph/pull/402)).
 
 - ✅ `src/db/` directory structure created
 - ✅ `repository/` — domain-split repository (nodes, edges, build-stmts, complexity, cfg, dataflow, cochange, embeddings, graph-read)
@@ -682,14 +684,14 @@ src/
 
 **Affected files:** `src/db.js` barrel updated, raw SQL extracted from `queries.js`, `builder.js`, `watcher.js`, `structure.js`, `complexity.js`, `cfg.js`, `dataflow.js`, `ast.js`, `ast-analysis/engine.js`, `embedder.js`, `sequence.js`, `communities.js`
 
-### 3.4 -- Decompose queries.js (3,395 Lines) 🔄
+### 3.4 -- Decompose queries.js (3,395 Lines) ✅
 
 > **v3.1.1 progress:** `queries.js` reduced from 3,395 → 2,490 lines by extracting all CLI formatting to `queries-cli.js` (3.2). Symbol kind constants extracted to `kinds.js` (49 lines) ([#378](https://github.com/optave/codegraph/pull/378)).
 
 - ✅ CLI formatting separated → `queries-cli.js` (via 3.2)
 - ✅ `kinds.js` — symbol kind constants extracted
-- 🔲 Split remaining `queries.js` data functions into `src/analysis/` modules
-- 🔲 Extract `shared/normalize.js`, `shared/generators.js`
+- ✅ Split remaining `queries.js` data functions into `src/analysis/` modules
+- ✅ Extract `shared/normalize.js`, `shared/generators.js`
 
 Split into pure analysis modules that return data and share no formatting concerns.
 
@@ -716,22 +718,24 @@ src/
 
 **Affected files:** `src/queries.js` -> split into `src/analysis/` + `src/shared/`
 
-### 3.5 -- Composable MCP Tool Registry
+### 3.5 -- Composable MCP Tool Registry ✅
 
-Replace the monolithic 1,370-line `mcp.js` (30 tools in one switch dispatch) with self-contained tool modules.
+Replaced the monolithic 1,470-line `mcp.js` (31 tools in one switch dispatch) with self-contained tool modules.
 
 ```
 src/
+  mcp.js                       # 2-line re-export shim (preserves public API)
   mcp/
-    server.js                  # MCP server setup, transport, lifecycle
-    tool-registry.js           # Auto-discovery + dynamic registration
-    middleware.js              # Pagination, error handling, repo resolution
+    index.js                   # Re-exports: TOOLS, buildToolList, startMCPServer
+    server.js                  # MCP server setup, transport, lifecycle, dispatch
+    tool-registry.js           # BASE_TOOLS schemas, buildToolList(), TOOLS constant
+    middleware.js              # effectiveLimit/effectiveOffset pagination helpers
     tools/
-      query-function.js        # { schema, handler } -- one per tool (30 files)
-      ...
+      index.js                 # Barrel: Map<name, { name, handler }> for all 31 tools
+      query.js ... ast-query.js  # { name, handler } -- one per tool (31 files)
 ```
 
-Adding a new MCP tool = adding a file. No other files change.
+Adding a new MCP tool = adding a file + one line in the barrel. No other files change.
 
 **Affected files:** `src/mcp.js` -> split into `src/mcp/`
 
