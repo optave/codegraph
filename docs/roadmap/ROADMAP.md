@@ -682,14 +682,14 @@ src/
 
 **Affected files:** `src/db.js` barrel updated, raw SQL extracted from `queries.js`, `builder.js`, `watcher.js`, `structure.js`, `complexity.js`, `cfg.js`, `dataflow.js`, `ast.js`, `ast-analysis/engine.js`, `embedder.js`, `sequence.js`, `communities.js`
 
-### 3.4 -- Decompose queries.js (3,395 Lines) 🔄
+### 3.4 -- Decompose queries.js (3,395 Lines) ✅
 
 > **v3.1.1 progress:** `queries.js` reduced from 3,395 → 2,490 lines by extracting all CLI formatting to `queries-cli.js` (3.2). Symbol kind constants extracted to `kinds.js` (49 lines) ([#378](https://github.com/optave/codegraph/pull/378)).
 
 - ✅ CLI formatting separated → `queries-cli.js` (via 3.2)
 - ✅ `kinds.js` — symbol kind constants extracted
-- 🔲 Split remaining `queries.js` data functions into `src/analysis/` modules
-- 🔲 Extract `shared/normalize.js`, `shared/generators.js`
+- ✅ Split remaining `queries.js` data functions into `src/analysis/` modules
+- ✅ Extract `shared/normalize.js`, `shared/generators.js`
 
 Split into pure analysis modules that return data and share no formatting concerns.
 

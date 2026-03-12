@@ -1,0 +1,595 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  findCallees,
+  findCallers,
+  findCrossFileCallTargets,
+  findDbPath,
+  findFileNodes,
+  findImportSources,
+  findImportTargets,
+  findIntraFileCallEdges,
+  findNodeChildren,
+  findNodesByFile,
+  getClassHierarchy,
+  getComplexityForNode,
+  openReadonlyOrFail,
+} from '../db.js';
+import { isTestFile } from '../infrastructure/test-filter.js';
+import { debug } from '../logger.js';
+import { paginateResult } from '../paginate.js';
+import { LANGUAGE_REGISTRY } from '../parser.js';
+import { normalizeSymbol } from '../shared/normalize.js';
+import { findMatchingNodes } from './symbol-lookup.js';
+
+// ─── Helpers (exported for use by exports.js) ────────────────────────────
+
+/**
+ * Resolve a file path relative to repoRoot, rejecting traversal outside the repo.
+ * Returns null if the resolved path escapes repoRoot.
+ */
+export function safePath(repoRoot, file) {
+  const resolved = path.resolve(repoRoot, file);
+  if (!resolved.startsWith(repoRoot + path.sep) && resolved !== repoRoot) return null;
+  return resolved;
+}
+
+export function readSourceRange(repoRoot, file, startLine, endLine) {
+  try {
+    const absPath = safePath(repoRoot, file);
+    if (!absPath) return null;
+    const content = fs.readFileSync(absPath, 'utf-8');
+    const lines = content.split('\n');
+    const start = Math.max(0, (startLine || 1) - 1);
+    const end = Math.min(lines.length, endLine || startLine + 50);
+    return lines.slice(start, end).join('\n');
+  } catch (e) {
+    debug(`readSourceRange failed for ${file}: ${e.message}`);
+    return null;
+  }
+}
+
+export function extractSummary(fileLines, line) {
+  if (!fileLines || !line || line <= 1) return null;
+  const idx = line - 2; // line above the definition (0-indexed)
+  // Scan up to 10 lines above for JSDoc or comment
+  let jsdocEnd = -1;
+  for (let i = idx; i >= Math.max(0, idx - 10); i--) {
+    const trimmed = fileLines[i].trim();
+    if (trimmed.endsWith('*/')) {
+      jsdocEnd = i;
+      break;
+    }
+    if (trimmed.startsWith('//') || trimmed.startsWith('#')) {
+      // Single-line comment immediately above
+      const text = trimmed
+        .replace(/^\/\/\s*/, '')
+        .replace(/^#\s*/, '')
+        .trim();
+      return text.length > 100 ? `${text.slice(0, 100)}...` : text;
+    }
+    if (trimmed !== '' && !trimmed.startsWith('*') && !trimmed.startsWith('/*')) break;
+  }
+  if (jsdocEnd >= 0) {
+    // Find opening /**
+    for (let i = jsdocEnd; i >= Math.max(0, jsdocEnd - 20); i--) {
+      if (fileLines[i].trim().startsWith('/**')) {
+        // Extract first non-tag, non-empty line
+        for (let j = i + 1; j <= jsdocEnd; j++) {
+          const docLine = fileLines[j]
+            .trim()
+            .replace(/^\*\s?/, '')
+            .trim();
+          if (docLine && !docLine.startsWith('@') && docLine !== '/' && docLine !== '*/') {
+            return docLine.length > 100 ? `${docLine.slice(0, 100)}...` : docLine;
+          }
+        }
+        break;
+      }
+    }
+  }
+  return null;
+}
+
+export function extractSignature(fileLines, line) {
+  if (!fileLines || !line) return null;
+  const idx = line - 1;
+  // Gather up to 5 lines to handle multi-line params
+  const chunk = fileLines.slice(idx, Math.min(fileLines.length, idx + 5)).join('\n');
+
+  // JS/TS: function name(params) or (params) => or async function
+  let m = chunk.match(
+    /(?:export\s+)?(?:async\s+)?function\s*\*?\s*\w*\s*\(([^)]*)\)\s*(?::\s*([^\n{]+))?/,
+  );
+  if (m) {
+    return {
+      params: m[1].trim() || null,
+      returnType: m[2] ? m[2].trim().replace(/\s*\{$/, '') : null,
+    };
+  }
+  // Arrow: const name = (params) => or (params):ReturnType =>
+  m = chunk.match(/=\s*(?:async\s+)?\(([^)]*)\)\s*(?::\s*([^=>\n{]+))?\s*=>/);
+  if (m) {
+    return {
+      params: m[1].trim() || null,
+      returnType: m[2] ? m[2].trim() : null,
+    };
+  }
+  // Python: def name(params) -> return:
+  m = chunk.match(/def\s+\w+\s*\(([^)]*)\)\s*(?:->\s*([^:\n]+))?/);
+  if (m) {
+    return {
+      params: m[1].trim() || null,
+      returnType: m[2] ? m[2].trim() : null,
+    };
+  }
+  // Go: func (recv) name(params) (returns)
+  m = chunk.match(/func\s+(?:\([^)]*\)\s+)?\w+\s*\(([^)]*)\)\s*(?:\(([^)]+)\)|(\w[^\n{]*))?/);
+  if (m) {
+    return {
+      params: m[1].trim() || null,
+      returnType: (m[2] || m[3] || '').trim() || null,
+    };
+  }
+  // Rust: fn name(params) -> ReturnType
+  m = chunk.match(/fn\s+\w+\s*\(([^)]*)\)\s*(?:->\s*([^\n{]+))?/);
+  if (m) {
+    return {
+      params: m[1].trim() || null,
+      returnType: m[2] ? m[2].trim() : null,
+    };
+  }
+  return null;
+}
+
+function isFileLikeTarget(target) {
+  if (target.includes('/') || target.includes('\\')) return true;
+  const ext = path.extname(target).toLowerCase();
+  if (!ext) return false;
+  for (const entry of LANGUAGE_REGISTRY) {
+    if (entry.extensions.includes(ext)) return true;
+  }
+  return false;
+}
+
+function resolveMethodViaHierarchy(db, methodName) {
+  const methods = db
+    .prepare(`SELECT * FROM nodes WHERE kind = 'method' AND name LIKE ?`)
+    .all(`%.${methodName}`);
+
+  const results = [...methods];
+  for (const m of methods) {
+    const className = m.name.split('.')[0];
+    const classNode = db
+      .prepare(`SELECT * FROM nodes WHERE name = ? AND kind = 'class' AND file = ?`)
+      .get(className, m.file);
+    if (!classNode) continue;
+
+    const ancestors = getClassHierarchy(db, classNode.id);
+    for (const ancestorId of ancestors) {
+      const ancestor = db.prepare('SELECT name FROM nodes WHERE id = ?').get(ancestorId);
+      if (!ancestor) continue;
+      const parentMethods = db
+        .prepare(`SELECT * FROM nodes WHERE name = ? AND kind = 'method'`)
+        .all(`${ancestor.name}.${methodName}`);
+      results.push(...parentMethods);
+    }
+  }
+  return results;
+}
+
+function explainFileImpl(db, target, getFileLines) {
+  const fileNodes = findFileNodes(db, `%${target}%`);
+  if (fileNodes.length === 0) return [];
+
+  return fileNodes.map((fn) => {
+    const symbols = findNodesByFile(db, fn.file);
+
+    // IDs of symbols that have incoming calls from other files (public)
+    const publicIds = findCrossFileCallTargets(db, fn.file);
+
+    const fileLines = getFileLines(fn.file);
+    const mapSymbol = (s) => ({
+      name: s.name,
+      kind: s.kind,
+      line: s.line,
+      role: s.role || null,
+      summary: fileLines ? extractSummary(fileLines, s.line) : null,
+      signature: fileLines ? extractSignature(fileLines, s.line) : null,
+    });
+
+    const publicApi = symbols.filter((s) => publicIds.has(s.id)).map(mapSymbol);
+    const internal = symbols.filter((s) => !publicIds.has(s.id)).map(mapSymbol);
+
+    // Imports / importedBy
+    const imports = findImportTargets(db, fn.id).map((r) => ({ file: r.file }));
+
+    const importedBy = findImportSources(db, fn.id).map((r) => ({ file: r.file }));
+
+    // Intra-file data flow
+    const intraEdges = findIntraFileCallEdges(db, fn.file);
+
+    const dataFlowMap = new Map();
+    for (const edge of intraEdges) {
+      if (!dataFlowMap.has(edge.caller_name)) dataFlowMap.set(edge.caller_name, []);
+      dataFlowMap.get(edge.caller_name).push(edge.callee_name);
+    }
+    const dataFlow = [...dataFlowMap.entries()].map(([caller, callees]) => ({
+      caller,
+      callees,
+    }));
+
+    // Line count: prefer node_metrics (actual), fall back to MAX(end_line)
+    const metric = db
+      .prepare(`SELECT nm.line_count FROM node_metrics nm WHERE nm.node_id = ?`)
+      .get(fn.id);
+    let lineCount = metric?.line_count || null;
+    if (!lineCount) {
+      const maxLine = db
+        .prepare(`SELECT MAX(end_line) as max_end FROM nodes WHERE file = ?`)
+        .get(fn.file);
+      lineCount = maxLine?.max_end || null;
+    }
+
+    return {
+      file: fn.file,
+      lineCount,
+      symbolCount: symbols.length,
+      publicApi,
+      internal,
+      imports,
+      importedBy,
+      dataFlow,
+    };
+  });
+}
+
+function explainFunctionImpl(db, target, noTests, getFileLines) {
+  let nodes = db
+    .prepare(
+      `SELECT * FROM nodes WHERE name LIKE ? AND kind IN ('function','method','class','interface','type','struct','enum','trait','record','module') ORDER BY file, line`,
+    )
+    .all(`%${target}%`);
+  if (noTests) nodes = nodes.filter((n) => !isTestFile(n.file));
+  if (nodes.length === 0) return [];
+
+  const hc = new Map();
+  return nodes.slice(0, 10).map((node) => {
+    const fileLines = getFileLines(node.file);
+    const lineCount = node.end_line ? node.end_line - node.line + 1 : null;
+    const summary = fileLines ? extractSummary(fileLines, node.line) : null;
+    const signature = fileLines ? extractSignature(fileLines, node.line) : null;
+
+    const callees = findCallees(db, node.id).map((c) => ({
+      name: c.name,
+      kind: c.kind,
+      file: c.file,
+      line: c.line,
+    }));
+
+    let callers = findCallers(db, node.id).map((c) => ({
+      name: c.name,
+      kind: c.kind,
+      file: c.file,
+      line: c.line,
+    }));
+    if (noTests) callers = callers.filter((c) => !isTestFile(c.file));
+
+    const testCallerRows = findCallers(db, node.id);
+    const seenFiles = new Set();
+    const relatedTests = testCallerRows
+      .filter((r) => isTestFile(r.file) && !seenFiles.has(r.file) && seenFiles.add(r.file))
+      .map((r) => ({ file: r.file }));
+
+    // Complexity metrics
+    let complexityMetrics = null;
+    try {
+      const cRow = getComplexityForNode(db, node.id);
+      if (cRow) {
+        complexityMetrics = {
+          cognitive: cRow.cognitive,
+          cyclomatic: cRow.cyclomatic,
+          maxNesting: cRow.max_nesting,
+          maintainabilityIndex: cRow.maintainability_index || 0,
+          halsteadVolume: cRow.halstead_volume || 0,
+        };
+      }
+    } catch {
+      /* table may not exist */
+    }
+
+    return {
+      ...normalizeSymbol(node, db, hc),
+      lineCount,
+      summary,
+      signature,
+      complexity: complexityMetrics,
+      callees,
+      callers,
+      relatedTests,
+    };
+  });
+}
+
+// ─── Exported functions ──────────────────────────────────────────────────
+
+export function contextData(name, customDbPath, opts = {}) {
+  const db = openReadonlyOrFail(customDbPath);
+  try {
+    const depth = opts.depth || 0;
+    const noSource = opts.noSource || false;
+    const noTests = opts.noTests || false;
+    const includeTests = opts.includeTests || false;
+
+    const dbPath = findDbPath(customDbPath);
+    const repoRoot = path.resolve(path.dirname(dbPath), '..');
+
+    const nodes = findMatchingNodes(db, name, { noTests, file: opts.file, kind: opts.kind });
+    if (nodes.length === 0) {
+      return { name, results: [] };
+    }
+
+    // No hardcoded slice — pagination handles bounding via limit/offset
+
+    // File-lines cache to avoid re-reading the same file
+    const fileCache = new Map();
+    function getFileLines(file) {
+      if (fileCache.has(file)) return fileCache.get(file);
+      try {
+        const absPath = safePath(repoRoot, file);
+        if (!absPath) {
+          fileCache.set(file, null);
+          return null;
+        }
+        const lines = fs.readFileSync(absPath, 'utf-8').split('\n');
+        fileCache.set(file, lines);
+        return lines;
+      } catch (e) {
+        debug(`getFileLines failed for ${file}: ${e.message}`);
+        fileCache.set(file, null);
+        return null;
+      }
+    }
+
+    const results = nodes.map((node) => {
+      const fileLines = getFileLines(node.file);
+
+      // Source
+      const source = noSource
+        ? null
+        : readSourceRange(repoRoot, node.file, node.line, node.end_line);
+
+      // Signature
+      const signature = fileLines ? extractSignature(fileLines, node.line) : null;
+
+      // Callees
+      const calleeRows = findCallees(db, node.id);
+      const filteredCallees = noTests ? calleeRows.filter((c) => !isTestFile(c.file)) : calleeRows;
+
+      const callees = filteredCallees.map((c) => {
+        const cLines = getFileLines(c.file);
+        const summary = cLines ? extractSummary(cLines, c.line) : null;
+        let calleeSource = null;
+        if (depth >= 1) {
+          calleeSource = readSourceRange(repoRoot, c.file, c.line, c.end_line);
+        }
+        return {
+          name: c.name,
+          kind: c.kind,
+          file: c.file,
+          line: c.line,
+          endLine: c.end_line || null,
+          summary,
+          source: calleeSource,
+        };
+      });
+
+      // Deep callee expansion via BFS (depth > 1, capped at 5)
+      if (depth > 1) {
+        const visited = new Set(filteredCallees.map((c) => c.id));
+        visited.add(node.id);
+        let frontier = filteredCallees.map((c) => c.id);
+        const maxDepth = Math.min(depth, 5);
+        for (let d = 2; d <= maxDepth; d++) {
+          const nextFrontier = [];
+          for (const fid of frontier) {
+            const deeper = findCallees(db, fid);
+            for (const c of deeper) {
+              if (!visited.has(c.id) && (!noTests || !isTestFile(c.file))) {
+                visited.add(c.id);
+                nextFrontier.push(c.id);
+                const cLines = getFileLines(c.file);
+                callees.push({
+                  name: c.name,
+                  kind: c.kind,
+                  file: c.file,
+                  line: c.line,
+                  endLine: c.end_line || null,
+                  summary: cLines ? extractSummary(cLines, c.line) : null,
+                  source: readSourceRange(repoRoot, c.file, c.line, c.end_line),
+                });
+              }
+            }
+          }
+          frontier = nextFrontier;
+          if (frontier.length === 0) break;
+        }
+      }
+
+      // Callers
+      let callerRows = findCallers(db, node.id);
+
+      // Method hierarchy resolution
+      if (node.kind === 'method' && node.name.includes('.')) {
+        const methodName = node.name.split('.').pop();
+        const relatedMethods = resolveMethodViaHierarchy(db, methodName);
+        for (const rm of relatedMethods) {
+          if (rm.id === node.id) continue;
+          const extraCallers = findCallers(db, rm.id);
+          callerRows.push(...extraCallers.map((c) => ({ ...c, viaHierarchy: rm.name })));
+        }
+      }
+      if (noTests) callerRows = callerRows.filter((c) => !isTestFile(c.file));
+
+      const callers = callerRows.map((c) => ({
+        name: c.name,
+        kind: c.kind,
+        file: c.file,
+        line: c.line,
+        viaHierarchy: c.viaHierarchy || undefined,
+      }));
+
+      // Related tests: callers that live in test files
+      const testCallerRows = findCallers(db, node.id);
+      const testCallers = testCallerRows.filter((c) => isTestFile(c.file));
+
+      const testsByFile = new Map();
+      for (const tc of testCallers) {
+        if (!testsByFile.has(tc.file)) testsByFile.set(tc.file, []);
+        testsByFile.get(tc.file).push(tc);
+      }
+
+      const relatedTests = [];
+      for (const [file] of testsByFile) {
+        const tLines = getFileLines(file);
+        const testNames = [];
+        if (tLines) {
+          for (const tl of tLines) {
+            const tm = tl.match(/(?:it|test|describe)\s*\(\s*['"`]([^'"`]+)['"`]/);
+            if (tm) testNames.push(tm[1]);
+          }
+        }
+        const testSource = includeTests && tLines ? tLines.join('\n') : undefined;
+        relatedTests.push({
+          file,
+          testCount: testNames.length,
+          testNames,
+          source: testSource,
+        });
+      }
+
+      // Complexity metrics
+      let complexityMetrics = null;
+      try {
+        const cRow = getComplexityForNode(db, node.id);
+        if (cRow) {
+          complexityMetrics = {
+            cognitive: cRow.cognitive,
+            cyclomatic: cRow.cyclomatic,
+            maxNesting: cRow.max_nesting,
+            maintainabilityIndex: cRow.maintainability_index || 0,
+            halsteadVolume: cRow.halstead_volume || 0,
+          };
+        }
+      } catch {
+        /* table may not exist */
+      }
+
+      // Children (parameters, properties, constants)
+      let nodeChildren = [];
+      try {
+        nodeChildren = findNodeChildren(db, node.id).map((c) => ({
+          name: c.name,
+          kind: c.kind,
+          line: c.line,
+          endLine: c.end_line || null,
+        }));
+      } catch {
+        /* parent_id column may not exist */
+      }
+
+      return {
+        name: node.name,
+        kind: node.kind,
+        file: node.file,
+        line: node.line,
+        role: node.role || null,
+        endLine: node.end_line || null,
+        source,
+        signature,
+        complexity: complexityMetrics,
+        children: nodeChildren.length > 0 ? nodeChildren : undefined,
+        callees,
+        callers,
+        relatedTests,
+      };
+    });
+
+    const base = { name, results };
+    return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
+  } finally {
+    db.close();
+  }
+}
+
+export function explainData(target, customDbPath, opts = {}) {
+  const db = openReadonlyOrFail(customDbPath);
+  try {
+    const noTests = opts.noTests || false;
+    const depth = opts.depth || 0;
+    const kind = isFileLikeTarget(target) ? 'file' : 'function';
+
+    const dbPath = findDbPath(customDbPath);
+    const repoRoot = path.resolve(path.dirname(dbPath), '..');
+
+    const fileCache = new Map();
+    function getFileLines(file) {
+      if (fileCache.has(file)) return fileCache.get(file);
+      try {
+        const absPath = safePath(repoRoot, file);
+        if (!absPath) {
+          fileCache.set(file, null);
+          return null;
+        }
+        const lines = fs.readFileSync(absPath, 'utf-8').split('\n');
+        fileCache.set(file, lines);
+        return lines;
+      } catch (e) {
+        debug(`getFileLines failed for ${file}: ${e.message}`);
+        fileCache.set(file, null);
+        return null;
+      }
+    }
+
+    const results =
+      kind === 'file'
+        ? explainFileImpl(db, target, getFileLines)
+        : explainFunctionImpl(db, target, noTests, getFileLines);
+
+    // Recursive dependency explanation for function targets
+    if (kind === 'function' && depth > 0 && results.length > 0) {
+      const visited = new Set(results.map((r) => `${r.name}:${r.file}:${r.line}`));
+
+      function explainCallees(parentResults, currentDepth) {
+        if (currentDepth <= 0) return;
+        for (const r of parentResults) {
+          const newCallees = [];
+          for (const callee of r.callees) {
+            const key = `${callee.name}:${callee.file}:${callee.line}`;
+            if (visited.has(key)) continue;
+            visited.add(key);
+            const calleeResults = explainFunctionImpl(db, callee.name, noTests, getFileLines);
+            const exact = calleeResults.find(
+              (cr) => cr.file === callee.file && cr.line === callee.line,
+            );
+            if (exact) {
+              exact._depth = (r._depth || 0) + 1;
+              newCallees.push(exact);
+            }
+          }
+          if (newCallees.length > 0) {
+            r.depDetails = newCallees;
+            explainCallees(newCallees, currentDepth - 1);
+          }
+        }
+      }
+
+      explainCallees(results, depth);
+    }
+
+    const base = { target, kind, results };
+    return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
+  } finally {
+    db.close();
+  }
+}
