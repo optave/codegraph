@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import {
   findCrossFileCallTargets,
@@ -9,7 +8,7 @@ import {
 } from '../db.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import { paginateResult } from '../paginate.js';
-import { extractSignature, extractSummary, safePath } from '../shared/file-utils.js';
+import { createFileLinesReader, extractSignature, extractSummary } from '../shared/file-utils.js';
 
 export function exportsData(file, customDbPath, opts = {}) {
   const db = openReadonlyOrFail(customDbPath);
@@ -19,23 +18,7 @@ export function exportsData(file, customDbPath, opts = {}) {
     const dbFilePath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbFilePath), '..');
 
-    const fileCache = new Map();
-    function getFileLines(f) {
-      if (fileCache.has(f)) return fileCache.get(f);
-      try {
-        const absPath = safePath(repoRoot, f);
-        if (!absPath) {
-          fileCache.set(f, null);
-          return null;
-        }
-        const lines = fs.readFileSync(absPath, 'utf-8').split('\n');
-        fileCache.set(f, lines);
-        return lines;
-      } catch {
-        fileCache.set(f, null);
-        return null;
-      }
-    }
+    const getFileLines = createFileLinesReader(repoRoot);
 
     const unused = opts.unused || false;
     const fileResults = exportsFileImpl(db, file, noTests, getFileLines, unused);

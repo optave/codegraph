@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import {
   findCallees,
@@ -15,14 +14,13 @@ import {
   openReadonlyOrFail,
 } from '../db.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
-import { debug } from '../logger.js';
 import { paginateResult } from '../paginate.js';
 import {
+  createFileLinesReader,
   extractSignature,
   extractSummary,
   isFileLikeTarget,
   readSourceRange,
-  safePath,
 } from '../shared/file-utils.js';
 import { resolveMethodViaHierarchy } from '../shared/hierarchy.js';
 import { normalizeSymbol } from '../shared/normalize.js';
@@ -181,25 +179,7 @@ export function contextData(name, customDbPath, opts = {}) {
 
     // No hardcoded slice — pagination handles bounding via limit/offset
 
-    // File-lines cache to avoid re-reading the same file
-    const fileCache = new Map();
-    function getFileLines(file) {
-      if (fileCache.has(file)) return fileCache.get(file);
-      try {
-        const absPath = safePath(repoRoot, file);
-        if (!absPath) {
-          fileCache.set(file, null);
-          return null;
-        }
-        const lines = fs.readFileSync(absPath, 'utf-8').split('\n');
-        fileCache.set(file, lines);
-        return lines;
-      } catch (e) {
-        debug(`getFileLines failed for ${file}: ${e.message}`);
-        fileCache.set(file, null);
-        return null;
-      }
-    }
+    const getFileLines = createFileLinesReader(repoRoot);
 
     const results = nodes.map((node) => {
       const fileLines = getFileLines(node.file);
@@ -382,24 +362,7 @@ export function explainData(target, customDbPath, opts = {}) {
     const dbPath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbPath), '..');
 
-    const fileCache = new Map();
-    function getFileLines(file) {
-      if (fileCache.has(file)) return fileCache.get(file);
-      try {
-        const absPath = safePath(repoRoot, file);
-        if (!absPath) {
-          fileCache.set(file, null);
-          return null;
-        }
-        const lines = fs.readFileSync(absPath, 'utf-8').split('\n');
-        fileCache.set(file, lines);
-        return lines;
-      } catch (e) {
-        debug(`getFileLines failed for ${file}: ${e.message}`);
-        fileCache.set(file, null);
-        return null;
-      }
-    }
+    const getFileLines = createFileLinesReader(repoRoot);
 
     const results =
       kind === 'file'

@@ -121,6 +121,27 @@ export function extractSignature(fileLines, line) {
   return null;
 }
 
+export function createFileLinesReader(repoRoot) {
+  const cache = new Map();
+  return function getFileLines(file) {
+    if (cache.has(file)) return cache.get(file);
+    try {
+      const absPath = safePath(repoRoot, file);
+      if (!absPath) {
+        cache.set(file, null);
+        return null;
+      }
+      const lines = fs.readFileSync(absPath, 'utf-8').split('\n');
+      cache.set(file, lines);
+      return lines;
+    } catch (e) {
+      debug(`getFileLines failed for ${file}: ${e.message}`);
+      cache.set(file, null);
+      return null;
+    }
+  };
+}
+
 export function isFileLikeTarget(target) {
   if (target.includes('/') || target.includes('\\')) return true;
   const ext = path.extname(target).toLowerCase();
