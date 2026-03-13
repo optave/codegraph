@@ -26,7 +26,7 @@ export const command = {
       limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
       offset: opts.offset ? parseInt(opts.offset, 10) : undefined,
       impact: opts.impact,
-      depth: opts.depth,
+      depth: parseInt(opts.depth, 10),
     });
   },
 };
