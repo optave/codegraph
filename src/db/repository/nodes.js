@@ -239,12 +239,53 @@ export function bulkNodeIdsByFile(db, file) {
  * Find child nodes (parameters, properties, constants) of a parent.
  * @param {object} db
  * @param {number} parentId
- * @returns {{ name: string, kind: string, line: number, end_line: number|null }[]}
+ * @returns {{ name: string, kind: string, line: number, end_line: number|null, qualified_name: string|null, scope: string|null, visibility: string|null }[]}
  */
 export function findNodeChildren(db, parentId) {
   return cachedStmt(
     _findNodeChildrenStmt,
     db,
-    'SELECT name, kind, line, end_line FROM nodes WHERE parent_id = ? ORDER BY line',
+    'SELECT name, kind, line, end_line, qualified_name, scope, visibility FROM nodes WHERE parent_id = ? ORDER BY line',
   ).all(parentId);
+}
+
+/**
+ * Find all nodes that belong to a given scope (by scope column).
+ * Enables "all methods of class X" without traversing edges.
+ * @param {object} db
+ * @param {string} scopeName - The scope to search for (e.g., class name)
+ * @param {object} [opts]
+ * @param {string} [opts.kind] - Filter by node kind
+ * @param {string} [opts.file] - Filter by file path
+ * @returns {object[]}
+ */
+const _findNodesByScopeStmt = new WeakMap();
+export function findNodesByScope(db, scopeName, opts = {}) {
+  let sql = 'SELECT * FROM nodes WHERE scope = ?';
+  const params = [scopeName];
+  if (opts.kind) {
+    sql += ' AND kind = ?';
+    params.push(opts.kind);
+  }
+  if (opts.file) {
+    sql += ' AND file LIKE ?';
+    params.push(`%${opts.file}%`);
+  }
+  sql += ' ORDER BY file, line';
+  return db.prepare(sql).all(...params);
+}
+
+/**
+ * Find a node by its qualified name (direct lookup without edge traversal).
+ * @param {object} db
+ * @param {string} qualifiedName - e.g., 'DateHelper.format'
+ * @returns {object|undefined}
+ */
+const _findNodeByQualifiedNameStmt = new WeakMap();
+export function findNodeByQualifiedName(db, qualifiedName) {
+  return cachedStmt(
+    _findNodeByQualifiedNameStmt,
+    db,
+    'SELECT * FROM nodes WHERE qualified_name = ? LIMIT 1',
+  ).get(qualifiedName);
 }
