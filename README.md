@@ -33,7 +33,7 @@
 
 AI agents face an impossible trade-off in large codebases. They either spend thousands of tokens reading files to understand the structure — blowing up their context window until quality degrades — or they assume, and the assumptions are wrong. Either way, things break. The larger the codebase, the worse it gets.
 
-An agent modifies a function without knowing 9 files import it. It misreads what a helper does and builds logic on top of that misunderstanding. It leaves dead code behind after a refactor. The PR gets opened, and your reviewer — human or automated — flags the same structural issues every time: _"this breaks 14 callers,"_ _"that function already exists,"_ _"this export is now dead."_ Three rounds of review later, the fix is in. Multiply that by every PR, every developer, every repo.
+An agent modifies a function without knowing 9 files import it. It misreads what a helper does and builds logic on top of that misunderstanding. It leaves dead code behind after a refactor. The PR gets opened, and your reviewer — human or automated — flags the same structural issues every time: _"this breaks 14 callers,"_ _"that function already exists,"_ _"this export is now dead."_ If the reviewer catches it, that's three rounds of back-and-forth. If they don't, it ships to production. Multiply that by every PR, every developer, every repo.
 
 The information to prevent all of this exists — it's in the code itself. But without a structured map, agents lack the context to get it right the first time, reviewers waste cycles on preventable issues, and architecture degrades one unreviewed change at a time.
 
