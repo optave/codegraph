@@ -7,7 +7,7 @@
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { loadConfig } from '../config.js';
-import { getBuildMeta, initSchema, MIGRATIONS, openDb } from '../db.js';
+import { closeDb, getBuildMeta, initSchema, MIGRATIONS, openDb } from '../db.js';
 import { info } from '../logger.js';
 import { getActiveEngine } from '../parser.js';
 import { PipelineContext } from './context.js';
@@ -98,28 +98,33 @@ export async function buildGraph(rootDir, opts = {}) {
 
   if (ctx.earlyExit) return;
 
-  await parseFiles(ctx);
-  await insertNodes(ctx);
-  await resolveImports(ctx);
-  await buildEdges(ctx);
-  await buildStructure(ctx);
-  await runAnalyses(ctx);
-  await finalize(ctx);
+  try {
+    await parseFiles(ctx);
+    await insertNodes(ctx);
+    await resolveImports(ctx);
+    await buildEdges(ctx);
+    await buildStructure(ctx);
+    await runAnalyses(ctx);
+    await finalize(ctx);
+  } catch (err) {
+    closeDb(ctx.db);
+    throw err;
+  }
 
   return {
     phases: {
       setupMs: +ctx.timing.setupMs.toFixed(1),
-      parseMs: +ctx.timing.parseMs.toFixed(1),
-      insertMs: +ctx.timing.insertMs.toFixed(1),
-      resolveMs: +ctx.timing.resolveMs.toFixed(1),
-      edgesMs: +ctx.timing.edgesMs.toFixed(1),
-      structureMs: +ctx.timing.structureMs.toFixed(1),
-      rolesMs: +ctx.timing.rolesMs.toFixed(1),
-      astMs: +ctx.timing.astMs.toFixed(1),
-      complexityMs: +ctx.timing.complexityMs.toFixed(1),
+      parseMs: +(ctx.timing.parseMs ?? 0).toFixed(1),
+      insertMs: +(ctx.timing.insertMs ?? 0).toFixed(1),
+      resolveMs: +(ctx.timing.resolveMs ?? 0).toFixed(1),
+      edgesMs: +(ctx.timing.edgesMs ?? 0).toFixed(1),
+      structureMs: +(ctx.timing.structureMs ?? 0).toFixed(1),
+      rolesMs: +(ctx.timing.rolesMs ?? 0).toFixed(1),
+      astMs: +(ctx.timing.astMs ?? 0).toFixed(1),
+      complexityMs: +(ctx.timing.complexityMs ?? 0).toFixed(1),
       ...(ctx.timing.cfgMs != null && { cfgMs: +ctx.timing.cfgMs.toFixed(1) }),
       ...(ctx.timing.dataflowMs != null && { dataflowMs: +ctx.timing.dataflowMs.toFixed(1) }),
-      finalizeMs: +ctx.timing.finalizeMs.toFixed(1),
+      finalizeMs: +(ctx.timing.finalizeMs ?? 0).toFixed(1),
     },
   };
 }
