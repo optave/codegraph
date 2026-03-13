@@ -1,3 +1,4 @@
+import { ConfigError } from '../../errors.js';
 import { EVERY_SYMBOL_KIND } from '../../queries.js';
 
 export const command = {
@@ -27,8 +28,9 @@ export const command = {
 
     if (!isDiffMode && !opts.rules) {
       if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-        console.error(`Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
-        process.exit(1);
+        throw new ConfigError(
+          `Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`,
+        );
       }
       const { manifesto } = await import('../../commands/manifesto.js');
       manifesto(opts.db, {
@@ -58,8 +60,9 @@ export const command = {
 
     if (opts.rules) {
       if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-        console.error(`Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
-        process.exit(1);
+        throw new ConfigError(
+          `Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`,
+        );
       }
       const { manifesto } = await import('../../commands/manifesto.js');
       manifesto(opts.db, {

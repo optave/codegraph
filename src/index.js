@@ -119,6 +119,17 @@ export {
   search,
   searchData,
 } from './embedder.js';
+// Domain errors
+export {
+  AnalysisError,
+  BoundaryError,
+  CodegraphError,
+  ConfigError,
+  DbError,
+  EngineError,
+  ParseError,
+  ResolutionError,
+} from './errors.js';
 // Export (DOT/Mermaid/JSON/GraphML/GraphSON/Neo4j CSV)
 export {
   exportDOT,

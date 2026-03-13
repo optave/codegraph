@@ -1,3 +1,4 @@
+import { ConfigError } from '../../errors.js';
 import { EVERY_SYMBOL_KIND, VALID_ROLES } from '../../queries.js';
 
 export const command = {
@@ -46,20 +47,17 @@ export const command = {
     }
 
     if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-      console.error(`Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
-      process.exit(1);
+      throw new ConfigError(`Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
     }
     if (opts.role && !VALID_ROLES.includes(opts.role)) {
-      console.error(`Invalid role "${opts.role}". Valid: ${VALID_ROLES.join(', ')}`);
-      process.exit(1);
+      throw new ConfigError(`Invalid role "${opts.role}". Valid: ${VALID_ROLES.join(', ')}`);
     }
     let weights;
     if (opts.weights) {
       try {
         weights = JSON.parse(opts.weights);
-      } catch {
-        console.error('Invalid --weights JSON');
-        process.exit(1);
+      } catch (err) {
+        throw new ConfigError('Invalid --weights JSON', { cause: err });
       }
     }
     const { triage } = await import('../../commands/triage.js');

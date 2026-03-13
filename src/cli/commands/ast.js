@@ -1,3 +1,5 @@
+import { ConfigError } from '../../errors.js';
+
 export const command = {
   name: 'ast [pattern]',
   description: 'Search stored AST nodes (calls, new, string, regex, throw, await) by pattern',
@@ -9,8 +11,7 @@ export const command = {
   async execute([pattern], opts, ctx) {
     const { AST_NODE_KINDS, astQuery } = await import('../../ast.js');
     if (opts.kind && !AST_NODE_KINDS.includes(opts.kind)) {
-      console.error(`Invalid AST kind "${opts.kind}". Valid: ${AST_NODE_KINDS.join(', ')}`);
-      process.exit(1);
+      throw new ConfigError(`Invalid AST kind "${opts.kind}". Valid: ${AST_NODE_KINDS.join(', ')}`);
     }
     astQuery(pattern, opts.db, {
       kind: opts.kind,

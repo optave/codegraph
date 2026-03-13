@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { BATCH_COMMANDS, multiBatchData, splitTargets } from '../../batch.js';
 import { batch } from '../../commands/batch.js';
+import { ConfigError } from '../../errors.js';
 import { EVERY_SYMBOL_KIND } from '../../queries.js';
 
 export const command = {
@@ -40,13 +41,13 @@ export const command = {
         targets = splitTargets(positionalTargets);
       }
     } catch (err) {
-      console.error(`Failed to parse targets: ${err.message}`);
-      process.exit(1);
+      throw new ConfigError(`Failed to parse targets: ${err.message}`, { cause: err });
     }
 
     if (!targets || targets.length === 0) {
-      console.error('No targets provided. Pass targets as arguments, --from-file, or --stdin.');
-      process.exit(1);
+      throw new ConfigError(
+        'No targets provided. Pass targets as arguments, --from-file, or --stdin.',
+      );
     }
 
     const batchOpts = {

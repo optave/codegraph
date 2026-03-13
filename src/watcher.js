@@ -4,6 +4,7 @@ import { readFileSafe } from './builder.js';
 import { appendChangeEvents, buildChangeEvent, diffSymbols } from './change-journal.js';
 import { EXTENSIONS, IGNORE_DIRS, normalizePath } from './constants.js';
 import { closeDb, getNodeId as getNodeIdQuery, initSchema, openDb } from './db.js';
+import { DbError } from './errors.js';
 import { appendJournalEntries } from './journal.js';
 import { info, warn } from './logger.js';
 import { createParseTreeCache, getActiveEngine, parseFileIncremental } from './parser.js';
@@ -162,8 +163,7 @@ async function updateFile(_db, rootDir, filePath, stmts, engineOpts, cache) {
 export async function watchProject(rootDir, opts = {}) {
   const dbPath = path.join(rootDir, '.codegraph', 'graph.db');
   if (!fs.existsSync(dbPath)) {
-    console.error('No graph.db found. Run `codegraph build` first.');
-    process.exit(1);
+    throw new DbError('No graph.db found. Run `codegraph build` first.', { file: dbPath });
   }
 
   const db = openDb(dbPath);

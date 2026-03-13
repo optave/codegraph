@@ -1,3 +1,4 @@
+import { ConfigError } from '../../errors.js';
 import { EVERY_SYMBOL_KIND, VALID_ROLES } from '../../kinds.js';
 import { NodeQuery } from '../query-builder.js';
 import { cachedStmt } from './cached-stmt.js';
@@ -37,10 +38,12 @@ export function findNodesWithFanIn(db, namePattern, opts = {}) {
  */
 export function findNodesForTriage(db, opts = {}) {
   if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-    throw new Error(`Invalid kind: ${opts.kind} (expected one of ${EVERY_SYMBOL_KIND.join(', ')})`);
+    throw new ConfigError(
+      `Invalid kind: ${opts.kind} (expected one of ${EVERY_SYMBOL_KIND.join(', ')})`,
+    );
   }
   if (opts.role && !VALID_ROLES.includes(opts.role)) {
-    throw new Error(`Invalid role: ${opts.role} (expected one of ${VALID_ROLES.join(', ')})`);
+    throw new ConfigError(`Invalid role: ${opts.role} (expected one of ${VALID_ROLES.join(', ')})`);
   }
 
   const kindsToUse = opts.kind ? [opts.kind] : ['function', 'method', 'class'];

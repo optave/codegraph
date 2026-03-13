@@ -7,6 +7,7 @@
 
 import { createRequire } from 'node:module';
 import { findDbPath } from '../db.js';
+import { CodegraphError, ConfigError } from '../errors.js';
 import { MCP_MAX_LIMIT } from '../paginate.js';
 import { buildToolList } from './tool-registry.js';
 import { TOOL_HANDLERS } from './tools/index.js';
@@ -33,11 +34,9 @@ export async function startMCPServer(customDbPath, options = {}) {
     ListToolsRequestSchema = types.ListToolsRequestSchema;
     CallToolRequestSchema = types.CallToolRequestSchema;
   } catch {
-    console.error(
-      'MCP server requires @modelcontextprotocol/sdk.\n' +
-        'Install it with: npm install @modelcontextprotocol/sdk',
+    throw new ConfigError(
+      'MCP server requires @modelcontextprotocol/sdk.\nInstall it with: npm install @modelcontextprotocol/sdk',
     );
-    process.exit(1);
   }
 
   // Connect transport FIRST so the server can receive the client's
@@ -75,12 +74,12 @@ export async function startMCPServer(customDbPath, options = {}) {
     const { name, arguments: args } = request.params;
     try {
       if (!multiRepo && args.repo) {
-        throw new Error(
+        throw new ConfigError(
           'Multi-repo access is disabled. Restart with `codegraph mcp --multi-repo` to access other repositories.',
         );
       }
       if (!multiRepo && name === 'list_repos') {
-        throw new Error(
+        throw new ConfigError(
           'Multi-repo access is disabled. Restart with `codegraph mcp --multi-repo` to list repositories.',
         );
       }
@@ -88,12 +87,12 @@ export async function startMCPServer(customDbPath, options = {}) {
       let dbPath = customDbPath || undefined;
       if (args.repo) {
         if (allowedRepos && !allowedRepos.includes(args.repo)) {
-          throw new Error(`Repository "${args.repo}" is not in the allowed repos list.`);
+          throw new ConfigError(`Repository "${args.repo}" is not in the allowed repos list.`);
         }
         const { resolveRepoDbPath } = await import('../registry.js');
         const resolved = resolveRepoDbPath(args.repo);
         if (!resolved)
-          throw new Error(
+          throw new ConfigError(
             `Repository "${args.repo}" not found in registry or its database is missing.`,
           );
         dbPath = resolved;
@@ -117,7 +116,10 @@ export async function startMCPServer(customDbPath, options = {}) {
       if (result?.content) return result; // pass-through MCP responses
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      const code = err instanceof CodegraphError ? err.code : 'UNKNOWN_ERROR';
+      const text =
+        err instanceof CodegraphError ? `[${code}] ${err.message}` : `Error: ${err.message}`;
+      return { content: [{ type: 'text', text }], isError: true };
     }
   });
 

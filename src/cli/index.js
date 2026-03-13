@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
+import { ConfigError } from '../errors.js';
 import { setVerbose } from '../logger.js';
 import { checkForUpdates, printUpdateNotification } from '../update-check.js';
 import { applyQueryOpts, config, formatSize, resolveNoTests } from './shared/options.js';
@@ -68,8 +69,7 @@ function registerCommand(parent, def) {
       if (def.validate) {
         const err = def.validate(args, opts, ctx);
         if (err) {
-          console.error(err);
-          process.exit(1);
+          throw new ConfigError(err);
         }
       }
 
@@ -112,7 +112,7 @@ async function discoverCommands() {
 
 export async function run() {
   await discoverCommands();
-  program.parse();
+  await program.parseAsync();
 }
 
 export { program, registerCommand, ctx };

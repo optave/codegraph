@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { ConfigError } from '../../errors.js';
 import {
   listRepos,
   pruneRegistry,
@@ -54,8 +55,7 @@ export const command = {
         if (removed) {
           console.log(`Removed "${name}" from registry.`);
         } else {
-          console.error(`Repository "${name}" not found in registry.`);
-          process.exit(1);
+          throw new ConfigError(`Repository "${name}" not found in registry.`);
         }
       },
     },

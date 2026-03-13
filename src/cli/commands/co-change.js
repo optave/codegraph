@@ -1,3 +1,5 @@
+import { AnalysisError } from '../../errors.js';
+
 export const command = {
   name: 'co-change [file]',
   description:
@@ -32,8 +34,7 @@ export const command = {
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
       } else if (result.error) {
-        console.error(result.error);
-        process.exit(1);
+        throw new AnalysisError(result.error);
       } else {
         console.log(
           `\nCo-change analysis complete: ${result.pairsFound} pairs from ${result.commitsScanned} commits (since: ${result.since})\n`,

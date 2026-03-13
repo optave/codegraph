@@ -10,6 +10,7 @@ import {
   openDb,
   openReadonlyOrFail,
 } from './db.js';
+import { ConfigError, DbError, EngineError } from './errors.js';
 import { info, warn } from './logger.js';
 import { normalizeSymbol } from './queries.js';
 
@@ -123,8 +124,7 @@ function getModelConfig(modelKey) {
   const key = modelKey || DEFAULT_MODEL;
   const config = MODELS[key];
   if (!config) {
-    console.error(`Unknown model: ${key}. Available: ${Object.keys(MODELS).join(', ')}`);
-    process.exit(1);
+    throw new ConfigError(`Unknown model: ${key}. Available: ${Object.keys(MODELS).join(', ')}`);
   }
   return config;
 }
@@ -263,13 +263,14 @@ async function loadTransformers() {
     if (installed) {
       try {
         return await import(pkg);
-      } catch {
-        console.error(`\n${pkg} was installed but failed to load. Please check your environment.`);
-        process.exit(1);
+      } catch (loadErr) {
+        throw new EngineError(
+          `${pkg} was installed but failed to load. Please check your environment.`,
+          { cause: loadErr },
+        );
       }
     }
-    console.error(`Semantic search requires ${pkg}.\n` + `Install it with: npm install ${pkg}`);
-    process.exit(1);
+    throw new EngineError(`Semantic search requires ${pkg}.\nInstall it with: npm install ${pkg}`);
   }
 }
 
@@ -304,20 +305,20 @@ async function loadModel(modelKey) {
   } catch (err) {
     const msg = err.message || String(err);
     if (msg.includes('Unauthorized') || msg.includes('401') || msg.includes('gated')) {
-      console.error(
-        `\nModel "${config.name}" requires authentication.\n` +
+      throw new EngineError(
+        `Model "${config.name}" requires authentication.\n` +
           `This model is gated on HuggingFace and needs an access token.\n\n` +
           `Options:\n` +
           `  1. Set HF_TOKEN env var: export HF_TOKEN=hf_...\n` +
-          `  2. Use a public model instead: codegraph embed --model minilm\n`,
-      );
-    } else {
-      console.error(
-        `\nFailed to load model "${config.name}": ${msg}\n` +
-          `Try a different model: codegraph embed --model minilm\n`,
+          `  2. Use a public model instead: codegraph embed --model minilm`,
+        { cause: err },
       );
     }
-    process.exit(1);
+    throw new EngineError(
+      `Failed to load model "${config.name}": ${msg}\n` +
+        `Try a different model: codegraph embed --model minilm`,
+      { cause: err },
+    );
   }
   activeModel = config.name;
   info('Model loaded.');
@@ -413,11 +414,10 @@ export async function buildEmbeddings(rootDir, modelKey, customDbPath, options =
   const dbPath = customDbPath || findDbPath(null);
 
   if (!fs.existsSync(dbPath)) {
-    console.error(
-      `No codegraph database found at ${dbPath}.\n` +
-        `Run "codegraph build" first to analyze your codebase.`,
+    throw new DbError(
+      `No codegraph database found at ${dbPath}.\nRun "codegraph build" first to analyze your codebase.`,
+      { file: dbPath },
     );
-    process.exit(1);
   }
 
   const db = openDb(dbPath);

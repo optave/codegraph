@@ -34,7 +34,7 @@ describe('loadTransformers install prompt', () => {
     vi.restoreAllMocks();
   });
 
-  test('non-TTY: prints error and exits without prompting', async () => {
+  test('non-TTY: throws EngineError without prompting', async () => {
     process.stdin.isTTY = undefined;
 
     const rlFactory = vi.fn();
@@ -46,15 +46,18 @@ describe('loadTransformers install prompt', () => {
 
     const { embed } = await import('../../src/embedder.js');
 
-    await expect(embed(['test'], 'minilm')).rejects.toThrow('process.exit(1)');
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Semantic search requires @huggingface/transformers'),
+    await expect(embed(['test'], 'minilm')).rejects.toThrow(
+      'Semantic search requires @huggingface/transformers',
     );
+    await expect(embed(['test'], 'minilm')).rejects.toMatchObject({
+      name: 'EngineError',
+      code: 'ENGINE_UNAVAILABLE',
+    });
     // readline should NOT have been called — no prompt in non-TTY
     expect(rlFactory).not.toHaveBeenCalled();
   });
 
-  test('TTY + user declines: prints error and exits', async () => {
+  test('TTY + user declines: throws EngineError', async () => {
     process.stdin.isTTY = true;
 
     vi.doMock('node:readline', () => ({
@@ -70,13 +73,16 @@ describe('loadTransformers install prompt', () => {
 
     const { embed } = await import('../../src/embedder.js');
 
-    await expect(embed(['test'], 'minilm')).rejects.toThrow('process.exit(1)');
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Semantic search requires @huggingface/transformers'),
+    await expect(embed(['test'], 'minilm')).rejects.toThrow(
+      'Semantic search requires @huggingface/transformers',
     );
+    await expect(embed(['test'], 'minilm')).rejects.toMatchObject({
+      name: 'EngineError',
+      code: 'ENGINE_UNAVAILABLE',
+    });
   });
 
-  test('TTY + user accepts but npm install fails: prints error and exits', async () => {
+  test('TTY + user accepts but npm install fails: throws EngineError', async () => {
     process.stdin.isTTY = true;
 
     const execMock = vi.fn(() => {
@@ -95,14 +101,17 @@ describe('loadTransformers install prompt', () => {
 
     const { embed } = await import('../../src/embedder.js');
 
-    await expect(embed(['test'], 'minilm')).rejects.toThrow('process.exit(1)');
+    await expect(embed(['test'], 'minilm')).rejects.toThrow(
+      'Semantic search requires @huggingface/transformers',
+    );
+    await expect(embed(['test'], 'minilm')).rejects.toMatchObject({
+      name: 'EngineError',
+      code: 'ENGINE_UNAVAILABLE',
+    });
     expect(execMock).toHaveBeenCalledWith(
       'npm',
       ['install', '@huggingface/transformers'],
       expect.objectContaining({ stdio: 'inherit', timeout: 300_000 }),
-    );
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Semantic search requires @huggingface/transformers'),
     );
   });
 
