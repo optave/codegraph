@@ -74,6 +74,7 @@ const BATCH_SIZE_MAP = {
 };
 const DEFAULT_BATCH_SIZE = 32;
 
+/** @internal Used by generator.js — not part of the public barrel. */
 export function getModelConfig(modelKey) {
   const key = modelKey || DEFAULT_MODEL;
   const config = MODELS[key];
@@ -87,6 +88,7 @@ export function getModelConfig(modelKey) {
  * Prompt the user to install a missing package interactively.
  * Returns true if the package was installed, false otherwise.
  * Skips the prompt entirely in non-TTY environments (CI, piped stdin).
+ * @internal Not part of the public barrel.
  */
 export function promptInstall(packageName) {
   if (!process.stdin.isTTY) return Promise.resolve(false);
@@ -113,6 +115,7 @@ export function promptInstall(packageName) {
  * Lazy-load @huggingface/transformers.
  * If the package is missing, prompts the user to install it interactively.
  * In non-TTY environments, prints an error and exits.
+ * @internal Not part of the public barrel.
  */
 export async function loadTransformers() {
   try {
