@@ -29,7 +29,8 @@ const VISIBILITY_KEYWORDS = new Set(['public', 'private', 'protected']);
  * Python convention: __name → private, _name → protected, else undefined.
  */
 export function pythonVisibility(name) {
-  if (name.startsWith('__') && !name.endsWith('__')) return 'private';
+  if (name.startsWith('__') && name.endsWith('__')) return undefined; // dunder — public
+  if (name.startsWith('__')) return 'private';
   if (name.startsWith('_')) return 'protected';
   return undefined;
 }

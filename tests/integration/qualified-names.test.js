@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildGraph } from '../../src/builder.js';
 import { findNodeByQualifiedName, findNodesByScope, openReadonlyOrFail } from '../../src/db.js';
+import { pythonVisibility } from '../../src/extractors/helpers.js';
 import { childrenData } from '../../src/queries.js';
 
 // Fixture: a small project with classes, methods, and visibility modifiers
@@ -66,11 +67,11 @@ describe('qualified_name column', () => {
   it('methods have qualified_name matching their full name', () => {
     const db = openReadonlyOrFail(dbPath);
     try {
-      const node = findNodeByQualifiedName(db, 'DateHelper.format');
-      expect(node).toBeDefined();
-      expect(node.name).toBe('DateHelper.format');
-      expect(node.kind).toBe('method');
-      expect(node.qualified_name).toBe('DateHelper.format');
+      const nodes = findNodeByQualifiedName(db, 'DateHelper.format');
+      expect(nodes.length).toBe(1);
+      expect(nodes[0].name).toBe('DateHelper.format');
+      expect(nodes[0].kind).toBe('method');
+      expect(nodes[0].qualified_name).toBe('DateHelper.format');
     } finally {
       db.close();
     }
@@ -79,10 +80,10 @@ describe('qualified_name column', () => {
   it('top-level functions have qualified_name equal to name', () => {
     const db = openReadonlyOrFail(dbPath);
     try {
-      const node = findNodeByQualifiedName(db, 'freeFunction');
-      expect(node).toBeDefined();
-      expect(node.name).toBe('freeFunction');
-      expect(node.qualified_name).toBe('freeFunction');
+      const nodes = findNodeByQualifiedName(db, 'freeFunction');
+      expect(nodes.length).toBe(1);
+      expect(nodes[0].name).toBe('freeFunction');
+      expect(nodes[0].qualified_name).toBe('freeFunction');
     } finally {
       db.close();
     }
@@ -92,10 +93,10 @@ describe('qualified_name column', () => {
     const db = openReadonlyOrFail(dbPath);
     try {
       // Parameters of freeFunction should have qualified_name 'freeFunction.x'
-      const node = findNodeByQualifiedName(db, 'freeFunction.x');
-      expect(node).toBeDefined();
-      expect(node.kind).toBe('parameter');
-      expect(node.scope).toBe('freeFunction');
+      const nodes = findNodeByQualifiedName(db, 'freeFunction.x');
+      expect(nodes.length).toBe(1);
+      expect(nodes[0].kind).toBe('parameter');
+      expect(nodes[0].scope).toBe('freeFunction');
     } finally {
       db.close();
     }
@@ -132,8 +133,8 @@ describe('scope column', () => {
   it('top-level functions have null scope', () => {
     const db = openReadonlyOrFail(dbPath);
     try {
-      const node = findNodeByQualifiedName(db, 'freeFunction');
-      expect(node.scope).toBeNull();
+      const nodes = findNodeByQualifiedName(db, 'freeFunction');
+      expect(nodes[0].scope).toBeNull();
     } finally {
       db.close();
     }
@@ -141,6 +142,17 @@ describe('scope column', () => {
 });
 
 describe('visibility column', () => {
+  it('python dunder methods are not marked as protected', () => {
+    // pythonVisibility('__init__') should return undefined, not 'protected'
+    expect(pythonVisibility('__init__')).toBeUndefined();
+    expect(pythonVisibility('__str__')).toBeUndefined();
+    expect(pythonVisibility('__len__')).toBeUndefined();
+    // But true name-mangled privates should still be private
+    expect(pythonVisibility('__secret')).toBe('private');
+    expect(pythonVisibility('_protected')).toBe('protected');
+    expect(pythonVisibility('public_method')).toBeUndefined();
+  });
+
   it('private # fields are marked as private (WASM engine)', async () => {
     // Visibility extraction requires the WASM engine (JS extractor).
     // The native engine doesn't populate visibility yet.

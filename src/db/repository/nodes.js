@@ -116,6 +116,7 @@ const _getNodeIdStmt = new WeakMap();
 const _getFunctionNodeIdStmt = new WeakMap();
 const _bulkNodeIdsByFileStmt = new WeakMap();
 const _findNodeChildrenStmt = new WeakMap();
+const _findNodeByQualifiedNameStmt = new WeakMap();
 
 /**
  * Count total nodes.
@@ -256,10 +257,9 @@ export function findNodeChildren(db, parentId) {
  * @param {string} scopeName - The scope to search for (e.g., class name)
  * @param {object} [opts]
  * @param {string} [opts.kind] - Filter by node kind
- * @param {string} [opts.file] - Filter by file path
+ * @param {string} [opts.file] - Filter by file path (LIKE match)
  * @returns {object[]}
  */
-const _findNodesByScopeStmt = new WeakMap();
 export function findNodesByScope(db, scopeName, opts = {}) {
   let sql = 'SELECT * FROM nodes WHERE scope = ?';
   const params = [scopeName];
@@ -276,16 +276,24 @@ export function findNodesByScope(db, scopeName, opts = {}) {
 }
 
 /**
- * Find a node by its qualified name (direct lookup without edge traversal).
+ * Find nodes by qualified name. Returns all matches since the same
+ * qualified_name can exist in different files (e.g., two classes named
+ * `DateHelper.format` in separate modules). Pass `opts.file` to narrow.
  * @param {object} db
  * @param {string} qualifiedName - e.g., 'DateHelper.format'
- * @returns {object|undefined}
+ * @param {object} [opts]
+ * @param {string} [opts.file] - Filter by file path (LIKE match)
+ * @returns {object[]}
  */
-const _findNodeByQualifiedNameStmt = new WeakMap();
-export function findNodeByQualifiedName(db, qualifiedName) {
+export function findNodeByQualifiedName(db, qualifiedName, opts = {}) {
+  if (opts.file) {
+    return db
+      .prepare('SELECT * FROM nodes WHERE qualified_name = ? AND file LIKE ? ORDER BY file, line')
+      .all(qualifiedName, `%${opts.file}%`);
+  }
   return cachedStmt(
     _findNodeByQualifiedNameStmt,
     db,
-    'SELECT * FROM nodes WHERE qualified_name = ? LIMIT 1',
-  ).get(qualifiedName);
+    'SELECT * FROM nodes WHERE qualified_name = ? ORDER BY file, line',
+  ).all(qualifiedName);
 }
