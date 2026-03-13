@@ -195,17 +195,9 @@ export class CodeGraph {
       g.addNode(id);
     }
 
-    if (type === 'undirected') {
-      // Deduplicate: only add each unordered pair once
-      for (const [src, tgt] of this.edges()) {
-        if (src === tgt) continue;
-        if (!g.hasEdge(src, tgt)) g.addEdge(src, tgt);
-      }
-    } else {
-      for (const [src, tgt] of this.edges()) {
-        if (src === tgt) continue;
-        if (!g.hasEdge(src, tgt)) g.addEdge(src, tgt);
-      }
+    for (const [src, tgt] of this.edges()) {
+      if (src === tgt) continue;
+      if (!g.hasEdge(src, tgt)) g.addEdge(src, tgt);
     }
     return g;
   }
