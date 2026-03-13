@@ -93,12 +93,12 @@ export async function buildGraph(rootDir, opts = {}) {
   ctx.timing.setupMs = performance.now() - ctx.buildStart;
 
   // ── Pipeline stages ───────────────────────────────────────────────
-  await collectFiles(ctx);
-  await detectChanges(ctx);
-
-  if (ctx.earlyExit) return;
-
   try {
+    await collectFiles(ctx);
+    await detectChanges(ctx);
+
+    if (ctx.earlyExit) return;
+
     await parseFiles(ctx);
     await insertNodes(ctx);
     await resolveImports(ctx);
@@ -107,7 +107,7 @@ export async function buildGraph(rootDir, opts = {}) {
     await runAnalyses(ctx);
     await finalize(ctx);
   } catch (err) {
-    closeDb(ctx.db);
+    if (!ctx.earlyExit) closeDb(ctx.db);
     throw err;
   }
 

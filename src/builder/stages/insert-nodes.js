@@ -41,11 +41,17 @@ export async function insertNodes(ctx) {
     upsertHash = null;
   }
 
+  // Populate fileSymbols before the transaction so it is a pure input
+  // to (rather than a side-effect of) the DB write — avoids partial
+  // population if the transaction rolls back.
+  for (const [relPath, symbols] of allSymbols) {
+    ctx.fileSymbols.set(relPath, symbols);
+  }
+
   const insertAll = db.transaction(() => {
     // Phase 1: Batch insert all file nodes + definitions + exports
     const phase1Rows = [];
     for (const [relPath, symbols] of allSymbols) {
-      ctx.fileSymbols.set(relPath, symbols);
       phase1Rows.push([relPath, 'file', relPath, 0, null, null]);
       for (const def of symbols.definitions) {
         phase1Rows.push([def.name, def.kind, relPath, def.line, def.endLine || null, null]);
