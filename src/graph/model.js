@@ -32,7 +32,8 @@ export class CodeGraph {
   get edgeCount() {
     let count = 0;
     for (const targets of this._successors.values()) count += targets.size;
-    return count;
+    // Undirected graphs store each edge twice (a→b and b→a)
+    return this._directed ? count : count / 2;
   }
 
   // ─── Node operations ────────────────────────────────────────────

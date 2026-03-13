@@ -1,5 +1,5 @@
 import { findNodesForTriage, openReadonlyOrFail } from './db.js';
-import { DEFAULT_WEIGHTS, round4, scoreRisk } from './graph/classifiers/risk.js';
+import { DEFAULT_WEIGHTS, scoreRisk } from './graph/classifiers/risk.js';
 import { isTestFile } from './infrastructure/test-filter.js';
 import { warn } from './logger.js';
 import { paginateResult } from './paginate.js';
@@ -117,4 +117,10 @@ export function triageData(customDbPath, opts = {}) {
   } finally {
     db.close();
   }
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────
+
+function round4(n) {
+  return Math.round(n * 10000) / 10000;
 }

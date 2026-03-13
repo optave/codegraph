@@ -30,7 +30,7 @@ export function minMaxNormalize(values) {
   return values.map((v) => (v - min) / range);
 }
 
-export function round4(n) {
+function round4(n) {
   return Math.round(n * 10000) / 10000;
 }
 
