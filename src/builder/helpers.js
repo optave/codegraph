@@ -55,6 +55,22 @@ export function collectFiles(
   const trackDirs = directories instanceof Set;
   let hasFiles = false;
 
+  // Merge config ignoreDirs with defaults
+  const extraIgnore = config.ignoreDirs ? new Set(config.ignoreDirs) : null;
+
+  // Detect symlink loops (before I/O to avoid wasted readdirSync)
+  let realDir;
+  try {
+    realDir = fs.realpathSync(dir);
+  } catch {
+    return trackDirs ? { files, directories } : files;
+  }
+  if (_visited.has(realDir)) {
+    warn(`Symlink loop detected, skipping: ${dir}`);
+    return trackDirs ? { files, directories } : files;
+  }
+  _visited.add(realDir);
+
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -62,19 +78,6 @@ export function collectFiles(
     warn(`Cannot read directory ${dir}: ${err.message}`);
     return trackDirs ? { files, directories } : files;
   }
-
-  // Merge config ignoreDirs with defaults
-  const extraIgnore = config.ignoreDirs ? new Set(config.ignoreDirs) : null;
-
-  // Detect symlink loops
-  let realDir;
-  try {
-    realDir = fs.realpathSync(dir);
-  } catch {
-    return trackDirs ? { files, directories } : files;
-  }
-  if (_visited.has(realDir)) return trackDirs ? { files, directories } : files;
-  _visited.add(realDir);
 
   for (const entry of entries) {
     if (entry.name.startsWith('.') && entry.name !== '.') {

@@ -4,6 +4,7 @@
  * Reuses pipeline helpers instead of duplicating node insertion and edge building
  * logic from the main builder. This eliminates the watcher.js divergence (ROADMAP 3.9).
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePath } from '../constants.js';
 import { warn } from '../logger.js';
@@ -27,8 +28,6 @@ import { BUILTIN_RECEIVERS, readFileSafe } from './helpers.js';
 export async function rebuildFile(db, rootDir, filePath, stmts, engineOpts, cache, options = {}) {
   const { diffSymbols } = options;
   const relPath = normalizePath(path.relative(rootDir, filePath));
-  const fs = await import('node:fs');
-
   const oldNodes = stmts.countNodes.get(relPath)?.c || 0;
   const oldSymbols = diffSymbols ? stmts.listSymbols.all(relPath) : [];
 
