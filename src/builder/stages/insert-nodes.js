@@ -57,7 +57,7 @@ export async function insertNodes(ctx) {
       for (const def of symbols.definitions) {
         // Methods already have 'Class.method' as name — use as qualified_name.
         // For methods, scope is the class portion; for top-level defs, scope is null.
-        const dotIdx = def.name.indexOf('.');
+        const dotIdx = def.name.lastIndexOf('.');
         const scope = dotIdx !== -1 ? def.name.slice(0, dotIdx) : null;
         phase1Rows.push([
           def.name,

@@ -265,10 +265,6 @@ function escapeLike(s) {
  * @param {string} [opts.file] - Filter by file path (LIKE match)
  * @returns {object[]}
  */
-function escapeLike(s) {
-  return s.replace(/[%_\\]/g, '\\$&');
-}
-
 export function findNodesByScope(db, scopeName, opts = {}) {
   let sql = 'SELECT * FROM nodes WHERE scope = ?';
   const params = [scopeName];
