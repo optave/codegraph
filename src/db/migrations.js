@@ -235,6 +235,7 @@ export const MIGRATIONS = [
       ALTER TABLE nodes ADD COLUMN qualified_name TEXT;
       ALTER TABLE nodes ADD COLUMN scope TEXT;
       ALTER TABLE nodes ADD COLUMN visibility TEXT;
+      UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL;
       CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
       CREATE INDEX IF NOT EXISTS idx_nodes_scope ON nodes(scope);
     `,
@@ -333,6 +334,11 @@ export function initSchema(db) {
     db.exec('ALTER TABLE nodes ADD COLUMN visibility TEXT');
   } catch {
     /* already exists */
+  }
+  try {
+    db.exec('UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL');
+  } catch {
+    /* nodes table may not exist yet */
   }
   try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name)');
