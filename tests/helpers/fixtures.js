@@ -104,7 +104,9 @@ class TestRepoBuilder {
     for (const n of this.#pending.nodes) {
       const id = repo.addNode(n);
       if (ids.has(n.name)) {
-        throw new Error(`Duplicate node name: "${n.name}" — use unique names or qualify with file path`);
+        throw new Error(
+          `Duplicate node name: "${n.name}" — use unique names or qualify with file path`,
+        );
       }
       ids.set(n.name, id);
     }
