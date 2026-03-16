@@ -7,6 +7,7 @@
  */
 
 import { openRepo } from '../db/index.js';
+import { SqliteRepository } from '../db/repository/sqlite-repository.js';
 import { findMatchingNodes } from '../domain/queries.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import { paginateResult } from '../shared/paginate.js';
@@ -172,7 +173,7 @@ export function sequenceData(name, dbPath, opts = {}) {
     if (withDataflow && messages.length > 0) {
       const hasTable = repo.hasDataflowTable();
 
-      if (hasTable && repo.db) {
+      if (hasTable && repo instanceof SqliteRepository) {
         const db = repo.db;
         // Build name|file lookup for O(1) target node access
         const nodeByNameFile = new Map();

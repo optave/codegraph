@@ -101,7 +101,12 @@ export function openReadonlyOrFail(customPath) {
  * @returns {{ repo: Repository, close(): void }}
  */
 export function openRepo(customDbPath, opts = {}) {
-  if (opts.repo instanceof Repository) {
+  if (opts.repo != null) {
+    if (!(opts.repo instanceof Repository)) {
+      throw new TypeError(
+        `openRepo: opts.repo must be a Repository instance, got ${Object.prototype.toString.call(opts.repo)}`,
+      );
+    }
     return { repo: opts.repo, close() {} };
   }
   const db = openReadonlyOrFail(customDbPath);
