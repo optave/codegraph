@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { DbError } from '../errors.js';
 import { debug, warn } from '../logger.js';
 
-let _cachedRepoRoot = undefined; // undefined = not computed, null = not a git repo
+let _cachedRepoRoot; // undefined = not computed, null = not a git repo
 
 /**
  * Return the git worktree/repo root for the given directory (or cwd).
@@ -100,7 +100,11 @@ export function findDbPath(customPath) {
   const ceiling = findRepoRoot();
   // Resolve symlinks (e.g. macOS /var → /private/var) so dir matches ceiling from git
   let dir;
-  try { dir = fs.realpathSync(process.cwd()); } catch { dir = process.cwd(); }
+  try {
+    dir = fs.realpathSync(process.cwd());
+  } catch {
+    dir = process.cwd();
+  }
   while (true) {
     const candidate = path.join(dir, '.codegraph', 'graph.db');
     if (fs.existsSync(candidate)) return candidate;
