@@ -4,6 +4,7 @@
  */
 
 import { getCallableNodes, getCallEdges, getFileNodesAll, getImportEdges } from '../../db/index.js';
+import { Repository } from '../../db/repository/base.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { CodeGraph } from '../model.js';
 
@@ -27,8 +28,9 @@ export function buildDependencyGraph(db, opts = {}) {
 
 function buildFileLevelGraph(db, noTests) {
   const graph = new CodeGraph();
+  const isRepo = db instanceof Repository;
 
-  let nodes = getFileNodesAll(db);
+  let nodes = isRepo ? db.getFileNodesAll() : getFileNodesAll(db);
   if (noTests) nodes = nodes.filter((n) => !isTestFile(n.file));
 
   const nodeIds = new Set();
@@ -37,7 +39,7 @@ function buildFileLevelGraph(db, noTests) {
     nodeIds.add(n.id);
   }
 
-  const edges = getImportEdges(db);
+  const edges = isRepo ? db.getImportEdges() : getImportEdges(db);
   for (const e of edges) {
     if (!nodeIds.has(e.source_id) || !nodeIds.has(e.target_id)) continue;
     const src = String(e.source_id);
@@ -53,8 +55,9 @@ function buildFileLevelGraph(db, noTests) {
 
 function buildFunctionLevelGraph(db, noTests, minConfidence) {
   const graph = new CodeGraph();
+  const isRepo = db instanceof Repository;
 
-  let nodes = getCallableNodes(db);
+  let nodes = isRepo ? db.getCallableNodes() : getCallableNodes(db);
   if (noTests) nodes = nodes.filter((n) => !isTestFile(n.file));
 
   const nodeIds = new Set();
@@ -70,11 +73,17 @@ function buildFunctionLevelGraph(db, noTests, minConfidence) {
 
   let edges;
   if (minConfidence != null) {
-    edges = db
-      .prepare("SELECT source_id, target_id FROM edges WHERE kind = 'calls' AND confidence >= ?")
-      .all(minConfidence);
+    if (isRepo) {
+      edges = db
+        .getCallEdges()
+        .filter((e) => e.confidence != null && e.confidence >= minConfidence);
+    } else {
+      edges = db
+        .prepare("SELECT source_id, target_id FROM edges WHERE kind = 'calls' AND confidence >= ?")
+        .all(minConfidence);
+    }
   } else {
-    edges = getCallEdges(db);
+    edges = isRepo ? db.getCallEdges() : getCallEdges(db);
   }
 
   for (const e of edges) {

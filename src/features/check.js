@@ -97,8 +97,10 @@ export function checkMaxBlastRadius(db, changedRanges, threshold, noTests, maxDe
       }
       if (!overlaps) continue;
 
-      const { totalDependents } = bfsTransitiveCallers(db, def.id, { noTests, maxDepth });
-      const totalCallers = totalDependents;
+      const { totalDependents: totalCallers } = bfsTransitiveCallers(db, def.id, {
+        noTests,
+        maxDepth,
+      });
 
       if (totalCallers > maxFound) maxFound = totalCallers;
       if (totalCallers > threshold) {
