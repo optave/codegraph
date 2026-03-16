@@ -2,7 +2,9 @@
  * Unit tests for src/db.js — build_meta helpers included
  */
 
-import { execFileSync as realExecFileSync } from 'node:child_process';
+// Note: due to vi.mock hoisting, this resolves to the spy (which delegates
+// to the real impl by default). Safe for setup calls before mockImplementationOnce.
+import { execFileSync as execFileSyncForSetup } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -270,7 +272,7 @@ describe('findDbPath with git ceiling', () => {
     fs.writeFileSync(path.join(outerDir, '.codegraph', 'graph.db'), '');
     fs.mkdirSync(innerDir, { recursive: true });
     // Initialize a real git repo at the worktree root so findRepoRoot returns it
-    realExecFileSync('git', ['init'], { cwd: worktreeRoot, stdio: 'pipe' });
+    execFileSyncForSetup('git', ['init'], { cwd: worktreeRoot, stdio: 'pipe' });
   });
 
   afterAll(() => {
@@ -319,6 +321,9 @@ describe('findDbPath with git ceiling', () => {
     const origCwd = process.cwd;
     process.cwd = () => emptyDir;
     _resetRepoRootCache();
+    execFileSyncSpy.mockImplementationOnce(() => {
+      throw new Error('not a git repo');
+    });
     try {
       const result = findDbPath();
       // Should return default path at cwd since there's no git ceiling
