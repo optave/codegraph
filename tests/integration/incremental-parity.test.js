@@ -60,8 +60,8 @@ function readAnalysisTables(dbPath) {
   try {
     result.cfgBlocks = db
       .prepare(
-        `SELECT cb.node_id, cb.block_index, cb.block_type, n.name, n.file
-         FROM cfg_blocks cb JOIN nodes n ON cb.node_id = n.id
+        `SELECT cb.function_node_id, cb.block_index, cb.block_type, n.name, n.file
+         FROM cfg_blocks cb JOIN nodes n ON cb.function_node_id = n.id
          ORDER BY n.name, n.file, cb.block_index`,
       )
       .all();
@@ -71,8 +71,8 @@ function readAnalysisTables(dbPath) {
   try {
     result.dataflow = db
       .prepare(
-        `SELECT d.source_node_id, d.kind, n.name, n.file
-         FROM dataflow d JOIN nodes n ON d.source_node_id = n.id
+        `SELECT d.source_id, d.kind, n.name, n.file
+         FROM dataflow d JOIN nodes n ON d.source_id = n.id
          ORDER BY n.name, n.file, d.kind`,
       )
       .all();
@@ -154,12 +154,14 @@ describe('Incremental build parity: full vs incremental', () => {
   it('preserves CFG blocks for changed file (#468)', () => {
     const fullAnalysis = readAnalysisTables(path.join(fullDir, '.codegraph', 'graph.db'));
     const incrAnalysis = readAnalysisTables(path.join(incrDir, '.codegraph', 'graph.db'));
+    expect(incrAnalysis.cfgBlocks.length).toBeGreaterThan(0);
     expect(incrAnalysis.cfgBlocks.length).toBe(fullAnalysis.cfgBlocks.length);
   });
 
   it('preserves dataflow edges for changed file (#468)', () => {
     const fullAnalysis = readAnalysisTables(path.join(fullDir, '.codegraph', 'graph.db'));
     const incrAnalysis = readAnalysisTables(path.join(incrDir, '.codegraph', 'graph.db'));
+    expect(incrAnalysis.dataflow.length).toBeGreaterThan(0);
     expect(incrAnalysis.dataflow.length).toBe(fullAnalysis.dataflow.length);
   });
 });

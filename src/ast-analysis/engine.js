@@ -95,6 +95,7 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, engineOpts) {
           (d) =>
             (d.kind === 'function' || d.kind === 'method') &&
             d.line &&
+            d.cfg !== null &&
             !Array.isArray(d.cfg?.blocks),
         );
       const needsDataflow = doDataflow && !symbols.dataflow && DATAFLOW_EXTENSIONS.has(ext);
