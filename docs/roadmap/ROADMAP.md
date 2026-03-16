@@ -1119,7 +1119,7 @@ Migrate top-level orchestration and entry points:
 1. **Coverage gate** -- add `vitest --coverage` to CI with minimum threshold (e.g. 80% lines/branches); fail the pipeline when coverage drops below the threshold
 2. **Unified test workflow** -- merge embedding tests into the main CI workflow using a securely stored `HF_TOKEN` secret; eliminate the separate workflow
 3. **Timer cleanup** -- audit and reduce `setTimeout`/`sleep` usage in tests; replace with deterministic waits (event-based, polling with backoff, or `vi.useFakeTimers()`) to reduce flakiness
-4. **Dependency audit step** -- add `npm audit --omit=dev` to CI (shared with 4.7)
+4. > _Dependency audit step is covered by [4.7](#47----supply-chain-security--audit) deliverable 1._
 
 **Affected files:** `.github/workflows/ci.yml`, `vitest.config.js`, `tests/`
 
