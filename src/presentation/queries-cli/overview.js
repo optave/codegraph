@@ -7,7 +7,7 @@ export async function stats(customDbPath, opts = {}) {
 
   // Community detection summary (async import for lazy-loading)
   try {
-    const { communitySummaryForStats } = await import('../communities.js');
+    const { communitySummaryForStats } = await import('../../features/communities.js');
     data.communities = communitySummaryForStats(customDbPath, { noTests: opts.noTests });
   } catch {
     /* graphology may not be available */
