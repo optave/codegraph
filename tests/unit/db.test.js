@@ -159,11 +159,13 @@ describe('findDbPath', () => {
     const emptyDir = fs.mkdtempSync(path.join(tmpDir, 'empty-'));
     const origCwd = process.cwd;
     process.cwd = () => emptyDir;
+    _resetRepoRootCache();
+    execFileSyncSpy.mockImplementationOnce(() => {
+      throw new Error('not a git repo');
+    });
     try {
-      _resetRepoRootCache();
       const result = findDbPath();
-      expect(result).toContain('.codegraph');
-      expect(result).toContain('graph.db');
+      expect(result).toBe(path.join(emptyDir, '.codegraph', 'graph.db'));
     } finally {
       process.cwd = origCwd;
       _resetRepoRootCache();
