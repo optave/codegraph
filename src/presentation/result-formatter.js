@@ -80,7 +80,10 @@ function printAutoTable(data, field) {
   if (columns.length === 0) columns.push('value');
 
   const colDefs = columns.map((col) => {
-    const maxLen = Math.max(col.length, ...flatItems.map((item) => String(item[col] ?? '').length));
+    const maxLen = flatItems.reduce(
+      (max, item) => Math.max(max, String(item[col] ?? '').length),
+      col.length,
+    );
     const isNumeric = flatItems.every((item) => {
       const v = item[col];
       return v == null || v === '' || Number.isFinite(Number(v));
