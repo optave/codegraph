@@ -13,11 +13,15 @@ export const command = {
   ],
   execute(_args, opts, ctx) {
     const { db, close } = openGraph(opts);
-    const cycles = findCycles(db, {
-      fileLevel: !opts.functions,
-      noTests: ctx.resolveNoTests(opts),
-    });
-    close();
+    let cycles;
+    try {
+      cycles = findCycles(db, {
+        fileLevel: !opts.functions,
+        noTests: ctx.resolveNoTests(opts),
+      });
+    } finally {
+      close();
+    }
 
     if (opts.json) {
       console.log(JSON.stringify({ cycles, count: cycles.length }, null, 2));

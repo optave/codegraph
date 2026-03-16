@@ -27,38 +27,41 @@ export const command = {
     const { db, close } = openGraph(opts);
 
     let plotCfg;
-    if (opts.config) {
-      try {
-        plotCfg = JSON.parse(fs.readFileSync(opts.config, 'utf-8'));
-      } catch (e) {
-        console.error(`Failed to load config: ${e.message}`);
-        close();
-        process.exitCode = 1;
-        return;
+    let html;
+    try {
+      if (opts.config) {
+        try {
+          plotCfg = JSON.parse(fs.readFileSync(opts.config, 'utf-8'));
+        } catch (e) {
+          console.error(`Failed to load config: ${e.message}`);
+          process.exitCode = 1;
+          return;
+        }
+      } else {
+        plotCfg = loadPlotConfig(process.cwd());
       }
-    } else {
-      plotCfg = loadPlotConfig(process.cwd());
-    }
 
-    if (opts.cluster) plotCfg.clusterBy = opts.cluster;
-    if (opts.colorBy) plotCfg.colorBy = opts.colorBy;
-    if (opts.sizeBy) plotCfg.sizeBy = opts.sizeBy;
-    if (opts.seed) plotCfg.seedStrategy = opts.seed;
-    if (opts.seedCount) plotCfg.seedCount = parseInt(opts.seedCount, 10);
-    if (opts.overlay) {
-      const parts = opts.overlay.split(',').map((s) => s.trim());
-      if (!plotCfg.overlays) plotCfg.overlays = {};
-      if (parts.includes('complexity')) plotCfg.overlays.complexity = true;
-      if (parts.includes('risk')) plotCfg.overlays.risk = true;
-    }
+      if (opts.cluster) plotCfg.clusterBy = opts.cluster;
+      if (opts.colorBy) plotCfg.colorBy = opts.colorBy;
+      if (opts.sizeBy) plotCfg.sizeBy = opts.sizeBy;
+      if (opts.seed) plotCfg.seedStrategy = opts.seed;
+      if (opts.seedCount) plotCfg.seedCount = parseInt(opts.seedCount, 10);
+      if (opts.overlay) {
+        const parts = opts.overlay.split(',').map((s) => s.trim());
+        if (!plotCfg.overlays) plotCfg.overlays = {};
+        if (parts.includes('complexity')) plotCfg.overlays.complexity = true;
+        if (parts.includes('risk')) plotCfg.overlays.risk = true;
+      }
 
-    const html = generatePlotHTML(db, {
-      fileLevel: !opts.functions,
-      noTests: ctx.resolveNoTests(opts),
-      minConfidence: parseFloat(opts.minConfidence),
-      config: plotCfg,
-    });
-    close();
+      html = generatePlotHTML(db, {
+        fileLevel: !opts.functions,
+        noTests: ctx.resolveNoTests(opts),
+        minConfidence: parseFloat(opts.minConfidence),
+        config: plotCfg,
+      });
+    } finally {
+      close();
+    }
 
     const outPath = opts.output || path.join(os.tmpdir(), `codegraph-plot-${Date.now()}.html`);
     fs.writeFileSync(outPath, html, 'utf-8');

@@ -32,38 +32,39 @@ export const command = {
     };
 
     let output;
-    switch (opts.format) {
-      case 'mermaid':
-        output = exportMermaid(db, exportOpts);
-        break;
-      case 'json':
-        output = JSON.stringify(exportJSON(db, exportOpts), null, 2);
-        break;
-      case 'graphml':
-        output = exportGraphML(db, exportOpts);
-        break;
-      case 'graphson':
-        output = JSON.stringify(exportGraphSON(db, exportOpts), null, 2);
-        break;
-      case 'neo4j': {
-        const csv = exportNeo4jCSV(db, exportOpts);
-        if (opts.output) {
-          const base = opts.output.replace(/\.[^.]+$/, '') || opts.output;
-          fs.writeFileSync(`${base}-nodes.csv`, csv.nodes, 'utf-8');
-          fs.writeFileSync(`${base}-relationships.csv`, csv.relationships, 'utf-8');
-          close();
-          console.log(`Exported to ${base}-nodes.csv and ${base}-relationships.csv`);
-          return;
+    try {
+      switch (opts.format) {
+        case 'mermaid':
+          output = exportMermaid(db, exportOpts);
+          break;
+        case 'json':
+          output = JSON.stringify(exportJSON(db, exportOpts), null, 2);
+          break;
+        case 'graphml':
+          output = exportGraphML(db, exportOpts);
+          break;
+        case 'graphson':
+          output = JSON.stringify(exportGraphSON(db, exportOpts), null, 2);
+          break;
+        case 'neo4j': {
+          const csv = exportNeo4jCSV(db, exportOpts);
+          if (opts.output) {
+            const base = opts.output.replace(/\.[^.]+$/, '') || opts.output;
+            fs.writeFileSync(`${base}-nodes.csv`, csv.nodes, 'utf-8');
+            fs.writeFileSync(`${base}-relationships.csv`, csv.relationships, 'utf-8');
+            console.log(`Exported to ${base}-nodes.csv and ${base}-relationships.csv`);
+            return;
+          }
+          output = `--- nodes.csv ---\n${csv.nodes}\n\n--- relationships.csv ---\n${csv.relationships}`;
+          break;
         }
-        output = `--- nodes.csv ---\n${csv.nodes}\n\n--- relationships.csv ---\n${csv.relationships}`;
-        break;
+        default:
+          output = exportDOT(db, exportOpts);
+          break;
       }
-      default:
-        output = exportDOT(db, exportOpts);
-        break;
+    } finally {
+      close();
     }
-
-    close();
 
     if (opts.output) {
       fs.writeFileSync(opts.output, output, 'utf-8');

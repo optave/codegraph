@@ -87,7 +87,7 @@ function printAutoTable(data, field) {
     );
     const isNumeric = flatItems.every((item) => {
       const v = item[col];
-      return v == null || v === '' || Number.isFinite(Number(v));
+      return v == null || v === '' || (typeof v !== 'boolean' && Number.isFinite(Number(v)));
     });
     return {
       header: col,
