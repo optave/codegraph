@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { DbError } from '../errors.js';
-import { debug, warn } from '../logger.js';
+import { debug, warn } from '../infrastructure/logger.js';
+import { DbError } from '../shared/errors.js';
 
 let _cachedRepoRoot; // undefined = not computed, null = not a git repo
 
