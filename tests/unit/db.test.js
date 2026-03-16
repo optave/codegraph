@@ -24,10 +24,13 @@ import {
   closeDb,
   findDbPath,
   findRepoRoot,
+  getBuildMeta,
+  initSchema,
+  MIGRATIONS,
   openDb,
   openReadonlyOrFail,
-} from '../../src/db/connection.js';
-import { getBuildMeta, initSchema, MIGRATIONS, setBuildMeta } from '../../src/db.js';
+  setBuildMeta,
+} from '../../src/db/index.js';
 
 let tmpDir;
 
@@ -293,7 +296,7 @@ describe('findDbPath with git ceiling', () => {
       const result = findDbPath();
       // Should return default path at the ceiling root, NOT the outer DB
       expect(result).toBe(path.join(worktreeRoot, '.codegraph', 'graph.db'));
-      expect(result).not.toContain(path.basename(outerDir) + path.sep + '.codegraph');
+      expect(result).not.toContain(`${path.basename(outerDir)}${path.sep}.codegraph`);
     } finally {
       process.cwd = origCwd;
     }
