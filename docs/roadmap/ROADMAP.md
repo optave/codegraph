@@ -1110,7 +1110,7 @@ With analysis data loss fixed, optimize the 1-file rebuild path end-to-end. Curr
 
 **Goal:** Migrate the codebase from plain JavaScript to TypeScript, leveraging the clean module boundaries established in Phase 3. Incremental module-by-module migration starting from leaf modules inward.
 
-**Why after Phase 3:** The architectural refactoring creates small, well-bounded modules with explicit interfaces (Repository, Engine, BaseExtractor, Pipeline stages, Command objects). These are natural type boundaries -- typing monolithic 2,000-line files that are about to be split would be double work.
+**Why after Phase 4:** The architectural refactoring (Phase 3) creates small, well-bounded modules with explicit interfaces. Phase 4 moves the remaining hot-path visitor code to Rust — doing TS migration first would mean rewriting those visitors to TypeScript only to delete them when porting to Rust. With both phases complete, the JS layer is purely orchestration and presentation, which is the ideal surface for TypeScript.
 
 ### 5.1 -- Project Setup
 
@@ -1227,14 +1227,14 @@ Migrate top-level orchestration and entry points:
 - No coverage thresholds enforced in CI (coverage report runs locally only)
 - Embedding tests in separate workflow requiring HuggingFace token
 - 312 `setTimeout`/`sleep` instances in tests — potential flakiness under load
-- No dependency audit step in CI (see also [5.7](#47----supply-chain-security--audit))
+- No dependency audit step in CI (see also [5.7](#57----supply-chain-security--audit))
 
 **Deliverables:**
 
 1. **Coverage gate** -- add `vitest --coverage` to CI with minimum threshold (e.g. 80% lines/branches); fail the pipeline when coverage drops below the threshold
 2. **Unified test workflow** -- merge embedding tests into the main CI workflow using a securely stored `HF_TOKEN` secret; eliminate the separate workflow
 3. **Timer cleanup** -- audit and reduce `setTimeout`/`sleep` usage in tests; replace with deterministic waits (event-based, polling with backoff, or `vi.useFakeTimers()`) to reduce flakiness
-4. > _Dependency audit step is covered by [5.7](#47----supply-chain-security--audit) deliverable 1._
+4. > _Dependency audit step is covered by [5.7](#57----supply-chain-security--audit) deliverable 1._
 
 **Affected files:** `.github/workflows/ci.yml`, `vitest.config.js`, `tests/`
 
