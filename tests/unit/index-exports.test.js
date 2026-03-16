@@ -1,4 +1,4 @@
-import { createRequire } from 'module';
+import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
 describe('index.js re-exports', () => {
