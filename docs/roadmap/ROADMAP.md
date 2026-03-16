@@ -964,13 +964,12 @@ These items from the original Phase 3 are still valid but less urgent:
 
 Practical cleanup to make the CLI surface match the internal composability that `*Data()` functions and MCP already provide. Not a philosophical overhaul -- just eliminating duplication and making the human CLI path as clean as the programmatic one.
 
-**Context:** The internal architecture is already well-layered -- pure `*Data()` functions, read/write separation, NDJSON support. But `cli.js` is a 2K-line monolith, every command repeats DB open/close boilerplate, and output formatting is scattered across individual commands. MCP and `batch_query` already solve in-process composition for AI agents; these items fix the equivalent gaps on the CLI side.
+**Context:** The internal architecture is already well-layered -- pure `*Data()` functions, read/write separation, NDJSON support. The 3.6 refactor split the former 1,525-line `cli.js` into `src/cli/` with 40 command modules and an 8-line thin wrapper, but individual commands still repeat DB open/close boilerplate, and output formatting is scattered across command files. MCP and `batch_query` already solve in-process composition for AI agents; these items fix the equivalent gaps on the CLI side.
 
-- **Extract shared `openGraph()` helper.** All commands repeat DB open/close boilerplate. A single `openGraph(opts)` helper returns `{ db, rootDir, config }` and handles engine selection, config loading, and cleanup. Eliminates ~200 lines of duplication across commands.
-- **Thin CLI dispatcher.** Reduce `cli.js` to pure command registration -- no business logic, no formatting. Each `commands/*.js` file owns its arg parsing and calls its `*Data()` function. Complements the command/query separation already done in 3.2 by finishing the extraction from the CLI entry point itself.
+- **Extract shared `openGraph()` helper.** The thin dispatcher is done (3.6), but each of the 40 `commands/*.js` files still inlines its own DB-open / config-load / cleanup sequence. A single `openGraph(opts)` helper returning `{ db, rootDir, config }` with engine selection, config loading, and cleanup eliminates ~200 lines of per-command duplication.
 - **Universal output formatter.** Complete the existing `result-formatter.js` into a full presentation layer that handles `--json`, `--ndjson`, `--table`, `--csv` for any data function. Commands produce data; the formatter renders. Eliminates per-command format-switching logic.
 
-**Affected files:** `src/cli.js`, `src/commands/*.js`, `src/infrastructure/result-formatter.js`
+**Affected files:** `src/cli/commands/*.js`, `src/cli/shared/`, `src/presentation/result-formatter.js`
 
 ---
 
