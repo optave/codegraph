@@ -38,6 +38,7 @@ export const command = {
       kind: opts.kind,
       noTests: qOpts.noTests,
       json: qOpts.json,
+      config: qOpts.config,
     });
   },
 };

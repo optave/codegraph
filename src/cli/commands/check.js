@@ -53,6 +53,7 @@ export const command = {
       depth: opts.depth ? parseInt(opts.depth, 10) : undefined,
       noTests: qOpts.noTests,
       json: qOpts.json,
+      config: qOpts.config,
     });
 
     if (opts.rules) {
