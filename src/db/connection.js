@@ -98,7 +98,9 @@ export function closeDb(db) {
 export function findDbPath(customPath) {
   if (customPath) return path.resolve(customPath);
   const ceiling = findRepoRoot();
-  let dir = process.cwd();
+  // Resolve symlinks (e.g. macOS /var → /private/var) so dir matches ceiling from git
+  let dir;
+  try { dir = fs.realpathSync(process.cwd()); } catch { dir = process.cwd(); }
   while (true) {
     const candidate = path.join(dir, '.codegraph', 'graph.db');
     if (fs.existsSync(candidate)) return candidate;
