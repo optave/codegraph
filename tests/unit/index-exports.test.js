@@ -15,10 +15,14 @@ describe('index.js re-exports', () => {
     const require = createRequire(import.meta.url);
     const cjs = await require('../../src/index.cjs');
     const esm = await import('../../src/index.js');
-    // Every named ESM export should be present in the CJS wrapper result
+    // Every named ESM export should resolve to a real value, not undefined.
+    // CJS import() produces a separate module namespace so reference equality
+    // (toBe) is not possible, but we verify the export exists, is defined,
+    // and has the same type as its ESM counterpart.
     for (const key of Object.keys(esm)) {
       if (key === 'default') continue;
-      expect(cjs).toHaveProperty(key);
+      expect(cjs[key], `CJS export "${key}" is missing or undefined`).toBeDefined();
+      expect(typeof cjs[key]).toBe(typeof esm[key]);
     }
   });
 });
