@@ -3,6 +3,16 @@ import { CORE_SYMBOL_KINDS, EVERY_SYMBOL_KIND, VALID_ROLES } from '../../kinds.j
 import { Repository } from './base.js';
 
 /**
+ * Escape LIKE special characters so they are treated as literals.
+ * Mirrors the `escapeLike` function in `nodes.js`.
+ * @param {string} s
+ * @returns {string}
+ */
+function escapeLike(s) {
+  return s.replace(/[%_\\]/g, '\\$&');
+}
+
+/**
  * Convert a SQL LIKE pattern to a RegExp (case-insensitive).
  * Supports `%` (any chars) and `_` (single char).
  * @param {string} pattern
@@ -121,7 +131,7 @@ export class InMemoryRepository extends Repository {
       nodes = nodes.filter((n) => opts.kinds.includes(n.kind));
     }
     if (opts.file) {
-      const fileRe = likeToRegex(`%${opts.file}%`);
+      const fileRe = likeToRegex(`%${escapeLike(opts.file)}%`);
       nodes = nodes.filter((n) => fileRe.test(n.file));
     }
 
@@ -197,7 +207,7 @@ export class InMemoryRepository extends Repository {
       nodes = nodes.filter((n) => n.kind === opts.kind);
     }
     if (opts.file) {
-      const fileRe = likeToRegex(`%${opts.file}%`);
+      const fileRe = likeToRegex(`%${escapeLike(opts.file)}%`);
       nodes = nodes.filter((n) => fileRe.test(n.file));
     }
 
@@ -208,7 +218,7 @@ export class InMemoryRepository extends Repository {
     let nodes = [...this.#nodes.values()].filter((n) => n.qualified_name === qualifiedName);
 
     if (opts.file) {
-      const fileRe = likeToRegex(`%${opts.file}%`);
+      const fileRe = likeToRegex(`%${escapeLike(opts.file)}%`);
       nodes = nodes.filter((n) => fileRe.test(n.file));
     }
 
@@ -241,7 +251,7 @@ export class InMemoryRepository extends Repository {
       nodes = nodes.filter((n) => !n.file.includes('.test.') && !n.file.includes('.spec.'));
     }
     if (opts.file) {
-      const fileRe = likeToRegex(`%${opts.file}%`);
+      const fileRe = likeToRegex(`%${escapeLike(opts.file)}%`);
       nodes = nodes.filter((n) => fileRe.test(n.file));
     }
     if (opts.role) {
@@ -534,11 +544,11 @@ export class InMemoryRepository extends Repository {
     );
 
     if (opts.file) {
-      const fileRe = likeToRegex(`%${opts.file}%`);
+      const fileRe = likeToRegex(`%${escapeLike(opts.file)}%`);
       nodes = nodes.filter((n) => fileRe.test(n.file));
     }
     if (opts.pattern) {
-      const patternRe = likeToRegex(`%${opts.pattern}%`);
+      const patternRe = likeToRegex(`%${escapeLike(opts.pattern)}%`);
       nodes = nodes.filter((n) => patternRe.test(n.name));
     }
     if (opts.noTests) {
