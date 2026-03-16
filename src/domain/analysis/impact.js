@@ -23,7 +23,7 @@ import { findMatchingNodes } from './symbol-lookup.js';
 /**
  * BFS traversal to find transitive callers of a node.
  *
- * @param {object} db - Open SQLite database handle
+ * @param {import('better-sqlite3').Database} db - Open read-only SQLite database handle (not a Repository)
  * @param {number} startId - Starting node ID
  * @param {{ noTests?: boolean, maxDepth?: number, onVisit?: (caller: object, parentId: number, depth: number) => void }} options
  * @returns {{ totalDependents: number, levels: Record<number, Array<{name:string, kind:string, file:string, line:number}>> }}
