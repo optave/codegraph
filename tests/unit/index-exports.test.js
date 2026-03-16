@@ -35,5 +35,10 @@ describe('index.js re-exports', () => {
       expect(cjs[key], `CJS export "${key}" is missing or undefined`).toBeDefined();
       expect(typeof cjs[key]).toBe(typeof esm[key]);
     }
+
+    // Symmetric check: CJS should not have extra keys beyond ESM exports.
+    const esmKeys = new Set(Object.keys(esm).filter(k => k !== 'default'));
+    const cjsKeys = new Set(Object.keys(cjs).filter(k => k !== 'default'));
+    expect(cjsKeys).toEqual(esmKeys);
   });
 });
