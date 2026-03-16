@@ -3,6 +3,8 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { warn } from '../infrastructure/logger.js';
 import { DbError } from '../shared/errors.js';
+import { Repository } from './repository/base.js';
+import { SqliteRepository } from './repository/sqlite-repository.js';
 
 function isProcessAlive(pid) {
   try {
@@ -85,4 +87,33 @@ export function openReadonlyOrFail(customPath) {
     );
   }
   return new Database(dbPath, { readonly: true });
+}
+
+/**
+ * Open a Repository from either an injected instance or a DB path.
+ *
+ * When `opts.repo` is a Repository instance, returns it directly (no DB opened).
+ * Otherwise opens a readonly SQLite DB and wraps it in SqliteRepository.
+ *
+ * @param {string} [customDbPath] - Path to graph.db (ignored when opts.repo is set)
+ * @param {object} [opts]
+ * @param {Repository} [opts.repo] - Pre-built Repository to use instead of SQLite
+ * @returns {{ repo: Repository, close(): void }}
+ */
+export function openRepo(customDbPath, opts = {}) {
+  if (opts.repo != null) {
+    if (!(opts.repo instanceof Repository)) {
+      throw new TypeError(
+        `openRepo: opts.repo must be a Repository instance, got ${Object.prototype.toString.call(opts.repo)}`,
+      );
+    }
+    return { repo: opts.repo, close() {} };
+  }
+  const db = openReadonlyOrFail(customDbPath);
+  return {
+    repo: new SqliteRepository(db),
+    close() {
+      db.close();
+    },
+  };
 }
