@@ -40,9 +40,9 @@ A single AI agent cannot hold an entire large codebase in context. The Titan Par
 Copy the skill directories into your project's `.claude/skills/` directory:
 
 ```bash
-# From your project root
+# From your project root (assuming codegraph is installed)
 mkdir -p .claude/skills
-cp -r titan-recon titan-gauntlet titan-sync titan-gate titan-reset .claude/skills/
+cp -r node_modules/@optave/codegraph/docs/examples/claude-code-skills/titan-* .claude/skills/
 ```
 
 Then install codegraph if you haven't:
