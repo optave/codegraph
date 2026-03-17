@@ -76,14 +76,14 @@ export function rolesData(customDbPath, opts = {}) {
  * if test-file edges were excluded.
  */
 function _findTestOnlyCalledIds(db) {
-  const hasTestNodes = db
-    .prepare(
-      `SELECT 1 FROM nodes WHERE file LIKE '%.test.%' OR file LIKE '%.spec.%' OR file LIKE '%__tests__%' LIMIT 1`,
-    )
-    .get();
+  // Check whether any test-file nodes exist in the graph at all.
+  // If the graph was built with -T (excluding test files), there will be
+  // no test callers and the query below would silently return nothing.
+  const files = db.prepare(`SELECT DISTINCT file FROM nodes WHERE kind = 'file'`).all();
+  const hasTestNodes = files.some((r) => isTestFile(r.file));
   if (!hasTestNodes) {
     warn(
-      'No test-file nodes in the graph — cannot determine test-only callers. Rebuild without -T to include test files.',
+      'No test file nodes found in the graph — run "codegraph build" without -T to enable test-only detection',
     );
     return new Set();
   }
