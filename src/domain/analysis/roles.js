@@ -1,4 +1,5 @@
 import { openReadonlyOrFail } from '../../db/index.js';
+import { warn } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
@@ -75,6 +76,18 @@ export function rolesData(customDbPath, opts = {}) {
  * if test-file edges were excluded.
  */
 function _findTestOnlyCalledIds(db) {
+  // Check whether any test-file nodes exist in the graph at all.
+  // If the graph was built with -T (excluding test files), there will be
+  // no test callers and the query below would silently return nothing.
+  const files = db.prepare(`SELECT DISTINCT file FROM nodes WHERE kind = 'file'`).all();
+  const hasTestNodes = files.some((r) => isTestFile(r.file));
+  if (!hasTestNodes) {
+    warn(
+      'No test file nodes found in the graph — run "codegraph build" without -T to enable test-only detection',
+    );
+    return new Set();
+  }
+
   // Get all non-test symbols that have at least one caller
   const rows = db
     .prepare(
