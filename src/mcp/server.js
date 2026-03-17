@@ -12,15 +12,6 @@ import { MCP_MAX_LIMIT } from '../shared/paginate.js';
 import { buildToolList } from './tool-registry.js';
 import { TOOL_HANDLERS } from './tools/index.js';
 
-/**
- * Start the MCP server.
- * This function requires @modelcontextprotocol/sdk to be installed.
- *
- * @param {string} [customDbPath] - Path to a specific graph.db
- * @param {object} [options]
- * @param {boolean} [options.multiRepo] - Enable multi-repo access (default: false)
- * @param {string[]} [options.allowedRepos] - Restrict access to these repo names only
- */
 async function loadMCPSdk() {
   try {
     const sdk = await import('@modelcontextprotocol/sdk/server/index.js');
@@ -87,6 +78,15 @@ function validateMultiRepoAccess(multiRepo, name, args) {
   }
 }
 
+/**
+ * Start the MCP server.
+ * This function requires @modelcontextprotocol/sdk to be installed.
+ *
+ * @param {string} [customDbPath] - Path to a specific graph.db
+ * @param {object} [options]
+ * @param {boolean} [options.multiRepo] - Enable multi-repo access (default: false)
+ * @param {string[]} [options.allowedRepos] - Restrict access to these repo names only
+ */
 export async function startMCPServer(customDbPath, options = {}) {
   const { allowedRepos } = options;
   const multiRepo = options.multiRepo || !!allowedRepos;
