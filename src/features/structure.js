@@ -5,6 +5,263 @@ import { isTestFile } from '../infrastructure/test-filter.js';
 import { normalizePath } from '../shared/constants.js';
 import { paginateResult } from '../shared/paginate.js';
 
+// ─── Build-time helpers ───────────────────────────────────────────────
+
+function getAncestorDirs(filePaths) {
+  const dirs = new Set();
+  for (const f of filePaths) {
+    let d = normalizePath(path.dirname(f));
+    while (d && d !== '.') {
+      dirs.add(d);
+      d = normalizePath(path.dirname(d));
+    }
+  }
+  return dirs;
+}
+
+function cleanupPreviousData(db, getNodeIdStmt, isIncremental, changedFiles) {
+  if (isIncremental) {
+    const affectedDirs = getAncestorDirs(changedFiles);
+    const deleteContainsForDir = db.prepare(
+      "DELETE FROM edges WHERE kind = 'contains' AND source_id IN (SELECT id FROM nodes WHERE name = ? AND kind = 'directory')",
+    );
+    const deleteMetricForNode = db.prepare('DELETE FROM node_metrics WHERE node_id = ?');
+    db.transaction(() => {
+      for (const dir of affectedDirs) {
+        deleteContainsForDir.run(dir);
+      }
+      for (const f of changedFiles) {
+        const fileRow = getNodeIdStmt.get(f, 'file', f, 0);
+        if (fileRow) deleteMetricForNode.run(fileRow.id);
+      }
+      for (const dir of affectedDirs) {
+        const dirRow = getNodeIdStmt.get(dir, 'directory', dir, 0);
+        if (dirRow) deleteMetricForNode.run(dirRow.id);
+      }
+    })();
+  } else {
+    db.exec(`
+      DELETE FROM edges WHERE kind = 'contains'
+        AND source_id IN (SELECT id FROM nodes WHERE kind = 'directory');
+      DELETE FROM node_metrics;
+      DELETE FROM nodes WHERE kind = 'directory';
+    `);
+  }
+}
+
+function collectAllDirectories(directories, fileSymbols) {
+  const allDirs = new Set();
+  for (const dir of directories) {
+    let d = dir;
+    while (d && d !== '.') {
+      allDirs.add(d);
+      d = normalizePath(path.dirname(d));
+    }
+  }
+  for (const relPath of fileSymbols.keys()) {
+    let d = normalizePath(path.dirname(relPath));
+    while (d && d !== '.') {
+      allDirs.add(d);
+      d = normalizePath(path.dirname(d));
+    }
+  }
+  return allDirs;
+}
+
+function insertContainsEdges(db, insertEdge, getNodeIdStmt, fileSymbols, allDirs, changedFiles) {
+  const isIncremental = changedFiles != null && changedFiles.length > 0;
+  const affectedDirs = isIncremental ? getAncestorDirs(changedFiles) : null;
+
+  db.transaction(() => {
+    for (const relPath of fileSymbols.keys()) {
+      const dir = normalizePath(path.dirname(relPath));
+      if (!dir || dir === '.') continue;
+      if (affectedDirs && !affectedDirs.has(dir)) continue;
+      const dirRow = getNodeIdStmt.get(dir, 'directory', dir, 0);
+      const fileRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
+      if (dirRow && fileRow) {
+        insertEdge.run(dirRow.id, fileRow.id, 'contains', 1.0, 0);
+      }
+    }
+    for (const dir of allDirs) {
+      const parent = normalizePath(path.dirname(dir));
+      if (!parent || parent === '.' || parent === dir) continue;
+      if (affectedDirs && !affectedDirs.has(parent)) continue;
+      const parentRow = getNodeIdStmt.get(parent, 'directory', parent, 0);
+      const childRow = getNodeIdStmt.get(dir, 'directory', dir, 0);
+      if (parentRow && childRow) {
+        insertEdge.run(parentRow.id, childRow.id, 'contains', 1.0, 0);
+      }
+    }
+  })();
+}
+
+function computeImportEdgeMaps(db) {
+  const fanInMap = new Map();
+  const fanOutMap = new Map();
+  const importEdges = db
+    .prepare(`
+      SELECT n1.file AS source_file, n2.file AS target_file
+      FROM edges e
+      JOIN nodes n1 ON e.source_id = n1.id
+      JOIN nodes n2 ON e.target_id = n2.id
+      WHERE e.kind IN ('imports', 'imports-type')
+        AND n1.file != n2.file
+    `)
+    .all();
+
+  for (const { source_file, target_file } of importEdges) {
+    fanOutMap.set(source_file, (fanOutMap.get(source_file) || 0) + 1);
+    fanInMap.set(target_file, (fanInMap.get(target_file) || 0) + 1);
+  }
+  return { fanInMap, fanOutMap, importEdges };
+}
+
+function computeFileMetrics(
+  db,
+  upsertMetric,
+  getNodeIdStmt,
+  fileSymbols,
+  lineCountMap,
+  fanInMap,
+  fanOutMap,
+) {
+  db.transaction(() => {
+    for (const [relPath, symbols] of fileSymbols) {
+      const fileRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
+      if (!fileRow) continue;
+
+      const lineCount = lineCountMap.get(relPath) || 0;
+      const seen = new Set();
+      let symbolCount = 0;
+      for (const d of symbols.definitions) {
+        const key = `${d.name}|${d.kind}|${d.line}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          symbolCount++;
+        }
+      }
+      const importCount = symbols.imports.length;
+      const exportCount = symbols.exports.length;
+      const fanIn = fanInMap.get(relPath) || 0;
+      const fanOut = fanOutMap.get(relPath) || 0;
+
+      upsertMetric.run(
+        fileRow.id,
+        lineCount,
+        symbolCount,
+        importCount,
+        exportCount,
+        fanIn,
+        fanOut,
+        null,
+        null,
+      );
+    }
+  })();
+}
+
+function computeDirectoryMetrics(
+  db,
+  upsertMetric,
+  getNodeIdStmt,
+  fileSymbols,
+  allDirs,
+  importEdges,
+) {
+  const dirFiles = new Map();
+  for (const dir of allDirs) {
+    dirFiles.set(dir, []);
+  }
+  for (const relPath of fileSymbols.keys()) {
+    let d = normalizePath(path.dirname(relPath));
+    while (d && d !== '.') {
+      if (dirFiles.has(d)) {
+        dirFiles.get(d).push(relPath);
+      }
+      d = normalizePath(path.dirname(d));
+    }
+  }
+
+  const fileToAncestorDirs = new Map();
+  for (const [dir, files] of dirFiles) {
+    for (const f of files) {
+      if (!fileToAncestorDirs.has(f)) fileToAncestorDirs.set(f, new Set());
+      fileToAncestorDirs.get(f).add(dir);
+    }
+  }
+
+  const dirEdgeCounts = new Map();
+  for (const dir of allDirs) {
+    dirEdgeCounts.set(dir, { intra: 0, fanIn: 0, fanOut: 0 });
+  }
+  for (const { source_file, target_file } of importEdges) {
+    const srcDirs = fileToAncestorDirs.get(source_file);
+    const tgtDirs = fileToAncestorDirs.get(target_file);
+    if (!srcDirs && !tgtDirs) continue;
+
+    if (srcDirs) {
+      for (const dir of srcDirs) {
+        const counts = dirEdgeCounts.get(dir);
+        if (!counts) continue;
+        if (tgtDirs?.has(dir)) {
+          counts.intra++;
+        } else {
+          counts.fanOut++;
+        }
+      }
+    }
+    if (tgtDirs) {
+      for (const dir of tgtDirs) {
+        if (srcDirs?.has(dir)) continue;
+        const counts = dirEdgeCounts.get(dir);
+        if (!counts) continue;
+        counts.fanIn++;
+      }
+    }
+  }
+
+  db.transaction(() => {
+    for (const [dir, files] of dirFiles) {
+      const dirRow = getNodeIdStmt.get(dir, 'directory', dir, 0);
+      if (!dirRow) continue;
+
+      const fileCount = files.length;
+      let symbolCount = 0;
+
+      for (const f of files) {
+        const sym = fileSymbols.get(f);
+        if (sym) {
+          const seen = new Set();
+          for (const d of sym.definitions) {
+            const key = `${d.name}|${d.kind}|${d.line}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              symbolCount++;
+            }
+          }
+        }
+      }
+
+      const counts = dirEdgeCounts.get(dir) || { intra: 0, fanIn: 0, fanOut: 0 };
+      const totalEdges = counts.intra + counts.fanIn + counts.fanOut;
+      const cohesion = totalEdges > 0 ? counts.intra / totalEdges : null;
+
+      upsertMetric.run(
+        dirRow.id,
+        null,
+        symbolCount,
+        null,
+        null,
+        counts.fanIn,
+        counts.fanOut,
+        cohesion,
+        fileCount,
+      );
+    }
+  })();
+}
+
 // ─── Build-time: insert directory nodes, contains edges, and metrics ────
 
 /**
@@ -38,276 +295,33 @@ export function buildStructure(db, fileSymbols, _rootDir, lineCountMap, director
 
   const isIncremental = changedFiles != null && changedFiles.length > 0;
 
-  if (isIncremental) {
-    // Incremental: only clean up data for changed files and their ancestor directories
-    const affectedDirs = new Set();
-    for (const f of changedFiles) {
-      let d = normalizePath(path.dirname(f));
-      while (d && d !== '.') {
-        affectedDirs.add(d);
-        d = normalizePath(path.dirname(d));
-      }
-    }
-    const deleteContainsForDir = db.prepare(
-      "DELETE FROM edges WHERE kind = 'contains' AND source_id IN (SELECT id FROM nodes WHERE name = ? AND kind = 'directory')",
-    );
-    const deleteMetricForNode = db.prepare('DELETE FROM node_metrics WHERE node_id = ?');
-    db.transaction(() => {
-      // Delete contains edges only from affected directories
-      for (const dir of affectedDirs) {
-        deleteContainsForDir.run(dir);
-      }
-      // Delete metrics for changed files
-      for (const f of changedFiles) {
-        const fileRow = getNodeIdStmt.get(f, 'file', f, 0);
-        if (fileRow) deleteMetricForNode.run(fileRow.id);
-      }
-      // Delete metrics for affected directories
-      for (const dir of affectedDirs) {
-        const dirRow = getNodeIdStmt.get(dir, 'directory', dir, 0);
-        if (dirRow) deleteMetricForNode.run(dirRow.id);
-      }
-    })();
-  } else {
-    // Full rebuild: clean previous directory nodes/edges (idempotent)
-    // Scope contains-edge delete to directory-sourced edges only,
-    // preserving symbol-level contains edges (file→def, class→method, etc.)
-    db.exec(`
-      DELETE FROM edges WHERE kind = 'contains'
-        AND source_id IN (SELECT id FROM nodes WHERE kind = 'directory');
-      DELETE FROM node_metrics;
-      DELETE FROM nodes WHERE kind = 'directory';
-    `);
-  }
+  cleanupPreviousData(db, getNodeIdStmt, isIncremental, changedFiles);
 
-  // Step 1: Ensure all directories are represented (including intermediate parents)
-  const allDirs = new Set();
-  for (const dir of directories) {
-    let d = dir;
-    while (d && d !== '.') {
-      allDirs.add(d);
-      d = normalizePath(path.dirname(d));
-    }
-  }
-  // Also add dirs derived from file paths
-  for (const relPath of fileSymbols.keys()) {
-    let d = normalizePath(path.dirname(relPath));
-    while (d && d !== '.') {
-      allDirs.add(d);
-      d = normalizePath(path.dirname(d));
-    }
-  }
+  const allDirs = collectAllDirectories(directories, fileSymbols);
 
-  // Step 2: Insert directory nodes (INSERT OR IGNORE — safe for incremental)
-  const insertDirs = db.transaction(() => {
+  db.transaction(() => {
     for (const dir of allDirs) {
       insertNode.run(dir, 'directory', dir, 0, null);
     }
-  });
-  insertDirs();
+  })();
 
-  // Step 3: Insert 'contains' edges (dir → file, dir → subdirectory)
-  // On incremental, only re-insert for affected directories (others are intact)
-  const affectedDirs = isIncremental
-    ? (() => {
-        const dirs = new Set();
-        for (const f of changedFiles) {
-          let d = normalizePath(path.dirname(f));
-          while (d && d !== '.') {
-            dirs.add(d);
-            d = normalizePath(path.dirname(d));
-          }
-        }
-        return dirs;
-      })()
-    : null;
+  insertContainsEdges(db, insertEdge, getNodeIdStmt, fileSymbols, allDirs, changedFiles);
 
-  const insertContains = db.transaction(() => {
-    // dir → file
-    for (const relPath of fileSymbols.keys()) {
-      const dir = normalizePath(path.dirname(relPath));
-      if (!dir || dir === '.') continue;
-      // On incremental, skip dirs whose contains edges are intact
-      if (affectedDirs && !affectedDirs.has(dir)) continue;
-      const dirRow = getNodeIdStmt.get(dir, 'directory', dir, 0);
-      const fileRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
-      if (dirRow && fileRow) {
-        insertEdge.run(dirRow.id, fileRow.id, 'contains', 1.0, 0);
-      }
-    }
-    // dir → subdirectory
-    for (const dir of allDirs) {
-      const parent = normalizePath(path.dirname(dir));
-      if (!parent || parent === '.' || parent === dir) continue;
-      // On incremental, skip parent dirs whose contains edges are intact
-      if (affectedDirs && !affectedDirs.has(parent)) continue;
-      const parentRow = getNodeIdStmt.get(parent, 'directory', parent, 0);
-      const childRow = getNodeIdStmt.get(dir, 'directory', dir, 0);
-      if (parentRow && childRow) {
-        insertEdge.run(parentRow.id, childRow.id, 'contains', 1.0, 0);
-      }
-    }
-  });
-  insertContains();
+  const { fanInMap, fanOutMap, importEdges } = computeImportEdgeMaps(db);
 
-  // Step 4: Compute per-file metrics
-  // Pre-compute fan-in/fan-out per file from import edges
-  const fanInMap = new Map();
-  const fanOutMap = new Map();
-  const importEdges = db
-    .prepare(`
-      SELECT n1.file AS source_file, n2.file AS target_file
-      FROM edges e
-      JOIN nodes n1 ON e.source_id = n1.id
-      JOIN nodes n2 ON e.target_id = n2.id
-      WHERE e.kind IN ('imports', 'imports-type')
-        AND n1.file != n2.file
-    `)
-    .all();
+  computeFileMetrics(
+    db,
+    upsertMetric,
+    getNodeIdStmt,
+    fileSymbols,
+    lineCountMap,
+    fanInMap,
+    fanOutMap,
+  );
 
-  for (const { source_file, target_file } of importEdges) {
-    fanOutMap.set(source_file, (fanOutMap.get(source_file) || 0) + 1);
-    fanInMap.set(target_file, (fanInMap.get(target_file) || 0) + 1);
-  }
+  computeDirectoryMetrics(db, upsertMetric, getNodeIdStmt, fileSymbols, allDirs, importEdges);
 
-  const computeFileMetrics = db.transaction(() => {
-    for (const [relPath, symbols] of fileSymbols) {
-      const fileRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
-      if (!fileRow) continue;
-
-      const lineCount = lineCountMap.get(relPath) || 0;
-      // Deduplicate definitions by name+kind+line
-      const seen = new Set();
-      let symbolCount = 0;
-      for (const d of symbols.definitions) {
-        const key = `${d.name}|${d.kind}|${d.line}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          symbolCount++;
-        }
-      }
-      const importCount = symbols.imports.length;
-      const exportCount = symbols.exports.length;
-      const fanIn = fanInMap.get(relPath) || 0;
-      const fanOut = fanOutMap.get(relPath) || 0;
-
-      upsertMetric.run(
-        fileRow.id,
-        lineCount,
-        symbolCount,
-        importCount,
-        exportCount,
-        fanIn,
-        fanOut,
-        null,
-        null,
-      );
-    }
-  });
-  computeFileMetrics();
-
-  // Step 5: Compute per-directory metrics
-  // Build a map of dir → descendant files
-  const dirFiles = new Map();
-  for (const dir of allDirs) {
-    dirFiles.set(dir, []);
-  }
-  for (const relPath of fileSymbols.keys()) {
-    let d = normalizePath(path.dirname(relPath));
-    while (d && d !== '.') {
-      if (dirFiles.has(d)) {
-        dirFiles.get(d).push(relPath);
-      }
-      d = normalizePath(path.dirname(d));
-    }
-  }
-
-  // Build reverse index: file → set of ancestor directories (O(files × depth))
-  const fileToAncestorDirs = new Map();
-  for (const [dir, files] of dirFiles) {
-    for (const f of files) {
-      if (!fileToAncestorDirs.has(f)) fileToAncestorDirs.set(f, new Set());
-      fileToAncestorDirs.get(f).add(dir);
-    }
-  }
-
-  // Single O(E) pass: pre-aggregate edge counts per directory
-  const dirEdgeCounts = new Map();
-  for (const dir of allDirs) {
-    dirEdgeCounts.set(dir, { intra: 0, fanIn: 0, fanOut: 0 });
-  }
-  for (const { source_file, target_file } of importEdges) {
-    const srcDirs = fileToAncestorDirs.get(source_file);
-    const tgtDirs = fileToAncestorDirs.get(target_file);
-    if (!srcDirs && !tgtDirs) continue;
-
-    // For each directory that contains the source file
-    if (srcDirs) {
-      for (const dir of srcDirs) {
-        const counts = dirEdgeCounts.get(dir);
-        if (!counts) continue;
-        if (tgtDirs?.has(dir)) {
-          counts.intra++;
-        } else {
-          counts.fanOut++;
-        }
-      }
-    }
-    // For each directory that contains the target but NOT the source
-    if (tgtDirs) {
-      for (const dir of tgtDirs) {
-        if (srcDirs?.has(dir)) continue; // already counted as intra
-        const counts = dirEdgeCounts.get(dir);
-        if (!counts) continue;
-        counts.fanIn++;
-      }
-    }
-  }
-
-  const computeDirMetrics = db.transaction(() => {
-    for (const [dir, files] of dirFiles) {
-      const dirRow = getNodeIdStmt.get(dir, 'directory', dir, 0);
-      if (!dirRow) continue;
-
-      const fileCount = files.length;
-      let symbolCount = 0;
-
-      for (const f of files) {
-        const sym = fileSymbols.get(f);
-        if (sym) {
-          const seen = new Set();
-          for (const d of sym.definitions) {
-            const key = `${d.name}|${d.kind}|${d.line}`;
-            if (!seen.has(key)) {
-              seen.add(key);
-              symbolCount++;
-            }
-          }
-        }
-      }
-
-      // O(1) lookup from pre-aggregated edge counts
-      const counts = dirEdgeCounts.get(dir) || { intra: 0, fanIn: 0, fanOut: 0 };
-      const totalEdges = counts.intra + counts.fanIn + counts.fanOut;
-      const cohesion = totalEdges > 0 ? counts.intra / totalEdges : null;
-
-      upsertMetric.run(
-        dirRow.id,
-        null,
-        symbolCount,
-        null,
-        null,
-        counts.fanIn,
-        counts.fanOut,
-        cohesion,
-        fileCount,
-      );
-    }
-  });
-  computeDirMetrics();
-
-  const dirCount = allDirs.size;
-  debug(`Structure: ${dirCount} directories, ${fileSymbols.size} files with metrics`);
+  debug(`Structure: ${allDirs.size} directories, ${fileSymbols.size} files with metrics`);
 }
 
 // ─── Node role classification ─────────────────────────────────────────
