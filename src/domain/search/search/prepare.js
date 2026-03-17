@@ -64,7 +64,7 @@ export function prepareSearch(customDbPath, opts = {}) {
     }
 
     let rows = db.prepare(sql).all(...params);
-    rows = applyFilters(rows, { ...opts, isGlob });
+    rows = applyFilters(rows, opts);
 
     return { db, rows, modelKey, storedDim };
   } catch (err) {

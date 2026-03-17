@@ -60,7 +60,7 @@ export function ftsSearchData(query, customDbPath, opts = {}) {
       return { results: [] };
     }
 
-    rows = applyFilters(rows, { ...opts, isGlob });
+    rows = applyFilters(rows, opts);
 
     const hc = new Map();
     const results = rows.slice(0, limit).map((row) => ({
