@@ -210,7 +210,7 @@ export const DEFAULTS = {
 
 **Files to change:**
 - `src/domain/search/search/hybrid.js` → read `config.search.rrfK`, `config.search.topK`
-- `src/domain/search/search/semantic.js` → read `config.search.defaultMinScore` and `config.search.similarityWarnThreshold` (C5, replaces hardcoded `SIMILARITY_WARN_THRESHOLD`)
+- `src/domain/search/search/semantic.js` → read `config.search.defaultMinScore`, `config.search.topK` (C3), and `config.search.similarityWarnThreshold` (C5, replaces hardcoded `SIMILARITY_WARN_THRESHOLD`)
 - `src/domain/search/models.js` → batch sizes stay hardcoded (moved to Category F — model-specific implementation details)
 
 **Note:** `config.search` already exists with `defaultMinScore`, `rrfK`, `topK`. The modules just don't read from it — they duplicate the values. This phase wires the existing config keys.
@@ -232,7 +232,7 @@ export const DEFAULTS = {
 4. Add a JSON Schema file (`.codegraphrc.schema.json`) for IDE autocomplete
 5. Add a **Configuration** section to `CLAUDE.md` that documents:
    - The `.codegraphrc.json` config file and its location
-   - The full list of configurable sections (`analysis`, `community`, `risk`, `display`, `mcp`, `search`, `check`, `coChange`, `manifesto`)
+   - The full list of configurable sections (`analysis`, `community`, `structure`, `risk`, `display`, `mcp`, `search`, `check`, `coChange`, `manifesto`)
    - Key tunable parameters and their defaults (depth limits, risk weights, thresholds)
    - How `mergeConfig` works (partial overrides deep-merge with defaults)
    - Env var overrides (`CODEGRAPH_LLM_*`)
