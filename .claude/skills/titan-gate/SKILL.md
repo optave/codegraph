@@ -17,25 +17,82 @@ Your goal: validate staged changes against codegraph quality checks AND the proj
 
 ---
 
-## Step 0 — Pre-flight
+## Step 0 — Pre-flight: find Titan state and validate
 
-1. **Worktree check:**
+1. **Locate the Titan session (if not already in one).** If `.codegraph/titan/titan-state.json` does not exist locally, search for it:
+
+   ```bash
+   git worktree list
+   ```
+
+   For each worktree, check:
+   ```bash
+   ls <worktree-path>/.codegraph/titan/titan-state.json 2>/dev/null
+   ```
+
+   Also check branches:
+   ```bash
+   git branch -a --list '*titan*'
+   ```
+
+   **Decision logic:**
+   - **Found a worktree/branch with Titan state:** Merge its branch into your worktree to pick up the artifacts: `git merge <titan-branch> --no-edit`
+   - **Found multiple:** Pick the one with the most recent `lastUpdated` and `currentPhase` closest to `"sync"` (GATE runs after SYNC). If ambiguous, ask the user.
+   - **Found nothing:** That's fine — GATE can run standalone. Proceed with defaults.
+
+2. **Worktree check:**
    ```bash
    git rev-parse --show-toplevel && git worktree list
    ```
    If not in a worktree, stop: "Run `/worktree` first."
 
-2. **Staged changes?**
+3. **Staged changes?**
    ```bash
    git diff --cached --name-only
    ```
    If nothing staged, stop: "Nothing staged. Use `git add` first."
 
-3. **Load state (optional).** Read `.codegraph/titan/titan-state.json` if it exists — use for thresholds, baseline comparison, and sync alignment. If missing or corrupt, proceed with defaults.
+4. **Load state (optional).** Read `.codegraph/titan/titan-state.json` if it exists — use for thresholds, baseline comparison, and sync alignment. If missing or corrupt, proceed with defaults.
 
 ---
 
-## Step 1 — Structural validation (codegraph)
+## Step 1 — Drift detection: has main moved since last gate run?
+
+GATE may run many times across a long pipeline. Check for upstream changes each time.
+
+1. **Compare main SHA:**
+   ```bash
+   git rev-parse origin/main
+   ```
+   Compare against `titan-state.json → mainSHA` (if state exists). If identical, skip to Step 1.
+
+2. **If main has advanced**, find what changed:
+   ```bash
+   git diff --name-only <mainSHA>..origin/main
+   ```
+
+3. **Cross-reference with staged files:**
+   - Do any staged files also appear in the main diff? If yes, there may be **merge conflicts waiting** after the commit.
+   - Did main change files that are callers/callees of staged changes? Use diff-impact to check.
+
+4. **Classify staleness:**
+
+   | Level | Condition | Action |
+   |-------|-----------|--------|
+   | **none** | main unchanged | Continue normally |
+   | **low** | Main changed but no overlap with staged files or their callers | Continue — note drift |
+   | **moderate** | Main changed files that are callers/callees of staged changes | **Warn:** "Main has changes that interact with your staged files. Consider merging main first: `git merge origin/main`" |
+   | **high** | Main changed the same files you're staging | **Warn strongly:** "Main modified files you're about to commit. Merge main first to avoid conflicts downstream." |
+
+5. **Write/update drift report** (same schema, `"detectedBy": "gate"`).
+
+6. **Update state:** Set `titan-state.json → mainSHA` to current `origin/main`.
+
+7. **If `sync.json` exists:** Check if main's changes invalidate any execution phases. If a phase's targets were changed on main, add a drift warning to the gate-log entry.
+
+---
+
+## Step 2 — Structural validation (codegraph)
 
 Run the full change validation predicates in one call:
 
@@ -55,7 +112,7 @@ Extract: changed functions (count + names), direct callers affected, transitive 
 
 ---
 
-## Step 2 — Cycle check
+## Step 3 — Cycle check
 
 ```bash
 codegraph cycles --json
@@ -67,7 +124,7 @@ Compare against RECON baseline (if `titan-state.json` exists):
 
 ---
 
-## Step 3 — Complexity delta
+## Step 4 — Complexity delta
 
 For each changed file (from diff-impact):
 
@@ -84,7 +141,7 @@ Check all metrics against thresholds:
 
 ---
 
-## Step 4 — Lint, build, and test
+## Step 5 — Lint, build, and test
 
 Detect project tools from `package.json`:
 
@@ -111,7 +168,7 @@ If any fail → overall verdict is FAIL → proceed to auto-rollback.
 
 ---
 
-## Step 5 — Branch structural diff
+## Step 6 — Branch structural diff
 
 ```bash
 codegraph branch-compare main HEAD -T --json
@@ -121,7 +178,7 @@ Cumulative structural impact of all changes on this branch (broader than `diff-i
 
 ---
 
-## Step 6 — Sync plan alignment
+## Step 7 — Sync plan alignment
 
 If `.codegraph/titan/sync.json` exists:
 - Are changed files part of the current execution phase?
@@ -132,7 +189,7 @@ Advisory — prevents jumping ahead and creating conflicts.
 
 ---
 
-## Step 7 — Blast radius check
+## Step 8 — Blast radius check
 
 From diff-impact results:
 - Transitive blast radius > 30 → FAIL
@@ -141,7 +198,7 @@ From diff-impact results:
 
 ---
 
-## Step 8 — Verdict and auto-rollback
+## Step 9 — Verdict and auto-rollback
 
 Aggregate all checks:
 
@@ -171,7 +228,7 @@ Aggregate all checks:
 
 > "GATE FAIL: [reason]. Graph restored, changes unstaged but preserved. Fix and re-stage."
 
-For structural-only failures (Steps 1-3, 5-7), do NOT auto-rollback — report and let user decide.
+For structural-only failures (Steps 2-4, 6-8), do NOT auto-rollback — report and let user decide.
 
 ### Snapshot cleanup on pipeline completion
 
@@ -186,7 +243,7 @@ codegraph snapshot delete titan-batch-<N>   # if any remain
 
 ---
 
-## Step 9 — Update state machine
+## Step 10 — Update state machine
 
 Append to `.codegraph/titan/gate-log.ndjson`:
 
@@ -215,7 +272,7 @@ Update `titan-state.json` (if exists): increment `progress.fixed`, update `fileA
 
 ---
 
-## Step 10 — Report to user
+## Step 11 — Report to user
 
 **PASS:**
 ```
@@ -246,6 +303,25 @@ GATE FAIL — changes unstaged, graph restored
 
 ---
 
+## Issue Tracking
+
+During validation, if you encounter any of the following, append a JSON line to `.codegraph/titan/issues.ndjson`:
+
+- **Codegraph bugs:** wrong diff-impact, false cycle detection, incorrect complexity after changes
+- **Tooling issues:** check command failures, snapshot errors, build tool problems
+- **Process suggestions:** threshold adjustments, missing checks, workflow improvements
+- **Codebase observations:** test gaps, flaky tests, build warnings worth noting
+
+Format (one JSON object per line, append-only):
+
+```json
+{"phase": "gate", "timestamp": "<ISO 8601>", "severity": "bug|limitation|suggestion", "category": "codegraph|tooling|process|codebase", "description": "<what happened>", "context": "<command, check, or file involved>"}
+```
+
+Log issues as they happen. The `/titan-close` phase compiles these into the final report.
+
+---
+
 ## Rules
 
 - **Fast execution.** Only staged changes, not full codebase.
@@ -256,6 +332,7 @@ GATE FAIL — changes unstaged, graph restored
 - **Force mode** downgrades WARN → PASS but cannot override FAIL.
 - **Run the project's own lint/build/test** — codegraph checks are necessary but not sufficient.
 - **Use the correct check flags:** `--cycles`, `--blast-radius <n>`, `--boundaries`.
+- If any check produces unexpected output, **log it to `issues.ndjson`** before continuing.
 
 ## Self-Improvement
 

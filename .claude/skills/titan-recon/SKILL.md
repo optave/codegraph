@@ -29,6 +29,12 @@ Your goal: map the dependency graph, identify structural hotspots, name logical 
    ```
    If there are merge conflicts, stop and ask the user to resolve them.
 
+3. **Record the main anchor SHA:**
+   ```bash
+   git rev-parse origin/main
+   ```
+   Store this as `mainSHA` in `titan-state.json`. All downstream phases use this to detect codebase drift — if main advances between phases, the drift detection mechanism (Step 0.5 in each phase) compares against this anchor to determine what's stale and what needs reassessment.
+
 ---
 
 ## Step 1 — Build the graph
@@ -215,6 +221,7 @@ mkdir -p .codegraph/titan
   "lastUpdated": "<ISO 8601>",
   "target": "<resolved path>",
   "currentPhase": "recon",
+  "mainSHA": "<git rev-parse origin/main>",
   "snapshots": {
     "baseline": "titan-baseline",
     "lastBatch": null
@@ -303,12 +310,31 @@ Print a concise summary:
 
 ---
 
+## Issue Tracking
+
+Throughout this phase, if you encounter any of the following, append a JSON line to `.codegraph/titan/issues.ndjson`:
+
+- **Codegraph bugs:** wrong output, crashes, missing features, unexpected behavior
+- **Tooling issues:** problems with commands, WASM failures, embedding errors
+- **Process suggestions:** ideas for improving the Titan workflow
+- **Codebase observations:** structural concerns beyond what metrics capture
+
+Format (one JSON object per line, append-only):
+
+```json
+{"phase": "recon", "timestamp": "<ISO 8601>", "severity": "bug|limitation|suggestion", "category": "codegraph|tooling|process|codebase", "description": "<what happened>", "context": "<command that triggered it, file involved, or other detail>"}
+```
+
+Log issues as they happen — don't batch them. The `/titan-close` phase compiles these into the final report.
+
+---
+
 ## Rules
 
 - **Always use `--json` and `-T`** on codegraph commands.
 - **Never paste raw JSON** into your response — parse and extract.
 - **Write artifacts before reporting.**
-- If any command fails, note it and continue with partial data.
+- If any command fails, **log it to `issues.ndjson`** and continue with partial data.
 - **Domain naming** uses the codebase's own vocabulary.
 
 ## Self-Improvement

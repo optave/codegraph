@@ -17,33 +17,126 @@ Your goal: audit every high-priority target from the RECON phase against 4 pilla
 
 ---
 
-## Step 0 — Pre-flight
+## Step 0 — Pre-flight: find or create the Titan worktree
 
-1. **Worktree check:**
+1. **Locate the Titan session.** A prior phase (RECON) may have run in a different worktree or branch. Search for it:
+
+   ```bash
+   git worktree list
+   ```
+
+   For each worktree, check if it contains Titan artifacts:
+   ```bash
+   ls <worktree-path>/.codegraph/titan/titan-state.json 2>/dev/null
+   ```
+
+   Also check branches for titan state:
+   ```bash
+   git branch -a --list '*titan*'
+   ```
+
+   **Decision logic:**
+   - **Found exactly one worktree with `titan-state.json`:** Read the state. If `currentPhase` is `"recon"` (RECON completed), this is the right one. Switch to it or merge its branch into your worktree.
+   - **Found a worktree but `currentPhase` is NOT `"recon"`:** This worktree may be mid-phase or from a different pipeline run. Keep searching other worktrees/branches. If no better match, ask the user: "Found Titan state at `<path>` but phase is `<phase>`. Is this the session to continue?"
+   - **Found multiple worktrees with `titan-state.json`:** List them with their `currentPhase` and `lastUpdated`. Ask the user: "Multiple Titan sessions found. Which one should GAUNTLET continue?"
+   - **Found a branch (not worktree) with titan artifacts:** Merge it into your current worktree:
+     ```bash
+     git merge <titan-branch> --no-edit
+     ```
+   - **Found nothing:** Warn: "No RECON artifacts found in any worktree or branch. Run `/titan-recon` first for best results." Fall back: `codegraph triage -T --limit 50 --json` for a minimal queue.
+
+2. **Ensure worktree isolation:**
    ```bash
    git rev-parse --show-toplevel && git worktree list
    ```
-   If not in a worktree, stop: "Run `/worktree` first."
+   If you are NOT in a worktree, stop: "Run `/worktree` first."
 
-2. **Sync with main:**
+3. **Sync with main:**
    ```bash
    git fetch origin main && git merge origin/main --no-edit
    ```
    If there are merge conflicts, stop: "Merge conflict detected. Resolve conflicts and re-run `/titan-gauntlet`."
 
-3. **Load state.** Read `.codegraph/titan/titan-state.json`. If missing:
-   - Warn: "No RECON artifacts. Run `/titan-recon` first for best results."
-   - Fall back: `codegraph triage -T --limit 50 --json` for a minimal queue.
+4. **Load state.** Read `.codegraph/titan/titan-state.json`.
 
-4. **Load architecture.** Read `.codegraph/titan/GLOBAL_ARCH.md` for domain context.
+5. **Load architecture.** Read `.codegraph/titan/GLOBAL_ARCH.md` for domain context.
 
-5. **Resume logic.** If `titan-state.json` has completed batches, skip them. Start from the first `pending` batch.
+6. **Resume logic.** If `titan-state.json` has completed batches, skip them. Start from the first `pending` batch.
 
-6. **Validate state.** If `titan-state.json` fails to parse, stop: "State file corrupted. Run `/titan-reset` to start over, or `/titan-recon` to rebuild."
+7. **Validate state.** If `titan-state.json` fails to parse, stop: "State file corrupted. Run `/titan-reset` to start over, or `/titan-recon` to rebuild."
 
 ---
 
-## Step 1 — The Four Pillars
+## Step 1 — Drift detection: has main moved since the last phase?
+
+The codebase may have changed significantly since RECON ran. Detect this before auditing stale data.
+
+1. **Compare main SHA:**
+   ```bash
+   git rev-parse origin/main
+   ```
+   Compare against `titan-state.json → mainSHA`. If identical, skip to Step 1.
+
+2. **If main has advanced**, find what changed:
+   ```bash
+   git diff --name-only <mainSHA>..origin/main
+   ```
+
+3. **Cross-reference with Titan targets.** Check which changed files overlap with:
+   - Files in the priority queue (`titan-state.json → priorityQueue`)
+   - Files in pending batches (`titan-state.json → batches`)
+   - Hot files (`titan-state.json → hotFiles`)
+   - Core symbols (`titan-state.json → roles.coreCount` files)
+
+4. **Run structural diff** to detect architecture-level changes:
+   ```bash
+   codegraph diff-impact <mainSHA>..origin/main -T --json 2>/dev/null || echo "DIFF_UNAVAILABLE"
+   ```
+   If unavailable (e.g., old SHA not in graph), fall back to file-count heuristics.
+
+5. **Classify staleness:**
+
+   | Level | Condition | Action |
+   |-------|-----------|--------|
+   | **none** | main unchanged | Continue normally |
+   | **low** | main changed but <5 files, none in priority queue | Continue — note in issues.ndjson |
+   | **moderate** | Some overlap: changed files appear in priority queue or batches (<20% of batches affected) | Continue but **mark affected batches for re-audit** |
+   | **high** | >20% of batches affected OR core symbols changed | **Warn user:** "Significant changes on main since RECON. Recommend re-running affected batches or `/titan-recon`." |
+   | **critical** | New files in src/, deleted files that were in batches, or >50% of priority queue affected | **Stop and recommend:** "Main has diverged significantly. Run `/titan-recon` to rebuild the baseline." |
+
+6. **Write drift report** to `.codegraph/titan/drift-report.json`:
+
+   ```json
+   {
+     "timestamp": "<ISO 8601>",
+     "detectedBy": "gauntlet",
+     "mainAtLastPhase": "<stored SHA>",
+     "mainNow": "<current SHA>",
+     "commitsBehind": 0,
+     "changedFiles": ["<files changed on main>"],
+     "impactedTargets": ["<priority queue targets in changed files>"],
+     "impactedBatches": [1, 3],
+     "impactedDomains": ["<domains containing changed files>"],
+     "staleness": "none|low|moderate|high|critical",
+     "recommendation": "continue|reassess-targets|rerun-gauntlet|rerun-recon",
+     "reassessmentScope": {
+       "targets": ["<specific targets to re-audit>"],
+       "batches": [1, 3],
+       "files": ["<specific files to re-check>"],
+       "fullRecon": false
+     }
+   }
+   ```
+
+7. **Update state:** Set `titan-state.json → mainSHA` to current `origin/main` after merging.
+
+8. **If `moderate`:** Mark impacted batches as `"stale"` in `titan-state.json` (change status from `"completed"` to `"stale"` or from `"pending"` to `"pending-reassess"`). These get re-audited during the batch loop.
+
+9. **If re-running GAUNTLET** and a previous `drift-report.json` exists with `reassessmentScope`, **only re-audit the targets listed** — don't repeat the entire pipeline. Clear completed targets from the scope as you go.
+
+---
+
+## Step 2 — The Four Pillars
 
 Every file must be checked against all four pillars. A file **FAILS** if it has any fail-level violation.
 
@@ -208,11 +301,11 @@ Codegraph provides all the data needed for a verifiable audit — no need to man
 
 ---
 
-## Step 2 — Batch audit loop
+## Step 3 — Batch audit loop
 
 For each pending batch (from `titan-state.json`):
 
-### 2a. Save pre-batch snapshot
+### 3a. Save pre-batch snapshot
 ```bash
 codegraph snapshot save titan-batch-<N>
 ```
@@ -221,7 +314,7 @@ Delete the previous batch snapshot if it exists:
 codegraph snapshot delete titan-batch-<N-1>
 ```
 
-### 2b. Collect all metrics in one call
+### 3b. Collect all metrics in one call
 ```bash
 codegraph batch complexity <target1> <target2> ... -T --json
 ```
@@ -232,7 +325,7 @@ For deeper context on high-risk targets:
 codegraph batch context <target1> <target2> ... -T --json
 ```
 
-### 2c. Run Pillar I checks
+### 3c. Run Pillar I checks
 For each file in the batch:
 - Parse complexity metrics from batch output (Rule 1 — all 7 metric thresholds)
 - Run AST queries for async hygiene (Rule 2), resource cleanup (Rule 5)
@@ -240,25 +333,25 @@ For each file in the batch:
 - Check dead code (Rule 4): `codegraph roles --role dead --file <f> -T --json`
 - Check immutability (Rule 6): `codegraph dataflow` + grep
 
-### 2d. Run Pillar II checks
+### 3d. Run Pillar II checks
 For each file:
 - Magic values (Rule 7): `codegraph ast --kind string` + grep
 - Boundary validation (Rule 8): check entry points
 - Secret hygiene (Rule 9): grep
 - Empty catches (Rule 10): grep
 
-### 2e. Run Pillar III checks
+### 3e. Run Pillar III checks
 - DRY (Rule 11): `codegraph search` (if embeddings available) + `co-change`
 - Naming symmetry (Rule 12): `codegraph where --file`
 - Config over code (Rule 13): `codegraph deps` + grep
 
-### 2f. Run Pillar IV checks
+### 3f. Run Pillar IV checks
 - Naming quality (Rule 14): `codegraph where --file`
 - Structured logging (Rule 15): `codegraph ast --kind call` + grep
 - Testability (Rule 16): `codegraph fn-impact` + test file mock count
 - Critical path coverage (Rule 17): `codegraph roles --role core`
 
-### 2g. Score each target
+### 3g. Score each target
 
 | Verdict | Condition |
 |---------|-----------|
@@ -272,7 +365,7 @@ For FAIL/DECOMPOSE targets, capture blast radius:
 codegraph fn-impact <target> -T --json
 ```
 
-### 2h. Write batch results
+### 3h. Write batch results
 
 Append to `.codegraph/titan/gauntlet.ndjson` (one line per target):
 
@@ -280,7 +373,7 @@ Append to `.codegraph/titan/gauntlet.ndjson` (one line per target):
 {"target": "<name>", "file": "<path>", "verdict": "FAIL", "pillarVerdicts": {"I": "fail", "II": "warn", "III": "pass", "IV": "pass"}, "metrics": {"cognitive": 35, "cyclomatic": 15, "maxNesting": 4, "mi": 32, "halsteadEffort": 12000, "halsteadBugs": 1.2, "sloc": 85}, "violations": [{"rule": 1, "pillar": "I", "metric": "cognitive", "detail": "35 > 30 threshold", "level": "fail"}], "blastRadius": {"direct": 5, "transitive": 18}, "recommendation": "Split: halstead.bugs 1.2 suggests ~1 defect. Separate validation from I/O."}
 ```
 
-### 2i. Update state machine
+### 3i. Update state machine
 
 Update `titan-state.json`:
 - Set batch status to `"completed"`
@@ -289,7 +382,7 @@ Update `titan-state.json`:
 - Update `snapshots.lastBatch`
 - Update `lastUpdated`
 
-### 2j. Progress check
+### 3j. Progress check
 
 Print: `Batch N/M: X pass, Y warn, Z fail`
 
@@ -300,7 +393,7 @@ Print: `Batch N/M: X pass, Y warn, Z fail`
 
 ---
 
-## Step 3 — Clean up batch snapshots
+## Step 4 — Clean up batch snapshots
 
 After all batches complete, delete the last batch snapshot:
 ```bash
@@ -312,7 +405,7 @@ If stopping early for context, keep the last batch snapshot for safety.
 
 ---
 
-## Step 4 — Aggregate and report
+## Step 5 — Aggregate and report
 
 Compute from `gauntlet.ndjson`:
 - Pass / Warn / Fail / Decompose counts
@@ -342,6 +435,25 @@ Print summary to user:
 
 ---
 
+## Issue Tracking
+
+Throughout this phase, if you encounter any of the following, append a JSON line to `.codegraph/titan/issues.ndjson`:
+
+- **Codegraph bugs:** wrong metrics, incorrect role classification, missing symbols, parse failures
+- **Tooling issues:** batch command failures, AST query errors, embedding unavailability
+- **Process suggestions:** threshold adjustments, missing rules, pillar improvements
+- **Codebase observations:** patterns not covered by the manifesto, architectural smells
+
+Format (one JSON object per line, append-only):
+
+```json
+{"phase": "gauntlet", "timestamp": "<ISO 8601>", "severity": "bug|limitation|suggestion", "category": "codegraph|tooling|process|codebase", "description": "<what happened>", "context": "<command, target, or file involved>"}
+```
+
+Log issues as they happen — don't batch them. The `/titan-close` phase compiles these into the final report.
+
+---
+
 ## Rules
 
 - **Batch processing is mandatory.** Never audit more than `$ARGUMENTS` targets at once.
@@ -353,6 +465,7 @@ Print summary to user:
 - **Lint runs once in GATE**, not per-batch here. Don't run `npm run lint`.
 - Advisory rules (12, 14, 17) produce warnings, never failures.
 - Dead symbols from RECON should be flagged for removal, not skipped.
+- If any command fails or produces unexpected output, **log it to `issues.ndjson`** before continuing.
 
 ## Self-Improvement
 

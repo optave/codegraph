@@ -15,32 +15,55 @@ Your goal: analyze GAUNTLET results to find overlapping problems, identify share
 
 ---
 
-## Step 0 — Pre-flight
+## Step 0 — Pre-flight: find or join the Titan worktree
 
-1. **Worktree check:**
+1. **Locate the Titan session.** Prior phases (RECON, GAUNTLET) may have run in a different worktree or branch. Search for it:
+
+   ```bash
+   git worktree list
+   ```
+
+   For each worktree, check if it contains Titan artifacts:
+   ```bash
+   ls <worktree-path>/.codegraph/titan/titan-state.json 2>/dev/null
+   ```
+
+   Also check branches:
+   ```bash
+   git branch -a --list '*titan*'
+   ```
+
+   **Decision logic:**
+   - **Found exactly one worktree with `titan-state.json` and `currentPhase` is `"gauntlet"`:** GAUNTLET completed — this is the right session. Merge its branch into your worktree.
+   - **Found a worktree but `currentPhase` is not `"gauntlet"`:** Suspicious — could be mid-phase or a different run. If `currentPhase` is `"recon"`, GAUNTLET hasn't run yet. If `"sync"` or later, someone else may be ahead. Ask the user: "Found Titan state at `<path>` with phase `<phase>`. Is this the session to continue?"
+   - **Found multiple worktrees with `titan-state.json`:** List them with `currentPhase` and `lastUpdated`. Ask the user which to continue.
+   - **Found a branch (not worktree) with titan artifacts:** Merge it: `git merge <titan-branch> --no-edit`
+   - **Found nothing:** Stop: "No Titan artifacts found. Run `/titan-recon` then `/titan-gauntlet` first."
+
+2. **Ensure worktree isolation:**
    ```bash
    git rev-parse --show-toplevel && git worktree list
    ```
    If not in a worktree, stop: "Run `/worktree` first."
 
-2. **Sync with main:**
+3. **Sync with main:**
    ```bash
    git fetch origin main && git merge origin/main --no-edit
    ```
    If there are merge conflicts, stop: "Merge conflict detected. Resolve conflicts and re-run `/titan-sync`."
 
-3. **Load artifacts.** Read:
+4. **Load artifacts.** Read:
    - `.codegraph/titan/titan-state.json` — state, domains, batches, file audits
    - `.codegraph/titan/GLOBAL_ARCH.md` — architecture, dependency flow, shared types
    - `.codegraph/titan/gauntlet.ndjson` — per-target audit details
    - `.codegraph/titan/gauntlet-summary.json` — aggregated results
 
-4. **Validate state.** If `titan-state.json` fails to parse, stop: "State file corrupted. Run `/titan-reset`."
+5. **Validate state.** If `titan-state.json` fails to parse, stop: "State file corrupted. Run `/titan-reset`."
 
-5. **Check GAUNTLET completeness.** If `gauntlet-summary.json` has `"complete": false`:
+6. **Check GAUNTLET completeness.** If `gauntlet-summary.json` has `"complete": false`:
    > "GAUNTLET incomplete (<N>/<M> batches). SYNC will plan based on known failures only. Run `/titan-gauntlet` first for a complete plan."
 
-6. **Extract.** From artifacts, collect:
+7. **Extract.** From artifacts, collect:
    - All FAIL and DECOMPOSE targets with violations and files
    - Common violation patterns by pillar
    - Community assignments
@@ -49,7 +72,47 @@ Your goal: analyze GAUNTLET results to find overlapping problems, identify share
 
 ---
 
-## Step 1 — Find dependency clusters among failing targets
+## Step 1 — Drift detection: has main moved since GAUNTLET?
+
+The codebase may have changed between GAUNTLET and now. Detect this before planning on stale audit data.
+
+1. **Compare main SHA:**
+   ```bash
+   git rev-parse origin/main
+   ```
+   Compare against `titan-state.json → mainSHA`. If identical, skip to Step 1.
+
+2. **If main has advanced**, find what changed:
+   ```bash
+   git diff --name-only <mainSHA>..origin/main
+   ```
+
+3. **Cross-reference with GAUNTLET results.** Check which changed files overlap with:
+   - Files that were audited (`gauntlet.ndjson → file` field)
+   - FAIL/DECOMPOSE targets (the ones SYNC plans around)
+   - Dead symbols targeted for removal
+
+4. **Classify staleness:**
+
+   | Level | Condition | Action |
+   |-------|-----------|--------|
+   | **none** | main unchanged | Continue normally |
+   | **low** | Changed files don't overlap with any audited targets | Continue — note drift |
+   | **moderate** | Some FAIL/DECOMPOSE targets are in changed files (<30% affected) | Continue but **flag affected targets** — their audit results may be outdated. Mark clusters containing them as `"needs-verification"` |
+   | **high** | >30% of FAIL targets affected OR shared dependencies changed | **Warn user:** "Main has changed significantly since GAUNTLET. Audit results for N targets may be stale. Recommend `/titan-gauntlet` re-run for affected targets before planning." |
+   | **critical** | New files added to src/ that would be in priority queue, or deleted files that were FAIL targets | **Stop:** "Codebase structure changed. Run `/titan-recon` to rebuild baseline, then `/titan-gauntlet`." |
+
+5. **Write/update drift report** to `.codegraph/titan/drift-report.json` (same schema as GAUNTLET, with `"detectedBy": "sync"`).
+
+6. **Update state:** Set `titan-state.json → mainSHA` to current `origin/main`.
+
+7. **If `moderate`:** Proceed but annotate affected clusters in `sync.json` with `"driftWarning": true`. The execution order should prioritize non-stale targets and defer stale ones pending re-audit.
+
+8. **If re-running SYNC** and a previous `drift-report.json` exists with `reassessmentScope.targets`, re-read GAUNTLET results only for those targets and rebuild affected clusters.
+
+---
+
+## Step 2 — Find dependency clusters among failing targets
 
 For FAIL/DECOMPOSE targets that share a file or community, check connections:
 
@@ -67,7 +130,7 @@ Filter to cycles including at least one FAIL/DECOMPOSE target.
 
 ---
 
-## Step 2 — Identify shared dependencies and ownership
+## Step 3 — Identify shared dependencies and ownership
 
 For each cluster, find what they share:
 
@@ -98,7 +161,7 @@ Avoid re-auditing or conflicting with in-progress work.
 
 ---
 
-## Step 3 — Detect extraction candidates
+## Step 4 — Detect extraction candidates
 
 For DECOMPOSE targets:
 
@@ -114,7 +177,7 @@ Look for:
 
 ---
 
-## Step 4 — Plan shared abstractions
+## Step 5 — Plan shared abstractions
 
 Identify what to build BEFORE individual fixes:
 
@@ -130,7 +193,7 @@ codegraph fn-impact <shared-dep> -T --json
 
 ---
 
-## Step 5 — Build execution order with logical commits
+## Step 6 — Build execution order with logical commits
 
 ### Phases (in order)
 
@@ -160,7 +223,7 @@ codegraph fn-impact <shared-dep> -T --json
 
 ---
 
-## Step 6 — Write the SYNC artifact
+## Step 7 — Write the SYNC artifact
 
 Write `.codegraph/titan/sync.json`:
 
@@ -208,7 +271,7 @@ Update `titan-state.json`: set `currentPhase` to `"sync"`.
 
 ---
 
-## Step 7 — Report to user
+## Step 8 — Report to user
 
 Print:
 - Dependency clusters found (count)
@@ -220,6 +283,25 @@ Print:
 
 ---
 
+## Issue Tracking
+
+Throughout this phase, if you encounter any of the following, append a JSON line to `.codegraph/titan/issues.ndjson`:
+
+- **Codegraph bugs:** incorrect path queries, wrong cycle detection, relationship errors
+- **Tooling issues:** artifact parsing failures, state inconsistencies
+- **Process suggestions:** better clustering strategies, execution order improvements
+- **Codebase observations:** cross-cutting concerns not captured by GAUNTLET
+
+Format (one JSON object per line, append-only):
+
+```json
+{"phase": "sync", "timestamp": "<ISO 8601>", "severity": "bug|limitation|suggestion", "category": "codegraph|tooling|process|codebase", "description": "<what happened>", "context": "<command, cluster, or artifact involved>"}
+```
+
+Log issues as they happen — don't batch them. The `/titan-close` phase compiles these into the final report.
+
+---
+
 ## Rules
 
 - **Read artifacts, don't re-scan.** Codegraph commands only for targeted relationship queries.
@@ -228,6 +310,7 @@ Print:
 - **Logical commits matter.** Never mix concerns.
 - If GAUNTLET found zero failures, produce minimal plan (dead code + warnings only).
 - Keep `codegraph path` queries targeted — same file or community only.
+- If any command fails or produces unexpected output, **log it to `issues.ndjson`** before continuing.
 
 ## Self-Improvement
 
