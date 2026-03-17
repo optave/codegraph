@@ -13,9 +13,16 @@ export function rolesData(customDbPath, opts = {}) {
     const conditions = ['role IS NOT NULL'];
     const params = [];
 
-    if (filterRole) {
+    // When noTests + filtering for 'dead', also include 'test-only' candidates
+    // (they are stored as non-dead roles but may need reclassification)
+    if (filterRole && filterRole !== 'test-only') {
       conditions.push('role = ?');
       params.push(filterRole);
+    } else if (filterRole === 'test-only') {
+      // test-only is not stored in DB; we need all symbols to reclassify
+      // Fetch everything and filter after reclassification
+      conditions.length = 1; // keep only 'role IS NOT NULL'
+      params.length = 0;
     }
     if (filterFile) {
       conditions.push('file LIKE ?');
@@ -28,7 +35,25 @@ export function rolesData(customDbPath, opts = {}) {
       )
       .all(...params);
 
-    if (noTests) rows = rows.filter((r) => !isTestFile(r.file));
+    if (noTests) {
+      rows = rows.filter((r) => !isTestFile(r.file));
+
+      // Reclassify symbols whose only callers are in test files as 'test-only'.
+      // A symbol that has fanIn > 0 at build time (all edges) but fanIn === 0
+      // when test-file callers are excluded should be 'test-only' instead of
+      // whatever role it was assigned with the full graph.
+      const testOnlyIds = _findTestOnlyCalledIds(db);
+      for (const r of rows) {
+        if (testOnlyIds.has(`${r.name}:${r.file}:${r.line}`)) {
+          r.role = 'test-only';
+        }
+      }
+    }
+
+    // If we were asked for a specific role, filter now (after reclassification)
+    if (filterRole) {
+      rows = rows.filter((r) => r.role === filterRole);
+    }
 
     const summary = {};
     for (const r of rows) {
@@ -42,4 +67,47 @@ export function rolesData(customDbPath, opts = {}) {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Find node keys (name:file:line) for symbols whose callers are ALL in test files.
+ * These symbols have fanIn > 0 in the full graph but would have fanIn === 0
+ * if test-file edges were excluded.
+ */
+function _findTestOnlyCalledIds(db) {
+  // Get all non-test symbols that have at least one caller
+  const rows = db
+    .prepare(
+      `SELECT target.name, target.file, target.line,
+              caller.file AS caller_file
+       FROM edges e
+       JOIN nodes target ON e.target_id = target.id
+       JOIN nodes caller ON e.source_id = caller.id
+       WHERE e.kind = 'calls'
+         AND target.kind NOT IN ('file', 'directory')`,
+    )
+    .all();
+
+  // Group callers by target symbol
+  const callersByTarget = new Map();
+  for (const r of rows) {
+    const key = `${r.name}:${r.file}:${r.line}`;
+    if (!callersByTarget.has(key))
+      callersByTarget.set(key, { hasTestCaller: false, hasNonTestCaller: false });
+    const entry = callersByTarget.get(key);
+    if (isTestFile(r.caller_file)) {
+      entry.hasTestCaller = true;
+    } else {
+      entry.hasNonTestCaller = true;
+    }
+  }
+
+  // Return keys where ALL callers are in test files
+  const result = new Set();
+  for (const [key, entry] of callersByTarget) {
+    if (entry.hasTestCaller && !entry.hasNonTestCaller) {
+      result.add(key);
+    }
+  }
+  return result;
 }
