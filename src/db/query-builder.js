@@ -92,6 +92,7 @@ export function normalizeFileFilter(file) {
  * @returns {{ sql: string, params: string[] }}
  */
 export function buildFileConditionSQL(file, column = 'file') {
+  validateColumn(column);
   const files = normalizeFileFilter(file);
   if (files.length === 0) return { sql: '', params: [] };
   if (files.length === 1) {
