@@ -132,6 +132,56 @@ export function fnImpact(name, customDbPath, opts = {}) {
   }
 }
 
+function printDiffFunctions(data) {
+  console.log(`\ndiff-impact: ${data.changedFiles} files changed\n`);
+  console.log(`  ${data.affectedFunctions.length} functions changed:\n`);
+  for (const fn of data.affectedFunctions) {
+    console.log(`  ${kindIcon(fn.kind)} ${fn.name} -- ${fn.file}:${fn.line}`);
+    if (fn.transitiveCallers > 0) console.log(`    ^ ${fn.transitiveCallers} transitive callers`);
+  }
+}
+
+function printDiffCoupled(data) {
+  if (!data.historicallyCoupled?.length) return;
+  console.log('\n  Historically coupled (not in static graph):\n');
+  for (const c of data.historicallyCoupled) {
+    const pct = `${(c.jaccard * 100).toFixed(0)}%`;
+    console.log(
+      `    ${c.file}  <- coupled with ${c.coupledWith} (${pct}, ${c.commitCount} commits)`,
+    );
+  }
+}
+
+function printDiffOwnership(data) {
+  if (!data.ownership) return;
+  console.log(`\n  Affected owners: ${data.ownership.affectedOwners.join(', ')}`);
+  console.log(`  Suggested reviewers: ${data.ownership.suggestedReviewers.join(', ')}`);
+}
+
+function printDiffBoundaries(data) {
+  if (!data.boundaryViolations?.length) return;
+  console.log(`\n  Boundary violations (${data.boundaryViolationCount}):\n`);
+  for (const v of data.boundaryViolations) {
+    console.log(`    [${v.name}] ${v.file} -> ${v.targetFile}`);
+    if (v.message) console.log(`      ${v.message}`);
+  }
+}
+
+function printDiffSummary(summary) {
+  if (!summary) return;
+  let line = `\n  Summary: ${summary.functionsChanged} functions changed -> ${summary.callersAffected} callers affected across ${summary.filesAffected} files`;
+  if (summary.historicallyCoupledCount > 0) {
+    line += `, ${summary.historicallyCoupledCount} historically coupled`;
+  }
+  if (summary.ownersAffected > 0) {
+    line += `, ${summary.ownersAffected} owners affected`;
+  }
+  if (summary.boundaryViolationCount > 0) {
+    line += `, ${summary.boundaryViolationCount} boundary violations`;
+  }
+  console.log(`${line}\n`);
+}
+
 export function diffImpact(customDbPath, opts = {}) {
   if (opts.format === 'mermaid') {
     console.log(diffImpactMermaid(customDbPath, opts));
@@ -156,43 +206,9 @@ export function diffImpact(customDbPath, opts = {}) {
     return;
   }
 
-  console.log(`\ndiff-impact: ${data.changedFiles} files changed\n`);
-  console.log(`  ${data.affectedFunctions.length} functions changed:\n`);
-  for (const fn of data.affectedFunctions) {
-    console.log(`  ${kindIcon(fn.kind)} ${fn.name} -- ${fn.file}:${fn.line}`);
-    if (fn.transitiveCallers > 0) console.log(`    ^ ${fn.transitiveCallers} transitive callers`);
-  }
-  if (data.historicallyCoupled && data.historicallyCoupled.length > 0) {
-    console.log('\n  Historically coupled (not in static graph):\n');
-    for (const c of data.historicallyCoupled) {
-      const pct = `${(c.jaccard * 100).toFixed(0)}%`;
-      console.log(
-        `    ${c.file}  <- coupled with ${c.coupledWith} (${pct}, ${c.commitCount} commits)`,
-      );
-    }
-  }
-  if (data.ownership) {
-    console.log(`\n  Affected owners: ${data.ownership.affectedOwners.join(', ')}`);
-    console.log(`  Suggested reviewers: ${data.ownership.suggestedReviewers.join(', ')}`);
-  }
-  if (data.boundaryViolations && data.boundaryViolations.length > 0) {
-    console.log(`\n  Boundary violations (${data.boundaryViolationCount}):\n`);
-    for (const v of data.boundaryViolations) {
-      console.log(`    [${v.name}] ${v.file} -> ${v.targetFile}`);
-      if (v.message) console.log(`      ${v.message}`);
-    }
-  }
-  if (data.summary) {
-    let summaryLine = `\n  Summary: ${data.summary.functionsChanged} functions changed -> ${data.summary.callersAffected} callers affected across ${data.summary.filesAffected} files`;
-    if (data.summary.historicallyCoupledCount > 0) {
-      summaryLine += `, ${data.summary.historicallyCoupledCount} historically coupled`;
-    }
-    if (data.summary.ownersAffected > 0) {
-      summaryLine += `, ${data.summary.ownersAffected} owners affected`;
-    }
-    if (data.summary.boundaryViolationCount > 0) {
-      summaryLine += `, ${data.summary.boundaryViolationCount} boundary violations`;
-    }
-    console.log(`${summaryLine}\n`);
-  }
+  printDiffFunctions(data);
+  printDiffCoupled(data);
+  printDiffOwnership(data);
+  printDiffBoundaries(data);
+  printDiffSummary(data.summary);
 }
