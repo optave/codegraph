@@ -623,6 +623,10 @@ impl<'a> CfgBuilder<'a> {
 
     fn process_if_depth(&mut self, if_stmt: &Node, current: u32, depth: usize) -> Option<u32> {
         if depth >= MAX_WALK_DEPTH {
+            // Depth limit reached: return `current` so the caller can still
+            // wire up a fallthrough edge to its join block. The else-if chain
+            // will be silently truncated — the resulting CFG is structurally
+            // valid but incomplete for very deeply nested if-else ladders.
             return Some(current);
         }
         self.set_end_line(current, node_line(if_stmt));
