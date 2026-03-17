@@ -60,4 +60,39 @@ describe('classifyRoles', () => {
     const roles = classifyRoles(nodes);
     expect(roles.get('1')).toBe('leaf');
   });
+
+  it('classifies test-only (has callers but all in test files)', () => {
+    const nodes = [
+      { id: '1', name: 'helper', fanIn: 5, fanOut: 2, isExported: false, productionFanIn: 0 },
+      { id: '2', name: 'coreLib', fanIn: 10, fanOut: 1, isExported: true, productionFanIn: 10 },
+    ];
+    const roles = classifyRoles(nodes);
+    expect(roles.get('1')).toBe('test-only');
+    expect(roles.get('2')).toBe('core');
+  });
+
+  it('does not classify test-only when productionFanIn is not provided', () => {
+    // Backward compat: without productionFanIn, classification is unchanged
+    const nodes = [
+      { id: '1', name: 'helper', fanIn: 5, fanOut: 2, isExported: false },
+      { id: '2', name: 'other', fanIn: 1, fanOut: 1, isExported: true },
+    ];
+    const roles = classifyRoles(nodes);
+    expect(roles.get('1')).not.toBe('test-only');
+  });
+
+  it('framework entry takes precedence over test-only', () => {
+    const nodes = [
+      {
+        id: '1',
+        name: 'route:/health',
+        fanIn: 3,
+        fanOut: 1,
+        isExported: false,
+        productionFanIn: 0,
+      },
+    ];
+    const roles = classifyRoles(nodes);
+    expect(roles.get('1')).toBe('entry');
+  });
 });

@@ -349,7 +349,7 @@ export function classifyNodeRoles(db) {
     .all();
 
   if (rows.length === 0) {
-    return { entry: 0, core: 0, utility: 0, adapter: 0, dead: 0, leaf: 0 };
+    return { entry: 0, core: 0, utility: 0, adapter: 0, dead: 0, leaf: 0, 'test-only': 0 };
   }
 
   const exportedIds = new Set(
@@ -365,6 +365,26 @@ export function classifyNodeRoles(db) {
       .map((r) => r.target_id),
   );
 
+  // Compute production fan-in (excluding callers in test files)
+  const prodFanInMap = new Map();
+  const prodRows = db
+    .prepare(
+      `SELECT e.target_id, COUNT(*) AS cnt
+      FROM edges e
+      JOIN nodes caller ON e.source_id = caller.id
+      WHERE e.kind = 'calls'
+        AND caller.file NOT LIKE '%.test.%'
+        AND caller.file NOT LIKE '%.spec.%'
+        AND caller.file NOT LIKE '%__test__%'
+        AND caller.file NOT LIKE '%__tests__%'
+        AND caller.file NOT LIKE '%.stories.%'
+      GROUP BY e.target_id`,
+    )
+    .all();
+  for (const r of prodRows) {
+    prodFanInMap.set(r.target_id, r.cnt);
+  }
+
   // Delegate classification to the pure-logic classifier
   const classifierInput = rows.map((r) => ({
     id: String(r.id),
@@ -372,12 +392,13 @@ export function classifyNodeRoles(db) {
     fanIn: r.fan_in,
     fanOut: r.fan_out,
     isExported: exportedIds.has(r.id),
+    productionFanIn: prodFanInMap.get(r.id) || 0,
   }));
 
   const roleMap = classifyRoles(classifierInput);
 
   // Build summary and updates
-  const summary = { entry: 0, core: 0, utility: 0, adapter: 0, dead: 0, leaf: 0 };
+  const summary = { entry: 0, core: 0, utility: 0, adapter: 0, dead: 0, leaf: 0, 'test-only': 0 };
   const updates = [];
   for (const row of rows) {
     const role = roleMap.get(String(row.id)) || 'leaf';

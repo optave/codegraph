@@ -15,7 +15,11 @@ function median(sorted) {
 /**
  * Classify nodes into architectural roles based on fan-in/fan-out metrics.
  *
- * @param {{ id: string, name: string, fanIn: number, fanOut: number, isExported: boolean }[]} nodes
+ * When `productionFanIn` is provided on a node (number >= 0), symbols with
+ * callers exclusively in test files (fanIn > 0, productionFanIn === 0) are
+ * classified as `test-only` instead of inflating production role metrics.
+ *
+ * @param {{ id: string, name: string, fanIn: number, fanOut: number, isExported: boolean, productionFanIn?: number }[]} nodes
  * @returns {Map<string, string>} nodeId → role
  */
 export function classifyRoles(nodes) {
@@ -38,6 +42,7 @@ export function classifyRoles(nodes) {
   for (const node of nodes) {
     const highIn = node.fanIn >= medFanIn && node.fanIn > 0;
     const highOut = node.fanOut >= medFanOut && node.fanOut > 0;
+    const hasProdFanIn = typeof node.productionFanIn === 'number';
 
     let role;
     const isFrameworkEntry = FRAMEWORK_ENTRY_PREFIXES.some((p) => node.name.startsWith(p));
@@ -47,6 +52,8 @@ export function classifyRoles(nodes) {
       role = 'dead';
     } else if (node.fanIn === 0 && node.isExported) {
       role = 'entry';
+    } else if (hasProdFanIn && node.productionFanIn === 0) {
+      role = 'test-only';
     } else if (highIn && !highOut) {
       role = 'core';
     } else if (highIn && highOut) {
