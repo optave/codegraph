@@ -29,6 +29,30 @@ function flattenObject(obj, prefix = '') {
   return result;
 }
 
+/**
+ * Flatten items array and derive column names.
+ * Shared by printCsv and printAutoTable.
+ * @returns {{ flatItems: object[], columns: string[] } | null}
+ */
+function prepareFlatItems(data, field) {
+  const items = field ? data[field] : data;
+  if (!Array.isArray(items)) return null;
+
+  const flatItems = items.map((item) =>
+    typeof item === 'object' && item !== null && !Array.isArray(item)
+      ? flattenObject(item)
+      : { value: item },
+  );
+  const columns = (() => {
+    const keys = new Set();
+    for (const item of flatItems) for (const key of Object.keys(item)) keys.add(key);
+    return [...keys];
+  })();
+  if (columns.length === 0) columns.push('value');
+
+  return { flatItems, columns };
+}
+
 /** Escape a value for CSV output (LF line endings). */
 function escapeCsv(val) {
   const str = val == null ? '' : String(val);
@@ -44,20 +68,9 @@ function escapeCsv(val) {
  * @param {string} field - Array field name (e.g. 'results')
  */
 function printCsv(data, field) {
-  const items = field ? data[field] : data;
-  if (!Array.isArray(items)) return false;
-
-  const flatItems = items.map((item) =>
-    typeof item === 'object' && item !== null && !Array.isArray(item)
-      ? flattenObject(item)
-      : { value: item },
-  );
-  const columns = (() => {
-    const keys = new Set();
-    for (const item of flatItems) for (const key of Object.keys(item)) keys.add(key);
-    return [...keys];
-  })();
-  if (columns.length === 0) columns.push('value');
+  const prepared = prepareFlatItems(data, field);
+  if (!prepared) return false;
+  const { flatItems, columns } = prepared;
 
   console.log(columns.map(escapeCsv).join(','));
   for (const row of flatItems) {
@@ -74,20 +87,9 @@ const MAX_COL_WIDTH = 40;
  * @param {string} field - Array field name (e.g. 'results')
  */
 function printAutoTable(data, field) {
-  const items = field ? data[field] : data;
-  if (!Array.isArray(items)) return false;
-
-  const flatItems = items.map((item) =>
-    typeof item === 'object' && item !== null && !Array.isArray(item)
-      ? flattenObject(item)
-      : { value: item },
-  );
-  const columns = (() => {
-    const keys = new Set();
-    for (const item of flatItems) for (const key of Object.keys(item)) keys.add(key);
-    return [...keys];
-  })();
-  if (columns.length === 0) columns.push('value');
+  const prepared = prepareFlatItems(data, field);
+  if (!prepared) return false;
+  const { flatItems, columns } = prepared;
 
   const colDefs = columns.map((col) => {
     const maxLen = flatItems.reduce(
