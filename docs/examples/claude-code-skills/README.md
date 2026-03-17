@@ -107,7 +107,7 @@ All artifacts are written to `.codegraph/titan/` (6 files, no redundancy):
 | `GLOBAL_ARCH.md` | Markdown | RECON | GAUNTLET, SYNC |
 | `gauntlet.ndjson` | NDJSON | GAUNTLET | SYNC |
 | `gauntlet-summary.json` | JSON | GAUNTLET | SYNC, GATE |
-| `sync.json` | JSON | SYNC | GATE |
+| `sync.json` | JSON | SYNC | FORGE, GATE |
 | `gate-log.ndjson` | NDJSON | GATE | Audit trail |
 
 NDJSON format (one JSON object per line) means partial results survive crashes mid-batch.

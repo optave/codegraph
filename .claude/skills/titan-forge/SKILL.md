@@ -1,7 +1,7 @@
 ---
 name: titan-forge
 description: Execute the sync.json plan — refactor code, validate with /titan-gate, commit, and advance state (Titan Paradigm Phase 4)
-argument-hint: <--phase N> <--target name> <--dry-run>
+argument-hint: <--phase N> <--target name> <--dry-run> <--yes>
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Agent
 ---
 
@@ -18,6 +18,7 @@ Your goal: read `sync.json`, find the next incomplete execution phase, make the 
 - `--phase N` → jump to specific phase
 - `--target <name>` → run single target only (for retrying failures)
 - `--dry-run` → show what would be done without changing code
+- `--yes` → skip confirmation prompt
 
 ---
 
@@ -52,7 +53,9 @@ Your goal: read `sync.json`, find the next incomplete execution phase, make the 
        "currentTarget": null,
        "completedTargets": [],
        "failedTargets": [],
-       "commits": []
+       "commits": [],
+       "currentSubphase": null,
+       "completedSubphases": []
      }
    }
    ```
@@ -136,10 +139,10 @@ For each target in the current phase:
    ```bash
    npm test 2>&1
    ```
-   If tests fail → go to rollback (step 10).
+   If tests fail → go to rollback (step 11).
 
 9. **Run /titan-gate:**
-   Use the Skill tool to invoke `titan-gate`. If FAIL → go to rollback (step 10).
+   Use the Skill tool to invoke `titan-gate`. If FAIL → go to rollback (step 11).
 
 10. **On success:**
     ```bash
