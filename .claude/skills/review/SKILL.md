@@ -175,7 +175,7 @@ After processing all PRs, output a summary table:
 ## Rules
 
 - **Never rebase.** Always `git merge <base>` to resolve conflicts.
-- **Never force-push.** If something goes wrong, fix it with a new commit.
+- **Never force-push** unless fixing a commit message that fails commitlint. Amend + force-push is the only way to fix a pushed commit title (messages are part of the SHA). This is safe on feature branches. For all other problems, fix with a new commit.
 - **Address ALL comments**, even minor/nit/optional ones. Leave zero unaddressed.
 - **Always reply to comments** explaining what was done. Don't just fix silently.
 - **Always re-trigger Greptile** after pushing fixes — it must confirm satisfaction.
