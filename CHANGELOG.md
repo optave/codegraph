@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file. See [commit
 * **roles:** classify test-only-called symbols as "test-only" instead of "dead" — reduces false positives in dead code detection ([#497](https://github.com/optave/codegraph/pull/497))
 * **builder:** include constant nodes in edge building — constants no longer appear as false-positive dead exports ([#495](https://github.com/optave/codegraph/pull/495))
 * **native:** add MAX_WALK_DEPTH guard to native engine AST walkers — prevents stack overflows on deeply nested files ([#484](https://github.com/optave/codegraph/pull/484))
+* **cli:** support repeated `--file` flag for multi-file scoping across all commands ([#498](https://github.com/optave/codegraph/pull/498))
 * **versioning:** use semver-compliant dev version numbering (`-dev.0` suffix instead of non-standard format) ([#479](https://github.com/optave/codegraph/pull/479))
 
 ### Refactors
@@ -22,6 +23,7 @@ All notable changes to this project will be documented in this file. See [commit
 * **extractors:** decompose monolithic language extractors (JS/TS, Python, Java) into per-category handlers ([#490](https://github.com/optave/codegraph/pull/490))
 * **ast-analysis:** decompose AST analysis visitors and domain builder stages into focused helpers ([#491](https://github.com/optave/codegraph/pull/491))
 * **domain:** decompose domain analysis and feature modules into single-responsibility functions ([#492](https://github.com/optave/codegraph/pull/492))
+* **presentation:** split data fetching from formatting and extract CLI/MCP subcommand dispatch ([#493](https://github.com/optave/codegraph/pull/493))
 * **cleanup:** dead code removal, shared abstractions, and empty catch block replacement across all layers ([#489](https://github.com/optave/codegraph/pull/489))
 
 ## [3.1.5](https://github.com/optave/codegraph/compare/v3.1.4...v3.1.5) (2026-03-16)
