@@ -46,11 +46,11 @@ export function getBenchmarkVersion(pkgVersion, cwd) {
 		/* git not available or no tags */
 	}
 
-	// Fallback: no git or no tags — match publish.yml's no-tags behavior
+	// Fallback: no git or no tags — match publish.yml's no-tags behavior (COMMITS=1)
 	const parts = pkgVersion.split('.');
 	if (parts.length === 3) {
 		const [major, minor, patch] = parts;
-		return `${major}.${minor}.${Number(patch) + 1}-dev.0`;
+		return `${major}.${minor}.${Number(patch) + 1}-dev.1`;
 	}
 	return `${pkgVersion}-dev`;
 }
