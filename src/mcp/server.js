@@ -12,8 +12,15 @@ import { MCP_MAX_LIMIT } from '../shared/paginate.js';
 import { buildToolList } from './tool-registry.js';
 import { TOOL_HANDLERS } from './tools/index.js';
 
-const require = createRequire(import.meta.url);
-
+/**
+ * Start the MCP server.
+ * This function requires @modelcontextprotocol/sdk to be installed.
+ *
+ * @param {string} [customDbPath] - Path to a specific graph.db
+ * @param {object} [options]
+ * @param {boolean} [options.multiRepo] - Enable multi-repo access (default: false)
+ * @param {string[]} [options.allowedRepos] - Restrict access to these repo names only
+ */
 async function loadMCPSdk() {
   try {
     const sdk = await import('@modelcontextprotocol/sdk/server/index.js');
@@ -42,6 +49,7 @@ function createLazyLoaders() {
     },
     getDatabase() {
       if (!_Database) {
+        const require = createRequire(import.meta.url);
         _Database = require('better-sqlite3');
       }
       return _Database;
@@ -50,7 +58,7 @@ function createLazyLoaders() {
 }
 
 async function resolveDbPath(customDbPath, args, allowedRepos) {
-  let dbPath = customDbPath;
+  let dbPath = customDbPath || undefined;
   if (args.repo) {
     if (allowedRepos && !allowedRepos.includes(args.repo)) {
       throw new ConfigError(`Repository "${args.repo}" is not in the allowed repos list.`);
@@ -79,15 +87,6 @@ function validateMultiRepoAccess(multiRepo, name, args) {
   }
 }
 
-/**
- * Start the MCP server.
- * This function requires @modelcontextprotocol/sdk to be installed.
- *
- * @param {string} [customDbPath] - Path to a specific graph.db
- * @param {object} [options]
- * @param {boolean} [options.multiRepo] - Enable multi-repo access (default: false)
- * @param {string[]} [options.allowedRepos] - Restrict access to these repo names only
- */
 export async function startMCPServer(customDbPath, options = {}) {
   const { allowedRepos } = options;
   const multiRepo = options.multiRepo || !!allowedRepos;

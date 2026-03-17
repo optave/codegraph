@@ -1,7 +1,7 @@
 /**
  * Node role classification — pure logic, no DB.
  *
- * Roles: entry, core, utility, adapter, leaf, dead
+ * Roles: entry, core, utility, adapter, leaf, dead, test-only
  */
 
 export const FRAMEWORK_ENTRY_PREFIXES = ['route:', 'event:', 'command:'];
@@ -15,7 +15,7 @@ function median(sorted) {
 /**
  * Classify nodes into architectural roles based on fan-in/fan-out metrics.
  *
- * @param {{ id: string, name: string, fanIn: number, fanOut: number, isExported: boolean }[]} nodes
+ * @param {{ id: string, name: string, fanIn: number, fanOut: number, isExported: boolean, testOnlyFanIn?: number }[]} nodes
  * @returns {Map<string, string>} nodeId → role
  */
 export function classifyRoles(nodes) {
@@ -38,15 +38,18 @@ export function classifyRoles(nodes) {
   for (const node of nodes) {
     const highIn = node.fanIn >= medFanIn && node.fanIn > 0;
     const highOut = node.fanOut >= medFanOut && node.fanOut > 0;
+    const hasProdFanIn = typeof node.productionFanIn === 'number';
 
     let role;
     const isFrameworkEntry = FRAMEWORK_ENTRY_PREFIXES.some((p) => node.name.startsWith(p));
     if (isFrameworkEntry) {
       role = 'entry';
     } else if (node.fanIn === 0 && !node.isExported) {
-      role = 'dead';
+      role = node.testOnlyFanIn > 0 ? 'test-only' : 'dead';
     } else if (node.fanIn === 0 && node.isExported) {
       role = 'entry';
+    } else if (hasProdFanIn && node.fanIn > 0 && node.productionFanIn === 0) {
+      role = 'test-only';
     } else if (highIn && !highOut) {
       role = 'core';
     } else if (highIn && highOut) {
