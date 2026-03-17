@@ -23,7 +23,7 @@ import {
   hasCfgTables,
   openReadonlyOrFail,
 } from '../db/index.js';
-import { info } from '../infrastructure/logger.js';
+import { debug, info } from '../infrastructure/logger.js';
 import { paginateResult } from '../shared/paginate.js';
 import { findNodes } from './shared/find-nodes.js';
 
@@ -149,7 +149,8 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
         let code;
         try {
           code = fs.readFileSync(absPath, 'utf-8');
-        } catch {
+        } catch (e) {
+          debug(`cfg: cannot read ${relPath}: ${e.message}`);
           continue;
         }
 
@@ -158,7 +159,8 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
 
         try {
           tree = parser.parse(code);
-        } catch {
+        } catch (e) {
+          debug(`cfg: parse failed for ${relPath}: ${e.message}`);
           continue;
         }
       }
