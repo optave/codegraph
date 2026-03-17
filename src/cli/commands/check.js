@@ -2,6 +2,22 @@ import { EVERY_SYMBOL_KIND } from '../../domain/queries.js';
 import { ConfigError } from '../../shared/errors.js';
 import { config } from '../shared/options.js';
 
+function validateKind(kind) {
+  if (kind && !EVERY_SYMBOL_KIND.includes(kind)) {
+    throw new ConfigError(`Invalid kind "${kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
+  }
+}
+
+async function runManifesto(opts, qOpts) {
+  validateKind(opts.kind);
+  const { manifesto } = await import('../../presentation/manifesto.js');
+  manifesto(opts.db, {
+    file: opts.file,
+    kind: opts.kind,
+    ...qOpts,
+  });
+}
+
 export const command = {
   name: 'check [ref]',
   description:
@@ -29,17 +45,7 @@ export const command = {
     const qOpts = ctx.resolveQueryOpts(opts);
 
     if (!isDiffMode && !opts.rules) {
-      if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-        throw new ConfigError(
-          `Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`,
-        );
-      }
-      const { manifesto } = await import('../../presentation/manifesto.js');
-      manifesto(opts.db, {
-        file: opts.file,
-        kind: opts.kind,
-        ...qOpts,
-      });
+      await runManifesto(opts, qOpts);
       return;
     }
 
@@ -58,17 +64,7 @@ export const command = {
     });
 
     if (opts.rules) {
-      if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-        throw new ConfigError(
-          `Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`,
-        );
-      }
-      const { manifesto } = await import('../../presentation/manifesto.js');
-      manifesto(opts.db, {
-        file: opts.file,
-        kind: opts.kind,
-        ...qOpts,
-      });
+      await runManifesto(opts, qOpts);
     }
   },
 };
