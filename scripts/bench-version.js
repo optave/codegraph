@@ -1,13 +1,14 @@
 /**
  * Compute the benchmark version string from git state.
  *
- * Uses the same two-step strategy as publish.yml's compute-version job:
+ * Uses the same strategy as publish.yml's compute-version job:
  *   1. `git describe --tags --match "v*" --abbrev=0` → find nearest release tag
  *   2. `git rev-list <tag>..HEAD --count` → count commits since that tag
  *
- * - If HEAD is exactly tagged (0 commits): returns "2.5.0"
- * - Otherwise: returns "2.5.(PATCH+1)-dev.COMMITS" (e.g. "2.5.3-dev.45")
- *   where COMMITS = number of commits since the tag
+ * - If HEAD is exactly tagged (0 commits): returns "3.1.5"
+ * - Otherwise: returns "3.1.6-dev.12" (NEXT_PATCH-dev.COMMIT_COUNT)
+ *   This keeps dev versions in the correct semver range between the
+ *   current release and the next, avoiding inflated patch numbers.
  *
  * This prevents dev/dogfood benchmark runs from overwriting release data
  * in the historical benchmark reports (which deduplicate by version).
@@ -39,7 +40,8 @@ export function getBenchmarkVersion(pkgVersion, cwd) {
 		if (commits === 0) return `${major}.${minor}.${patch}`;
 
 		// Dev build: MAJOR.MINOR.(PATCH+1)-dev.COMMITS
-		return `${major}.${minor}.${Number(patch) + 1}-dev.${commits}`;
+		const nextPatch = Number(patch) + 1;
+		return `${major}.${minor}.${nextPatch}-dev.${commits}`;
 	} catch {
 		/* git not available or no tags */
 	}
