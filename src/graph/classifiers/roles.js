@@ -15,11 +15,7 @@ function median(sorted) {
 /**
  * Classify nodes into architectural roles based on fan-in/fan-out metrics.
  *
- * When `productionFanIn` is provided on a node (number >= 0), symbols with
- * callers exclusively in test files (fanIn > 0, productionFanIn === 0) are
- * classified as `test-only` instead of inflating production role metrics.
- *
- * @param {{ id: string, name: string, fanIn: number, fanOut: number, isExported: boolean, productionFanIn?: number }[]} nodes
+ * @param {{ id: string, name: string, fanIn: number, fanOut: number, isExported: boolean, testOnlyFanIn?: number }[]} nodes
  * @returns {Map<string, string>} nodeId → role
  */
 export function classifyRoles(nodes) {
@@ -49,7 +45,7 @@ export function classifyRoles(nodes) {
     if (isFrameworkEntry) {
       role = 'entry';
     } else if (node.fanIn === 0 && !node.isExported) {
-      role = 'dead';
+      role = node.testOnlyFanIn > 0 ? 'test-only' : 'dead';
     } else if (node.fanIn === 0 && node.isExported) {
       role = 'entry';
     } else if (hasProdFanIn && node.fanIn > 0 && node.productionFanIn === 0) {

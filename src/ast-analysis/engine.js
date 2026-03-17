@@ -52,7 +52,7 @@ async function getParserModule() {
 
 // ─── WASM pre-parse ─────────────────────────────────────────────────────
 
-async function ensureWasmTreesIfNeeded(fileSymbols, rootDir, opts) {
+async function ensureWasmTreesIfNeeded(fileSymbols, opts, rootDir) {
   const doComplexity = opts.complexity !== false;
   const doCfg = opts.cfg !== false;
   const doDataflow = opts.dataflow !== false;
@@ -340,7 +340,7 @@ export async function runAnalyses(db, fileSymbols, rootDir, opts, engineOpts) {
   const extToLang = buildExtToLangMap();
 
   // WASM pre-parse for files that need it
-  await ensureWasmTreesIfNeeded(fileSymbols, rootDir, opts);
+  await ensureWasmTreesIfNeeded(fileSymbols, opts, rootDir);
 
   // Unified pre-walk: run all applicable visitors in a single DFS per file
   const t0walk = performance.now();

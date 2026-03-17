@@ -157,8 +157,8 @@ describe('classifyNodeRoles', () => {
       utility: 0,
       adapter: 0,
       dead: 0,
-      leaf: 0,
       'test-only': 0,
+      leaf: 0,
     });
   });
 
