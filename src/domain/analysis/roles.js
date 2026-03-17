@@ -44,7 +44,7 @@ export function rolesData(customDbPath, opts = {}) {
       // whatever role it was assigned with the full graph.
       const testOnlyIds = _findTestOnlyCalledIds(db);
       for (const r of rows) {
-        if (testOnlyIds.has(`${r.name}:${r.file}:${r.line}`)) {
+        if (testOnlyIds.has(`${r.name}\0${r.file}\0${r.line}`)) {
           r.role = 'test-only';
         }
       }
@@ -70,7 +70,7 @@ export function rolesData(customDbPath, opts = {}) {
 }
 
 /**
- * Find node keys (name:file:line) for symbols whose callers are ALL in test files.
+ * Find node keys (name\0file\0line) for symbols whose callers are ALL in test files.
  * These symbols have fanIn > 0 in the full graph but would have fanIn === 0
  * if test-file edges were excluded.
  */
@@ -91,7 +91,7 @@ function _findTestOnlyCalledIds(db) {
   // Group callers by target symbol
   const callersByTarget = new Map();
   for (const r of rows) {
-    const key = `${r.name}:${r.file}:${r.line}`;
+    const key = `${r.name}\0${r.file}\0${r.line}`;
     if (!callersByTarget.has(key))
       callersByTarget.set(key, { hasTestCaller: false, hasNonTestCaller: false });
     const entry = callersByTarget.get(key);
