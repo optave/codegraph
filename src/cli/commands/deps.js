@@ -1,16 +1,17 @@
+import { brief } from '../../presentation/brief.js';
 import { fileDeps } from '../../presentation/queries-cli.js';
 
 export const command = {
   name: 'deps <file>',
   description: 'Show what this file imports and what imports it',
   queryOpts: true,
+  options: [['--brief', 'Compact output with symbol roles, caller counts, and risk tier']],
   execute([file], opts, ctx) {
-    fileDeps(file, opts.db, {
-      noTests: ctx.resolveNoTests(opts),
-      json: opts.json,
-      limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
-      offset: opts.offset ? parseInt(opts.offset, 10) : undefined,
-      ndjson: opts.ndjson,
-    });
+    const qOpts = ctx.resolveQueryOpts(opts);
+    if (opts.brief) {
+      brief(file, opts.db, qOpts);
+    } else {
+      fileDeps(file, opts.db, qOpts);
+    }
   },
 };

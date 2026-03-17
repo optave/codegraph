@@ -12,7 +12,9 @@ import {
   findNodesWithFanIn,
   listFunctionNodes,
   openReadonlyOrFail,
+  Repository,
 } from '../../db/index.js';
+import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { EVERY_SYMBOL_KIND } from '../../shared/kinds.js';
 import { getFileHash, normalizeSymbol } from '../../shared/normalize.js';
@@ -23,11 +25,16 @@ const FUNCTION_KINDS = ['function', 'method', 'class', 'constant'];
 /**
  * Find nodes matching a name query, ranked by relevance.
  * Scoring: exact=100, prefix=60, word-boundary=40, substring=10, plus fan-in tiebreaker.
+ *
+ * @param {object} dbOrRepo - A better-sqlite3 Database or a Repository instance
  */
-export function findMatchingNodes(db, name, opts = {}) {
+export function findMatchingNodes(dbOrRepo, name, opts = {}) {
   const kinds = opts.kind ? [opts.kind] : opts.kinds?.length ? opts.kinds : FUNCTION_KINDS;
 
-  const rows = findNodesWithFanIn(db, `%${name}%`, { kinds, file: opts.file });
+  const isRepo = dbOrRepo instanceof Repository;
+  const rows = isRepo
+    ? dbOrRepo.findNodesWithFanIn(`%${name}%`, { kinds, file: opts.file })
+    : findNodesWithFanIn(dbOrRepo, `%${name}%`, { kinds, file: opts.file });
 
   const nodes = opts.noTests ? rows.filter((n) => !isTestFile(n.file)) : rows;
 
@@ -200,7 +207,8 @@ export function childrenData(name, customDbPath, opts = {}) {
       let children;
       try {
         children = findNodeChildren(db, node.id);
-      } catch {
+      } catch (e) {
+        debug(`findNodeChildren failed for node ${node.id}: ${e.message}`);
         children = [];
       }
       if (noTests) children = children.filter((c) => !isTestFile(c.file || node.file));
