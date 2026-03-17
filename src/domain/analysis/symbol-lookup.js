@@ -14,11 +14,11 @@ import {
   openReadonlyOrFail,
 } from '../../db/index.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
-import { ALL_SYMBOL_KINDS } from '../../shared/kinds.js';
+import { EVERY_SYMBOL_KIND } from '../../shared/kinds.js';
 import { getFileHash, normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
 
-const FUNCTION_KINDS = ['function', 'method', 'class'];
+const FUNCTION_KINDS = ['function', 'method', 'class', 'constant'];
 
 /**
  * Find nodes matching a name query, ranked by relevance.
@@ -103,12 +103,12 @@ export function queryNameData(name, customDbPath, opts = {}) {
 }
 
 function whereSymbolImpl(db, target, noTests) {
-  const placeholders = ALL_SYMBOL_KINDS.map(() => '?').join(', ');
+  const placeholders = EVERY_SYMBOL_KIND.map(() => '?').join(', ');
   let nodes = db
     .prepare(
       `SELECT * FROM nodes WHERE name LIKE ? AND kind IN (${placeholders}) ORDER BY file, line`,
     )
-    .all(`%${target}%`, ...ALL_SYMBOL_KINDS);
+    .all(`%${target}%`, ...EVERY_SYMBOL_KIND);
   if (noTests) nodes = nodes.filter((n) => !isTestFile(n.file));
 
   const hc = new Map();
