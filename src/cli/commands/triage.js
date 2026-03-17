@@ -2,6 +2,39 @@ import { collectFile } from '../../db/query-builder.js';
 import { EVERY_SYMBOL_KIND, VALID_ROLES } from '../../domain/queries.js';
 import { ConfigError } from '../../shared/errors.js';
 
+function validateFilters(opts) {
+  if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
+    throw new ConfigError(`Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
+  }
+  if (opts.role && !VALID_ROLES.includes(opts.role)) {
+    throw new ConfigError(`Invalid role "${opts.role}". Valid: ${VALID_ROLES.join(', ')}`);
+  }
+}
+
+function parseWeights(raw) {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new ConfigError('Invalid --weights JSON', { cause: err });
+  }
+}
+
+async function runHotspots(opts, ctx) {
+  const { hotspotsData, formatHotspots } = await import('../../presentation/structure.js');
+  const metric = opts.sort === 'risk' ? 'fan-in' : opts.sort;
+  const data = hotspotsData(opts.db, {
+    metric,
+    level: opts.level,
+    limit: parseInt(opts.limit, 10),
+    offset: opts.offset ? parseInt(opts.offset, 10) : undefined,
+    noTests: ctx.resolveNoTests(opts),
+  });
+  if (!ctx.outputResult(data, 'hotspots', opts)) {
+    console.log(formatHotspots(data));
+  }
+}
+
 export const command = {
   name: 'triage',
   description:
@@ -32,35 +65,12 @@ export const command = {
   ],
   async execute(_args, opts, ctx) {
     if (opts.level === 'file' || opts.level === 'directory') {
-      const { hotspotsData, formatHotspots } = await import('../../presentation/structure.js');
-      const metric = opts.sort === 'risk' ? 'fan-in' : opts.sort;
-      const data = hotspotsData(opts.db, {
-        metric,
-        level: opts.level,
-        limit: parseInt(opts.limit, 10),
-        offset: opts.offset ? parseInt(opts.offset, 10) : undefined,
-        noTests: ctx.resolveNoTests(opts),
-      });
-      if (!ctx.outputResult(data, 'hotspots', opts)) {
-        console.log(formatHotspots(data));
-      }
+      await runHotspots(opts, ctx);
       return;
     }
 
-    if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-      throw new ConfigError(`Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
-    }
-    if (opts.role && !VALID_ROLES.includes(opts.role)) {
-      throw new ConfigError(`Invalid role "${opts.role}". Valid: ${VALID_ROLES.join(', ')}`);
-    }
-    let weights;
-    if (opts.weights) {
-      try {
-        weights = JSON.parse(opts.weights);
-      } catch (err) {
-        throw new ConfigError('Invalid --weights JSON', { cause: err });
-      }
-    }
+    validateFilters(opts);
+    const weights = parseWeights(opts.weights);
     const { triage } = await import('../../presentation/triage.js');
     triage(opts.db, {
       limit: parseInt(opts.limit, 10),

@@ -38,6 +38,7 @@ export function classifyRoles(nodes) {
   for (const node of nodes) {
     const highIn = node.fanIn >= medFanIn && node.fanIn > 0;
     const highOut = node.fanOut >= medFanOut && node.fanOut > 0;
+    const hasProdFanIn = typeof node.productionFanIn === 'number';
 
     let role;
     const isFrameworkEntry = FRAMEWORK_ENTRY_PREFIXES.some((p) => node.name.startsWith(p));
@@ -47,6 +48,8 @@ export function classifyRoles(nodes) {
       role = node.testOnlyFanIn > 0 ? 'test-only' : 'dead';
     } else if (node.fanIn === 0 && node.isExported) {
       role = 'entry';
+    } else if (hasProdFanIn && node.fanIn > 0 && node.productionFanIn === 0) {
+      role = 'test-only';
     } else if (highIn && !highOut) {
       role = 'core';
     } else if (highIn && highOut) {

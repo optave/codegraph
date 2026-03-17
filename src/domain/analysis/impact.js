@@ -134,6 +134,251 @@ export function fnImpactData(name, customDbPath, opts = {}) {
   }
 }
 
+// ─── diffImpactData helpers ─────────────────────────────────────────────
+
+/**
+ * Walk up from repoRoot until a .git directory is found.
+ * Returns true if a git root exists, false otherwise.
+ *
+ * @param {string} repoRoot
+ * @returns {boolean}
+ */
+function findGitRoot(repoRoot) {
+  let checkDir = repoRoot;
+  while (checkDir) {
+    if (fs.existsSync(path.join(checkDir, '.git'))) {
+      return true;
+    }
+    const parent = path.dirname(checkDir);
+    if (parent === checkDir) break;
+    checkDir = parent;
+  }
+  return false;
+}
+
+/**
+ * Execute git diff and return the raw output string.
+ * Returns `{ output: string }` on success or `{ error: string }` on failure.
+ *
+ * @param {string} repoRoot
+ * @param {{ staged?: boolean, ref?: string }} opts
+ * @returns {{ output: string } | { error: string }}
+ */
+function runGitDiff(repoRoot, opts) {
+  try {
+    const args = opts.staged
+      ? ['diff', '--cached', '--unified=0', '--no-color']
+      : ['diff', opts.ref || 'HEAD', '--unified=0', '--no-color'];
+    const output = execFileSync('git', args, {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return { output };
+  } catch (e) {
+    return { error: `Failed to run git diff: ${e.message}` };
+  }
+}
+
+/**
+ * Parse raw git diff output into a changedRanges map and newFiles set.
+ *
+ * @param {string} diffOutput
+ * @returns {{ changedRanges: Map<string, Array<{start: number, end: number}>>, newFiles: Set<string> }}
+ */
+function parseGitDiff(diffOutput) {
+  const changedRanges = new Map();
+  const newFiles = new Set();
+  let currentFile = null;
+  let prevIsDevNull = false;
+
+  for (const line of diffOutput.split('\n')) {
+    if (line.startsWith('--- /dev/null')) {
+      prevIsDevNull = true;
+      continue;
+    }
+    if (line.startsWith('--- ')) {
+      prevIsDevNull = false;
+      continue;
+    }
+    const fileMatch = line.match(/^\+\+\+ b\/(.+)/);
+    if (fileMatch) {
+      currentFile = fileMatch[1];
+      if (!changedRanges.has(currentFile)) changedRanges.set(currentFile, []);
+      if (prevIsDevNull) newFiles.add(currentFile);
+      prevIsDevNull = false;
+      continue;
+    }
+    const hunkMatch = line.match(/^@@ .+ \+(\d+)(?:,(\d+))? @@/);
+    if (hunkMatch && currentFile) {
+      const start = parseInt(hunkMatch[1], 10);
+      const count = parseInt(hunkMatch[2] || '1', 10);
+      changedRanges.get(currentFile).push({ start, end: start + count - 1 });
+    }
+  }
+
+  return { changedRanges, newFiles };
+}
+
+/**
+ * Find all function/method/class nodes whose line ranges overlap any changed range.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {Map<string, Array<{start: number, end: number}>} changedRanges
+ * @param {boolean} noTests
+ * @returns {Array<object>}
+ */
+function findAffectedFunctions(db, changedRanges, noTests) {
+  const affectedFunctions = [];
+  for (const [file, ranges] of changedRanges) {
+    if (noTests && isTestFile(file)) continue;
+    const defs = db
+      .prepare(
+        `SELECT * FROM nodes WHERE file = ? AND kind IN ('function', 'method', 'class') ORDER BY line`,
+      )
+      .all(file);
+    for (let i = 0; i < defs.length; i++) {
+      const def = defs[i];
+      const endLine = def.end_line || (defs[i + 1] ? defs[i + 1].line - 1 : 999999);
+      for (const range of ranges) {
+        if (range.start <= endLine && range.end >= def.line) {
+          affectedFunctions.push(def);
+          break;
+        }
+      }
+    }
+  }
+  return affectedFunctions;
+}
+
+/**
+ * Run BFS per affected function, collecting per-function results and the full affected set.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {Array<object>} affectedFunctions
+ * @param {boolean} noTests
+ * @param {number} maxDepth
+ * @returns {{ functionResults: Array<object>, allAffected: Set<string> }}
+ */
+function buildFunctionImpactResults(db, affectedFunctions, noTests, maxDepth) {
+  const allAffected = new Set();
+  const functionResults = affectedFunctions.map((fn) => {
+    const edges = [];
+    const idToKey = new Map();
+    idToKey.set(fn.id, `${fn.file}::${fn.name}:${fn.line}`);
+
+    const { levels, totalDependents } = bfsTransitiveCallers(db, fn.id, {
+      noTests,
+      maxDepth,
+      onVisit(c, parentId) {
+        allAffected.add(`${c.file}:${c.name}`);
+        const callerKey = `${c.file}::${c.name}:${c.line}`;
+        idToKey.set(c.id, callerKey);
+        edges.push({ from: idToKey.get(parentId), to: callerKey });
+      },
+    });
+
+    return {
+      name: fn.name,
+      kind: fn.kind,
+      file: fn.file,
+      line: fn.line,
+      transitiveCallers: totalDependents,
+      levels,
+      edges,
+    };
+  });
+
+  return { functionResults, allAffected };
+}
+
+/**
+ * Look up historically co-changed files for the set of changed files.
+ * Returns an empty array if the co_changes table is unavailable.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {Map<string, any>} changedRanges
+ * @param {Set<string>} affectedFiles
+ * @param {boolean} noTests
+ * @returns {Array<object>}
+ */
+function lookupCoChanges(db, changedRanges, affectedFiles, noTests) {
+  try {
+    db.prepare('SELECT 1 FROM co_changes LIMIT 1').get();
+    const changedFilesList = [...changedRanges.keys()];
+    const coResults = coChangeForFiles(changedFilesList, db, {
+      minJaccard: 0.3,
+      limit: 20,
+      noTests,
+    });
+    return coResults.filter((r) => !affectedFiles.has(r.file));
+  } catch (e) {
+    debug(`co_changes lookup skipped: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Look up CODEOWNERS for changed and affected files.
+ * Returns null if no owners are found or lookup fails.
+ *
+ * @param {Map<string, any>} changedRanges
+ * @param {Set<string>} affectedFiles
+ * @param {string} repoRoot
+ * @returns {{ owners: object, affectedOwners: Array<string>, suggestedReviewers: Array<string> } | null}
+ */
+function lookupOwnership(changedRanges, affectedFiles, repoRoot) {
+  try {
+    const allFilePaths = [...new Set([...changedRanges.keys(), ...affectedFiles])];
+    const ownerResult = ownersForFiles(allFilePaths, repoRoot);
+    if (ownerResult.affectedOwners.length > 0) {
+      return {
+        owners: Object.fromEntries(ownerResult.owners),
+        affectedOwners: ownerResult.affectedOwners,
+        suggestedReviewers: ownerResult.suggestedReviewers,
+      };
+    }
+    return null;
+  } catch (e) {
+    debug(`CODEOWNERS lookup skipped: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Check manifesto boundary violations scoped to the changed files.
+ * Returns `{ boundaryViolations, boundaryViolationCount }`.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {Map<string, any>} changedRanges
+ * @param {boolean} noTests
+ * @param {object} opts — full diffImpactData opts (may contain `opts.config`)
+ * @param {string} repoRoot
+ * @returns {{ boundaryViolations: Array<object>, boundaryViolationCount: number }}
+ */
+function checkBoundaryViolations(db, changedRanges, noTests, opts, repoRoot) {
+  try {
+    const cfg = opts.config || loadConfig(repoRoot);
+    const boundaryConfig = cfg.manifesto?.boundaries;
+    if (boundaryConfig) {
+      const result = evaluateBoundaries(db, boundaryConfig, {
+        scopeFiles: [...changedRanges.keys()],
+        noTests,
+      });
+      return {
+        boundaryViolations: result.violations,
+        boundaryViolationCount: result.violationCount,
+      };
+    }
+  } catch (e) {
+    debug(`boundary check skipped: ${e.message}`);
+  }
+  return { boundaryViolations: [], boundaryViolationCount: 0 };
+}
+
+// ─── diffImpactData ─────────────────────────────────────────────────────
+
 /**
  * Fix #2: Shell injection vulnerability.
  * Uses execFileSync instead of execSync to prevent shell interpretation of user input.
@@ -147,38 +392,14 @@ export function diffImpactData(customDbPath, opts = {}) {
     const dbPath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbPath), '..');
 
-    // Verify we're in a git repository before running git diff
-    let checkDir = repoRoot;
-    let isGitRepo = false;
-    while (checkDir) {
-      if (fs.existsSync(path.join(checkDir, '.git'))) {
-        isGitRepo = true;
-        break;
-      }
-      const parent = path.dirname(checkDir);
-      if (parent === checkDir) break;
-      checkDir = parent;
-    }
-    if (!isGitRepo) {
+    if (!findGitRoot(repoRoot)) {
       return { error: `Not a git repository: ${repoRoot}` };
     }
 
-    let diffOutput;
-    try {
-      const args = opts.staged
-        ? ['diff', '--cached', '--unified=0', '--no-color']
-        : ['diff', opts.ref || 'HEAD', '--unified=0', '--no-color'];
-      diffOutput = execFileSync('git', args, {
-        cwd: repoRoot,
-        encoding: 'utf-8',
-        maxBuffer: 10 * 1024 * 1024,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } catch (e) {
-      return { error: `Failed to run git diff: ${e.message}` };
-    }
+    const gitResult = runGitDiff(repoRoot, opts);
+    if (gitResult.error) return { error: gitResult.error };
 
-    if (!diffOutput.trim()) {
+    if (!gitResult.output.trim()) {
       return {
         changedFiles: 0,
         newFiles: [],
@@ -188,34 +409,7 @@ export function diffImpactData(customDbPath, opts = {}) {
       };
     }
 
-    const changedRanges = new Map();
-    const newFiles = new Set();
-    let currentFile = null;
-    let prevIsDevNull = false;
-    for (const line of diffOutput.split('\n')) {
-      if (line.startsWith('--- /dev/null')) {
-        prevIsDevNull = true;
-        continue;
-      }
-      if (line.startsWith('--- ')) {
-        prevIsDevNull = false;
-        continue;
-      }
-      const fileMatch = line.match(/^\+\+\+ b\/(.+)/);
-      if (fileMatch) {
-        currentFile = fileMatch[1];
-        if (!changedRanges.has(currentFile)) changedRanges.set(currentFile, []);
-        if (prevIsDevNull) newFiles.add(currentFile);
-        prevIsDevNull = false;
-        continue;
-      }
-      const hunkMatch = line.match(/^@@ .+ \+(\d+)(?:,(\d+))? @@/);
-      if (hunkMatch && currentFile) {
-        const start = parseInt(hunkMatch[1], 10);
-        const count = parseInt(hunkMatch[2] || '1', 10);
-        changedRanges.get(currentFile).push({ start, end: start + count - 1 });
-      }
-    }
+    const { changedRanges, newFiles } = parseGitDiff(gitResult.output);
 
     if (changedRanges.size === 0) {
       return {
@@ -227,106 +421,26 @@ export function diffImpactData(customDbPath, opts = {}) {
       };
     }
 
-    const affectedFunctions = [];
-    for (const [file, ranges] of changedRanges) {
-      if (noTests && isTestFile(file)) continue;
-      const defs = db
-        .prepare(
-          `SELECT * FROM nodes WHERE file = ? AND kind IN ('function', 'method', 'class') ORDER BY line`,
-        )
-        .all(file);
-      for (let i = 0; i < defs.length; i++) {
-        const def = defs[i];
-        const endLine = def.end_line || (defs[i + 1] ? defs[i + 1].line - 1 : 999999);
-        for (const range of ranges) {
-          if (range.start <= endLine && range.end >= def.line) {
-            affectedFunctions.push(def);
-            break;
-          }
-        }
-      }
-    }
-
-    const allAffected = new Set();
-    const functionResults = affectedFunctions.map((fn) => {
-      const edges = [];
-      const idToKey = new Map();
-      idToKey.set(fn.id, `${fn.file}::${fn.name}:${fn.line}`);
-
-      const { levels, totalDependents } = bfsTransitiveCallers(db, fn.id, {
-        noTests,
-        maxDepth,
-        onVisit(c, parentId) {
-          allAffected.add(`${c.file}:${c.name}`);
-          const callerKey = `${c.file}::${c.name}:${c.line}`;
-          idToKey.set(c.id, callerKey);
-          edges.push({ from: idToKey.get(parentId), to: callerKey });
-        },
-      });
-
-      return {
-        name: fn.name,
-        kind: fn.kind,
-        file: fn.file,
-        line: fn.line,
-        transitiveCallers: totalDependents,
-        levels,
-        edges,
-      };
-    });
+    const affectedFunctions = findAffectedFunctions(db, changedRanges, noTests);
+    const { functionResults, allAffected } = buildFunctionImpactResults(
+      db,
+      affectedFunctions,
+      noTests,
+      maxDepth,
+    );
 
     const affectedFiles = new Set();
     for (const key of allAffected) affectedFiles.add(key.split(':')[0]);
 
-    // Look up historically coupled files from co-change data
-    let historicallyCoupled = [];
-    try {
-      db.prepare('SELECT 1 FROM co_changes LIMIT 1').get();
-      const changedFilesList = [...changedRanges.keys()];
-      const coResults = coChangeForFiles(changedFilesList, db, {
-        minJaccard: 0.3,
-        limit: 20,
-        noTests,
-      });
-      // Exclude files already found via static analysis
-      historicallyCoupled = coResults.filter((r) => !affectedFiles.has(r.file));
-    } catch (e) {
-      debug(`co_changes lookup skipped: ${e.message}`);
-    }
-
-    // Look up CODEOWNERS for changed + affected files
-    let ownership = null;
-    try {
-      const allFilePaths = [...new Set([...changedRanges.keys(), ...affectedFiles])];
-      const ownerResult = ownersForFiles(allFilePaths, repoRoot);
-      if (ownerResult.affectedOwners.length > 0) {
-        ownership = {
-          owners: Object.fromEntries(ownerResult.owners),
-          affectedOwners: ownerResult.affectedOwners,
-          suggestedReviewers: ownerResult.suggestedReviewers,
-        };
-      }
-    } catch (e) {
-      debug(`CODEOWNERS lookup skipped: ${e.message}`);
-    }
-
-    // Check boundary violations scoped to changed files
-    let boundaryViolations = [];
-    let boundaryViolationCount = 0;
-    try {
-      const cfg = opts.config || loadConfig(repoRoot);
-      const boundaryConfig = cfg.manifesto?.boundaries;
-      if (boundaryConfig) {
-        const result = evaluateBoundaries(db, boundaryConfig, {
-          scopeFiles: [...changedRanges.keys()],
-          noTests,
-        });
-        boundaryViolations = result.violations;
-        boundaryViolationCount = result.violationCount;
-      }
-    } catch (e) {
-      debug(`boundary check skipped: ${e.message}`);
-    }
+    const historicallyCoupled = lookupCoChanges(db, changedRanges, affectedFiles, noTests);
+    const ownership = lookupOwnership(changedRanges, affectedFiles, repoRoot);
+    const { boundaryViolations, boundaryViolationCount } = checkBoundaryViolations(
+      db,
+      changedRanges,
+      noTests,
+      opts,
+      repoRoot,
+    );
 
     const base = {
       changedFiles: changedRanges.size,

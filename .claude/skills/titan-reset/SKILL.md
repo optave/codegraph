@@ -50,6 +50,9 @@ This removes:
 - `gauntlet-summary.json` — aggregated results
 - `sync.json` — execution plan
 - `gate-log.ndjson` — gate audit trail
+- `issues.ndjson` — cross-phase issue tracker
+- `close-summary.json` — close phase summary
+- `drift-report.json` — staleness detection across phases
 
 ---
 

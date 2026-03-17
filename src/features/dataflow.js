@@ -58,6 +58,125 @@ export function extractDataflow(tree, _filePath, _definitions, langId = 'javascr
   return results.dataflow;
 }
 
+// ── Build-Time Helpers ──────────────────────────────────────────────────────
+
+async function initDataflowParsers(fileSymbols) {
+  let needsFallback = false;
+
+  for (const [relPath, symbols] of fileSymbols) {
+    if (!symbols._tree && !symbols.dataflow) {
+      const ext = path.extname(relPath).toLowerCase();
+      if (DATAFLOW_EXTENSIONS.has(ext)) {
+        needsFallback = true;
+        break;
+      }
+    }
+  }
+
+  let parsers = null;
+  let getParserFn = null;
+
+  if (needsFallback) {
+    const { createParsers } = await import('../domain/parser.js');
+    parsers = await createParsers();
+    const mod = await import('../domain/parser.js');
+    getParserFn = mod.getParser;
+  }
+
+  return { parsers, getParserFn };
+}
+
+function getDataflowForFile(symbols, relPath, rootDir, extToLang, parsers, getParserFn) {
+  if (symbols.dataflow) return symbols.dataflow;
+
+  let tree = symbols._tree;
+  let langId = symbols._langId;
+
+  if (!tree) {
+    if (!getParserFn) return null;
+    const ext = path.extname(relPath).toLowerCase();
+    langId = extToLang.get(ext);
+    if (!langId || !DATAFLOW_RULES.has(langId)) return null;
+
+    const absPath = path.join(rootDir, relPath);
+    let code;
+    try {
+      code = fs.readFileSync(absPath, 'utf-8');
+    } catch (e) {
+      debug(`dataflow: cannot read ${relPath}: ${e.message}`);
+      return null;
+    }
+
+    const parser = getParserFn(parsers, absPath);
+    if (!parser) return null;
+
+    try {
+      tree = parser.parse(code);
+    } catch (e) {
+      debug(`dataflow: parse failed for ${relPath}: ${e.message}`);
+      return null;
+    }
+  }
+
+  if (!langId) {
+    const ext = path.extname(relPath).toLowerCase();
+    langId = extToLang.get(ext);
+    if (!langId) return null;
+  }
+
+  if (!DATAFLOW_RULES.has(langId)) return null;
+
+  return extractDataflow(tree, relPath, symbols.definitions, langId);
+}
+
+function insertDataflowEdges(insert, data, resolveNode) {
+  let edgeCount = 0;
+
+  for (const flow of data.argFlows) {
+    const sourceNode = resolveNode(flow.callerFunc);
+    const targetNode = resolveNode(flow.calleeName);
+    if (sourceNode && targetNode) {
+      insert.run(
+        sourceNode.id,
+        targetNode.id,
+        'flows_to',
+        flow.argIndex,
+        flow.expression,
+        flow.line,
+        flow.confidence,
+      );
+      edgeCount++;
+    }
+  }
+
+  for (const assignment of data.assignments) {
+    const producerNode = resolveNode(assignment.sourceCallName);
+    const consumerNode = resolveNode(assignment.callerFunc);
+    if (producerNode && consumerNode) {
+      insert.run(
+        producerNode.id,
+        consumerNode.id,
+        'returns',
+        null,
+        assignment.expression,
+        assignment.line,
+        1.0,
+      );
+      edgeCount++;
+    }
+  }
+
+  for (const mut of data.mutations) {
+    const mutatorNode = resolveNode(mut.funcName);
+    if (mutatorNode && mut.binding?.type === 'param') {
+      insert.run(mutatorNode.id, mutatorNode.id, 'mutates', null, mut.mutatingExpr, mut.line, 1.0);
+      edgeCount++;
+    }
+  }
+
+  return edgeCount;
+}
+
 // ── buildDataflowEdges ──────────────────────────────────────────────────────
 
 /**
@@ -70,43 +189,14 @@ export function extractDataflow(tree, _filePath, _definitions, langId = 'javascr
  * @param {object} engineOpts - engine options
  */
 export async function buildDataflowEdges(db, fileSymbols, rootDir, _engineOpts) {
-  // Lazily init WASM parsers if needed
-  let parsers = null;
-  let needsFallback = false;
-
-  // Always build ext→langId map so native-only builds (where _langId is unset)
-  // can still derive the language from the file extension.
   const extToLang = buildExtToLangMap();
-
-  for (const [relPath, symbols] of fileSymbols) {
-    if (!symbols._tree && !symbols.dataflow) {
-      const ext = path.extname(relPath).toLowerCase();
-      if (DATAFLOW_EXTENSIONS.has(ext)) {
-        needsFallback = true;
-        break;
-      }
-    }
-  }
-
-  if (needsFallback) {
-    const { createParsers } = await import('../domain/parser.js');
-    parsers = await createParsers();
-  }
-
-  let getParserFn = null;
-  if (parsers) {
-    const mod = await import('../domain/parser.js');
-    getParserFn = mod.getParser;
-  }
+  const { parsers, getParserFn } = await initDataflowParsers(fileSymbols);
 
   const insert = db.prepare(
     `INSERT INTO dataflow (source_id, target_id, kind, param_index, expression, line, confidence)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
 
-  // MVP scope: only resolve function/method nodes for dataflow edges.
-  // Future expansion: add 'parameter', 'property', 'constant' kinds to track
-  // data flow through property accessors or constant references.
   const getNodeByNameAndFile = db.prepare(
     `SELECT id, name, kind, file, line FROM nodes
      WHERE name = ? AND file = ? AND kind IN ('function', 'method')`,
@@ -125,109 +215,17 @@ export async function buildDataflowEdges(db, fileSymbols, rootDir, _engineOpts) 
       const ext = path.extname(relPath).toLowerCase();
       if (!DATAFLOW_EXTENSIONS.has(ext)) continue;
 
-      // Use native dataflow data if available — skip WASM extraction
-      let data = symbols.dataflow;
-      if (!data) {
-        let tree = symbols._tree;
-        let langId = symbols._langId;
+      const data = getDataflowForFile(symbols, relPath, rootDir, extToLang, parsers, getParserFn);
+      if (!data) continue;
 
-        // WASM fallback if no cached tree
-        if (!tree) {
-          if (!getParserFn) continue;
-          langId = extToLang.get(ext);
-          if (!langId || !DATAFLOW_RULES.has(langId)) continue;
-
-          const absPath = path.join(rootDir, relPath);
-          let code;
-          try {
-            code = fs.readFileSync(absPath, 'utf-8');
-          } catch (e) {
-            debug(`dataflow: cannot read ${relPath}: ${e.message}`);
-            continue;
-          }
-
-          const parser = getParserFn(parsers, absPath);
-          if (!parser) continue;
-
-          try {
-            tree = parser.parse(code);
-          } catch (e) {
-            debug(`dataflow: parse failed for ${relPath}: ${e.message}`);
-            continue;
-          }
-        }
-
-        if (!langId) {
-          langId = extToLang.get(ext);
-          if (!langId) continue;
-        }
-
-        if (!DATAFLOW_RULES.has(langId)) continue;
-
-        data = extractDataflow(tree, relPath, symbols.definitions, langId);
-      }
-
-      // Resolve function names to node IDs in this file first, then globally
-      function resolveNode(funcName) {
+      const resolveNode = (funcName) => {
         const local = getNodeByNameAndFile.all(funcName, relPath);
         if (local.length > 0) return local[0];
         const global = getNodeByName.all(funcName);
         return global.length > 0 ? global[0] : null;
-      }
+      };
 
-      // flows_to: parameter/variable passed as argument to another function
-      for (const flow of data.argFlows) {
-        const sourceNode = resolveNode(flow.callerFunc);
-        const targetNode = resolveNode(flow.calleeName);
-        if (sourceNode && targetNode) {
-          insert.run(
-            sourceNode.id,
-            targetNode.id,
-            'flows_to',
-            flow.argIndex,
-            flow.expression,
-            flow.line,
-            flow.confidence,
-          );
-          totalEdges++;
-        }
-      }
-
-      // returns: call return value captured in caller
-      for (const assignment of data.assignments) {
-        const producerNode = resolveNode(assignment.sourceCallName);
-        const consumerNode = resolveNode(assignment.callerFunc);
-        if (producerNode && consumerNode) {
-          insert.run(
-            producerNode.id,
-            consumerNode.id,
-            'returns',
-            null,
-            assignment.expression,
-            assignment.line,
-            1.0,
-          );
-          totalEdges++;
-        }
-      }
-
-      // mutates: parameter-derived value is mutated
-      for (const mut of data.mutations) {
-        const mutatorNode = resolveNode(mut.funcName);
-        if (mutatorNode && mut.binding?.type === 'param') {
-          // The mutation in this function affects the parameter source
-          insert.run(
-            mutatorNode.id,
-            mutatorNode.id,
-            'mutates',
-            null,
-            mut.mutatingExpr,
-            mut.line,
-            1.0,
-          );
-          totalEdges++;
-        }
-      }
+      totalEdges += insertDataflowEdges(insert, data, resolveNode);
     }
   });
 
