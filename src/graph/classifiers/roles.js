@@ -1,7 +1,7 @@
 /**
  * Node role classification — pure logic, no DB.
  *
- * Roles: entry, core, utility, adapter, leaf, dead
+ * Roles: entry, core, utility, adapter, leaf, dead, test-only
  */
 
 export const FRAMEWORK_ENTRY_PREFIXES = ['route:', 'event:', 'command:'];
