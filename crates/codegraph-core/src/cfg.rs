@@ -1,6 +1,9 @@
 use tree_sitter::Node;
 use crate::types::{CfgBlock, CfgData, CfgEdge};
 
+/// Maximum recursion depth for CFG construction to prevent stack overflow.
+const MAX_WALK_DEPTH: usize = 200;
+
 // ─── CFG Rules ──────────────────────────────────────────────────────────
 
 /// Per-language node type names for CFG construction.
@@ -617,6 +620,13 @@ impl<'a> CfgBuilder<'a> {
 
     /// Process if/else-if/else chain (handles patterns A, B, C).
     fn process_if(&mut self, if_stmt: &Node, current: u32) -> Option<u32> {
+        self.process_if_depth(if_stmt, current, 0)
+    }
+
+    fn process_if_depth(&mut self, if_stmt: &Node, current: u32, depth: usize) -> Option<u32> {
+        if depth >= MAX_WALK_DEPTH {
+            return Some(current);
+        }
         self.set_end_line(current, node_line(if_stmt));
 
         let cond_block = self.make_block("condition", Some(node_line(if_stmt)), Some(node_line(if_stmt)), Some("if"));
@@ -653,7 +663,7 @@ impl<'a> CfgBuilder<'a> {
                     if matches_opt(alt_kind, self.rules.if_node) || matches_slice(alt_kind, self.rules.if_nodes) {
                         let false_block = self.make_block("branch_false", None, None, Some("else-if"));
                         self.add_edge(cond_block, false_block, "branch_false");
-                        let else_if_end = self.process_if(&alternative, false_block);
+                        let else_if_end = self.process_if_depth(&alternative, false_block, depth + 1);
                         if let Some(eie) = else_if_end {
                             self.add_edge(eie, join_block, "fallthrough");
                         }
@@ -679,7 +689,7 @@ impl<'a> CfgBuilder<'a> {
                         // else-if: recurse
                         let false_block = self.make_block("branch_false", None, None, Some("else-if"));
                         self.add_edge(cond_block, false_block, "branch_false");
-                        let else_if_end = self.process_if(&else_children[0], false_block);
+                        let else_if_end = self.process_if_depth(&else_children[0], false_block, depth + 1);
                         if let Some(eie) = else_if_end {
                             self.add_edge(eie, join_block, "fallthrough");
                         }
