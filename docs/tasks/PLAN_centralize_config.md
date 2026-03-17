@@ -4,7 +4,7 @@
 
 ## Problem
 
-The config system already exists and handles deep-merge + env overrides, but ~50+ behavioral constants are hardcoded in individual modules and never read from config. Users cannot tune thresholds, depths, weights, or limits without editing source code.
+The config system already exists and handles env overrides, but ~70 individual behavioral constants (34 inventory entries expanding to ~70 discrete values when counting sub-keys in B1, B2, and E1) are hardcoded in individual modules and never read from config. Users cannot tune thresholds, depths, weights, or limits without editing source code.
 
 ---
 
@@ -61,7 +61,7 @@ The config system already exists and handles deep-merge + env overrides, but ~50
 | # | Value | File | Line | Controls |
 |---|-------|------|------|----------|
 | E1 | `MCP_DEFAULTS` (22 entries) | `shared/paginate.js` | 9-34 | Per-tool default page sizes |
-| E2 | `MCP_MAX_LIMIT = 1000` | `shared/paginate.js` | 37 | Hard abuse-prevention cap |
+| ~~E2~~ | ~~`MCP_MAX_LIMIT = 1000`~~ | — | — | Moved to Category F (see below) |
 
 ### Category F — Infrastructure (low user value, keep hardcoded)
 
@@ -73,6 +73,7 @@ The config system already exists and handles deep-merge + env overrides, but ~50
 | F4 | `maxBuffer = 10MB` | `features/check.js` | 260 | Git diff buffer |
 | F5 | `volume / 3000` | `features/complexity.js` | 85 | Halstead bugs formula (standard) |
 | F6 | `timeout = 10_000` | `infrastructure/config.js` | 110 | apiKeyCommand timeout |
+| F7 | `MCP_MAX_LIMIT = 1000` | `shared/paginate.js` | 37 | Hard abuse-prevention cap — server-side safety boundary, not a tuning knob |
 
 ---
 
@@ -130,7 +131,7 @@ export const DEFAULTS = {
 
   mcp: {
     defaults: { /* E1: current MCP_DEFAULTS object */ },
-    maxLimit: 1000,            // E2
+    // MCP_MAX_LIMIT stays hardcoded (Category F) — server-side safety boundary
   },
 };
 ```
@@ -142,6 +143,7 @@ export const DEFAULTS = {
 - **`apiKeyCommand` timeout** — security boundary, not user-facing
 - **Update check TTL/timeout** — implementation detail
 - **Watcher debounce** — could be configurable later but low priority
+- **`MCP_MAX_LIMIT`** — server-side abuse-prevention cap; making it user-configurable via `.codegraphrc.json` would allow any process with project directory write access to raise it arbitrarily, defeating its security purpose
 
 ---
 
@@ -153,7 +155,7 @@ export const DEFAULTS = {
 
 1. Add `analysis`, `community`, `risk`, `display`, `mcp` sections to `DEFAULTS`
 2. Move `build.driftThreshold` → `community.driftThreshold` (keep `build.driftThreshold` as deprecated alias)
-3. Update `mergeConfig` to handle the new nested sections (already works for 1-level deep objects; verify 2-level `risk.weights` merges correctly — may need recursive merge)
+3. **Hard prerequisite:** Update `mergeConfig` to perform recursive (deep) merging — at minimum 2 levels deep. The current implementation only merges 1 level deep, which means partial user overrides of nested objects like `risk.weights` (e.g. `{ "complexity": 0.4, "churn": 0.1 }`) will **silently drop** un-specified sibling keys (`fanIn`, `role`, `mi`), producing `NaN` risk scores. This must be fixed before any nested config keys are wired in subsequent phases
 4. Add tests: loading config with overrides for each new section
 
 ### Phase 2 — Wire analysis parameters (1 PR)
@@ -197,7 +199,7 @@ export const DEFAULTS = {
 **Files to change:**
 - `src/presentation/result-formatter.js` → read `config.display.maxColWidth`
 - `src/shared/file-utils.js` → read `config.display.excerptLines`, etc.
-- `src/shared/paginate.js` → read `config.mcp.defaults`, `config.mcp.maxLimit`
+- `src/shared/paginate.js` → read `config.mcp.defaults` (`MCP_MAX_LIMIT` stays hardcoded — security boundary)
 
 **Consideration:** `file-utils.js` and `paginate.js` are low-level shared utilities. They shouldn't call `loadConfig()` directly. Instead, pass display/mcp settings down from callers, or use a module-level config cache set at startup.
 
@@ -207,16 +209,13 @@ export const DEFAULTS = {
 2. Add a `docs/configuration.md` reference with all keys, types, defaults, and descriptions
 3. Document the deprecated `build.driftThreshold` alias
 4. Add a JSON Schema file (`.codegraphrc.schema.json`) for IDE autocomplete
-
-### Phase 7 — Update CLAUDE.md with configuration guidance (same PR as Phase 6)
-
-Add a **Configuration** section to `CLAUDE.md` that documents:
-1. The `.codegraphrc.json` config file and its location
-2. The full list of configurable sections (`analysis`, `community`, `risk`, `display`, `mcp`, `search`, `check`, `coChange`, `manifesto`)
-3. Key tunable parameters and their defaults (depth limits, risk weights, thresholds)
-4. How `mergeConfig` works (partial overrides deep-merge with defaults)
-5. Env var overrides (`CODEGRAPH_LLM_*`)
-6. Guidance: when adding new behavioral constants, always add them to `DEFAULTS` in `config.js` and wire them through — never introduce new hardcoded magic numbers
+5. Add a **Configuration** section to `CLAUDE.md` that documents:
+   - The `.codegraphrc.json` config file and its location
+   - The full list of configurable sections (`analysis`, `community`, `risk`, `display`, `mcp`, `search`, `check`, `coChange`, `manifesto`)
+   - Key tunable parameters and their defaults (depth limits, risk weights, thresholds)
+   - How `mergeConfig` works (partial overrides deep-merge with defaults)
+   - Env var overrides (`CODEGRAPH_LLM_*`)
+   - Guidance: when adding new behavioral constants, always add them to `DEFAULTS` in `config.js` and wire them through — never introduce new hardcoded magic numbers
 
 ---
 
@@ -224,7 +223,7 @@ Add a **Configuration** section to `CLAUDE.md` that documents:
 
 - All new config keys have defaults matching current hardcoded values → **zero breaking changes**
 - Existing `.codegraphrc.json` files continue to work unchanged
-- `mergeConfig` deep-merges, so users only need to specify the keys they want to override
+- `mergeConfig` will be updated to deep-merge recursively (Phase 1 prerequisite), so users only need to specify the keys they want to override
 - The `build.driftThreshold` → `community.driftThreshold` move uses a deprecated alias
 
 ## Example `.codegraphrc.json` after this work
@@ -261,6 +260,6 @@ Add a **Configuration** section to `CLAUDE.md` that documents:
 | 3 — Risk/community | 3 | 2-3 | Medium (parameter threading) |
 | 4 — Search wiring | 3 | 2 | Low (config keys already exist) |
 | 5 — Display/MCP | 3 | 2 | Medium (shared utility coupling) |
-| 6 — Docs + CLAUDE.md | 4 | 0 | None |
+| 6 — Docs + CLAUDE.md | 5 | 0 | None |
 
-**Total: ~20 files changed, 6 PRs, one concern per PR.**
+**Total: ~22 files changed, 6 PRs, one concern per PR.**
