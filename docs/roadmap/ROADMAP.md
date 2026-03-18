@@ -1063,6 +1063,8 @@ Modern Node.js standard since v12. Currently codegraph's import resolution uses 
 
 `pnpm-workspace.yaml`, npm workspaces (`package.json` `workspaces`), and `lerna.json` are not recognized. Internal package imports (`@myorg/utils`) fall through to global resolution with low confidence.
 
+> **Scope note:** This phase covers the *resolution layer only* — detecting workspace packages and resolving internal imports to source files. Full monorepo graph support (package node type, cross-package edges, `build --workspace` flag) is deferred to Phase 12.2.
+
 - Detect workspace root and enumerate workspace packages
 - Resolve internal package imports to actual source files within the monorepo
 - Assign high confidence (0.95) to workspace-resolved imports
