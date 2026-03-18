@@ -474,22 +474,24 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
     // so the JS edge builder can be used as a fallback.
     if (needsTypeMap.length > 0) {
       const parsers = await createParsers();
-      for (const { filePath, relPath } of needsTypeMap) {
-        try {
-          const code = fs.readFileSync(filePath, 'utf-8');
-          const extracted = wasmExtractSymbols(parsers, filePath, code);
-          if (extracted?.symbols?.typeMap) {
-            const symbols = result.get(relPath);
-            symbols.typeMap =
-              extracted.symbols.typeMap instanceof Map
-                ? extracted.symbols.typeMap
-                : new Map(extracted.symbols.typeMap.map((e) => [e.name, e.typeName]));
-            symbols._typeMapBackfilled = true;
+      await Promise.all(
+        needsTypeMap.map(async ({ filePath, relPath }) => {
+          try {
+            const code = await fs.promises.readFile(filePath, 'utf-8');
+            const extracted = wasmExtractSymbols(parsers, filePath, code);
+            if (extracted?.symbols?.typeMap) {
+              const symbols = result.get(relPath);
+              symbols.typeMap =
+                extracted.symbols.typeMap instanceof Map
+                  ? extracted.symbols.typeMap
+                  : new Map(extracted.symbols.typeMap.map((e) => [e.name, e.typeName]));
+              symbols._typeMapBackfilled = true;
+            }
+          } catch {
+            /* skip — typeMap is a best-effort backfill */
           }
-        } catch {
-          /* skip — typeMap is a best-effort backfill */
-        }
-      }
+        }),
+      );
     }
     return result;
   }
