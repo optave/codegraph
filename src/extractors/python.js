@@ -299,7 +299,7 @@ function extractPythonTypeMapDepth(node, ctx, depth) {
     const typeNode = node.childForFieldName('type');
     if (nameNode && nameNode.type === 'identifier' && typeNode) {
       const typeName = extractPythonTypeName(typeNode);
-      if (typeName && typeName !== 'self' && typeName !== 'cls') {
+      if (typeName && nameNode.text !== 'self' && nameNode.text !== 'cls') {
         ctx.typeMap.set(nameNode.text, typeName);
       }
     }
@@ -311,7 +311,9 @@ function extractPythonTypeMapDepth(node, ctx, depth) {
     const typeNode = node.childForFieldName('type');
     if (nameNode && nameNode.type === 'identifier' && typeNode) {
       const typeName = extractPythonTypeName(typeNode);
-      if (typeName) ctx.typeMap.set(nameNode.text, typeName);
+      if (typeName && nameNode.text !== 'self' && nameNode.text !== 'cls') {
+        ctx.typeMap.set(nameNode.text, typeName);
+      }
     }
   }
 
