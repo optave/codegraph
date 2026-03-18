@@ -176,7 +176,7 @@ These close gaps in search expressiveness, cross-repo navigation, implementation
 
 ### Tier 1j — Audit-identified gaps (from Architecture Audit v3.1.4)
 
-Items identified by the [architectural audit](../../docs/architecture/ARCHITECTURE_AUDIT_v3.1.4_2026-03-16.md) that don't fit existing tiers. Most are zero-dep and foundation-aligned (see individual rows for exceptions).
+Items identified by the architectural audit (v3.1.4) that don't fit existing tiers. Most are zero-dep and foundation-aligned (see individual rows for exceptions).
 
 | ID | Title | Description | Category | Benefit | Zero-dep | Foundation-aligned | Problem-fit (1-5) | Breaking | Depends on |
 |----|-------|-------------|----------|---------|----------|-------------------|-------------------|----------|------------|
