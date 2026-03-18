@@ -379,6 +379,25 @@ for (const entry of LANGUAGE_REGISTRY) {
 export const SUPPORTED_EXTENSIONS = new Set(_extToLang.keys());
 
 /**
+ * Regex-based typeMap extraction for older native binaries that don't emit typeMap.
+ * Handles `const x = new Foo()` patterns. Removes the need for tree-sitter.
+ * TODO: Remove once all published native binaries include typeMap extraction (>= 3.2.0)
+ */
+function extractTypeMapRegex(filePath) {
+  let code;
+  try {
+    code = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const m of code.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*new\s+(\w+)/g)) {
+    entries.push({ name: m[1], typeName: m[2] });
+  }
+  return entries;
+}
+
+/**
  * WASM extraction helper: picks the right extractor based on file extension.
  */
 function wasmExtractSymbols(parsers, filePath, code) {
@@ -414,7 +433,12 @@ export async function parseFileAuto(filePath, source, opts = {}) {
 
   if (native) {
     const result = native.parseFile(filePath, source, !!opts.dataflow, opts.ast !== false);
-    return result ? patchNativeResult(result) : null;
+    if (!result) return null;
+    const patched = patchNativeResult(result);
+    if (!patched.typeMap || patched.typeMap.length === 0) {
+      patched.typeMap = extractTypeMapRegex(filePath);
+    }
+    return patched;
   }
 
   // WASM path
@@ -444,8 +468,13 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
     );
     for (const r of nativeResults) {
       if (!r) continue;
+      const patched = patchNativeResult(r);
+      // Older native binaries (< 3.2.0) don't extract typeMap; supplement from source
+      if (!patched.typeMap || patched.typeMap.length === 0) {
+        patched.typeMap = extractTypeMapRegex(r.file);
+      }
       const relPath = path.relative(rootDir, r.file).split(path.sep).join('/');
-      result.set(relPath, patchNativeResult(r));
+      result.set(relPath, patched);
     }
     return result;
   }
@@ -519,7 +548,12 @@ export function createParseTreeCache() {
 export async function parseFileIncremental(cache, filePath, source, opts = {}) {
   if (cache) {
     const result = cache.parseFile(filePath, source);
-    return result ? patchNativeResult(result) : null;
+    if (!result) return null;
+    const patched = patchNativeResult(result);
+    if (!patched.typeMap || patched.typeMap.length === 0) {
+      patched.typeMap = extractTypeMapRegex(filePath);
+    }
+    return patched;
   }
   return parseFileAuto(filePath, source, opts);
 }
