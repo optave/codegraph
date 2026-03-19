@@ -352,7 +352,7 @@ if (fs.existsSync(readmePath)) {
 	// Preserve existing benchmark link line from README rather than hardcoding.
 	// Fall back to a default if we can't find it.
 	let benchmarkLinks = '[build benchmarks](generated/benchmarks/BUILD-BENCHMARKS.md) | [embedding benchmarks](generated/benchmarks/EMBEDDING-BENCHMARKS.md)';
-	const linksMatch = readme.match(/Self-measured on every release via CI \(([^)]+)\)/);
+	const linksMatch = readme.match(/Self-measured on every release via CI \((.+?)\):/);
 	if (linksMatch) {
 		benchmarkLinks = linksMatch[1];
 	}
