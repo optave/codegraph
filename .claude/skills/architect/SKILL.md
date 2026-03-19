@@ -32,7 +32,8 @@ Before writing, check `docs/architecture/` for previous audits. Reference change
 1. Read `package.json` to get the current version
 2. Get the current date, commit SHA, and branch name
 3. Check `docs/architecture/` for previous audit files
-4. Run `codegraph build --no-incremental` to ensure fresh metrics
+4. **Read all ADRs in `docs/architecture/decisions/`.** These are the project's settled architectural decisions. Read every file — they document rationale, trade-offs, alternatives considered, and trajectory. The audit must evaluate the codebase *against* these decisions: are they being followed? Are the stated trade-offs still accurate? Has anything changed that invalidates the rationale?
+5. Run `codegraph build --no-incremental` to ensure fresh metrics
 
 ### Phase 1 — Structural Census
 1. Run `codegraph stats` to get graph health baseline
@@ -71,6 +72,12 @@ For each architectural layer, evaluate against these dimensions:
 - Is the analysis sound or best-effort? (Be explicit)
 - What false positives / negatives does the approach inherently produce?
 - Where does the tool present incomplete data as complete?
+
+**F. ADR Compliance**
+- Does the implementation match the decisions documented in `docs/architecture/decisions/`?
+- Are the trade-offs described in ADRs still accurate given the current code?
+- Has the codebase drifted from any stated trajectory? If so, is that drift justified or accidental?
+- Are there architectural decisions that *should* have an ADR but don't?
 
 ### Phase 3 — Cross-Cutting Concerns
 
@@ -116,6 +123,7 @@ The deliverable must contain:
 - "Does Codegraph Have a Reason to Exist?" section (verified competitor data)
 - Executive summary (1 paragraph, brutally honest)
 - Scorecard (each dimension rated 1-10 with justification)
+- **ADR compliance review** — for each ADR in `docs/architecture/decisions/`, assess whether the codebase follows the decision, whether the stated trade-offs are still valid, and whether any drift has occurred. Flag missing ADRs for decisions that exist in code but aren't documented
 - Detailed findings per layer
 - Verified competitor comparison table
 - Strategic recommendations (prioritized)
