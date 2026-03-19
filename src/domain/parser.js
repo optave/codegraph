@@ -395,26 +395,23 @@ async function backfillTypeMap(filePath, source) {
   }
   const parsers = await createParsers();
   const extracted = wasmExtractSymbols(parsers, filePath, code);
-  if (!extracted?.symbols?.typeMap) {
+  try {
+    if (!extracted?.symbols?.typeMap) {
+      return { typeMap: [], backfilled: false };
+    }
+    const tm = extracted.symbols.typeMap;
+    return {
+      typeMap: tm instanceof Map ? tm : new Map(tm.map((e) => [e.name, e.typeName])),
+      backfilled: true,
+    };
+  } finally {
     // Free the WASM tree to prevent memory accumulation across repeated builds
     if (extracted?.tree && typeof extracted.tree.delete === 'function') {
       try {
         extracted.tree.delete();
       } catch {}
     }
-    return { typeMap: [], backfilled: false };
   }
-  const tm = extracted.symbols.typeMap;
-  // Free the WASM tree — only the typeMap data is needed
-  if (extracted.tree && typeof extracted.tree.delete === 'function') {
-    try {
-      extracted.tree.delete();
-    } catch {}
-  }
-  return {
-    typeMap: tm instanceof Map ? tm : new Map(tm.map((e) => [e.name, e.typeName])),
-    backfilled: true,
-  };
 }
 
 /**
@@ -455,7 +452,13 @@ export async function parseFileAuto(filePath, source, opts = {}) {
     const result = native.parseFile(filePath, source, !!opts.dataflow, opts.ast !== false);
     if (!result) return null;
     const patched = patchNativeResult(result);
-    if (!patched.typeMap || patched.typeMap.length === 0) {
+    // Only backfill typeMap for TS/TSX — JS files have no type annotations,
+    // and the native engine already handles `new Expr()` patterns.
+    const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
+    if (
+      (!patched.typeMap || patched.typeMap.length === 0) &&
+      TS_BACKFILL_EXTS.has(path.extname(filePath))
+    ) {
       const { typeMap, backfilled } = await backfillTypeMap(filePath, source);
       patched.typeMap = typeMap;
       if (backfilled) patched._typeMapBackfilled = true;
@@ -606,7 +609,13 @@ export async function parseFileIncremental(cache, filePath, source, opts = {}) {
     const result = cache.parseFile(filePath, source);
     if (!result) return null;
     const patched = patchNativeResult(result);
-    if (!patched.typeMap || patched.typeMap.length === 0) {
+    // Only backfill typeMap for TS/TSX — JS files have no type annotations,
+    // and the native engine already handles `new Expr()` patterns.
+    const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
+    if (
+      (!patched.typeMap || patched.typeMap.length === 0) &&
+      TS_BACKFILL_EXTS.has(path.extname(filePath))
+    ) {
       const { typeMap, backfilled } = await backfillTypeMap(filePath, source);
       patched.typeMap = typeMap;
       if (backfilled) patched._typeMapBackfilled = true;
