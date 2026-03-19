@@ -1,5 +1,8 @@
 import { findChild, nodeEndLine, pythonVisibility } from './helpers.js';
 
+/** Built-in globals that start with uppercase but are not user-defined types. */
+const BUILTIN_GLOBALS_PY = new Set(['None', 'True', 'False', 'NotImplemented', 'Ellipsis']);
+
 /**
  * Extract symbols from Python files.
  */
@@ -333,7 +336,7 @@ function extractPythonTypeMapDepth(node, ctx, depth) {
       const fn = right.childForFieldName('function');
       if (fn && fn.type === 'identifier') {
         const name = fn.text;
-        if (name[0] === name[0].toUpperCase() && name[0] !== name[0].toLowerCase()) {
+        if (name[0] !== name[0].toLowerCase()) {
           setIfHigherPy(ctx.typeMap, left.text, name, 1.0);
         }
       }
@@ -341,7 +344,7 @@ function extractPythonTypeMapDepth(node, ctx, depth) {
         const obj = fn.childForFieldName('object');
         if (obj && obj.type === 'identifier') {
           const objName = obj.text;
-          if (objName[0] === objName[0].toUpperCase() && objName[0] !== objName[0].toLowerCase()) {
+          if (objName[0] !== objName[0].toLowerCase() && !BUILTIN_GLOBALS_PY.has(objName)) {
             setIfHigherPy(ctx.typeMap, left.text, objName, 0.7);
           }
         }

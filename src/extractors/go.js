@@ -251,13 +251,29 @@ function extractGoTypeMapDepth(node, ctx, depth) {
   }
 
   // short_var_declaration: x := Struct{}, x := &Struct{}, x := NewFoo()
+  // Handles multi-variable forms: x, y := A{}, B{}
   if (node.type === 'short_var_declaration') {
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
     if (left && right) {
-      const varNode = left.type === 'expression_list' ? left.child(0) : left;
-      const rhs = right.type === 'expression_list' ? right.child(0) : right;
-      if (varNode && varNode.type === 'identifier' && rhs) {
+      const lefts =
+        left.type === 'expression_list'
+          ? Array.from({ length: left.childCount }, (_, i) => left.child(i)).filter(
+              (c) => c?.type === 'identifier',
+            )
+          : left.type === 'identifier'
+            ? [left]
+            : [];
+      const rights =
+        right.type === 'expression_list'
+          ? Array.from({ length: right.childCount }, (_, i) => right.child(i)).filter(Boolean)
+          : [right];
+
+      for (let idx = 0; idx < lefts.length; idx++) {
+        const varNode = lefts[idx];
+        const rhs = rights[idx];
+        if (!varNode || !rhs) continue;
+
         // x := Struct{...} — composite literal (confidence 1.0)
         if (rhs.type === 'composite_literal') {
           const typeNode = rhs.childForFieldName('type');

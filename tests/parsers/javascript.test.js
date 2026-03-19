@@ -145,7 +145,10 @@ describe('JavaScript parser', () => {
 
     it('prefers constructor (1.0) over type annotation (0.9)', () => {
       const symbols = parseTS(`const x: Base = new Derived();`);
-      // Constructor confidence (1.0) beats annotation (0.9)
+      // Deliberate: constructor (1.0) beats annotation (0.9) because the runtime
+      // type is what matters for call resolution. In `const x: Base = new Derived()`,
+      // x.method() dispatches to Derived.method, not Base.method. This is a
+      // semantic reversal from the previous behaviour (annotation-first).
       expect(symbols.typeMap.get('x')).toEqual({ type: 'Derived', confidence: 1.0 });
     });
 
@@ -157,6 +160,17 @@ describe('JavaScript parser', () => {
     it('ignores lowercase factory calls', () => {
       const symbols = parseJS(`const result = utils.create();`);
       expect(symbols.typeMap.has('result')).toBe(false);
+    });
+
+    it('ignores built-in globals like Math, JSON, Promise', () => {
+      const symbols = parseJS(`
+        const r = Math.random();
+        const d = JSON.parse('{}');
+        const p = Promise.resolve(42);
+      `);
+      expect(symbols.typeMap.has('r')).toBe(false);
+      expect(symbols.typeMap.has('d')).toBe(false);
+      expect(symbols.typeMap.has('p')).toBe(false);
     });
   });
 

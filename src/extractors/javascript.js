@@ -1,6 +1,63 @@
 import { debug } from '../infrastructure/logger.js';
 import { findChild, nodeEndLine } from './helpers.js';
 
+/** Built-in globals that start with uppercase but are not user-defined types. */
+const BUILTIN_GLOBALS = new Set([
+  'Math',
+  'JSON',
+  'Promise',
+  'Array',
+  'Object',
+  'Date',
+  'Error',
+  'Symbol',
+  'Map',
+  'Set',
+  'RegExp',
+  'Number',
+  'String',
+  'Boolean',
+  'WeakMap',
+  'WeakSet',
+  'WeakRef',
+  'Proxy',
+  'Reflect',
+  'Intl',
+  'ArrayBuffer',
+  'SharedArrayBuffer',
+  'DataView',
+  'Atomics',
+  'BigInt',
+  'Float32Array',
+  'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Uint8Array',
+  'Uint16Array',
+  'Uint32Array',
+  'Uint8ClampedArray',
+  'URL',
+  'URLSearchParams',
+  'TextEncoder',
+  'TextDecoder',
+  'AbortController',
+  'AbortSignal',
+  'Headers',
+  'Request',
+  'Response',
+  'FormData',
+  'Blob',
+  'File',
+  'ReadableStream',
+  'WritableStream',
+  'TransformStream',
+  'console',
+  'Buffer',
+  'EventEmitter',
+  'Stream',
+]);
+
 /**
  * Extract symbols from a JS/TS parsed AST.
  * When a compiled tree-sitter Query is provided (from parser.js),
@@ -867,10 +924,7 @@ function extractTypeMapWalk(rootNode, typeMap) {
               const obj = fn.childForFieldName('object');
               if (obj && obj.type === 'identifier') {
                 const objName = obj.text;
-                if (
-                  objName[0] === objName[0].toUpperCase() &&
-                  objName[0] !== objName[0].toLowerCase()
-                ) {
+                if (objName[0] !== objName[0].toLowerCase() && !BUILTIN_GLOBALS.has(objName)) {
                   setIfHigher(nameN.text, objName, 0.7);
                 }
               }
