@@ -1,7 +1,48 @@
 import { findChild, nodeEndLine, pythonVisibility } from './helpers.js';
 
 /** Built-in globals that start with uppercase but are not user-defined types. */
-const BUILTIN_GLOBALS_PY = new Set(['None', 'True', 'False', 'NotImplemented', 'Ellipsis']);
+const BUILTIN_GLOBALS_PY = new Set([
+  // Uppercase builtins that would false-positive on the factory heuristic
+  'Exception',
+  'BaseException',
+  'ValueError',
+  'TypeError',
+  'KeyError',
+  'IndexError',
+  'AttributeError',
+  'RuntimeError',
+  'OSError',
+  'IOError',
+  'FileNotFoundError',
+  'PermissionError',
+  'NotImplementedError',
+  'StopIteration',
+  'GeneratorExit',
+  'SystemExit',
+  'KeyboardInterrupt',
+  'ArithmeticError',
+  'LookupError',
+  'UnicodeError',
+  'UnicodeDecodeError',
+  'UnicodeEncodeError',
+  'ImportError',
+  'ModuleNotFoundError',
+  'ConnectionError',
+  'TimeoutError',
+  'OverflowError',
+  'ZeroDivisionError',
+  'NameError',
+  'SyntaxError',
+  'RecursionError',
+  'MemoryError',
+  // Common standard library uppercase classes
+  'Path',
+  'PurePath',
+  'OrderedDict',
+  'Counter',
+  'Decimal',
+  'Fraction',
+]);
 
 /**
  * Extract symbols from Python files.
