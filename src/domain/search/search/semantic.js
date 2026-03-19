@@ -12,8 +12,8 @@ import { prepareSearch } from './prepare.js';
 export async function searchData(query, customDbPath, opts = {}) {
   const config = opts.config || loadConfig();
   const searchCfg = config.search || {};
-  const limit = opts.limit || searchCfg.topK || 15;
-  const minScore = opts.minScore || searchCfg.defaultMinScore || 0.2;
+  const limit = opts.limit ?? searchCfg.topK ?? 15;
+  const minScore = opts.minScore ?? searchCfg.defaultMinScore ?? 0.2;
 
   const prepared = prepareSearch(customDbPath, opts);
   if (!prepared) return null;
@@ -61,9 +61,9 @@ export async function searchData(query, customDbPath, opts = {}) {
 export async function multiSearchData(queries, customDbPath, opts = {}) {
   const config = opts.config || loadConfig();
   const searchCfg = config.search || {};
-  const limit = opts.limit || searchCfg.topK || 15;
-  const minScore = opts.minScore || searchCfg.defaultMinScore || 0.2;
-  const k = opts.rrfK || searchCfg.rrfK || 60;
+  const limit = opts.limit ?? searchCfg.topK ?? 15;
+  const minScore = opts.minScore ?? searchCfg.defaultMinScore ?? 0.2;
+  const k = opts.rrfK ?? searchCfg.rrfK ?? 60;
 
   const prepared = prepareSearch(customDbPath, opts);
   if (!prepared) return null;

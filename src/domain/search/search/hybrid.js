@@ -12,9 +12,9 @@ import { searchData } from './semantic.js';
 export async function hybridSearchData(query, customDbPath, opts = {}) {
   const config = opts.config || loadConfig();
   const searchCfg = config.search || {};
-  const limit = opts.limit || searchCfg.topK || 15;
-  const k = opts.rrfK || searchCfg.rrfK || 60;
-  const topK = (opts.limit || searchCfg.topK || 15) * 5;
+  const limit = opts.limit ?? searchCfg.topK ?? 15;
+  const k = opts.rrfK ?? searchCfg.rrfK ?? 60;
+  const topK = (opts.limit ?? searchCfg.topK ?? 15) * 5;
 
   // Split semicolons for multi-query support
   const queries =
@@ -52,7 +52,7 @@ export async function hybridSearchData(query, customDbPath, opts = {}) {
     const semData = await searchData(q, customDbPath, {
       ...opts,
       limit: topK,
-      minScore: opts.minScore || 0.2,
+      minScore: opts.minScore ?? 0.2,
     });
     if (semData?.results) {
       rankedLists.push(
