@@ -10,12 +10,12 @@
  * Usage: node scripts/embedding-benchmark.js > result.json
  */
 
-import { fork } from 'node:child_process';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { resolveBenchmarkSource, srcImport } from './lib/bench-config.js';
+import { forkWorker } from './lib/fork-engine.js';
 
 const MODEL_WORKER_KEY = '__BENCH_MODEL__';
 
@@ -133,68 +133,13 @@ let symbolCount = 0;
 
 const scriptPath = fileURLToPath(import.meta.url);
 
-function forkModel(modelKey) {
-	return new Promise((resolve) => {
-		console.error(`\n[fork] Spawning ${modelKey} worker (pid isolation)...`);
-
-		const child = fork(scriptPath, process.argv.slice(2), {
-			env: { ...process.env, [MODEL_WORKER_KEY]: modelKey },
-			stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
-			timeout: TIMEOUT_MS,
-		});
-
-		let stdout = '';
-		child.stdout.on('data', (chunk) => { stdout += chunk; });
-
-		const timer = setTimeout(() => {
-			console.error(`[fork] ${modelKey} worker timed out after ${TIMEOUT_MS / 1000}s — killing`);
-			child.kill('SIGKILL');
-		}, TIMEOUT_MS);
-
-		child.on('close', (code, signal) => {
-			clearTimeout(timer);
-
-			if (signal) {
-				console.error(`[fork] ${modelKey} worker killed by signal ${signal}`);
-				resolve(null);
-				return;
-			}
-
-			if (code !== 0) {
-				console.error(`[fork] ${modelKey} worker exited with code ${code}`);
-				try {
-					const parsed = JSON.parse(stdout);
-					console.error(`[fork] ${modelKey} worker produced partial results despite non-zero exit`);
-					resolve(parsed);
-				} catch {
-					resolve(null);
-				}
-				return;
-			}
-
-			try {
-				resolve(JSON.parse(stdout));
-			} catch (err) {
-				console.error(`[fork] ${modelKey} worker produced invalid JSON: ${err.message}`);
-				resolve(null);
-			}
-		});
-
-		child.on('error', (err) => {
-			clearTimeout(timer);
-			console.error(`[fork] ${modelKey} worker failed to start: ${err.message}`);
-			resolve(null);
-		});
-	});
-}
-
 for (const key of modelKeys) {
 	if (key === 'jina-code' && !hasHfToken) {
 		console.error(`Skipping ${key} (HF_TOKEN not set)`);
 		continue;
 	}
 
-	const data = await forkModel(key);
+	const data = await forkWorker(scriptPath, MODEL_WORKER_KEY, key, process.argv.slice(2), TIMEOUT_MS);
 	if (data) {
 		results[key] = data.result;
 		if (data.symbols) symbolCount = data.symbols;
