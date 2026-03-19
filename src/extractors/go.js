@@ -401,7 +401,11 @@ function matchGoStructuralInterfaces(ctx) {
     }
   }
 
-  // Match: struct satisfies interface if it has all interface methods
+  // Match: struct satisfies interface if it has all interface methods (name-only;
+  // signatures are not verified — treat as candidate match, not definitive).
+  // NOTE: embedded interfaces (type_elem nodes) are not resolved — composite
+  // interfaces like `type ReadWriter interface { Reader; Writer }` will have an
+  // empty method set and be silently excluded from matching.
   for (const [structName, methods] of structMethods) {
     for (const [ifaceName, ifaceMethods] of interfaceMethods) {
       if (ifaceMethods.size > 0 && [...ifaceMethods].every((m) => methods.has(m))) {
