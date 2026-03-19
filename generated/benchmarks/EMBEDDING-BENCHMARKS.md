@@ -9,13 +9,20 @@ Hit@N = expected symbol found in top N results.
 
 ### Latest results
 
-**Version:** 3.1.4 | **Strategy:** structured | **Symbols:** 1095 | **Date:** 2026-03-16
+**Version:** 3.3.0 | **Strategy:** structured | **Symbols:** 0 | **Date:** 2026-03-19
 
 | Model | Dim | Context | Hit@1 | Hit@3 | Hit@5 | Hit@10 | Misses | Embed | Search |
 |-------|----:|--------:|------:|------:|------:|-------:|-------:|------:|-------:|
 
 <!-- EMBEDDING_BENCHMARK_DATA
 [
+  {
+    "version": "3.3.0",
+    "date": "2026-03-19",
+    "strategy": "structured",
+    "symbols": 0,
+    "models": {}
+  },
   {
     "version": "3.1.4",
     "date": "2026-03-16",
