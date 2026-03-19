@@ -77,7 +77,9 @@ export function fileExports(file, customDbPath, opts = {}) {
   }
 
   if (hasReexported) {
-    const totalReexported = data.reexportedSymbols.length;
+    const totalReexported = opts.unused
+      ? (data.totalReexportedUnused ?? data.reexportedSymbols.length)
+      : (data.totalReexported ?? data.reexportedSymbols.length);
     if (data.results.length === 0) {
       if (opts.unused) {
         console.log(
