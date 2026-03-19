@@ -132,7 +132,7 @@ For **each** review comment — including minor suggestions, nits, style feedbac
    ```bash
    # Reply on the PR conversation thread so the reviewer sees it
    gh api repos/optave/codegraph/issues/<number>/comments \
-     -f body="Addressed Claude's review feedback:\n- <bullet per item addressed>"
+     -f body=$'Addressed Claude\'s review feedback:\n- <bullet per item addressed>'
    ```
 
    **For issue-style comments** (includes @greptileai trigger responses):
@@ -146,6 +146,7 @@ For **each** review comment — including minor suggestions, nits, style feedbac
 # List all unique reviewers who left comments
 gh api repos/optave/codegraph/pulls/<number>/comments --paginate --jq '[.[].user.login] | unique | .[]'
 gh api repos/optave/codegraph/pulls/<number>/reviews --paginate --jq '[.[].user.login] | unique | .[]'
+gh api repos/optave/codegraph/issues/<number>/comments --paginate --jq '[.[].user.login] | unique | .[]'
 # Confirm you addressed comments from EVERY reviewer listed
 ```
 
