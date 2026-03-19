@@ -1,5 +1,10 @@
 import { ConfigError } from '../../shared/errors.js';
-import { CORE_SYMBOL_KINDS, EVERY_SYMBOL_KIND, VALID_ROLES } from '../../shared/kinds.js';
+import {
+  CORE_SYMBOL_KINDS,
+  DEAD_ROLE_PREFIX,
+  EVERY_SYMBOL_KIND,
+  VALID_ROLES,
+} from '../../shared/kinds.js';
 import { escapeLike, normalizeFileFilter } from '../query-builder.js';
 import { Repository } from './base.js';
 
@@ -264,7 +269,11 @@ export class InMemoryRepository extends Repository {
       if (fileFn) nodes = nodes.filter((n) => fileFn(n.file));
     }
     if (opts.role) {
-      nodes = nodes.filter((n) => n.role === opts.role);
+      nodes = nodes.filter((n) =>
+        opts.role === DEAD_ROLE_PREFIX
+          ? n.role?.startsWith(DEAD_ROLE_PREFIX)
+          : n.role === opts.role,
+      );
     }
 
     const fanInMap = this.#computeFanIn();
