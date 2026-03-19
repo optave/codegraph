@@ -296,7 +296,7 @@ All query commands tested against a non-existent DB path:
 - **Environment:** win32-x64, Node v22.18.0
 
 ### BUG 3: Incremental builds produce fewer edges than full builds (Medium)
-- **Issue:** Not filed — pre-existing issue, not new to v3.3.0
+- **Issue:** [#533](https://github.com/optave/codegraph/issues/533)
 - **Symptoms:** Incremental build: 11,444 edges vs full rebuild: 11,834 edges (390 edge / 3.3% gap)
 - **Root cause:** The incremental pipeline likely misses some edges for files outside the reverse-dependency set
 
@@ -373,4 +373,5 @@ The 34 MCP tools, 57 programmatic API exports, and comprehensive CLI all work we
 | Issue | [#529](https://github.com/optave/codegraph/issues/529) | ast command crashes — import path points to non-existent dist/ast.js | Open (fix in #532) |
 | Issue | [#530](https://github.com/optave/codegraph/issues/530) | Native engine crashes with ACCESS_VIOLATION during benchmark builds | Open |
 | Issue | [#531](https://github.com/optave/codegraph/issues/531) | CJS require returns empty object | Closed (by design) |
+| Issue | [#533](https://github.com/optave/codegraph/issues/533) | Incremental builds produce fewer edges than full builds (3.3% gap) | Open |
 | PR | [#532](https://github.com/optave/codegraph/pull/532) | fix(cli): correct ast command import path after src/ reorganization | Open |
