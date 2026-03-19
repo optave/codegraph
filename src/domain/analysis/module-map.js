@@ -3,6 +3,7 @@ import { openReadonlyOrFail, testFilterSQL } from '../../db/index.js';
 import { loadConfig } from '../../infrastructure/config.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
+import { DEAD_ROLE_PREFIX } from '../../shared/kinds.js';
 import { findCycles } from '../graph/cycles.js';
 import { LANGUAGE_REGISTRY } from '../parser.js';
 
@@ -238,7 +239,12 @@ function countRoles(db, noTests) {
       .all();
   }
   const roles = {};
-  for (const r of roleRows) roles[r.role] = r.c;
+  let deadTotal = 0;
+  for (const r of roleRows) {
+    roles[r.role] = r.c;
+    if (r.role.startsWith(DEAD_ROLE_PREFIX)) deadTotal += r.c;
+  }
+  if (deadTotal > 0) roles.dead = deadTotal;
   return roles;
 }
 
