@@ -15,7 +15,8 @@ export function rolesData(customDbPath, opts = {}) {
 
     if (filterRole) {
       if (filterRole === DEAD_ROLE_PREFIX) {
-        conditions.push(`role LIKE '${DEAD_ROLE_PREFIX}%'`);
+        conditions.push('role LIKE ?');
+        params.push(`${DEAD_ROLE_PREFIX}%`);
       } else {
         conditions.push('role = ?');
         params.push(filterRole);

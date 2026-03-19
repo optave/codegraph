@@ -247,7 +247,8 @@ export class NodeQuery {
   roleFilter(role) {
     if (!role) return this;
     if (role === DEAD_ROLE_PREFIX) {
-      this.#conditions.push(`n.role LIKE '${DEAD_ROLE_PREFIX}%'`);
+      this.#conditions.push('n.role LIKE ?');
+      this.#params.push(`${DEAD_ROLE_PREFIX}%`);
     } else {
       this.#conditions.push('n.role = ?');
       this.#params.push(role);
