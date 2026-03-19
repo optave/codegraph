@@ -6,6 +6,7 @@
  *   1. Comment-only touch (no semantic change)
  *   2. Body edit (change implementation, keep exports)
  *   3. New export added (structural change)
+ *   4. File deletion (stale edges must be purged)
  *
  * Uses the sample-project fixture (CJS, classes, cross-file calls) for
  * broader edge coverage than the barrel-project fixture.
