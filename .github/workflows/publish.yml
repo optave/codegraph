@@ -182,6 +182,7 @@ jobs:
           VERSION: ${{ needs.compute-version.outputs.version }}
         shell: bash
         run: |
+          [[ -n "$VERSION" ]] || { echo "::error::VERSION is empty — compute-version output missing"; exit 1; }
           CARGO="crates/codegraph-core/Cargo.toml"
           awk -v v="$VERSION" '/^version =/{$0="version = \""v"\""}1' "$CARGO" > "${CARGO}.tmp"
           mv "${CARGO}.tmp" "$CARGO"
