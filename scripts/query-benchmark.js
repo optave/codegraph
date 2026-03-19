@@ -21,8 +21,32 @@ import { isWorker, workerEngine, forkEngines } from './lib/fork-engine.js';
 
 // ── Parent process: fork one child per engine, assemble final output ─────
 if (!isWorker()) {
-	const { version } = await resolveBenchmarkSource();
+	const __parentDir = path.dirname(fileURLToPath(import.meta.url));
+	const __parentRoot = path.resolve(__parentDir, '..');
+
+	const { version, cleanup: versionCleanup } = await resolveBenchmarkSource();
 	const { wasm, native } = await forkEngines(import.meta.url, process.argv.slice(2));
+
+	// Safety net: if a worker was killed mid-benchDiffImpact, the git staging
+	// area may be dirty.  Unstage any leftover changes so subsequent runs and
+	// unrelated git operations aren't affected.
+	try {
+		const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
+			cwd: __parentRoot, encoding: 'utf8',
+		}).trim();
+		if (staged) {
+			console.error('[fork] Cleaning up leftover staged files from crashed worker');
+			execFileSync('git', ['restore', '--staged', '.'], { cwd: __parentRoot, stdio: 'pipe' });
+			execFileSync('git', ['checkout', '.'], { cwd: __parentRoot, stdio: 'pipe' });
+		}
+	} catch { /* git not available or no repo — safe to ignore */ }
+
+	const primary = wasm || native;
+	if (!primary) {
+		console.error('Error: Both engines failed. No results to report.');
+		versionCleanup();
+		process.exit(1);
+	}
 
 	const result = {
 		version,
@@ -46,6 +70,7 @@ if (!isWorker()) {
 	};
 
 	console.log(JSON.stringify(result, null, 2));
+	versionCleanup();
 	process.exit(0);
 }
 
