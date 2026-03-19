@@ -44,6 +44,78 @@ export function workerEngine() {
 }
 
 /**
+ * Fork a single worker subprocess and collect its JSON output.
+ *
+ * @param {string} scriptPath  Absolute path to the script to fork
+ * @param {string} envKey      Environment variable name for the worker identifier
+ * @param {string} workerName  Human-readable label for logging (e.g. 'wasm', 'gte-small')
+ * @param {string[]} argv      CLI args to forward
+ * @param {number} [timeoutMs=600_000]  Per-worker timeout (default 10 min)
+ * @returns {Promise<object|null>}
+ */
+export function forkWorker(scriptPath, envKey, workerName, argv = [], timeoutMs = 600_000) {
+	return new Promise((resolve) => {
+		let settled = false;
+		function settle(value) {
+			if (settled) return;
+			settled = true;
+			resolve(value);
+		}
+
+		console.error(`\n[fork] Spawning ${workerName} worker (pid isolation)...`);
+
+		const child = fork(scriptPath, argv, {
+			env: { ...process.env, [envKey]: workerName },
+			stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
+		});
+
+		let stdout = '';
+		child.stdout.on('data', (chunk) => { stdout += chunk; });
+
+		const timer = setTimeout(() => {
+			console.error(`[fork] ${workerName} worker timed out after ${timeoutMs / 1000}s — killing`);
+			child.kill('SIGKILL');
+		}, timeoutMs);
+
+		child.on('close', (code, signal) => {
+			clearTimeout(timer);
+
+			if (signal) {
+				console.error(`[fork] ${workerName} worker killed by signal ${signal}`);
+				settle(null);
+				return;
+			}
+
+			if (code !== 0) {
+				console.error(`[fork] ${workerName} worker exited with code ${code}`);
+				// Try to parse partial output anyway
+				try {
+					const parsed = JSON.parse(stdout);
+					console.error(`[fork] ${workerName} worker produced partial results despite non-zero exit`);
+					settle(parsed);
+				} catch {
+					settle(null);
+				}
+				return;
+			}
+
+			try {
+				settle(JSON.parse(stdout));
+			} catch (err) {
+				console.error(`[fork] ${workerName} worker produced invalid JSON: ${err.message}`);
+				settle(null);
+			}
+		});
+
+		child.on('error', (err) => {
+			clearTimeout(timer);
+			console.error(`[fork] ${workerName} worker failed to start: ${err.message}`);
+			settle(null);
+		});
+	});
+}
+
+/**
  * Fork the calling script once per available engine, collect JSON results.
  *
  * @param {string} scriptUrl   import.meta.url of the calling benchmark script
@@ -83,78 +155,17 @@ export async function forkEngines(scriptUrl, argv = [], opts = {}) {
 		process.exit(1);
 	}
 
-	/**
-	 * Fork a single engine worker and collect its JSON output.
-	 * @param {string} engine
-	 * @returns {Promise<object|null>}
-	 */
-	function runWorker(engine) {
-		return new Promise((resolve) => {
-			console.error(`\n[fork] Spawning ${engine} worker (pid isolation)...`);
-
-			const child = fork(scriptPath, argv, {
-				env: { ...process.env, [WORKER_ENV_KEY]: engine },
-				stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
-				timeout: timeoutMs,
-			});
-
-			let stdout = '';
-			child.stdout.on('data', (chunk) => { stdout += chunk; });
-
-			const timer = setTimeout(() => {
-				console.error(`[fork] ${engine} worker timed out after ${timeoutMs / 1000}s — killing`);
-				child.kill('SIGKILL');
-			}, timeoutMs);
-
-			child.on('close', (code, signal) => {
-				clearTimeout(timer);
-
-				if (signal) {
-					console.error(`[fork] ${engine} worker killed by signal ${signal}`);
-					resolve(null);
-					return;
-				}
-
-				if (code !== 0) {
-					console.error(`[fork] ${engine} worker exited with code ${code}`);
-					// Try to parse partial output anyway
-					try {
-						const parsed = JSON.parse(stdout);
-						console.error(`[fork] ${engine} worker produced partial results despite non-zero exit`);
-						resolve(parsed);
-					} catch {
-						resolve(null);
-					}
-					return;
-				}
-
-				try {
-					resolve(JSON.parse(stdout));
-				} catch (err) {
-					console.error(`[fork] ${engine} worker produced invalid JSON: ${err.message}`);
-					resolve(null);
-				}
-			});
-
-			child.on('error', (err) => {
-				clearTimeout(timer);
-				console.error(`[fork] ${engine} worker failed to start: ${err.message}`);
-				resolve(null);
-			});
-		});
-	}
-
 	const results = { wasm: null, native: null };
 
 	// Run engines sequentially — they share the DB file and filesystem state.
 	if (hasWasm) {
-		results.wasm = await runWorker('wasm');
+		results.wasm = await forkWorker(scriptPath, WORKER_ENV_KEY, 'wasm', argv, timeoutMs);
 	} else {
 		console.error('WASM grammars not built — skipping WASM benchmark');
 	}
 
 	if (hasNative) {
-		results.native = await runWorker('native');
+		results.native = await forkWorker(scriptPath, WORKER_ENV_KEY, 'native', argv, timeoutMs);
 	} else {
 		console.error('Native engine not available — skipping native benchmark');
 	}
