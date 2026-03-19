@@ -21,7 +21,14 @@ import { isWorker, workerEngine, forkEngines } from './lib/fork-engine.js';
 // ── Parent process: fork one child per engine, assemble final output ─────
 if (!isWorker()) {
 	const { version, cleanup: versionCleanup } = await resolveBenchmarkSource();
-	const { wasm, native } = await forkEngines(import.meta.url, process.argv.slice(2));
+	let wasm, native;
+	try {
+		({ wasm, native } = await forkEngines(import.meta.url, process.argv.slice(2)));
+	} catch (err) {
+		console.error(`Error: ${err.message}`);
+		versionCleanup();
+		process.exit(1);
+	}
 
 	const primary = wasm || native;
 	if (!primary) {

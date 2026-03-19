@@ -150,9 +150,9 @@ export async function forkEngines(scriptUrl, argv = [], opts = {}) {
 	cleanup();
 
 	if (!hasWasm && !hasNative) {
-		console.error('Error: Neither WASM grammars nor native engine are available.');
-		console.error('Run "npm run build:wasm" to build WASM grammars, or install the native platform package.');
-		process.exit(1);
+		const msg = 'Neither WASM grammars nor native engine are available. ' +
+			'Run "npm run build:wasm" to build WASM grammars, or install the native platform package.';
+		throw new Error(msg);
 	}
 
 	const results = { wasm: null, native: null };

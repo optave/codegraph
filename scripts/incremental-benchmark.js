@@ -20,7 +20,14 @@ import { isWorker, workerEngine, forkEngines } from './lib/fork-engine.js';
 // ── Parent process: fork one child per engine, assemble final output ─────
 if (!isWorker()) {
 	const { version, srcDir: parentSrcDir, cleanup: parentCleanup } = await resolveBenchmarkSource();
-	const { wasm, native } = await forkEngines(import.meta.url, process.argv.slice(2));
+	let wasm, native;
+	try {
+		({ wasm, native } = await forkEngines(import.meta.url, process.argv.slice(2)));
+	} catch (err) {
+		console.error(`Error: ${err.message}`);
+		parentCleanup();
+		process.exit(1);
+	}
 
 	// Import resolution runs in the parent — it tests both native and JS
 	// fallback in a single pass and doesn't need engine isolation.

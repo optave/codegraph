@@ -25,7 +25,14 @@ if (!isWorker()) {
 	const __parentRoot = path.resolve(__parentDir, '..');
 
 	const { version, cleanup: versionCleanup } = await resolveBenchmarkSource();
-	const { wasm, native } = await forkEngines(import.meta.url, process.argv.slice(2));
+	let wasm, native;
+	try {
+		({ wasm, native } = await forkEngines(import.meta.url, process.argv.slice(2)));
+	} catch (err) {
+		console.error(`Error: ${err.message}`);
+		versionCleanup();
+		process.exit(1);
+	}
 
 	// Safety net: if a worker was killed mid-benchDiffImpact, the git staging
 	// area may be dirty.  Unstage any leftover changes so subsequent runs and
