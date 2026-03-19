@@ -6,6 +6,7 @@ import {
   findNodesByFile,
   openReadonlyOrFail,
 } from '../../db/index.js';
+import { loadConfig } from '../../infrastructure/config.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import {
@@ -20,13 +21,16 @@ export function exportsData(file, customDbPath, opts = {}) {
   try {
     const noTests = opts.noTests || false;
 
+    const config = opts.config || loadConfig();
+    const displayOpts = config.display || {};
+
     const dbFilePath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbFilePath), '..');
 
     const getFileLines = createFileLinesReader(repoRoot);
 
     const unused = opts.unused || false;
-    const fileResults = exportsFileImpl(db, file, noTests, getFileLines, unused);
+    const fileResults = exportsFileImpl(db, file, noTests, getFileLines, unused, displayOpts);
 
     if (fileResults.length === 0) {
       return paginateResult(
@@ -52,7 +56,7 @@ export function exportsData(file, customDbPath, opts = {}) {
   }
 }
 
-function exportsFileImpl(db, target, noTests, getFileLines, unused) {
+function exportsFileImpl(db, target, noTests, getFileLines, unused, displayOpts) {
   const fileNodes = findFileNodes(db, `%${target}%`);
   if (fileNodes.length === 0) return [];
 
@@ -100,8 +104,8 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused) {
         line: s.line,
         endLine: s.end_line ?? null,
         role: s.role || null,
-        signature: fileLines ? extractSignature(fileLines, s.line) : null,
-        summary: fileLines ? extractSummary(fileLines, s.line) : null,
+        signature: fileLines ? extractSignature(fileLines, s.line, displayOpts) : null,
+        summary: fileLines ? extractSummary(fileLines, s.line, displayOpts) : null,
         consumers: consumers.map((c) => ({ name: c.name, file: c.file, line: c.line })),
         consumerCount: consumers.length,
       };
