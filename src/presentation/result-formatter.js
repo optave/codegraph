@@ -1,3 +1,4 @@
+import { loadConfig } from '../infrastructure/config.js';
 import { printNdjson } from '../shared/paginate.js';
 import { formatTable, truncEnd } from './table.js';
 
@@ -140,7 +141,8 @@ export function outputResult(data, field, opts) {
     return printCsv(data, field) !== false;
   }
   if (opts.table) {
-    return printAutoTable(data, field, opts.display) !== false;
+    const displayOpts = opts.display ?? loadConfig().display;
+    return printAutoTable(data, field, displayOpts) !== false;
   }
   return false;
 }
