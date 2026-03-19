@@ -24,13 +24,7 @@ function insertFileNodes(stmts, relPath, symbols) {
     stmts.insertNode.run(def.name, def.kind, relPath, def.line, def.endLine || null);
     if (def.children?.length) {
       for (const child of def.children) {
-        stmts.insertNode.run(
-          child.name,
-          child.kind,
-          relPath,
-          child.line,
-          child.endLine || null,
-        );
+        stmts.insertNode.run(child.name, child.kind, relPath, child.line, child.endLine || null);
       }
     }
   }
@@ -128,7 +122,7 @@ function rebuildReverseDepEdges(db, rootDir, depRelPath, symbols, stmts, skipBar
 
 // ── Directory containment edges ────────────────────────────────────────
 
-function rebuildDirContainment(db, stmts, relPath) {
+function rebuildDirContainment(_db, stmts, relPath) {
   const dir = normalizePath(path.dirname(relPath));
   if (!dir || dir === '.') return 0;
   const dirRow = stmts.getNodeId.get(dir, 'directory', dir, 0);
@@ -146,8 +140,8 @@ function purgeAncillaryData(db, relPath) {
   const tryExec = (sql, ...args) => {
     try {
       db.prepare(sql).run(...args);
-    } catch {
-      /* table may not exist */
+    } catch (err) {
+      if (!err?.message?.includes('no such table')) throw err;
     }
   };
   tryExec(
@@ -176,14 +170,40 @@ function purgeAncillaryData(db, relPath) {
 
 // ── Import edge building ────────────────────────────────────────────────
 
-function isBarrelFile(db, relPath) {
-  const reexportCount = db
-    .prepare(
+// Lazily-cached prepared statements for barrel resolution (avoid re-preparing in hot loops)
+let _barrelDb = null;
+let _isBarrelStmt = null;
+let _reexportTargetsStmt = null;
+let _hasDefStmt = null;
+
+function getBarrelStmts(db) {
+  if (_barrelDb !== db) {
+    _barrelDb = db;
+    _isBarrelStmt = db.prepare(
       `SELECT COUNT(*) as c FROM edges e
        JOIN nodes n ON e.source_id = n.id
        WHERE e.kind = 'reexports' AND n.file = ? AND n.kind = 'file'`,
-    )
-    .get(relPath)?.c;
+    );
+    _reexportTargetsStmt = db.prepare(
+      `SELECT DISTINCT n2.file FROM edges e
+       JOIN nodes n1 ON e.source_id = n1.id
+       JOIN nodes n2 ON e.target_id = n2.id
+       WHERE e.kind = 'reexports' AND n1.file = ? AND n1.kind = 'file'`,
+    );
+    _hasDefStmt = db.prepare(
+      `SELECT 1 FROM nodes WHERE name = ? AND file = ? AND kind != 'file' AND kind != 'directory' LIMIT 1`,
+    );
+  }
+  return {
+    isBarrelStmt: _isBarrelStmt,
+    reexportTargetsStmt: _reexportTargetsStmt,
+    hasDefStmt: _hasDefStmt,
+  };
+}
+
+function isBarrelFile(db, relPath) {
+  const { isBarrelStmt } = getBarrelStmts(db);
+  const reexportCount = isBarrelStmt.get(relPath)?.c;
   return (reexportCount || 0) > 0;
 }
 
@@ -191,23 +211,14 @@ function resolveBarrelTarget(db, barrelPath, symbolName, visited = new Set()) {
   if (visited.has(barrelPath)) return null;
   visited.add(barrelPath);
 
+  const { reexportTargetsStmt, hasDefStmt } = getBarrelStmts(db);
+
   // Find re-export targets from this barrel
-  const reexportTargets = db
-    .prepare(
-      `SELECT DISTINCT n2.file FROM edges e
-       JOIN nodes n1 ON e.source_id = n1.id
-       JOIN nodes n2 ON e.target_id = n2.id
-       WHERE e.kind = 'reexports' AND n1.file = ? AND n1.kind = 'file'`,
-    )
-    .all(barrelPath);
+  const reexportTargets = reexportTargetsStmt.all(barrelPath);
 
   for (const { file: targetFile } of reexportTargets) {
     // Check if the symbol is defined in this target file
-    const hasDef = db
-      .prepare(
-        `SELECT 1 FROM nodes WHERE name = ? AND file = ? AND kind != 'file' AND kind != 'directory' LIMIT 1`,
-      )
-      .get(symbolName, targetFile);
+    const hasDef = hasDefStmt.get(symbolName, targetFile);
     if (hasDef) return targetFile;
 
     // Recurse through barrel chains
@@ -357,7 +368,7 @@ function buildCallEdges(stmts, relPath, symbols, fileNodeRow, importedNames) {
 /**
  * Parse a single file and update the database incrementally.
  *
- * @param {import('better-sqlite3').Database} _db
+ * @param {import('better-sqlite3').Database} db
  * @param {string} rootDir - Absolute root directory
  * @param {string} filePath - Absolute file path
  * @param {object} stmts - Prepared DB statements
@@ -456,11 +467,7 @@ export async function rebuildFile(db, rootDir, filePath, stmts, engineOpts, cach
         for (const name of imp.names) {
           const cleanName = name.replace(/^\*\s+as\s+/, '');
           const actualSource = resolveBarrelTarget(db, resolvedPath, cleanName);
-          if (
-            actualSource &&
-            actualSource !== resolvedPath &&
-            !resolvedSources.has(actualSource)
-          ) {
+          if (actualSource && actualSource !== resolvedPath && !resolvedSources.has(actualSource)) {
             resolvedSources.add(actualSource);
             const actualRow = stmts.getNodeId.get(actualSource, 'file', actualSource, 0);
             if (actualRow) {
