@@ -18,6 +18,13 @@ export function initMcpDefaults(configMcpDefaults) {
 }
 
 /**
+ * Reset MCP defaults back to the base defaults. Useful for test isolation.
+ */
+export function resetMcpDefaults() {
+  resolvedDefaults = MCP_DEFAULTS;
+}
+
+/**
  * Resolve effective limit for a tool call.
  * @param {object} args - Tool arguments
  * @param {string} toolName - Tool name (for default lookup)
