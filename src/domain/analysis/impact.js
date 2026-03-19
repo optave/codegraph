@@ -5,6 +5,7 @@ import {
   findDbPath,
   findDistinctCallers,
   findFileNodes,
+  findImplementors,
   findImportDependents,
   findNodeById,
   openReadonlyOrFail,
@@ -21,18 +22,50 @@ import { findMatchingNodes } from './symbol-lookup.js';
 
 // ─── Shared BFS: transitive callers ────────────────────────────────────
 
+const INTERFACE_LIKE_KINDS = new Set(['interface', 'trait']);
+
 /**
  * BFS traversal to find transitive callers of a node.
+ * When an interface/trait node is encountered (either as the start node or
+ * during traversal), its concrete implementors are also added to the frontier
+ * so that changes to an interface signature propagate to all implementors.
  *
  * @param {import('better-sqlite3').Database} db - Open read-only SQLite database handle (not a Repository)
  * @param {number} startId - Starting node ID
- * @param {{ noTests?: boolean, maxDepth?: number, onVisit?: (caller: object, parentId: number, depth: number) => void }} options
+ * @param {{ noTests?: boolean, maxDepth?: number, includeImplementors?: boolean, onVisit?: (caller: object, parentId: number, depth: number) => void }} options
  * @returns {{ totalDependents: number, levels: Record<number, Array<{name:string, kind:string, file:string, line:number}>> }}
  */
-export function bfsTransitiveCallers(db, startId, { noTests = false, maxDepth = 3, onVisit } = {}) {
+export function bfsTransitiveCallers(
+  db,
+  startId,
+  { noTests = false, maxDepth = 3, includeImplementors = true, onVisit } = {},
+) {
   const visited = new Set([startId]);
   const levels = {};
   let frontier = [startId];
+
+  // Seed: if start node is an interface/trait, include its implementors at depth 1
+  if (includeImplementors) {
+    const startNode = findNodeById(db, startId);
+    if (startNode && INTERFACE_LIKE_KINDS.has(startNode.kind)) {
+      const impls = findImplementors(db, startId);
+      for (const impl of impls) {
+        if (!visited.has(impl.id) && (!noTests || !isTestFile(impl.file))) {
+          visited.add(impl.id);
+          frontier.push(impl.id);
+          if (!levels[1]) levels[1] = [];
+          levels[1].push({
+            name: impl.name,
+            kind: impl.kind,
+            file: impl.file,
+            line: impl.line,
+            viaImplements: true,
+          });
+          if (onVisit) onVisit({ ...impl, viaImplements: true }, startId, 1);
+        }
+      }
+    }
+  }
 
   for (let d = 1; d <= maxDepth; d++) {
     const nextFrontier = [];
@@ -45,6 +78,26 @@ export function bfsTransitiveCallers(db, startId, { noTests = false, maxDepth = 
           if (!levels[d]) levels[d] = [];
           levels[d].push({ name: c.name, kind: c.kind, file: c.file, line: c.line });
           if (onVisit) onVisit(c, fid, d);
+        }
+
+        // If a caller is an interface/trait, also pull in its implementors
+        if (includeImplementors && INTERFACE_LIKE_KINDS.has(c.kind)) {
+          const impls = findImplementors(db, c.id);
+          for (const impl of impls) {
+            if (!visited.has(impl.id) && (!noTests || !isTestFile(impl.file))) {
+              visited.add(impl.id);
+              nextFrontier.push(impl.id);
+              if (!levels[d]) levels[d] = [];
+              levels[d].push({
+                name: impl.name,
+                kind: impl.kind,
+                file: impl.file,
+                line: impl.line,
+                viaImplements: true,
+              });
+              if (onVisit) onVisit({ ...impl, viaImplements: true }, c.id, d);
+            }
+          }
         }
       }
     }
@@ -118,8 +171,14 @@ export function fnImpactData(name, customDbPath, opts = {}) {
       return { name, results: [] };
     }
 
+    const includeImplementors = opts.includeImplementors !== false;
+
     const results = nodes.map((node) => {
-      const { levels, totalDependents } = bfsTransitiveCallers(db, node.id, { noTests, maxDepth });
+      const { levels, totalDependents } = bfsTransitiveCallers(db, node.id, {
+        noTests,
+        maxDepth,
+        includeImplementors,
+      });
       return {
         ...normalizeSymbol(node, db, hc),
         levels,
