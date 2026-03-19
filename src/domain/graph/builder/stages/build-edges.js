@@ -104,7 +104,11 @@ function buildCallEdgesNative(ctx, getNodeIdStmt, allEdgeRows, allNodes, native)
     const importedNames = buildImportedNamesForNative(ctx, relPath, symbols, rootDir);
     const typeMap =
       symbols.typeMap instanceof Map
-        ? [...symbols.typeMap.entries()].map(([name, typeName]) => ({ name, typeName }))
+        ? [...symbols.typeMap.entries()].map(([name, entry]) => ({
+            name,
+            typeName: typeof entry === 'string' ? entry : entry.type,
+            confidence: typeof entry === 'object' ? entry.confidence : 0.9,
+          }))
         : Array.isArray(symbols.typeMap)
           ? symbols.typeMap
           : [];
@@ -166,7 +170,9 @@ function supplementReceiverEdges(ctx, nativeFiles, getNodeIdStmt, allEdgeRows) {
 
   for (const nf of nativeFiles) {
     const relPath = nf.file;
-    const typeMap = new Map(nf.typeMap.map((t) => [t.name, t.typeName]));
+    const typeMap = new Map(
+      nf.typeMap.map((t) => [t.name, { type: t.typeName, confidence: t.confidence ?? 0.9 }]),
+    );
     const fileNodeRow = { id: nf.fileNodeId };
 
     for (const call of nf.calls) {
@@ -180,7 +186,8 @@ function supplementReceiverEdges(ctx, nativeFiles, getNodeIdStmt, allEdgeRows) {
       buildReceiverEdge(ctx, call, caller, relPath, seenCallEdges, allEdgeRows, typeMap);
 
       // Type-resolved method call: caller → Type.method
-      const typeName = typeMap.get(call.receiver);
+      const typeEntry = typeMap.get(call.receiver);
+      const typeName = typeEntry ? typeEntry.type : null;
       if (typeName) {
         const qualifiedName = `${typeName}.${call.name}`;
         const targets = (ctx.nodesByName.get(qualifiedName) || []).filter(
@@ -298,7 +305,12 @@ function resolveCallTargets(ctx, call, relPath, importedNames, typeMap) {
 function resolveByMethodOrGlobal(ctx, call, relPath, typeMap) {
   // Type-aware resolution: translate variable receiver to its declared type
   if (call.receiver && typeMap) {
-    const typeName = typeMap.get(call.receiver);
+    const typeEntry = typeMap.get(call.receiver);
+    const typeName = typeEntry
+      ? typeof typeEntry === 'string'
+        ? typeEntry
+        : typeEntry.type
+      : null;
     if (typeName) {
       const qualifiedName = `${typeName}.${call.name}`;
       const typed = (ctx.nodesByName.get(qualifiedName) || []).filter((n) => n.kind === 'method');
@@ -367,7 +379,10 @@ function buildFileCallEdges(
 
 function buildReceiverEdge(ctx, call, caller, relPath, seenCallEdges, allEdgeRows, typeMap) {
   const receiverKinds = new Set(['class', 'struct', 'interface', 'type', 'module']);
-  const effectiveReceiver = typeMap?.get(call.receiver) || call.receiver;
+  const typeEntry = typeMap?.get(call.receiver);
+  const typeName = typeEntry ? (typeof typeEntry === 'string' ? typeEntry : typeEntry.type) : null;
+  const typeConfidence = typeEntry && typeof typeEntry === 'object' ? typeEntry.confidence : null;
+  const effectiveReceiver = typeName || call.receiver;
   const samefile = ctx.nodesByNameAndFile.get(`${effectiveReceiver}|${relPath}`) || [];
   const candidates = samefile.length > 0 ? samefile : ctx.nodesByName.get(effectiveReceiver) || [];
   const receiverNodes = candidates.filter((n) => receiverKinds.has(n.kind));
@@ -376,7 +391,8 @@ function buildReceiverEdge(ctx, call, caller, relPath, seenCallEdges, allEdgeRow
     const recvKey = `recv|${caller.id}|${recvTarget.id}`;
     if (!seenCallEdges.has(recvKey)) {
       seenCallEdges.add(recvKey);
-      const confidence = effectiveReceiver !== call.receiver ? 0.9 : 0.7;
+      // Use type source confidence when available, otherwise 0.7 for untyped receiver
+      const confidence = typeConfidence ?? (typeName ? 0.9 : 0.7);
       allEdgeRows.push([caller.id, recvTarget.id, 'receiver', confidence, 0]);
     }
   }
@@ -384,13 +400,19 @@ function buildReceiverEdge(ctx, call, caller, relPath, seenCallEdges, allEdgeRow
 
 // ── Class hierarchy edges ───────────────────────────────────────────────
 
+const HIERARCHY_SOURCE_KINDS = new Set(['class', 'struct', 'record', 'enum']);
+const EXTENDS_TARGET_KINDS = new Set(['class', 'struct', 'trait', 'record']);
+const IMPLEMENTS_TARGET_KINDS = new Set(['interface', 'trait', 'class']);
+
 function buildClassHierarchyEdges(ctx, relPath, symbols, allEdgeRows) {
   for (const cls of symbols.classes) {
     if (cls.extends) {
-      const sourceRow = (ctx.nodesByNameAndFile.get(`${cls.name}|${relPath}`) || []).find(
-        (n) => n.kind === 'class',
+      const sourceRow = (ctx.nodesByNameAndFile.get(`${cls.name}|${relPath}`) || []).find((n) =>
+        HIERARCHY_SOURCE_KINDS.has(n.kind),
       );
-      const targetRows = (ctx.nodesByName.get(cls.extends) || []).filter((n) => n.kind === 'class');
+      const targetRows = (ctx.nodesByName.get(cls.extends) || []).filter((n) =>
+        EXTENDS_TARGET_KINDS.has(n.kind),
+      );
       if (sourceRow) {
         for (const t of targetRows) {
           allEdgeRows.push([sourceRow.id, t.id, 'extends', 1.0, 0]);
@@ -399,11 +421,11 @@ function buildClassHierarchyEdges(ctx, relPath, symbols, allEdgeRows) {
     }
 
     if (cls.implements) {
-      const sourceRow = (ctx.nodesByNameAndFile.get(`${cls.name}|${relPath}`) || []).find(
-        (n) => n.kind === 'class',
+      const sourceRow = (ctx.nodesByNameAndFile.get(`${cls.name}|${relPath}`) || []).find((n) =>
+        HIERARCHY_SOURCE_KINDS.has(n.kind),
       );
-      const targetRows = (ctx.nodesByName.get(cls.implements) || []).filter(
-        (n) => n.kind === 'interface' || n.kind === 'class',
+      const targetRows = (ctx.nodesByName.get(cls.implements) || []).filter((n) =>
+        IMPLEMENTS_TARGET_KINDS.has(n.kind),
       );
       if (sourceRow) {
         for (const t of targetRows) {

@@ -362,7 +362,7 @@ const BASE_TOOLS = [
   {
     name: 'node_roles',
     description:
-      'Show node role classification (entry, core, utility, adapter, dead, leaf) based on connectivity patterns',
+      'Show node role classification (entry, core, utility, adapter, dead [dead-leaf, dead-entry, dead-ffi, dead-unresolved], leaf) based on connectivity patterns',
     inputSchema: {
       type: 'object',
       properties: {
@@ -756,6 +756,45 @@ const BASE_TOOLS = [
         no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
         ...PAGINATION_PROPS,
       },
+    },
+  },
+  {
+    name: 'implementations',
+    description:
+      'List all concrete types (classes, structs, records) that implement a given interface or trait',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Interface/trait name (partial match)' },
+        file: { type: 'string', description: 'Scope to file (partial match)' },
+        kind: {
+          type: 'string',
+          enum: EVERY_SYMBOL_KIND,
+          description: 'Filter by symbol kind',
+        },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+        ...PAGINATION_PROPS,
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'interfaces',
+    description: 'List all interfaces and traits that a given class, struct, or record implements',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Class/struct name (partial match)' },
+        file: { type: 'string', description: 'Scope to file (partial match)' },
+        kind: {
+          type: 'string',
+          enum: EVERY_SYMBOL_KIND,
+          description: 'Filter by symbol kind',
+        },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+        ...PAGINATION_PROPS,
+      },
+      required: ['name'],
     },
   },
   {

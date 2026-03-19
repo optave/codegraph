@@ -2,6 +2,7 @@ import path from 'node:path';
 import { openRepo } from '../db/index.js';
 import { louvainCommunities } from '../graph/algorithms/louvain.js';
 import { buildDependencyGraph } from '../graph/builders/dependency.js';
+import { loadConfig } from '../infrastructure/config.js';
 import { paginateResult } from '../shared/paginate.js';
 
 // ─── Directory Helpers ────────────────────────────────────────────────
@@ -144,7 +145,8 @@ export function communitiesData(customDbPath, opts = {}) {
     };
   }
 
-  const resolution = opts.resolution ?? 1.0;
+  const config = opts.config || loadConfig();
+  const resolution = opts.resolution ?? config.community?.resolution ?? 1.0;
   const { assignments, modularity } = louvainCommunities(graph, { resolution });
 
   const { communities, communityDirs } = buildCommunityObjects(graph, assignments, opts);

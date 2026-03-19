@@ -1,6 +1,63 @@
 import { debug } from '../infrastructure/logger.js';
 import { findChild, nodeEndLine } from './helpers.js';
 
+/** Built-in globals that start with uppercase but are not user-defined types. */
+const BUILTIN_GLOBALS = new Set([
+  'Math',
+  'JSON',
+  'Promise',
+  'Array',
+  'Object',
+  'Date',
+  'Error',
+  'Symbol',
+  'Map',
+  'Set',
+  'RegExp',
+  'Number',
+  'String',
+  'Boolean',
+  'WeakMap',
+  'WeakSet',
+  'WeakRef',
+  'Proxy',
+  'Reflect',
+  'Intl',
+  'ArrayBuffer',
+  'SharedArrayBuffer',
+  'DataView',
+  'Atomics',
+  'BigInt',
+  'Float32Array',
+  'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Uint8Array',
+  'Uint16Array',
+  'Uint32Array',
+  'Uint8ClampedArray',
+  'URL',
+  'URLSearchParams',
+  'TextEncoder',
+  'TextDecoder',
+  'AbortController',
+  'AbortSignal',
+  'Headers',
+  'Request',
+  'Response',
+  'FormData',
+  'Blob',
+  'File',
+  'ReadableStream',
+  'WritableStream',
+  'TransformStream',
+  'console',
+  'Buffer',
+  'EventEmitter',
+  'Stream',
+]);
+
 /**
  * Extract symbols from a JS/TS parsed AST.
  * When a compiled tree-sitter Query is provided (from parser.js),
@@ -824,7 +881,24 @@ function extractNewExprTypeName(newExprNode) {
   return null;
 }
 
+/**
+ * Extract variable-to-type assignments into a per-file type map.
+ *
+ * Values are `{ type: string, confidence: number }`:
+ *   - 1.0: explicit constructor (`new Foo()`)
+ *   - 0.9: type annotation (`: Foo`) or typed parameter
+ *   - 0.7: factory method call (`Foo.create()` — uppercase-first heuristic)
+ *
+ * Higher-confidence entries take priority when the same variable is seen twice.
+ */
 function extractTypeMapWalk(rootNode, typeMap) {
+  function setIfHigher(name, type, confidence) {
+    const existing = typeMap.get(name);
+    if (!existing || confidence > existing.confidence) {
+      typeMap.set(name, { type, confidence });
+    }
+  }
+
   function walk(node, depth) {
     if (depth >= 200) return;
     const t = node.type;
@@ -834,12 +908,27 @@ function extractTypeMapWalk(rootNode, typeMap) {
         const typeAnno = findChild(node, 'type_annotation');
         if (typeAnno) {
           const typeName = extractSimpleTypeName(typeAnno);
-          if (typeName) typeMap.set(nameN.text, typeName);
-        } else {
-          const valueN = node.childForFieldName('value');
-          if (valueN && valueN.type === 'new_expression') {
+          if (typeName) setIfHigher(nameN.text, typeName, 0.9);
+        }
+        const valueN = node.childForFieldName('value');
+        if (valueN) {
+          // Constructor: const x = new Foo() → confidence 1.0
+          if (valueN.type === 'new_expression') {
             const ctorType = extractNewExprTypeName(valueN);
-            if (ctorType) typeMap.set(nameN.text, ctorType);
+            if (ctorType) setIfHigher(nameN.text, ctorType, 1.0);
+          }
+          // Factory method: const x = Foo.create() → confidence 0.7
+          else if (valueN.type === 'call_expression') {
+            const fn = valueN.childForFieldName('function');
+            if (fn && fn.type === 'member_expression') {
+              const obj = fn.childForFieldName('object');
+              if (obj && obj.type === 'identifier') {
+                const objName = obj.text;
+                if (objName[0] !== objName[0].toLowerCase() && !BUILTIN_GLOBALS.has(objName)) {
+                  setIfHigher(nameN.text, objName, 0.7);
+                }
+              }
+            }
           }
         }
       }
@@ -850,7 +939,7 @@ function extractTypeMapWalk(rootNode, typeMap) {
         const typeAnno = findChild(node, 'type_annotation');
         if (typeAnno) {
           const typeName = extractSimpleTypeName(typeAnno);
-          if (typeName) typeMap.set(nameNode.text, typeName);
+          if (typeName) setIfHigher(nameNode.text, typeName, 0.9);
         }
       }
     }

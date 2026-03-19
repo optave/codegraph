@@ -1,5 +1,49 @@
 import { findChild, nodeEndLine, pythonVisibility } from './helpers.js';
 
+/** Built-in globals that start with uppercase but are not user-defined types. */
+const BUILTIN_GLOBALS_PY = new Set([
+  // Uppercase builtins that would false-positive on the factory heuristic
+  'Exception',
+  'BaseException',
+  'ValueError',
+  'TypeError',
+  'KeyError',
+  'IndexError',
+  'AttributeError',
+  'RuntimeError',
+  'OSError',
+  'IOError',
+  'FileNotFoundError',
+  'PermissionError',
+  'NotImplementedError',
+  'StopIteration',
+  'GeneratorExit',
+  'SystemExit',
+  'KeyboardInterrupt',
+  'ArithmeticError',
+  'LookupError',
+  'UnicodeError',
+  'UnicodeDecodeError',
+  'UnicodeEncodeError',
+  'ImportError',
+  'ModuleNotFoundError',
+  'ConnectionError',
+  'TimeoutError',
+  'OverflowError',
+  'ZeroDivisionError',
+  'NameError',
+  'SyntaxError',
+  'RecursionError',
+  'MemoryError',
+  // Common standard library uppercase classes
+  'Path',
+  'PurePath',
+  'OrderedDict',
+  'Counter',
+  'Decimal',
+  'Fraction',
+]);
+
 /**
  * Extract symbols from Python files.
  */
@@ -290,29 +334,61 @@ function extractPythonTypeMap(node, ctx) {
   extractPythonTypeMapDepth(node, ctx, 0);
 }
 
+function setIfHigherPy(typeMap, name, type, confidence) {
+  const existing = typeMap.get(name);
+  if (!existing || confidence > existing.confidence) {
+    typeMap.set(name, { type, confidence });
+  }
+}
+
 function extractPythonTypeMapDepth(node, ctx, depth) {
   if (depth >= 200) return;
 
-  // typed_parameter: identifier : type
+  // typed_parameter: identifier : type (confidence 0.9)
   if (node.type === 'typed_parameter') {
     const nameNode = node.child(0);
     const typeNode = node.childForFieldName('type');
     if (nameNode && nameNode.type === 'identifier' && typeNode) {
       const typeName = extractPythonTypeName(typeNode);
       if (typeName && nameNode.text !== 'self' && nameNode.text !== 'cls') {
-        ctx.typeMap.set(nameNode.text, typeName);
+        setIfHigherPy(ctx.typeMap, nameNode.text, typeName, 0.9);
       }
     }
   }
 
-  // typed_default_parameter: name : type = default
+  // typed_default_parameter: name : type = default (confidence 0.9)
   if (node.type === 'typed_default_parameter') {
     const nameNode = node.childForFieldName('name');
     const typeNode = node.childForFieldName('type');
     if (nameNode && nameNode.type === 'identifier' && typeNode) {
       const typeName = extractPythonTypeName(typeNode);
       if (typeName && nameNode.text !== 'self' && nameNode.text !== 'cls') {
-        ctx.typeMap.set(nameNode.text, typeName);
+        setIfHigherPy(ctx.typeMap, nameNode.text, typeName, 0.9);
+      }
+    }
+  }
+
+  // assignment: x = SomeClass(...) → constructor (confidence 1.0)
+  //             x = SomeClass.create(...) → factory (confidence 0.7)
+  if (node.type === 'assignment') {
+    const left = node.childForFieldName('left');
+    const right = node.childForFieldName('right');
+    if (left && left.type === 'identifier' && right && right.type === 'call') {
+      const fn = right.childForFieldName('function');
+      if (fn && fn.type === 'identifier') {
+        const name = fn.text;
+        if (name[0] !== name[0].toLowerCase()) {
+          setIfHigherPy(ctx.typeMap, left.text, name, 1.0);
+        }
+      }
+      if (fn && fn.type === 'attribute') {
+        const obj = fn.childForFieldName('object');
+        if (obj && obj.type === 'identifier') {
+          const objName = obj.text;
+          if (objName[0] !== objName[0].toLowerCase() && !BUILTIN_GLOBALS_PY.has(objName)) {
+            setIfHigherPy(ctx.typeMap, left.text, objName, 0.7);
+          }
+        }
       }
     }
   }

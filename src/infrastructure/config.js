@@ -23,7 +23,7 @@ export const DEFAULTS = {
   },
   embeddings: { model: 'nomic-v1.5', llmProvider: null },
   llm: { provider: null, model: null, baseUrl: null, apiKey: null, apiKeyCommand: null },
-  search: { defaultMinScore: 0.2, rrfK: 60, topK: 15 },
+  search: { defaultMinScore: 0.2, rrfK: 60, topK: 15, similarityWarnThreshold: 0.85 },
   ci: { failOnCycles: false, impactThreshold: null },
   manifesto: {
     rules: {
@@ -53,6 +53,80 @@ export const DEFAULTS = {
     minSupport: 3,
     minJaccard: 0.3,
     maxFilesPerCommit: 50,
+  },
+  analysis: {
+    impactDepth: 3,
+    fnImpactDepth: 5,
+    auditDepth: 3,
+    sequenceDepth: 10,
+    falsePositiveCallers: 20,
+    briefCallerDepth: 5,
+    briefImporterDepth: 5,
+    briefHighRiskCallers: 10,
+    briefMediumRiskCallers: 3,
+  },
+  community: {
+    resolution: 1.0,
+  },
+  structure: {
+    cohesionThreshold: 0.3,
+  },
+  risk: {
+    weights: {
+      fanIn: 0.25,
+      complexity: 0.3,
+      churn: 0.2,
+      role: 0.15,
+      mi: 0.1,
+    },
+    roleWeights: {
+      core: 1.0,
+      utility: 0.9,
+      entry: 0.8,
+      adapter: 0.5,
+      leaf: 0.2,
+      'test-only': 0.1,
+      dead: 0.1,
+      'dead-leaf': 0.0,
+      'dead-entry': 0.3,
+      'dead-ffi': 0.05,
+      'dead-unresolved': 0.15,
+    },
+    defaultRoleWeight: 0.5,
+  },
+  display: {
+    maxColWidth: 40,
+    excerptLines: 50,
+    summaryMaxChars: 100,
+    jsdocEndScanLines: 10,
+    jsdocOpenScanLines: 20,
+    signatureGatherLines: 5,
+  },
+  mcp: {
+    defaults: {
+      list_functions: 100,
+      query: 10,
+      where: 50,
+      node_roles: 100,
+      export_graph: 500,
+      fn_impact: 5,
+      context: 5,
+      explain: 10,
+      file_deps: 20,
+      file_exports: 20,
+      diff_impact: 30,
+      impact_analysis: 20,
+      semantic_search: 20,
+      execution_flow: 50,
+      hotspots: 20,
+      co_changes: 20,
+      complexity: 30,
+      manifesto: 50,
+      communities: 20,
+      structure: 30,
+      triage: 20,
+      ast_query: 50,
+    },
   },
 };
 
@@ -120,7 +194,183 @@ export function resolveSecrets(config) {
   return config;
 }
 
-function mergeConfig(defaults, overrides) {
+// ── Monorepo workspace detection ─────────────────────────────────────
+
+/**
+ * Expand a workspace glob pattern into matching directories.
+ * Supports trailing `/*` or `/**` patterns (e.g. "packages/*").
+ * Does not depend on an external glob library — uses fs.readdirSync.
+ */
+function expandWorkspaceGlob(pattern, rootDir) {
+  // Strip trailing /*, /**, or just *
+  const clean = pattern.replace(/\/?\*\*?$/, '');
+  const baseDir = path.resolve(rootDir, clean);
+  if (!fs.existsSync(baseDir)) return [];
+  try {
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isDirectory())
+      .map((e) => path.join(baseDir, e.name))
+      .filter((d) => fs.existsSync(path.join(d, 'package.json')));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read a package.json and return its name field, or null.
+ */
+function readPackageName(pkgDir) {
+  try {
+    const raw = fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8');
+    const pkg = JSON.parse(raw);
+    return pkg.name || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the entry-point source file for a workspace package.
+ * Checks exports → main → index file fallback.
+ */
+function resolveWorkspaceEntry(pkgDir) {
+  try {
+    const raw = fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8');
+    const pkg = JSON.parse(raw);
+
+    // Try "source" field first (common in monorepos for pre-built packages)
+    if (pkg.source) {
+      const s = path.resolve(pkgDir, pkg.source);
+      if (fs.existsSync(s)) return s;
+    }
+
+    // Try "main" field
+    if (pkg.main) {
+      const m = path.resolve(pkgDir, pkg.main);
+      if (fs.existsSync(m)) return m;
+    }
+
+    // Index file fallback
+    for (const idx of [
+      'index.ts',
+      'index.tsx',
+      'index.js',
+      'index.mjs',
+      'src/index.ts',
+      'src/index.tsx',
+      'src/index.js',
+    ]) {
+      const candidate = path.resolve(pkgDir, idx);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * Detect monorepo workspace packages from workspace configuration files.
+ *
+ * Checks (in order):
+ *   1. pnpm-workspace.yaml — `packages:` array
+ *   2. package.json — `workspaces` field (npm/yarn)
+ *   3. lerna.json — `packages` array
+ *
+ * @param {string} rootDir - Project root directory
+ * @returns {Map<string, { dir: string, entry: string|null }>}
+ *   Map of package name → { absolute dir, resolved entry file }
+ */
+export function detectWorkspaces(rootDir) {
+  const workspaces = new Map();
+  const patterns = [];
+
+  // 1. pnpm-workspace.yaml
+  const pnpmPath = path.join(rootDir, 'pnpm-workspace.yaml');
+  if (fs.existsSync(pnpmPath)) {
+    try {
+      const raw = fs.readFileSync(pnpmPath, 'utf-8');
+      // Simple YAML parse for `packages:` array — no dependency needed
+      const packagesMatch = raw.match(/^packages:\s*\n((?:\s+-\s+.+\n?)*)/m);
+      if (packagesMatch) {
+        const lines = packagesMatch[1].match(/^\s+-\s+['"]?([^'"#\n]+)['"]?\s*$/gm);
+        if (lines) {
+          for (const line of lines) {
+            const m = line.match(/^\s+-\s+['"]?([^'"#\n]+?)['"]?\s*$/);
+            if (m) patterns.push(m[1].trim());
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 2. package.json workspaces (npm/yarn)
+  if (patterns.length === 0) {
+    const rootPkgPath = path.join(rootDir, 'package.json');
+    if (fs.existsSync(rootPkgPath)) {
+      try {
+        const raw = fs.readFileSync(rootPkgPath, 'utf-8');
+        const pkg = JSON.parse(raw);
+        const ws = pkg.workspaces;
+        if (Array.isArray(ws)) {
+          patterns.push(...ws);
+        } else if (ws && Array.isArray(ws.packages)) {
+          // Yarn classic format: { packages: [...], nohoist: [...] }
+          patterns.push(...ws.packages);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  // 3. lerna.json
+  if (patterns.length === 0) {
+    const lernaPath = path.join(rootDir, 'lerna.json');
+    if (fs.existsSync(lernaPath)) {
+      try {
+        const raw = fs.readFileSync(lernaPath, 'utf-8');
+        const lerna = JSON.parse(raw);
+        if (Array.isArray(lerna.packages)) {
+          patterns.push(...lerna.packages);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  if (patterns.length === 0) return workspaces;
+
+  // Expand glob patterns and collect packages
+  for (const pattern of patterns) {
+    // Check if pattern is a direct path (no glob) or a glob
+    if (pattern.includes('*')) {
+      for (const dir of expandWorkspaceGlob(pattern, rootDir)) {
+        const name = readPackageName(dir);
+        if (name) workspaces.set(name, { dir, entry: resolveWorkspaceEntry(dir) });
+      }
+    } else {
+      // Direct path like "packages/core"
+      const dir = path.resolve(rootDir, pattern);
+      if (fs.existsSync(path.join(dir, 'package.json'))) {
+        const name = readPackageName(dir);
+        if (name) workspaces.set(name, { dir, entry: resolveWorkspaceEntry(dir) });
+      }
+    }
+  }
+
+  if (workspaces.size > 0) {
+    debug(`Detected ${workspaces.size} workspace packages: ${[...workspaces.keys()].join(', ')}`);
+  }
+
+  return workspaces;
+}
+
+export function mergeConfig(defaults, overrides) {
   const result = { ...defaults };
   for (const [key, value] of Object.entries(overrides)) {
     if (
@@ -128,9 +378,10 @@ function mergeConfig(defaults, overrides) {
       typeof value === 'object' &&
       !Array.isArray(value) &&
       defaults[key] &&
-      typeof defaults[key] === 'object'
+      typeof defaults[key] === 'object' &&
+      !Array.isArray(defaults[key])
     ) {
-      result[key] = { ...defaults[key], ...value };
+      result[key] = mergeConfig(defaults[key], value);
     } else {
       result[key] = value;
     }
