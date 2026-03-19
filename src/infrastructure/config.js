@@ -130,12 +130,19 @@ export const DEFAULTS = {
   },
 };
 
+// Per-cwd config cache — avoids re-reading the config file on every query call.
+// The config file rarely changes within a single process lifetime.
+const _configCache = new Map();
+
 /**
  * Load project configuration from a .codegraphrc.json or similar file.
- * Returns merged config with defaults.
+ * Returns merged config with defaults. Results are cached per cwd.
  */
 export function loadConfig(cwd) {
   cwd = cwd || process.cwd();
+  const cached = _configCache.get(cwd);
+  if (cached) return cached;
+
   for (const name of CONFIG_FILES) {
     const filePath = path.join(cwd, name);
     if (fs.existsSync(filePath)) {
@@ -148,13 +155,24 @@ export function loadConfig(cwd) {
           merged.query.excludeTests = Boolean(config.excludeTests);
         }
         delete merged.excludeTests;
-        return resolveSecrets(applyEnvOverrides(merged));
+        const result = resolveSecrets(applyEnvOverrides(merged));
+        _configCache.set(cwd, result);
+        return result;
       } catch (err) {
         debug(`Failed to parse config ${filePath}: ${err.message}`);
       }
     }
   }
-  return resolveSecrets(applyEnvOverrides({ ...DEFAULTS }));
+  const defaults = resolveSecrets(applyEnvOverrides({ ...DEFAULTS }));
+  _configCache.set(cwd, defaults);
+  return defaults;
+}
+
+/**
+ * Clear the config cache. Useful in tests or after config file changes.
+ */
+export function clearConfigCache() {
+  _configCache.clear();
 }
 
 const ENV_LLM_MAP = {
