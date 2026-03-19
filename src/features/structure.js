@@ -611,7 +611,7 @@ export function moduleBoundariesData(customDbPath, opts = {}) {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const config = opts.config || loadConfig();
-    const threshold = opts.threshold || config.structure?.cohesionThreshold || 0.3;
+    const threshold = opts.threshold ?? config.structure?.cohesionThreshold ?? 0.3;
 
     const dirs = db
       .prepare(`
