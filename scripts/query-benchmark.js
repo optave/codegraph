@@ -118,6 +118,7 @@ const PINNED_HUB_CANDIDATES = ['buildGraph', 'openDb', 'loadConfig'];
 
 function selectTargets() {
 	const db = new Database(dbPath, { readonly: true });
+	try {
 
 	// Try pinned candidates first for a stable hub across versions
 	let hub = null;
@@ -146,7 +147,6 @@ function selectTargets() {
        ORDER BY cnt DESC`,
 		)
 		.all();
-	db.close();
 
 	if (rows.length === 0) throw new Error('No nodes with edges found in graph');
 
@@ -156,6 +156,10 @@ function selectTargets() {
 	const mid = rows[Math.floor(rows.length / 2)].name;
 	const leaf = rows[rows.length - 1].name;
 	return { hub, mid, leaf };
+
+	} finally {
+		db.close();
+	}
 }
 
 function benchDepths(fn, name, depths) {

@@ -141,7 +141,7 @@ const _configCache = new Map();
 export function loadConfig(cwd) {
   cwd = cwd || process.cwd();
   const cached = _configCache.get(cwd);
-  if (cached) return cached;
+  if (cached) return structuredClone(cached);
 
   for (const name of CONFIG_FILES) {
     const filePath = path.join(cwd, name);
@@ -169,7 +169,9 @@ export function loadConfig(cwd) {
 }
 
 /**
- * Clear the config cache. Useful in tests or after config file changes.
+ * Clear the config cache. Intended for long-running processes that need to
+ * pick up on-disk config changes, and for test isolation when tests share
+ * the same cwd.
  */
 export function clearConfigCache() {
   _configCache.clear();
