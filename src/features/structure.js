@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { getNodeId, openReadonlyOrFail, testFilterSQL } from '../db/index.js';
+import { loadConfig } from '../infrastructure/config.js';
 import { debug } from '../infrastructure/logger.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import { normalizePath } from '../shared/constants.js';
@@ -349,7 +350,19 @@ export function classifyNodeRoles(db) {
     .all();
 
   if (rows.length === 0) {
-    return { entry: 0, core: 0, utility: 0, adapter: 0, dead: 0, 'test-only': 0, leaf: 0 };
+    return {
+      entry: 0,
+      core: 0,
+      utility: 0,
+      adapter: 0,
+      dead: 0,
+      'dead-leaf': 0,
+      'dead-entry': 0,
+      'dead-ffi': 0,
+      'dead-unresolved': 0,
+      'test-only': 0,
+      leaf: 0,
+    };
   }
 
   const exportedIds = new Set(
@@ -385,6 +398,8 @@ export function classifyNodeRoles(db) {
   const classifierInput = rows.map((r) => ({
     id: String(r.id),
     name: r.name,
+    kind: r.kind,
+    file: r.file,
     fanIn: r.fan_in,
     fanOut: r.fan_out,
     isExported: exportedIds.has(r.id),
@@ -394,12 +409,25 @@ export function classifyNodeRoles(db) {
   const roleMap = classifyRoles(classifierInput);
 
   // Build summary and updates
-  const summary = { entry: 0, core: 0, utility: 0, adapter: 0, dead: 0, 'test-only': 0, leaf: 0 };
+  const summary = {
+    entry: 0,
+    core: 0,
+    utility: 0,
+    adapter: 0,
+    dead: 0,
+    'dead-leaf': 0,
+    'dead-entry': 0,
+    'dead-ffi': 0,
+    'dead-unresolved': 0,
+    'test-only': 0,
+    leaf: 0,
+  };
   const updates = [];
   for (const row of rows) {
     const role = roleMap.get(String(row.id)) || 'leaf';
     updates.push({ id: row.id, role });
-    summary[role]++;
+    if (role.startsWith('dead')) summary.dead++;
+    summary[role] = (summary[role] || 0) + 1;
   }
 
   const clearRoles = db.prepare('UPDATE nodes SET role = NULL');
@@ -609,7 +637,8 @@ export function hotspotsData(customDbPath, opts = {}) {
 export function moduleBoundariesData(customDbPath, opts = {}) {
   const db = openReadonlyOrFail(customDbPath);
   try {
-    const threshold = opts.threshold || 0.3;
+    const config = opts.config || loadConfig();
+    const threshold = opts.threshold ?? config.structure?.cohesionThreshold ?? 0.3;
 
     const dirs = db
       .prepare(`

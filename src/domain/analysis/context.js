@@ -13,6 +13,7 @@ import {
   getComplexityForNode,
   openReadonlyOrFail,
 } from '../../db/index.js';
+import { loadConfig } from '../../infrastructure/config.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import {
@@ -28,16 +29,16 @@ import { paginateResult } from '../../shared/paginate.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
 function buildCallees(db, node, repoRoot, getFileLines, opts) {
-  const { noTests, depth } = opts;
+  const { noTests, depth, displayOpts } = opts;
   const calleeRows = findCallees(db, node.id);
   const filteredCallees = noTests ? calleeRows.filter((c) => !isTestFile(c.file)) : calleeRows;
 
   const callees = filteredCallees.map((c) => {
     const cLines = getFileLines(c.file);
-    const summary = cLines ? extractSummary(cLines, c.line) : null;
+    const summary = cLines ? extractSummary(cLines, c.line, displayOpts) : null;
     let calleeSource = null;
     if (depth >= 1) {
-      calleeSource = readSourceRange(repoRoot, c.file, c.line, c.end_line);
+      calleeSource = readSourceRange(repoRoot, c.file, c.line, c.end_line, displayOpts);
     }
     return {
       name: c.name,
@@ -70,8 +71,8 @@ function buildCallees(db, node, repoRoot, getFileLines, opts) {
               file: c.file,
               line: c.line,
               endLine: c.end_line || null,
-              summary: cLines ? extractSummary(cLines, c.line) : null,
-              source: readSourceRange(repoRoot, c.file, c.line, c.end_line),
+              summary: cLines ? extractSummary(cLines, c.line, displayOpts) : null,
+              source: readSourceRange(repoRoot, c.file, c.line, c.end_line, displayOpts),
             });
           }
         }
@@ -170,7 +171,7 @@ function getNodeChildrenSafe(db, nodeId) {
   }
 }
 
-function explainFileImpl(db, target, getFileLines) {
+function explainFileImpl(db, target, getFileLines, displayOpts) {
   const fileNodes = findFileNodes(db, `%${target}%`);
   if (fileNodes.length === 0) return [];
 
@@ -186,8 +187,8 @@ function explainFileImpl(db, target, getFileLines) {
       kind: s.kind,
       line: s.line,
       role: s.role || null,
-      summary: fileLines ? extractSummary(fileLines, s.line) : null,
-      signature: fileLines ? extractSignature(fileLines, s.line) : null,
+      summary: fileLines ? extractSummary(fileLines, s.line, displayOpts) : null,
+      signature: fileLines ? extractSignature(fileLines, s.line, displayOpts) : null,
     });
 
     const publicApi = symbols.filter((s) => publicIds.has(s.id)).map(mapSymbol);
@@ -231,7 +232,7 @@ function explainFileImpl(db, target, getFileLines) {
   });
 }
 
-function explainFunctionImpl(db, target, noTests, getFileLines) {
+function explainFunctionImpl(db, target, noTests, getFileLines, displayOpts) {
   let nodes = db
     .prepare(
       `SELECT * FROM nodes WHERE name LIKE ? AND kind IN ('function','method','class','interface','type','struct','enum','trait','record','module','constant') ORDER BY file, line`,
@@ -244,8 +245,8 @@ function explainFunctionImpl(db, target, noTests, getFileLines) {
   return nodes.slice(0, 10).map((node) => {
     const fileLines = getFileLines(node.file);
     const lineCount = node.end_line ? node.end_line - node.line + 1 : null;
-    const summary = fileLines ? extractSummary(fileLines, node.line) : null;
-    const signature = fileLines ? extractSignature(fileLines, node.line) : null;
+    const summary = fileLines ? extractSummary(fileLines, node.line, displayOpts) : null;
+    const signature = fileLines ? extractSignature(fileLines, node.line, displayOpts) : null;
 
     const callees = findCallees(db, node.id).map((c) => ({
       name: c.name,
@@ -281,7 +282,15 @@ function explainFunctionImpl(db, target, noTests, getFileLines) {
   });
 }
 
-function explainCallees(parentResults, currentDepth, visited, db, noTests, getFileLines) {
+function explainCallees(
+  parentResults,
+  currentDepth,
+  visited,
+  db,
+  noTests,
+  getFileLines,
+  displayOpts,
+) {
   if (currentDepth <= 0) return;
   for (const r of parentResults) {
     const newCallees = [];
@@ -289,7 +298,13 @@ function explainCallees(parentResults, currentDepth, visited, db, noTests, getFi
       const key = `${callee.name}:${callee.file}:${callee.line}`;
       if (visited.has(key)) continue;
       visited.add(key);
-      const calleeResults = explainFunctionImpl(db, callee.name, noTests, getFileLines);
+      const calleeResults = explainFunctionImpl(
+        db,
+        callee.name,
+        noTests,
+        getFileLines,
+        displayOpts,
+      );
       const exact = calleeResults.find((cr) => cr.file === callee.file && cr.line === callee.line);
       if (exact) {
         exact._depth = (r._depth || 0) + 1;
@@ -298,7 +313,7 @@ function explainCallees(parentResults, currentDepth, visited, db, noTests, getFi
     }
     if (newCallees.length > 0) {
       r.depDetails = newCallees;
-      explainCallees(newCallees, currentDepth - 1, visited, db, noTests, getFileLines);
+      explainCallees(newCallees, currentDepth - 1, visited, db, noTests, getFileLines, displayOpts);
     }
   }
 }
@@ -312,6 +327,9 @@ export function contextData(name, customDbPath, opts = {}) {
     const noSource = opts.noSource || false;
     const noTests = opts.noTests || false;
     const includeTests = opts.includeTests || false;
+
+    const config = opts.config || loadConfig();
+    const displayOpts = config.display || {};
 
     const dbPath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbPath), '..');
@@ -328,11 +346,15 @@ export function contextData(name, customDbPath, opts = {}) {
 
       const source = noSource
         ? null
-        : readSourceRange(repoRoot, node.file, node.line, node.end_line);
+        : readSourceRange(repoRoot, node.file, node.line, node.end_line, displayOpts);
 
-      const signature = fileLines ? extractSignature(fileLines, node.line) : null;
+      const signature = fileLines ? extractSignature(fileLines, node.line, displayOpts) : null;
 
-      const callees = buildCallees(db, node, repoRoot, getFileLines, { noTests, depth });
+      const callees = buildCallees(db, node, repoRoot, getFileLines, {
+        noTests,
+        depth,
+        displayOpts,
+      });
       const callers = buildCallers(db, node, noTests);
       const relatedTests = buildRelatedTests(db, node, getFileLines, includeTests);
       const complexityMetrics = getComplexityMetrics(db, node.id);
@@ -369,6 +391,9 @@ export function explainData(target, customDbPath, opts = {}) {
     const depth = opts.depth || 0;
     const kind = isFileLikeTarget(target) ? 'file' : 'function';
 
+    const config = opts.config || loadConfig();
+    const displayOpts = config.display || {};
+
     const dbPath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbPath), '..');
 
@@ -376,12 +401,12 @@ export function explainData(target, customDbPath, opts = {}) {
 
     const results =
       kind === 'file'
-        ? explainFileImpl(db, target, getFileLines)
-        : explainFunctionImpl(db, target, noTests, getFileLines);
+        ? explainFileImpl(db, target, getFileLines, displayOpts)
+        : explainFunctionImpl(db, target, noTests, getFileLines, displayOpts);
 
     if (kind === 'function' && depth > 0 && results.length > 0) {
       const visited = new Set(results.map((r) => `${r.name}:${r.file}:${r.line}`));
-      explainCallees(results, depth, visited, db, noTests, getFileLines);
+      explainCallees(results, depth, visited, db, noTests, getFileLines, displayOpts);
     }
 
     const base = { target, kind, results };
