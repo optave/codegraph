@@ -546,18 +546,18 @@ Codegraph also extracts symbols from common callback patterns: Commander `.comma
 
 ## 📊 Performance
 
-Self-measured on every release via CI ([build benchmarks](generated/benchmarks/BUILD-BENCHMARKS.md) | [embedding benchmarks](generated/benchmarks/EMBEDDING-BENCHMARKS.md) | [query benchmarks](generated/benchmarks/QUERY-BENCHMARKS.md) | [incremental benchmarks](generated/benchmarks/INCREMENTAL-BENCHMARKS.md) | [resolution precision/recall](tests/benchmarks/resolution/)):
+Self-measured on every release via CI ([build benchmarks](generated/benchmarks/BUILD-BENCHMARKS.md) | [embedding benchmarks](generated/benchmarks/EMBEDDING-BENCHMARKS.md)):
 
 | Metric | Latest |
 |---|---|
-| Build speed (native) | **3.5 ms/file** |
-| Build speed (WASM) | **9.6 ms/file** |
-| Query time | **3ms** |
-| No-op rebuild (native) | **9ms** |
-| 1-file rebuild (native) | **265ms** |
-| Query: fn-deps | **0.9ms** |
-| Query: path | **0.9ms** |
-| ~50,000 files (est.) | **~175.0s build** |
+| Build speed (native) | **8 ms/file** |
+| Build speed (WASM) | **11.5 ms/file** |
+| Query time | **7ms** |
+| No-op rebuild (native) | **10ms** |
+| 1-file rebuild (native) | **422ms** |
+| Query: fn-deps | **1.2ms** |
+| Query: path | **1.1ms** |
+| ~50,000 files (est.) | **~400.0s build** |
 
 Metrics are normalized per file for cross-version comparability. Times above are for a full initial build — incremental rebuilds only re-parse changed files.
 
