@@ -338,7 +338,13 @@ function resolveCallTargets(stmts, call, relPath, importedNames, typeMap) {
 }
 
 function buildCallEdges(stmts, relPath, symbols, fileNodeRow, importedNames) {
-  const typeMap = symbols.typeMap || new Map();
+  const rawTM = symbols.typeMap;
+  const typeMap =
+    rawTM instanceof Map
+      ? rawTM
+      : Array.isArray(rawTM) && rawTM.length > 0
+        ? new Map(rawTM.map((e) => [e.name, e.typeName ?? e.type ?? null]))
+        : new Map();
   let edgesAdded = 0;
   for (const call of symbols.calls) {
     if (call.receiver && BUILTIN_RECEIVERS.has(call.receiver)) continue;
@@ -441,9 +447,11 @@ export async function rebuildFile(db, rootDir, filePath, stmts, engineOpts, cach
   // then add barrel import edges (which need reexports edges to exist for resolution).
   const depSymbols = new Map();
   for (const depRelPath of reverseDeps) {
-    deleteOutgoingEdges(db, depRelPath);
     const symbols_ = await parseReverseDep(rootDir, depRelPath, engineOpts, cache);
-    if (symbols_) depSymbols.set(depRelPath, symbols_);
+    if (symbols_) {
+      deleteOutgoingEdges(db, depRelPath);
+      depSymbols.set(depRelPath, symbols_);
+    }
   }
   // Pass 1: direct edges only (no barrel resolution) — creates reexports edges
   for (const [depRelPath, symbols_] of depSymbols) {
