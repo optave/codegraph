@@ -27,10 +27,10 @@ export function diffCPM(part, g, v, c, gamma = 1.0) {
 
 export function qualityCPM(part, _g, gamma = 1.0) {
   let sum = 0;
-  for (let c = 0; c < part.communityCount; c++)
-    sum +=
-      part.communityInternalEdgeWeight[c] -
-      (gamma * (part.communityNodeCount[c] * (part.communityNodeCount[c] - 1))) / 2;
+  for (let c = 0; c < part.communityCount; c++) {
+    const S = part.communityTotalSize[c] || 0;
+    sum += part.communityInternalEdgeWeight[c] - (gamma * (S * (S - 1))) / 2;
+  }
   return sum;
 }
 
