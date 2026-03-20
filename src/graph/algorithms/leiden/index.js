@@ -60,8 +60,9 @@ export function detectClusters(graph, options = {}) {
           return qualityCPMSizeAware(partition, finalGraph, gamma);
         return qualityCPM(partition, finalGraph, gamma);
       }
-      const gamma = typeof options.resolution === 'number' ? options.resolution : 1.0;
-      return qualityModularity(partition, finalGraph, gamma);
+      // Always evaluate at gamma=1.0 for standard Newman-Girvan modularity reporting,
+      // regardless of the resolution used during optimization
+      return qualityModularity(partition, finalGraph, 1.0);
     },
     toJSON() {
       const membershipObj = {};
