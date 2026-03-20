@@ -215,15 +215,22 @@ describe('Incremental edge parity (CI gate)', () => {
         // Update index.js to remove the require
         const indexPath = path.join(dir, 'index.js');
         let src = fs.readFileSync(indexPath, 'utf-8');
-        const before = src;
+        let prev = src;
         src = src.replace("const { sumOfSquares, Calculator } = require('./utils');\n", '');
+        if (src === prev)
+          throw new Error('Mutation failed: require(./utils) not found in index.js');
+        prev = src;
         src = src.replace('  console.log(sumOfSquares(3, 4));\n', '');
+        if (src === prev)
+          throw new Error('Mutation failed: sumOfSquares call not found in index.js');
+        prev = src;
         src = src.replace('  const calc = new Calculator();\n', '');
+        if (src === prev)
+          throw new Error('Mutation failed: Calculator instantiation not found in index.js');
+        prev = src;
         src = src.replace('  console.log(calc.compute(5, 6));\n', '');
-        if (src === before)
-          throw new Error(
-            'Mutation failed: no replacements applied in index.js for file deletion scenario',
-          );
+        if (src === prev)
+          throw new Error('Mutation failed: calc.compute call not found in index.js');
         fs.writeFileSync(indexPath, src);
       });
     }, 60_000);
