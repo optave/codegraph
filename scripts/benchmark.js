@@ -16,7 +16,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { resolveBenchmarkSource, srcImport } from './lib/bench-config.js';
-import { isWorker, workerEngine, forkEngines } from './lib/fork-engine.js';
+import { isWorker, workerEngine, workerTargets, forkEngines } from './lib/fork-engine.js';
 
 // ── Parent process: fork one child per engine, assemble final output ─────
 if (!isWorker()) {
@@ -88,14 +88,14 @@ const { srcDir, cleanup } = await resolveBenchmarkSource();
 
 const dbPath = path.join(root, '.codegraph', 'graph.db');
 
-const { buildGraph } = await import(srcImport(srcDir, 'builder.js'));
+const { buildGraph } = await import(srcImport(srcDir, 'domain/graph/builder.js'));
 const { fnDepsData, fnImpactData, pathData, rolesData, statsData } = await import(
-	srcImport(srcDir, 'queries.js')
+	srcImport(srcDir, 'domain/queries.js')
 );
 
 const INCREMENTAL_RUNS = 3;
 const QUERY_RUNS = 5;
-const PROBE_FILE = path.join(root, 'src', 'queries.js');
+const PROBE_FILE = path.join(root, 'src', 'domain', 'queries.js');
 
 function median(arr) {
 	const sorted = [...arr].sort((a, b) => a - b);
@@ -179,7 +179,7 @@ try {
 
 // ── Query benchmarks ────────────────────────────────────────────────
 console.error(`  [${engine}] Benchmarking queries...`);
-const targets = selectTargets();
+const targets = workerTargets() || selectTargets();
 console.error(`    hub=${targets.hub}, leaf=${targets.leaf}`);
 
 function benchQuery(fn, ...args) {
@@ -219,6 +219,7 @@ const workerResult = {
 	oneFileRebuildMs,
 	oneFilePhases,
 	queries,
+	targets,
 	phases: buildResult?.phases || null,
 };
 

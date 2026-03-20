@@ -17,7 +17,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { resolveBenchmarkSource, srcImport } from './lib/bench-config.js';
-import { isWorker, workerEngine, forkEngines } from './lib/fork-engine.js';
+import { isWorker, workerEngine, workerTargets, forkEngines } from './lib/fork-engine.js';
 
 // ── Parent process: fork one child per engine, assemble final output ─────
 if (!isWorker()) {
@@ -90,9 +90,9 @@ const root = path.resolve(__dirname, '..');
 const { srcDir, cleanup } = await resolveBenchmarkSource();
 const dbPath = path.join(root, '.codegraph', 'graph.db');
 
-const { buildGraph } = await import(srcImport(srcDir, 'builder.js'));
+const { buildGraph } = await import(srcImport(srcDir, 'domain/graph/builder.js'));
 const { fnDepsData, fnImpactData, diffImpactData } = await import(
-	srcImport(srcDir, 'queries.js')
+	srcImport(srcDir, 'domain/queries.js')
 );
 
 // Redirect console.log to stderr so only JSON goes to stdout
@@ -111,8 +111,32 @@ function round1(n) {
 	return Math.round(n * 10) / 10;
 }
 
+// Pinned hub targets — stable function names that exist across versions.
+// Auto-selecting the most-connected node makes version-to-version comparison
+// meaningless when barrel/type files get added or removed.
+const PINNED_HUB_CANDIDATES = ['buildGraph', 'openDb', 'loadConfig'];
+
 function selectTargets() {
 	const db = new Database(dbPath, { readonly: true });
+	try {
+
+	// Try pinned candidates first for a stable hub across versions
+	let hub = null;
+	for (const candidate of PINNED_HUB_CANDIDATES) {
+		const row = db
+			.prepare(
+				`SELECT n.name FROM nodes n
+         JOIN edges e ON e.source_id = n.id OR e.target_id = n.id
+         WHERE n.name = ? AND n.file NOT LIKE '%test%' AND n.file NOT LIKE '%spec%'
+         LIMIT 1`,
+			)
+			.get(candidate);
+		if (row) {
+			hub = row.name;
+			break;
+		}
+	}
+
 	const rows = db
 		.prepare(
 			`SELECT n.name, COUNT(e.id) AS cnt
@@ -123,14 +147,19 @@ function selectTargets() {
        ORDER BY cnt DESC`,
 		)
 		.all();
-	db.close();
 
 	if (rows.length === 0) throw new Error('No nodes with edges found in graph');
 
-	const hub = rows[0].name;
+	// Fall back to most-connected if no pinned candidate found
+	if (!hub) hub = rows[0].name;
+
 	const mid = rows[Math.floor(rows.length / 2)].name;
 	const leaf = rows[rows.length - 1].name;
 	return { hub, mid, leaf };
+
+	} finally {
+		db.close();
+	}
 }
 
 function benchDepths(fn, name, depths) {
@@ -186,7 +215,7 @@ function benchDiffImpact(hubName) {
 if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 await buildGraph(root, { engine, incremental: false });
 
-const targets = selectTargets();
+const targets = workerTargets() || selectTargets();
 console.error(`Targets: hub=${targets.hub}, mid=${targets.mid}, leaf=${targets.leaf}`);
 
 const fnDeps = {};
