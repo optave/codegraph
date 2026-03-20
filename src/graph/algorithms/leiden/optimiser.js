@@ -194,7 +194,7 @@ export function runLouvainUndirectedModularity(graph, optionsInput = {}) {
  * Uses CodeGraph instead of ngraph.graph.
  */
 function buildCoarseGraph(g, p) {
-  const coarse = new CodeGraph();
+  const coarse = new CodeGraph({ directed: g.directed });
   for (let c = 0; c < p.communityCount; c++) {
     coarse.addNode(String(c), { size: p.communityTotalSize[c] });
   }
@@ -268,23 +268,12 @@ function computeQualityGain(partition, v, c, opts) {
   const quality = (opts.quality || 'modularity').toLowerCase();
   const gamma = typeof opts.resolution === 'number' ? opts.resolution : 1.0;
   if (quality === 'cpm') {
-    return (
-      diffCPM(partition, partition.graph || {}, v, c, gamma) ||
-      partition.deltaCPM?.(v, c, gamma) ||
-      0
-    );
+    return diffCPM(partition, partition.graph || {}, v, c, gamma);
   }
-  if (opts.directed)
-    return (
-      diffModularityDirected(partition, partition.graph || {}, v, c, gamma) ||
-      partition.deltaModularityDirected?.(v, c, gamma) ||
-      0
-    );
-  return (
-    diffModularity(partition, partition.graph || {}, v, c, gamma) ||
-    partition.deltaModularityUndirected?.(v, c, gamma) ||
-    0
-  );
+  if (opts.directed) {
+    return diffModularityDirected(partition, partition.graph || {}, v, c, gamma);
+  }
+  return diffModularity(partition, partition.graph || {}, v, c, gamma);
 }
 
 function shuffleArrayInPlace(arr, rng = Math.random) {
