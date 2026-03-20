@@ -15,11 +15,9 @@
  */
 export function makeGraphAdapter(graph, opts = {}) {
   const linkWeight =
-    opts.linkWeight ||
-    ((attrs) => (attrs && typeof attrs.weight === 'number' ? attrs.weight : 1));
+    opts.linkWeight || ((attrs) => (attrs && typeof attrs.weight === 'number' ? attrs.weight : 1));
   const nodeSize =
-    opts.nodeSize ||
-    ((attrs) => (attrs && typeof attrs.size === 'number' ? attrs.size : 1));
+    opts.nodeSize || ((attrs) => (attrs && typeof attrs.size === 'number' ? attrs.size : 1));
   const directed = !!opts.directed;
   const baseNodeIds = opts.baseNodeIds;
 
@@ -29,8 +27,7 @@ export function makeGraphAdapter(graph, opts = {}) {
   if (Array.isArray(baseNodeIds) && baseNodeIds.length > 0) {
     for (let i = 0; i < baseNodeIds.length; i++) {
       const id = baseNodeIds[i];
-      if (!graph.hasNode(id))
-        throw new Error('Missing node: ' + id);
+      if (!graph.hasNode(id)) throw new Error(`Missing node: ${id}`);
       idToIndex.set(id, i);
       nodeIds.push(id);
     }
@@ -86,7 +83,7 @@ export function makeGraphAdapter(graph, opts = {}) {
       }
       const i = a < b ? a : b;
       const j = a < b ? b : a;
-      const key = i + ':' + j;
+      const key = `${i}:${j}`;
       let rec = pairAgg.get(key);
       if (!rec) {
         rec = { sum: 0, seenAB: 0, seenBA: 0 };

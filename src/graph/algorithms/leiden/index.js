@@ -55,14 +55,12 @@ export function detectClusters(graph, options = {}) {
     quality() {
       const q = (options.quality || 'modularity').toLowerCase();
       if (q === 'cpm') {
-        const gamma =
-          typeof options.resolution === 'number' ? options.resolution : 1.0;
+        const gamma = typeof options.resolution === 'number' ? options.resolution : 1.0;
         if ((options.cpmMode || 'unit') === 'size-aware')
           return qualityCPMSizeAware(partition, finalGraph, gamma);
         return qualityCPM(partition, finalGraph, gamma);
       }
-      const gamma =
-          typeof options.resolution === 'number' ? options.resolution : 1.0;
+      const gamma = typeof options.resolution === 'number' ? options.resolution : 1.0;
       return qualityModularity(partition, finalGraph, gamma);
     },
     toJSON() {

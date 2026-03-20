@@ -20,12 +20,12 @@ export function makePartition(graph) {
   let communityTotalOutStrength = new Float64Array(communityCount);
   let communityTotalInStrength = new Float64Array(communityCount);
 
-  let candidateCommunities = new Int32Array(n);
+  const candidateCommunities = new Int32Array(n);
   let candidateCommunityCount = 0;
-  let neighborEdgeWeightToCommunity = new Float64Array(n);
-  let outEdgeWeightToCommunity = new Float64Array(n);
-  let inEdgeWeightFromCommunity = new Float64Array(n);
-  let isCandidateCommunity = new Uint8Array(n);
+  const neighborEdgeWeightToCommunity = new Float64Array(n);
+  const outEdgeWeightToCommunity = new Float64Array(n);
+  const inEdgeWeightFromCommunity = new Float64Array(n);
+  const isCandidateCommunity = new Uint8Array(n);
 
   function ensureCommCapacity(newCount) {
     if (newCount <= communityTotalSize.length) return;
@@ -136,20 +136,18 @@ export function makePartition(graph) {
     if (newC === oldC) return 0;
     const strengthV = graph.strengthOut[v];
     const weightToNew =
-      newC < neighborEdgeWeightToCommunity.length
-        ? neighborEdgeWeightToCommunity[newC] || 0
-        : 0;
+      newC < neighborEdgeWeightToCommunity.length ? neighborEdgeWeightToCommunity[newC] || 0 : 0;
     const weightToOld = neighborEdgeWeightToCommunity[oldC] || 0;
     const totalStrengthNew =
       newC < communityTotalStrength.length ? communityTotalStrength[newC] : 0;
     const totalStrengthOld = communityTotalStrength[oldC];
     const gain_remove = -(
       weightToOld / twoMUndirected -
-      gamma * (strengthV * totalStrengthOld) / (twoMUndirected * twoMUndirected)
+      (gamma * (strengthV * totalStrengthOld)) / (twoMUndirected * twoMUndirected)
     );
     const gain_add =
       weightToNew / twoMUndirected -
-      gamma * (strengthV * totalStrengthNew) / (twoMUndirected * twoMUndirected);
+      (gamma * (strengthV * totalStrengthNew)) / (twoMUndirected * twoMUndirected);
     return gain_remove + gain_add;
   }
 
@@ -171,11 +169,11 @@ export function makePartition(graph) {
       newC < communityTotalOutStrength.length ? communityTotalOutStrength[newC] : 0;
     const totalInStrengthOld = communityTotalInStrength[oldC];
     const totalOutStrengthOld = communityTotalOutStrength[oldC];
-    const deltaInternal =
-      (inFromNew + outToNew - inFromOld - outToOld) / totalEdgeWeight;
+    const deltaInternal = (inFromNew + outToNew - inFromOld - outToOld) / totalEdgeWeight;
     const deltaExpected =
-      gamma * (strengthOutV * (totalInStrengthNew - totalInStrengthOld) +
-        strengthInV * (totalOutStrengthNew - totalOutStrengthOld)) /
+      (gamma *
+        (strengthOutV * (totalInStrengthNew - totalInStrengthOld) +
+          strengthInV * (totalOutStrengthNew - totalOutStrengthOld))) /
       (totalEdgeWeight * totalEdgeWeight);
     return deltaInternal - deltaExpected;
   }
@@ -185,9 +183,7 @@ export function makePartition(graph) {
     if (newC === oldC) return 0;
     const weightToOld = neighborEdgeWeightToCommunity[oldC] || 0;
     const weightToNew =
-      newC < neighborEdgeWeightToCommunity.length
-        ? neighborEdgeWeightToCommunity[newC] || 0
-        : 0;
+      newC < neighborEdgeWeightToCommunity.length ? neighborEdgeWeightToCommunity[newC] || 0 : 0;
     const nodeSize = graph.size[v] || 1;
     const sizeOld = communityTotalSize[oldC] || 0;
     const sizeNew = newC < communityTotalSize.length ? communityTotalSize[newC] : 0;
@@ -226,9 +222,7 @@ export function makePartition(graph) {
       const outToNew =
         newC < outEdgeWeightToCommunity.length ? outEdgeWeightToCommunity[newC] || 0 : 0;
       const inFromNew =
-        newC < inEdgeWeightFromCommunity.length
-          ? inEdgeWeightFromCommunity[newC] || 0
-          : 0;
+        newC < inEdgeWeightFromCommunity.length ? inEdgeWeightFromCommunity[newC] || 0 : 0;
       communityInternalEdgeWeight[oldC] -= outToOld + inFromOld + selfLoopWeight;
       communityInternalEdgeWeight[newC] += outToNew + inFromNew + selfLoopWeight;
     } else {
@@ -244,8 +238,7 @@ export function makePartition(graph) {
 
   function compactCommunityIds(opts = {}) {
     const ids = [];
-    for (let c = 0; c < communityCount; c++)
-      if (communityNodeCount[c] > 0) ids.push(c);
+    for (let c = 0; c < communityCount; c++) if (communityNodeCount[c] > 0) ids.push(c);
     if (opts.keepOldOrder) {
       ids.sort((a, b) => a - b);
     } else if (opts.preserveMap instanceof Map) {
