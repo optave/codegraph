@@ -62,6 +62,10 @@ export function makeGraphAdapter(graph, opts = {}) {
       const w = +linkWeight(attrs) || 0;
       if (from === to) {
         selfLoop[from] += w;
+        // Self-loop is intentionally kept in outEdges/inEdges as well.
+        // partition.js's moveNodeToCommunity (directed path) accounts for this
+        // by subtracting selfLoopWeight once from outToOld+inFromOld to avoid
+        // triple-counting (see partition.js moveNodeToCommunity directed block).
       }
       outEdges[from].push({ to, w });
       inEdges[to].push({ from, w });
