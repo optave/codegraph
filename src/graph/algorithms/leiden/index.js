@@ -34,13 +34,10 @@ import { runLouvainUndirectedModularity } from './optimiser.js';
  * not the objective that was actually optimized.
  */
 export function detectClusters(graph, options = {}) {
-  const {
-    graph: finalGraph,
-    partition,
-    levels,
-    originalToCurrent,
-    originalNodeIds,
-  } = runLouvainUndirectedModularity(graph, options);
+  const { levels, originalToCurrent, originalNodeIds, baseGraph } = runLouvainUndirectedModularity(
+    graph,
+    options,
+  );
 
   const idToClass = new Map();
   for (let i = 0; i < originalNodeIds.length; i++) {
@@ -61,14 +58,18 @@ export function detectClusters(graph, options = {}) {
       return out;
     },
     quality() {
+      // Compute quality on the original (level-0) graph with the final
+      // partition mapped back.  Computing on the last coarse-level graph
+      // produces inflated values because the modularity null model depends
+      // on the degree distribution, which changes after coarsening.
+      const part = buildOriginalPartition(baseGraph, originalToCurrent);
       const q = (options.quality || 'modularity').toLowerCase();
       if (q === 'cpm') {
         const gamma = typeof options.resolution === 'number' ? options.resolution : 1.0;
-        return qualityCPM(partition, finalGraph, gamma);
+        return qualityCPM(part, baseGraph, gamma);
       }
-      // Always evaluate at gamma=1.0 for standard Newman-Girvan modularity reporting,
-      // regardless of the resolution used during optimization
-      return qualityModularity(partition, finalGraph, 1.0);
+      // Always evaluate at gamma=1.0 for standard Newman-Girvan modularity
+      return qualityModularity(part, baseGraph, 1.0);
     },
     toJSON() {
       const membershipObj = {};
@@ -78,5 +79,65 @@ export function detectClusters(graph, options = {}) {
         meta: { levels: levels.length, quality: this.quality(), options },
       };
     },
+  };
+}
+
+/**
+ * Build a minimal partition-like object from the original graph and the
+ * final community mapping, suitable for qualityModularity / qualityCPM.
+ */
+function buildOriginalPartition(g, communityMap) {
+  const n = g.n;
+  let maxC = 0;
+  for (let i = 0; i < n; i++) if (communityMap[i] > maxC) maxC = communityMap[i];
+  const cc = maxC + 1;
+
+  const internalWeight = new Float64Array(cc);
+  const totalStr = new Float64Array(cc);
+  const totalOutStr = new Float64Array(cc);
+  const totalInStr = new Float64Array(cc);
+  const totalSize = new Float64Array(cc);
+
+  for (let i = 0; i < n; i++) {
+    const c = communityMap[i];
+    totalSize[c] += g.size[i];
+    if (g.directed) {
+      totalOutStr[c] += g.strengthOut[i];
+      totalInStr[c] += g.strengthIn[i];
+    } else {
+      totalStr[c] += g.strengthOut[i];
+    }
+    if (g.selfLoop[i]) internalWeight[c] += g.selfLoop[i];
+  }
+
+  if (g.directed) {
+    for (let i = 0; i < n; i++) {
+      const ci = communityMap[i];
+      const list = g.outEdges[i];
+      for (let k = 0; k < list.length; k++) {
+        const { to: j, w } = list[k];
+        if (i === j) continue;
+        if (ci === communityMap[j]) internalWeight[ci] += w;
+      }
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      const ci = communityMap[i];
+      const list = g.outEdges[i];
+      for (let k = 0; k < list.length; k++) {
+        const { to: j, w } = list[k];
+        if (j <= i) continue;
+        if (ci === communityMap[j]) internalWeight[ci] += w;
+      }
+    }
+  }
+
+  return {
+    communityCount: cc,
+    communityInternalEdgeWeight: internalWeight,
+    communityTotalStrength: totalStr,
+    communityTotalOutStrength: totalOutStr,
+    communityTotalInStrength: totalInStr,
+    communityTotalSize: totalSize,
   };
 }
