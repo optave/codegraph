@@ -6,8 +6,19 @@
 export function diffCPM(part, g, v, c, gamma = 1.0) {
   const oldC = part.nodeCommunity[v];
   if (c === oldC) return 0;
-  const w_old = part.getNeighborEdgeWeightToCommunity(oldC) || 0;
-  const w_new = c < g.n ? part.getNeighborEdgeWeightToCommunity(c) || 0 : 0;
+  let w_old, w_new;
+  if (g.directed) {
+    w_old =
+      (part.getOutEdgeWeightToCommunity(oldC) || 0) +
+      (part.getInEdgeWeightFromCommunity(oldC) || 0);
+    w_new =
+      c < g.n
+        ? (part.getOutEdgeWeightToCommunity(c) || 0) + (part.getInEdgeWeightFromCommunity(c) || 0)
+        : 0;
+  } else {
+    w_old = part.getNeighborEdgeWeightToCommunity(oldC) || 0;
+    w_new = c < g.n ? part.getNeighborEdgeWeightToCommunity(c) || 0 : 0;
+  }
   const s_v = g.size[v] || 1;
   const S_old = part.communityTotalSize[oldC] || 0;
   const S_new = c < part.communityTotalSize.length ? part.communityTotalSize[c] : 0;
