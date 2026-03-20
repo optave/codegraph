@@ -181,12 +181,10 @@ describe('coarse graph quality', () => {
       }
     const clusters = detectClusters(g, { randomSeed: 42 });
     const q = clusters.quality();
-    // Modularity must not exceed 1.0 (inflated values were ~0.5 when true was ~0)
-    expect(q).toBeLessThanOrEqual(1.0);
-    expect(q).toBeGreaterThanOrEqual(-1.0);
-    // With two perfect cliques and no inter-community edges, modularity should be ~0
-    // (each community captures exactly its expected share of edges)
-    expect(Math.abs(q)).toBeLessThan(0.1);
+    // Two disjoint K4 cliques: the ideal 2-community partition gives Q = 0.5.
+    // Each clique has L_c = 6 edges, d_c = 12, 2m = 24:
+    //   Q = 2 × [2·6/24 − (12/24)²] = 2 × 0.25 = 0.5
+    expect(q).toBeCloseTo(0.5, 2);
   });
 });
 

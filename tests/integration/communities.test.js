@@ -97,8 +97,9 @@ describe('communitiesData (file-level)', () => {
 
   test('modularity is in valid range', () => {
     const data = communitiesData(null, { repo });
-    // Modularity theoretical range is [-0.5, 1]
-    expect(data.modularity).toBeGreaterThanOrEqual(-0.5);
+    // Leiden starts from singleton partition and only makes improving moves.
+    // Quality should always be non-negative on a real graph.
+    expect(data.modularity).toBeGreaterThanOrEqual(0);
     expect(data.modularity).toBeLessThanOrEqual(1);
   });
 

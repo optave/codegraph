@@ -57,10 +57,14 @@ export function qualityModularity(part, g, gamma = 1.0) {
         (gamma * (part.communityTotalOutStrength[c] * part.communityTotalInStrength[c])) /
           (m2 * m2);
   } else {
+    // communityInternalEdgeWeight counts each undirected edge once (j > i),
+    // but m2 = totalWeight = 2m (sum of symmetrized degrees). The standard
+    // Newman-Girvan formula is Q = Σ_c [2·L_c/(2m) - γ·(d_c/(2m))²], so
+    // we multiply lc by 2 to match.
     for (let c = 0; c < part.communityCount; c++) {
       const lc = part.communityInternalEdgeWeight[c];
       const dc = part.communityTotalStrength[c];
-      sum += lc / m2 - (gamma * (dc * dc)) / (m2 * m2);
+      sum += (2 * lc) / m2 - (gamma * (dc * dc)) / (m2 * m2);
     }
   }
   return sum;
