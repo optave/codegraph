@@ -33,12 +33,3 @@ export function qualityCPM(part, _g, gamma = 1.0) {
   }
   return sum;
 }
-
-export function qualityCPMSizeAware(part, _g, gamma = 1.0) {
-  let sum = 0;
-  for (let c = 0; c < part.communityCount; c++) {
-    const S = part.communityTotalSize[c] || 0;
-    sum += part.communityInternalEdgeWeight[c] - (gamma * (S * (S - 1))) / 2;
-  }
-  return sum;
-}

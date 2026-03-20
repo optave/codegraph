@@ -6,7 +6,7 @@
  * License:  MIT — see LICENSE in this directory.
  */
 
-import { qualityCPM, qualityCPMSizeAware } from './cpm.js';
+import { qualityCPM } from './cpm.js';
 import { qualityModularity } from './modularity.js';
 import { runLouvainUndirectedModularity } from './optimiser.js';
 
@@ -64,8 +64,6 @@ export function detectClusters(graph, options = {}) {
       const q = (options.quality || 'modularity').toLowerCase();
       if (q === 'cpm') {
         const gamma = typeof options.resolution === 'number' ? options.resolution : 1.0;
-        if ((options.cpmMode || 'unit') === 'size-aware')
-          return qualityCPMSizeAware(partition, finalGraph, gamma);
         return qualityCPM(partition, finalGraph, gamma);
       }
       // Always evaluate at gamma=1.0 for standard Newman-Girvan modularity reporting,

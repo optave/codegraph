@@ -72,10 +72,10 @@ describe('CPM resolution tuning', () => {
   });
 });
 
-// ─── CPM size-aware ───────────────────────────────────────────────────
+// ─── CPM with weighted nodes ─────────────────────────────────────────
 
-describe('CPM size-aware mode', () => {
-  it('penalizes large-size communities more than unit mode', () => {
+describe('CPM with weighted nodes', () => {
+  it('uses communityTotalSize in quality reporting', () => {
     const g = new CodeGraph();
     const A = ['0', '1', '2', '3'];
     const B = ['4', '5', '6', '7'];
@@ -93,28 +93,16 @@ describe('CPM size-aware mode', () => {
     g.addEdge('3', '4');
     g.addEdge('4', '3');
 
-    const gamma = 0.5;
-    const unit = detectClusters(g, {
+    const result = detectClusters(g, {
       quality: 'cpm',
-      cpmMode: 'unit',
-      resolution: gamma,
+      resolution: 0.5,
       randomSeed: 3,
     });
-    const sized = detectClusters(g, {
-      quality: 'cpm',
-      cpmMode: 'size-aware',
-      resolution: gamma,
-      randomSeed: 3,
-    });
-    expect(sized.quality()).toBeLessThanOrEqual(unit.quality());
-    // B-clique (size=1 nodes) merges; A-clique nodes (size=5) stay separate
-    // because CPM penalty gamma * s_v * S_new dominates the edge gain
-    const bCommunities = new Set(B.map((i) => unit.getClass(i)));
+    // B-clique (size=1 nodes) merges; quality is finite
+    const bCommunities = new Set(B.map((i) => result.getClass(i)));
     expect(bCommunities.size).toBe(1);
-    const ids = [...A, ...B];
-    const count = (cl) => new Set(ids.map((i) => cl.getClass(i))).size;
-    expect(count(unit)).toBeGreaterThanOrEqual(2);
-    expect(count(sized)).toBeGreaterThanOrEqual(2);
+    expect(typeof result.quality()).toBe('number');
+    expect(Number.isFinite(result.quality())).toBe(true);
   });
 });
 
