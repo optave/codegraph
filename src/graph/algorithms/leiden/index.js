@@ -24,6 +24,14 @@ import { runLouvainUndirectedModularity } from './optimiser.js';
  * @param {Set|Array} [options.fixedNodes]
  * @param {string}  [options.candidateStrategy]    - 'neighbors' | 'all' | 'random' | 'random-neighbor'
  * @returns {{ getClass(id): number, getCommunities(): Map, quality(): number, toJSON(): object }}
+ *
+ * **Note on `quality()`:** For modularity, `quality()` always evaluates at γ=1.0
+ * (standard Newman-Girvan modularity) regardless of the `resolution` used during
+ * optimization. This makes quality values comparable across runs with different
+ * resolutions. For CPM, `quality()` uses the caller-specified resolution since γ
+ * is intrinsic to the CPM metric. Do not use modularity `quality()` values to
+ * compare partitions found at different resolutions — they reflect Q at γ=1.0,
+ * not the objective that was actually optimized.
  */
 export function detectClusters(graph, options = {}) {
   const {
