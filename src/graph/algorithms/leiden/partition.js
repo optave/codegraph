@@ -63,6 +63,7 @@ export function makePartition(graph) {
         const neighbors = graph.outEdges[i];
         for (let k = 0; k < neighbors.length; k++) {
           const { to: j, w } = neighbors[k];
+          if (i === j) continue; // self-loop already counted via graph.selfLoop[i]
           if (ci === nodeCommunity[j]) communityInternalEdgeWeight[ci] += w;
         }
       }
@@ -223,7 +224,9 @@ export function makePartition(graph) {
         newC < outEdgeWeightToCommunity.length ? outEdgeWeightToCommunity[newC] || 0 : 0;
       const inFromNew =
         newC < inEdgeWeightFromCommunity.length ? inEdgeWeightFromCommunity[newC] || 0 : 0;
-      communityInternalEdgeWeight[oldC] -= outToOld + inFromOld + selfLoopWeight;
+      // outToOld/inFromOld already include the self-loop weight (self-loops are
+      // in outEdges/inEdges), so subtract it once to avoid triple-counting.
+      communityInternalEdgeWeight[oldC] -= outToOld + inFromOld - selfLoopWeight;
       communityInternalEdgeWeight[newC] += outToNew + inFromNew + selfLoopWeight;
     } else {
       const weightToOld = neighborEdgeWeightToCommunity[oldC] || 0;
@@ -284,6 +287,7 @@ export function makePartition(graph) {
       } else {
         newTotalStrength[c] += graph.strengthOut[i];
       }
+      if (graph.selfLoop[i] !== 0) newInternalEdgeWeight[c] += graph.selfLoop[i];
     }
     if (graph.directed) {
       for (let i = 0; i < n; i++) {
@@ -291,6 +295,7 @@ export function makePartition(graph) {
         const list = graph.outEdges[i];
         for (let k = 0; k < list.length; k++) {
           const { to: j, w } = list[k];
+          if (i === j) continue; // self-loop already counted via graph.selfLoop[i]
           if (ci === nodeCommunity[j]) newInternalEdgeWeight[ci] += w;
         }
       }

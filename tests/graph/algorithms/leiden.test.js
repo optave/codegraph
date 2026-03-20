@@ -137,6 +137,35 @@ describe('directed modularity', () => {
   });
 });
 
+// ─── Directed self-loops ──────────────────────────────────────────────
+
+describe('directed self-loops', () => {
+  it('does not corrupt internal edge weight with directed self-loops', () => {
+    const g = new CodeGraph();
+    const A = ['0', '1', '2'];
+    const B = ['3', '4', '5'];
+    for (const id of [...A, ...B]) g.addNode(id);
+    for (let i = 0; i < A.length; i++)
+      for (let j = 0; j < A.length; j++) if (i !== j) g.addEdge(A[i], A[j]);
+    for (let i = 0; i < B.length; i++)
+      for (let j = 0; j < B.length; j++) if (i !== j) g.addEdge(B[i], B[j]);
+    g.addEdge('2', '3');
+    // Add self-loops — these previously caused double-counting in directed mode
+    g.addEdge('0', '0', { weight: 3 });
+    g.addEdge('3', '3', { weight: 3 });
+
+    const clusters = detectClusters(g, { directed: true, randomSeed: 2 });
+    // Quality must be finite (not NaN from negative internal edge weight)
+    expect(Number.isFinite(clusters.quality())).toBe(true);
+    expect(clusters.quality()).toBeGreaterThanOrEqual(0);
+    // A-side nodes should not mix with B-side nodes
+    const aCommunities = new Set(A.map((i) => clusters.getClass(i)));
+    const bCommunities = new Set(B.map((i) => clusters.getClass(i)));
+    const overlap = [...aCommunities].filter((c) => bCommunities.has(c));
+    expect(overlap.length).toBe(0);
+  });
+});
+
 // ─── Edge cases ───────────────────────────────────────────────────────
 
 describe('edge cases', () => {
