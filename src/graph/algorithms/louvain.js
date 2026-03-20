@@ -2,6 +2,10 @@
  * Community detection via vendored Leiden algorithm.
  * Maintains backward-compatible API: { assignments: Map<string, number>, modularity: number }
  *
+ * **Note:** Always runs in undirected mode (`directed: false`) regardless of
+ * the input graph's directedness. For direction-aware community detection,
+ * use `detectClusters` from `./leiden/index.js` directly.
+ *
  * @param {import('../model.js').CodeGraph} graph
  * @param {{ resolution?: number, maxLevels?: number, maxLocalPasses?: number }} [opts]
  * @returns {{ assignments: Map<string, number>, modularity: number }}
