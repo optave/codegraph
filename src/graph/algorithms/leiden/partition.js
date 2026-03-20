@@ -182,13 +182,22 @@ export function makePartition(graph) {
   function deltaCPM(v, newC, gamma = 1.0) {
     const oldC = nodeCommunity[v];
     if (newC === oldC) return 0;
-    const weightToOld = neighborEdgeWeightToCommunity[oldC] || 0;
-    const weightToNew =
-      newC < neighborEdgeWeightToCommunity.length ? neighborEdgeWeightToCommunity[newC] || 0 : 0;
+    let w_old, w_new;
+    if (graph.directed) {
+      w_old = (outEdgeWeightToCommunity[oldC] || 0) + (inEdgeWeightFromCommunity[oldC] || 0);
+      w_new =
+        newC < outEdgeWeightToCommunity.length
+          ? (outEdgeWeightToCommunity[newC] || 0) + (inEdgeWeightFromCommunity[newC] || 0)
+          : 0;
+    } else {
+      w_old = neighborEdgeWeightToCommunity[oldC] || 0;
+      w_new =
+        newC < neighborEdgeWeightToCommunity.length ? neighborEdgeWeightToCommunity[newC] || 0 : 0;
+    }
     const nodeSize = graph.size[v] || 1;
     const sizeOld = communityTotalSize[oldC] || 0;
     const sizeNew = newC < communityTotalSize.length ? communityTotalSize[newC] : 0;
-    return weightToNew - weightToOld - gamma * nodeSize * (sizeNew - sizeOld + nodeSize);
+    return w_new - w_old - gamma * nodeSize * (sizeNew - sizeOld + nodeSize);
   }
 
   function moveNodeToCommunity(v, newC) {
