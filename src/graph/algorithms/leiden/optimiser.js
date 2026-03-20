@@ -195,6 +195,11 @@ export function runLouvainUndirectedModularity(graph, optionsInput = {}) {
  * Build a coarse graph where each community becomes a node.
  * Uses CodeGraph instead of ngraph.graph.
  */
+// Build a coarse graph where each community becomes a single node.
+// Self-loops (g.selfLoop[]) don't need separate handling here because they
+// are already present in g.outEdges (directed path keeps them in both arrays).
+// When the coarse graph is fed back to makeGraphAdapter at the next level,
+// the adapter re-detects cu===cu edges as self-loops and populates selfLoop[].
 function buildCoarseGraph(g, p) {
   const coarse = new CodeGraph({ directed: g.directed });
   for (let c = 0; c < p.communityCount; c++) {
