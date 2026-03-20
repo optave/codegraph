@@ -339,12 +339,24 @@ export function makePartition(graph) {
       return communityCount;
     },
     nodeCommunity,
-    communityTotalSize,
-    communityNodeCount,
-    communityInternalEdgeWeight,
-    communityTotalStrength,
-    communityTotalOutStrength,
-    communityTotalInStrength,
+    get communityTotalSize() {
+      return communityTotalSize;
+    },
+    get communityNodeCount() {
+      return communityNodeCount;
+    },
+    get communityInternalEdgeWeight() {
+      return communityInternalEdgeWeight;
+    },
+    get communityTotalStrength() {
+      return communityTotalStrength;
+    },
+    get communityTotalOutStrength() {
+      return communityTotalOutStrength;
+    },
+    get communityTotalInStrength() {
+      return communityTotalInStrength;
+    },
     initializeAggregates,
     accumulateNeighborCommunityEdgeWeights,
     getCandidateCommunityCount: () => candidateCommunityCount,
