@@ -16,7 +16,7 @@ declare module 'better-sqlite3' {
 
     interface Statement {
       run(...params: unknown[]): RunResult;
-      get(...params: unknown[]): unknown;
+      get(...params: unknown[]): unknown | undefined;
       all(...params: unknown[]): unknown[];
       iterate(...params: unknown[]): IterableIterator<unknown>;
     }
@@ -27,6 +27,9 @@ declare module 'better-sqlite3' {
     }
   }
 
-  function BetterSqlite3(filename: string, options?: Record<string, unknown>): BetterSqlite3.Database;
+  function BetterSqlite3(
+    filename: string,
+    options?: Record<string, unknown>,
+  ): BetterSqlite3.Database;
   export = BetterSqlite3;
 }

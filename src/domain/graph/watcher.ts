@@ -19,10 +19,7 @@ function isTrackedExt(filePath: string): boolean {
   return EXTENSIONS.has(path.extname(filePath));
 }
 
-export async function watchProject(
-  rootDir: string,
-  opts: { engine?: string } = {},
-): Promise<void> {
+export async function watchProject(rootDir: string, opts: { engine?: string } = {}): Promise<void> {
   const dbPath = path.join(rootDir, '.codegraph', 'graph.db');
   if (!fs.existsSync(dbPath)) {
     throw new DbError('No graph.db found. Run `codegraph build` first.', { file: dbPath });
@@ -101,9 +98,9 @@ export async function watchProject(
       edgesAdded: number;
     }> = [];
     for (const filePath of files) {
-      const result = await rebuildFile(db, rootDir, filePath, stmts, engineOpts, cache, {
+      const result = (await rebuildFile(db, rootDir, filePath, stmts, engineOpts, cache, {
         diffSymbols,
-      }) as typeof results[number] | null;
+      })) as (typeof results)[number] | null;
       if (result) results.push(result);
     }
     const updates = results;

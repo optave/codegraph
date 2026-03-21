@@ -220,9 +220,7 @@ export function setWorkspaces(
 /**
  * Get workspace packages for a rootDir. Returns empty map if not set.
  */
-function getWorkspaces(
-  rootDir: string,
-): Map<string, { dir: string; entry: string | null }> {
+function getWorkspaces(rootDir: string): Map<string, { dir: string; entry: string | null }> {
   return _workspaceCache.get(rootDir) || new Map();
 }
 

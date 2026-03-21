@@ -95,25 +95,25 @@ function setupPipeline(ctx: PipelineContext): void {
     info(`Detected ${workspaces.size} workspace packages`);
   }
 
-  ctx.timing['setupMs'] = performance.now() - ctx.buildStart;
+  ctx.timing.setupMs = performance.now() - ctx.buildStart;
 }
 
 function formatTimingResult(ctx: PipelineContext): BuildResult {
   const t = ctx.timing;
   return {
     phases: {
-      setupMs: +(t['setupMs'] ?? 0).toFixed(1),
-      parseMs: +(t['parseMs'] ?? 0).toFixed(1),
-      insertMs: +(t['insertMs'] ?? 0).toFixed(1),
-      resolveMs: +(t['resolveMs'] ?? 0).toFixed(1),
-      edgesMs: +(t['edgesMs'] ?? 0).toFixed(1),
-      structureMs: +(t['structureMs'] ?? 0).toFixed(1),
-      rolesMs: +(t['rolesMs'] ?? 0).toFixed(1),
-      astMs: +(t['astMs'] ?? 0).toFixed(1),
-      complexityMs: +(t['complexityMs'] ?? 0).toFixed(1),
-      cfgMs: +(t['cfgMs'] ?? 0).toFixed(1),
-      dataflowMs: +(t['dataflowMs'] ?? 0).toFixed(1),
-      finalizeMs: +(t['finalizeMs'] ?? 0).toFixed(1),
+      setupMs: +(t.setupMs ?? 0).toFixed(1),
+      parseMs: +(t.parseMs ?? 0).toFixed(1),
+      insertMs: +(t.insertMs ?? 0).toFixed(1),
+      resolveMs: +(t.resolveMs ?? 0).toFixed(1),
+      edgesMs: +(t.edgesMs ?? 0).toFixed(1),
+      structureMs: +(t.structureMs ?? 0).toFixed(1),
+      rolesMs: +(t.rolesMs ?? 0).toFixed(1),
+      astMs: +(t.astMs ?? 0).toFixed(1),
+      complexityMs: +(t.complexityMs ?? 0).toFixed(1),
+      cfgMs: +(t.cfgMs ?? 0).toFixed(1),
+      dataflowMs: +(t.dataflowMs ?? 0).toFixed(1),
+      finalizeMs: +(t.finalizeMs ?? 0).toFixed(1),
     },
   };
 }
@@ -142,7 +142,10 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
  *
  * Signature and return value are identical to the original monolithic buildGraph().
  */
-export async function buildGraph(rootDir: string, opts: BuildGraphOpts = {}): Promise<BuildResult | undefined> {
+export async function buildGraph(
+  rootDir: string,
+  opts: BuildGraphOpts = {},
+): Promise<BuildResult | undefined> {
   const ctx = new PipelineContext();
   ctx.buildStart = performance.now();
   ctx.opts = opts;
@@ -152,7 +155,7 @@ export async function buildGraph(rootDir: string, opts: BuildGraphOpts = {}): Pr
     setupPipeline(ctx);
     await runPipelineStages(ctx);
   } catch (err) {
-    if (!ctx.earlyExit) closeDb(ctx.db);
+    if (!ctx.earlyExit && ctx.db) closeDb(ctx.db);
     throw err;
   }
 

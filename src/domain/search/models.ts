@@ -13,7 +13,10 @@ export interface ModelConfig {
 
 // Lazy-load transformers (heavy, optional module)
 let pipeline: unknown = null;
-let extractor: (null | { dispose(): Promise<void>; (batch: string[], opts: Record<string, unknown>): Promise<{ data: number[] }> }) = null;
+let extractor: null | {
+  dispose(): Promise<void>;
+  (batch: string[], opts: Record<string, unknown>): Promise<{ data: number[] }>;
+} = null;
 let activeModel: string | null = null;
 
 export const MODELS: Record<string, ModelConfig> = {
@@ -103,19 +106,22 @@ export function promptInstall(packageName: string): Promise<boolean> {
 
   return new Promise((resolve) => {
     const rl = createInterface({ input: process.stdin, output: process.stderr });
-    rl.question(`Semantic search requires ${packageName}. Install it now? [y/N] `, (answer: string) => {
-      rl.close();
-      if (answer.trim().toLowerCase() !== 'y') return resolve(false);
-      try {
-        execFileSync('npm', ['install', packageName], {
-          stdio: 'inherit',
-          timeout: 300_000,
-        });
-        resolve(true);
-      } catch {
-        resolve(false);
-      }
-    });
+    rl.question(
+      `Semantic search requires ${packageName}. Install it now? [y/N] `,
+      (answer: string) => {
+        rl.close();
+        if (answer.trim().toLowerCase() !== 'y') return resolve(false);
+        try {
+          execFileSync('npm', ['install', packageName], {
+            stdio: 'inherit',
+            timeout: 300_000,
+          });
+          resolve(true);
+        } catch {
+          resolve(false);
+        }
+      },
+    );
   });
 }
 
@@ -165,13 +171,15 @@ async function loadModel(modelKey?: string): Promise<{ extractor: unknown; confi
   // Dispose previous model before loading a different one
   await disposeModel();
 
-  const transformers = await loadTransformers() as { pipeline: unknown };
+  const transformers = (await loadTransformers()) as { pipeline: unknown };
   pipeline = transformers.pipeline;
 
   info(`Loading embedding model: ${config.name} (${config.dim}d)...`);
   const pipelineOpts = config.quantized ? { quantized: true } : {};
   try {
-    extractor = await (pipeline as Function)('feature-extraction', config.name, pipelineOpts);
+    extractor =
+      await // biome-ignore lint/complexity/noBannedTypes: dynamically loaded transformers pipeline is untyped
+      (pipeline as Function)('feature-extraction', config.name, pipelineOpts);
   } catch (err: unknown) {
     const msg = (err as Error).message || String(err);
     if (msg.includes('Unauthorized') || msg.includes('401') || msg.includes('gated')) {
@@ -198,7 +206,10 @@ async function loadModel(modelKey?: string): Promise<{ extractor: unknown; confi
 /**
  * Generate embeddings for an array of texts.
  */
-export async function embed(texts: string[], modelKey?: string): Promise<{ vectors: Float32Array[]; dim: number }> {
+export async function embed(
+  texts: string[],
+  modelKey?: string,
+): Promise<{ vectors: Float32Array[]; dim: number }> {
   const { extractor: ext, config } = await loadModel(modelKey);
   const dim = config.dim;
   const results: Float32Array[] = [];
@@ -206,13 +217,17 @@ export async function embed(texts: string[], modelKey?: string): Promise<{ vecto
 
   for (let i = 0; i < texts.length; i += batchSize) {
     const batch = texts.slice(i, i + batchSize);
-    const output = await (ext as Function)(batch, { pooling: 'mean', normalize: true }) as { data: number[] };
+    const output =
+      (await // biome-ignore lint/complexity/noBannedTypes: dynamically loaded extractor is untyped
+      (ext as Function)(batch, { pooling: 'mean', normalize: true })) as {
+        data: number[];
+      };
 
     for (let j = 0; j < batch.length; j++) {
       const start = j * dim;
       const vec = new Float32Array(dim);
       for (let k = 0; k < dim; k++) {
-        vec[k] = output.data[start + k]!;
+        vec[k] = output.data[start + k] ?? 0;
       }
       results.push(vec);
     }

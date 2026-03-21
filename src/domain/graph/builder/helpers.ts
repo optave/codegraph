@@ -65,11 +65,11 @@ export function collectFiles(
   try {
     realDir = fs.realpathSync(dir);
   } catch {
-    return trackDirs ? { files, directories: directories! } : files;
+    return trackDirs ? { files, directories: directories as Set<string> } : files;
   }
   if (_visited.has(realDir)) {
     warn(`Symlink loop detected, skipping: ${dir}`);
-    return trackDirs ? { files, directories: directories! } : files;
+    return trackDirs ? { files, directories: directories as Set<string> } : files;
   }
   _visited.add(realDir);
 
@@ -78,7 +78,7 @@ export function collectFiles(
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch (err: unknown) {
     warn(`Cannot read directory ${dir}: ${(err as Error).message}`);
-    return trackDirs ? { files, directories: directories! } : files;
+    return trackDirs ? { files, directories: directories as Set<string> } : files;
   }
 
   for (const entry of entries) {
@@ -98,9 +98,9 @@ export function collectFiles(
     }
   }
   if (trackDirs && hasFiles) {
-    directories!.add(dir);
+    (directories as Set<string>).add(dir);
   }
-  return trackDirs ? { files, directories: directories! } : files;
+  return trackDirs ? { files, directories: directories as Set<string> } : files;
 }
 
 /**
@@ -117,12 +117,16 @@ export function loadPathAliases(rootDir: string): PathAliases {
         .replace(/\/\/.*$/gm, '')
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/,\s*([\]}])/g, '$1');
-      const config = JSON.parse(raw) as { compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> } };
+      const config = JSON.parse(raw) as {
+        compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
+      };
       const opts = config.compilerOptions || {};
       if (opts.baseUrl) aliases.baseUrl = path.resolve(rootDir, opts.baseUrl);
       if (opts.paths) {
         for (const [pattern, targets] of Object.entries(opts.paths)) {
-          aliases.paths[pattern] = targets.map((t: string) => path.resolve(aliases.baseUrl || rootDir, t));
+          aliases.paths[pattern] = targets.map((t: string) =>
+            path.resolve(aliases.baseUrl || rootDir, t),
+          );
         }
       }
       break;
@@ -164,8 +168,8 @@ export function readFileSafe(filePath: string, retries: number = 2): string {
       return fs.readFileSync(filePath, 'utf-8');
     } catch (err: unknown) {
       if (attempt < retries && TRANSIENT_CODES.has((err as NodeJS.ErrnoException).code ?? '')) {
-        const end = Date.now() + RETRY_DELAY_MS;
-        while (Date.now() < end) {}
+        const sharedBuf = new SharedArrayBuffer(4);
+        Atomics.wait(new Int32Array(sharedBuf), 0, 0, RETRY_DELAY_MS);
         continue;
       }
       throw err;
@@ -176,7 +180,11 @@ export function readFileSafe(filePath: string, retries: number = 2): string {
 /**
  * Purge all graph data for the specified files.
  */
-export function purgeFilesFromGraph(db: BetterSqlite3.Database, files: string[], options: Record<string, unknown> = {}): void {
+export function purgeFilesFromGraph(
+  db: BetterSqlite3.Database,
+  files: string[],
+  options: Record<string, unknown> = {},
+): void {
   purgeFilesData(db, files, options);
 }
 

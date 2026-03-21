@@ -12,12 +12,7 @@ import {
   renderFunctionLevelNeo4jCSV,
 } from '../presentation/export.js';
 import { paginateResult } from '../shared/paginate.js';
-import type {
-  ExportGraphSONResult,
-  ExportNeo4jCSVResult,
-  ExportOpts,
-  Paginated,
-} from '../types.js';
+import type { ExportNeo4jCSVResult, ExportOpts } from '../types.js';
 
 const DEFAULT_MIN_CONFIDENCE = 0.5;
 
@@ -79,7 +74,13 @@ interface FunctionLevelLoadOpts {
  */
 function loadFileLevelEdges(
   db: BetterSqlite3.Database,
-  { noTests, minConfidence, limit, includeKind = false, includeConfidence = false }: FileLevelLoadOpts,
+  {
+    noTests,
+    minConfidence,
+    limit,
+    includeKind = false,
+    includeConfidence = false,
+  }: FileLevelLoadOpts,
 ): { edges: FileLevelEdge[]; totalEdges: number } {
   const minConf = minConfidence ?? DEFAULT_MIN_CONFIDENCE;
   const kindClause = includeKind ? ', e.kind AS edge_kind' : '';
@@ -142,7 +143,8 @@ function loadFunctionLevelEdges(
  */
 function loadDirectoryGroups(db: BetterSqlite3.Database, allFiles: Set<string>): DirectoryGroup[] {
   const hasDirectoryNodes =
-    (db.prepare("SELECT COUNT(*) as c FROM nodes WHERE kind = 'directory'").get() as { c: number }).c > 0;
+    (db.prepare("SELECT COUNT(*) as c FROM nodes WHERE kind = 'directory'").get() as { c: number })
+      .c > 0;
 
   const dirs = new Map<string, { files: string[]; cohesion: number | null }>();
 
@@ -157,13 +159,15 @@ function loadDirectoryGroups(db: BetterSqlite3.Database, allFiles: Set<string>):
       .all() as Array<{ id: number; name: string; cohesion: number | null }>;
 
     for (const d of dbDirs) {
-      const containedFiles = (db
-        .prepare(`
+      const containedFiles = (
+        db
+          .prepare(`
           SELECT n.name FROM edges e
           JOIN nodes n ON e.target_id = n.id
           WHERE e.source_id = ? AND e.kind = 'contains' AND n.kind = 'file'
         `)
-        .all(d.id) as Array<{ name: string }>)
+          .all(d.id) as Array<{ name: string }>
+      )
         .map((r) => r.name)
         .filter((f) => allFiles.has(f));
 
@@ -175,7 +179,7 @@ function loadDirectoryGroups(db: BetterSqlite3.Database, allFiles: Set<string>):
     for (const file of allFiles) {
       const dir = path.dirname(file) || '.';
       if (!dirs.has(dir)) dirs.set(dir, { files: [], cohesion: null });
-      dirs.get(dir)!.files.push(file);
+      dirs.get(dir)?.files.push(file);
     }
   }
 
@@ -191,22 +195,30 @@ function loadDirectoryGroups(db: BetterSqlite3.Database, allFiles: Set<string>):
 /**
  * Load directory groupings for Mermaid file-level graphs (simplified — no cohesion, string arrays).
  */
-function loadMermaidDirectoryGroups(db: BetterSqlite3.Database, allFiles: Set<string>): MermaidDirectoryGroup[] {
+function loadMermaidDirectoryGroups(
+  db: BetterSqlite3.Database,
+  allFiles: Set<string>,
+): MermaidDirectoryGroup[] {
   const hasDirectoryNodes =
-    (db.prepare("SELECT COUNT(*) as c FROM nodes WHERE kind = 'directory'").get() as { c: number }).c > 0;
+    (db.prepare("SELECT COUNT(*) as c FROM nodes WHERE kind = 'directory'").get() as { c: number })
+      .c > 0;
 
   const dirs = new Map<string, string[]>();
 
   if (hasDirectoryNodes) {
-    const dbDirs = db.prepare("SELECT id, name FROM nodes WHERE kind = 'directory'").all() as Array<{ id: number; name: string }>;
+    const dbDirs = db
+      .prepare("SELECT id, name FROM nodes WHERE kind = 'directory'")
+      .all() as Array<{ id: number; name: string }>;
     for (const d of dbDirs) {
-      const containedFiles = (db
-        .prepare(`
+      const containedFiles = (
+        db
+          .prepare(`
           SELECT n.name FROM edges e
           JOIN nodes n ON e.target_id = n.id
           WHERE e.source_id = ? AND e.kind = 'contains' AND n.kind = 'file'
         `)
-        .all(d.id) as Array<{ name: string }>)
+          .all(d.id) as Array<{ name: string }>
+      )
         .map((r) => r.name)
         .filter((f) => allFiles.has(f));
       if (containedFiles.length > 0) dirs.set(d.name, containedFiles);
@@ -215,7 +227,7 @@ function loadMermaidDirectoryGroups(db: BetterSqlite3.Database, allFiles: Set<st
     for (const file of allFiles) {
       const dir = path.dirname(file) || '.';
       if (!dirs.has(dir)) dirs.set(dir, []);
-      dirs.get(dir)!.push(file);
+      dirs.get(dir)?.push(file);
     }
   }
 
@@ -227,7 +239,10 @@ function loadMermaidDirectoryGroups(db: BetterSqlite3.Database, allFiles: Set<st
 /**
  * Load node roles for Mermaid function-level styling.
  */
-function loadNodeRoles(db: BetterSqlite3.Database, edges: FunctionLevelEdge[]): Map<string, string> {
+function loadNodeRoles(
+  db: BetterSqlite3.Database,
+  edges: FunctionLevelEdge[],
+): Map<string, string> {
   const roles = new Map<string, string>();
   const seen = new Set<string>();
   for (const e of edges) {
@@ -276,7 +291,10 @@ export function exportDOT(db: BetterSqlite3.Database, opts: ExportOpts = {}): st
 /**
  * Export the dependency graph in Mermaid format.
  */
-export function exportMermaid(db: BetterSqlite3.Database, opts: ExportOpts & { direction?: string } = {}): string {
+export function exportMermaid(
+  db: BetterSqlite3.Database,
+  opts: ExportOpts & { direction?: string } = {},
+): string {
   const fileLevel = opts.fileLevel !== false;
   const noTests = opts.noTests || false;
   const minConfidence = opts.minConfidence;
@@ -296,7 +314,13 @@ export function exportMermaid(db: BetterSqlite3.Database, opts: ExportOpts & { d
       allFiles.add(target);
     }
     const dirs = loadMermaidDirectoryGroups(db, allFiles);
-    return renderFileLevelMermaid({ direction, dirs, edges: edges as Array<{ source: string; target: string; edge_kind: string }>, totalEdges, limit });
+    return renderFileLevelMermaid({
+      direction,
+      dirs,
+      edges: edges as Array<{ source: string; target: string; edge_kind: string }>,
+      totalEdges,
+      limit,
+    });
   }
 
   const { edges, totalEdges } = loadFunctionLevelEdges(db, { noTests, minConfidence, limit });
@@ -307,7 +331,10 @@ export function exportMermaid(db: BetterSqlite3.Database, opts: ExportOpts & { d
 /**
  * Export as JSON adjacency list.
  */
-export function exportJSON(db: BetterSqlite3.Database, opts: ExportOpts = {}): { nodes: unknown[]; edges: unknown[] } {
+export function exportJSON(
+  db: BetterSqlite3.Database,
+  opts: ExportOpts = {},
+): { nodes: unknown[]; edges: unknown[] } {
   const noTests = opts.noTests || false;
   const minConf = opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
 
@@ -330,7 +357,10 @@ export function exportJSON(db: BetterSqlite3.Database, opts: ExportOpts = {}): {
   if (noTests) edges = edges.filter((e) => !isTestFile(e.source) && !isTestFile(e.target));
 
   const base = { nodes, edges };
-  return paginateResult(base, 'edges', { limit: opts.limit, offset: opts.offset }) as { nodes: unknown[]; edges: unknown[] };
+  return paginateResult(base, 'edges', { limit: opts.limit, offset: opts.offset }) as {
+    nodes: unknown[];
+    edges: unknown[];
+  };
 }
 
 /**
@@ -354,7 +384,10 @@ export function exportGraphML(db: BetterSqlite3.Database, opts: ExportOpts = {})
 /**
  * Export the dependency graph in TinkerPop GraphSON v3 format.
  */
-export function exportGraphSON(db: BetterSqlite3.Database, opts: ExportOpts = {}): { vertices: unknown[]; edges: unknown[] } {
+export function exportGraphSON(
+  db: BetterSqlite3.Database,
+  opts: ExportOpts = {},
+): { vertices: unknown[]; edges: unknown[] } {
   const noTests = opts.noTests || false;
   const minConf = opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
 
@@ -363,7 +396,14 @@ export function exportGraphSON(db: BetterSqlite3.Database, opts: ExportOpts = {}
     SELECT id, name, kind, file, line, role FROM nodes
     WHERE kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant', 'file')
   `)
-    .all() as Array<{ id: number; name: string; kind: string; file: string; line: number | null; role: string | null }>;
+    .all() as Array<{
+    id: number;
+    name: string;
+    kind: string;
+    file: string;
+    line: number | null;
+    role: string | null;
+  }>;
   if (noTests) nodes = nodes.filter((n) => !isTestFile(n.file));
 
   let edges = db
@@ -374,7 +414,13 @@ export function exportGraphSON(db: BetterSqlite3.Database, opts: ExportOpts = {}
     JOIN nodes n2 ON e.target_id = n2.id
     WHERE e.confidence >= ?
   `)
-    .all(minConf) as Array<{ id: number; outV: number; inV: number; kind: string; confidence: number }>;
+    .all(minConf) as Array<{
+    id: number;
+    outV: number;
+    inV: number;
+    kind: string;
+    confidence: number;
+  }>;
   if (noTests) {
     const nodeIds = new Set(nodes.map((n) => n.id));
     edges = edges.filter((e) => nodeIds.has(e.outV) && nodeIds.has(e.inV));
@@ -402,14 +448,20 @@ export function exportGraphSON(db: BetterSqlite3.Database, opts: ExportOpts = {}
   }));
 
   const base = { vertices, edges: gEdges };
-  return paginateResult(base, 'edges', { limit: opts.limit, offset: opts.offset }) as { vertices: unknown[]; edges: unknown[] };
+  return paginateResult(base, 'edges', { limit: opts.limit, offset: opts.offset }) as {
+    vertices: unknown[];
+    edges: unknown[];
+  };
 }
 
 /**
  * Export the dependency graph as Neo4j bulk-import CSV files.
  * Returns { nodes: string, relationships: string }.
  */
-export function exportNeo4jCSV(db: BetterSqlite3.Database, opts: ExportOpts = {}): ExportNeo4jCSVResult {
+export function exportNeo4jCSV(
+  db: BetterSqlite3.Database,
+  opts: ExportOpts = {},
+): ExportNeo4jCSVResult {
   const fileLevel = opts.fileLevel !== false;
   const noTests = opts.noTests || false;
   const minConfidence = opts.minConfidence;
@@ -423,7 +475,14 @@ export function exportNeo4jCSV(db: BetterSqlite3.Database, opts: ExportOpts = {}
       includeKind: true,
       includeConfidence: true,
     });
-    return renderFileLevelNeo4jCSV({ edges: edges as Array<{ source: string; target: string; edge_kind: string; confidence: number }> });
+    return renderFileLevelNeo4jCSV({
+      edges: edges as Array<{
+        source: string;
+        target: string;
+        edge_kind: string;
+        confidence: number;
+      }>,
+    });
   }
 
   const { edges } = loadFunctionLevelEdges(db, { noTests, minConfidence, limit });

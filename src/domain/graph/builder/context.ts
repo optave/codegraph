@@ -62,6 +62,20 @@ export class PipelineContext {
   lineCountMap!: Map<string, number>;
 
   // ── Phase timing ───────────────────────────────────────────────────
-  timing: Record<string, number> = {};
+  timing: {
+    setupMs?: number;
+    parseMs?: number;
+    insertMs?: number;
+    resolveMs?: number;
+    edgesMs?: number;
+    structureMs?: number;
+    rolesMs?: number;
+    astMs?: number;
+    complexityMs?: number;
+    cfgMs?: number;
+    dataflowMs?: number;
+    finalizeMs?: number;
+    [key: string]: number | undefined;
+  } = {};
   buildStart!: number;
 }

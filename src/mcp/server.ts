@@ -6,11 +6,11 @@
  */
 
 import { createRequire } from 'node:module';
-import type { CodegraphConfig, MCPServerOptions } from '../types.js';
 import { findDbPath } from '../db/index.js';
 import { loadConfig } from '../infrastructure/config.js';
 import { CodegraphError, ConfigError } from '../shared/errors.js';
 import { MCP_MAX_LIMIT } from '../shared/paginate.js';
+import type { CodegraphConfig, MCPServerOptions } from '../types.js';
 import { initMcpDefaults } from './middleware.js';
 import { buildToolList } from './tool-registry.js';
 import { TOOL_HANDLERS } from './tools/index.js';
@@ -84,11 +84,7 @@ async function resolveDbPath(
   return dbPath;
 }
 
-function validateMultiRepoAccess(
-  multiRepo: boolean,
-  name: string,
-  args: { repo?: string },
-): void {
+function validateMultiRepoAccess(multiRepo: boolean, name: string, args: { repo?: string }): void {
   if (!multiRepo && args.repo) {
     throw new ConfigError(
       'Multi-repo access is disabled. Restart with `codegraph mcp --multi-repo` to access other repositories.',
@@ -121,6 +117,7 @@ export async function startMCPServer(
   // and cached for subsequent calls.
   const { getQueries, getDatabase } = createLazyLoaders();
 
+  // biome-ignore lint/suspicious/noExplicitAny: MCP SDK types are lazy-loaded and untyped
   const server = new (Server as any)(
     { name: 'codegraph', version: '1.0.0' },
     { capabilities: { tools: {} } },
@@ -130,6 +127,7 @@ export async function startMCPServer(
     tools: buildToolList(multiRepo),
   }));
 
+  // biome-ignore lint/suspicious/noExplicitAny: MCP SDK request type is dynamic
   server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
     const { name, arguments: args } = request.params;
     try {
@@ -145,14 +143,17 @@ export async function startMCPServer(
       const result = await toolEntry.handler(args, ctx);
       if (result?.content) return result;
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    } catch (err: any) {
+    } catch (err: unknown) {
       const code = err instanceof CodegraphError ? err.code : 'UNKNOWN_ERROR';
       const text =
-        err instanceof CodegraphError ? `[${code}] ${err.message}` : `Error: ${err.message}`;
+        err instanceof CodegraphError
+          ? `[${code}] ${err.message}`
+          : `Error: ${(err as Error).message}`;
       return { content: [{ type: 'text', text }], isError: true };
     }
   });
 
+  // biome-ignore lint/suspicious/noExplicitAny: MCP SDK types are lazy-loaded and untyped
   const transport = new (StdioServerTransport as any)();
   await server.connect(transport);
 }

@@ -88,7 +88,7 @@ export async function buildEmbeddings(
   const byFile = new Map<string, typeof nodes>();
   for (const node of nodes) {
     if (!byFile.has(node.file)) byFile.set(node.file, []);
-    byFile.get(node.file)!.push(node);
+    byFile.get(node.file)?.push(node);
   }
 
   const texts: string[] = [];
@@ -146,7 +146,8 @@ export async function buildEmbeddings(
   const insertMeta = db.prepare('INSERT OR REPLACE INTO embedding_meta (key, value) VALUES (?, ?)');
   const insertAll = db.transaction(() => {
     for (let i = 0; i < vectors.length; i++) {
-      insert.run(nodeIds[i], Buffer.from(vectors[i]!.buffer), previews[i], texts[i]);
+      const vec = vectors[i] as Float32Array;
+      insert.run(nodeIds[i], Buffer.from(vec.buffer), previews[i], texts[i]);
       insertFts.run(nodeIds[i], nodeNames[i], texts[i]);
     }
     insertMeta.run('model', config.name);
