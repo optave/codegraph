@@ -562,3 +562,92 @@ describe('probabilistic refinement', () => {
     expect(countWith).toBeGreaterThanOrEqual(countWithout);
   });
 });
+
+// ─── Community connectivity guarantee ────────────────────────────────
+
+describe('community connectivity', () => {
+  it('every community is internally connected', () => {
+    // Verify the core Leiden guarantee: no community should contain
+    // disconnected components.  Build a graph where probabilistic
+    // refinement could potentially strand nodes into disconnected
+    // subcommunities if the post-refinement split step is missing.
+    //
+    // Topology: two 4-cliques (A, B) connected by a bridge, plus two
+    // isolated pairs (C, D) with weak links to A and B respectively.
+    // The Louvain phase may group A+C or B+D into the same macro-
+    // community, but if refinement merges C into A's community without
+    // a path between them, the split step must catch it.
+    const g = new CodeGraph();
+    // Clique A
+    const A = ['a0', 'a1', 'a2', 'a3'];
+    // Clique B
+    const B = ['b0', 'b1', 'b2', 'b3'];
+    // Isolated pairs
+    const C = ['c0', 'c1'];
+    const D = ['d0', 'd1'];
+    for (const id of [...A, ...B, ...C, ...D]) g.addNode(id);
+
+    // Strong intra-clique edges
+    for (const clique of [A, B])
+      for (let i = 0; i < clique.length; i++)
+        for (let j = i + 1; j < clique.length; j++) {
+          g.addEdge(clique[i], clique[j], { weight: 10 });
+          g.addEdge(clique[j], clique[i], { weight: 10 });
+        }
+    // Pair edges
+    g.addEdge('c0', 'c1', { weight: 5 });
+    g.addEdge('c1', 'c0', { weight: 5 });
+    g.addEdge('d0', 'd1', { weight: 5 });
+    g.addEdge('d1', 'd0', { weight: 5 });
+    // Bridge A↔B
+    g.addEdge('a3', 'b0', { weight: 1 });
+    g.addEdge('b0', 'a3', { weight: 1 });
+    // Weak links to isolated pairs (could tempt merging)
+    g.addEdge('a0', 'c0', { weight: 0.5 });
+    g.addEdge('c0', 'a0', { weight: 0.5 });
+    g.addEdge('b0', 'd0', { weight: 0.5 });
+    g.addEdge('d0', 'b0', { weight: 0.5 });
+
+    // Run across several seeds — connectivity must hold for all.
+    const allIds = [...A, ...B, ...C, ...D];
+    for (const seed of [1, 42, 100, 999, 2024]) {
+      const result = detectClusters(g, {
+        randomSeed: seed,
+        refine: true,
+        refinementTheta: 1.0,
+      });
+
+      // Group nodes by community.
+      const communities = new Map();
+      for (const id of allIds) {
+        const c = result.getClass(id);
+        if (!communities.has(c)) communities.set(c, []);
+        communities.get(c).push(id);
+      }
+
+      // For each community, verify all members are reachable from the first
+      // member via edges within the community (BFS on subgraph).
+      for (const [, members] of communities) {
+        if (members.length <= 1) continue;
+        const memberSet = new Set(members);
+        const visited = new Set();
+        const queue = [members[0]];
+        visited.add(members[0]);
+        while (queue.length > 0) {
+          const current = queue.shift();
+          for (const neighbor of g.successors(current)) {
+            if (memberSet.has(neighbor) && !visited.has(neighbor)) {
+              visited.add(neighbor);
+              queue.push(neighbor);
+            }
+          }
+        }
+        expect(visited.size).toBe(
+          memberSet.size,
+          `seed=${seed}: community with members [${members.join(',')}] is disconnected — ` +
+            `only ${[...visited].join(',')} reachable from ${members[0]}`,
+        );
+      }
+    }
+  });
+});
