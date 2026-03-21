@@ -58,7 +58,7 @@ export function fileDepsData(
  */
 function buildTransitiveCallers(
   db: BetterSqlite3.Database,
-  callers: Array<{ name: string; kind: string; file: string; line: number }>,
+  callers: Array<{ id: number; name: string; kind: string; file: string; line: number }>,
   nodeId: number,
   depth: number,
   noTests: boolean,
@@ -70,20 +70,7 @@ function buildTransitiveCallers(
   if (depth <= 1) return transitiveCallers;
 
   const visited = new Set([nodeId]);
-  let frontier = callers
-    .map((c) => {
-      const row = db
-        .prepare('SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? AND line = ?')
-        .get(c.name, c.kind, c.file, c.line) as { id: number } | undefined;
-      return row ? { ...c, id: row.id } : null;
-    })
-    .filter(Boolean) as Array<{
-    name: string;
-    kind: string;
-    file: string;
-    line: number;
-    id: number;
-  }>;
+  let frontier = callers;
 
   for (let d = 2; d <= depth; d++) {
     const nextFrontier: typeof frontier = [];
