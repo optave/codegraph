@@ -4,9 +4,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const loaderPath = pathToFileURL(resolve(__dirname, 'scripts/ts-resolver-loader.js')).href;
+const hookPath = pathToFileURL(resolve(__dirname, 'scripts/ts-resolver-hook.js')).href;
 const [major, minor] = process.versions.node.split('.').map(Number);
 const supportsStripTypes = major > 22 || (major === 22 && minor >= 6);
+const existing = process.env.NODE_OPTIONS || '';
 
 /**
  * During the JS → TS migration, some .js files import from modules that have
@@ -42,9 +43,13 @@ export default defineConfig({
     exclude: ['**/node_modules/**', '**/.git/**', '.claude/**'],
     env: {
       NODE_OPTIONS: [
-        process.env.NODE_OPTIONS,
-        supportsStripTypes ? (major >= 23 ? '--strip-types' : '--experimental-strip-types') : '',
-        `--import ${loaderPath}`,
+        existing,
+        supportsStripTypes &&
+        !existing.includes('--experimental-strip-types') &&
+        !existing.includes('--strip-types')
+          ? (major >= 23 ? '--strip-types' : '--experimental-strip-types')
+          : '',
+        existing.includes(hookPath) ? '' : `--import ${hookPath}`,
       ].filter(Boolean).join(' '),
     },
   },
