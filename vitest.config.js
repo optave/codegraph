@@ -5,6 +5,8 @@ import { defineConfig } from 'vitest/config';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const loaderPath = pathToFileURL(resolve(__dirname, 'scripts/ts-resolve-loader.js')).href;
+const [major, minor] = process.versions.node.split('.').map(Number);
+const supportsStripTypes = major > 22 || (major === 22 && minor >= 6);
 
 /**
  * During the JS → TS migration, some .js files import from modules that have
@@ -42,7 +44,10 @@ export default defineConfig({
     // Register the .js→.ts resolve loader for Node's native ESM resolver.
     // This covers require() calls and child processes spawned by tests.
     env: {
-      NODE_OPTIONS: `--experimental-strip-types --import ${loaderPath}`,
+      NODE_OPTIONS: [
+        supportsStripTypes ? '--experimental-strip-types' : '',
+        `--import ${loaderPath}`,
+      ].filter(Boolean).join(' '),
     },
   },
 });
