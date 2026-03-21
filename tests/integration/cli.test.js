@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
-// Child processes load .ts files natively — requires Node >= 22.6 type stripping
+// All tests spawn child processes that load .ts files — requires Node >= 22.6
 const [_major, _minor] = process.versions.node.split('.').map(Number);
 const canStripTypes = _major > 22 || (_major === 22 && _minor >= 6);
 

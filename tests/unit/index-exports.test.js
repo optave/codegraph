@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// Child processes load .ts files natively — requires Node >= 22.6 type stripping
+// CJS require goes through Node's native loader — needs Node >= 22.6 for .ts
 const [_major, _minor] = process.versions.node.split('.').map(Number);
 const canStripTypes = _major > 22 || (_major === 22 && _minor >= 6);
 
