@@ -114,8 +114,7 @@ function exportsFileImpl(
   // Detect whether exported column exists
   let hasExportedCol = false;
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: Statement.raw() exists at runtime but is missing from type declarations
-    (db.prepare('SELECT exported FROM nodes LIMIT 0') as any).raw(true);
+    db.prepare('SELECT exported FROM nodes LIMIT 0').raw(true);
     hasExportedCol = true;
   } catch (e: unknown) {
     debug(`exported column not available, using fallback: ${(e as Error).message}`);
