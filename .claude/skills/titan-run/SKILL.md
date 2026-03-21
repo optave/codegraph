@@ -206,10 +206,11 @@ while iteration < maxIterations:
     else:
         stallCount = 0  # reset on any progress
 
+    countBeforeUpdate = previousAuditedCount
     previousAuditedCount = currentAuditedCount
 
     # Efficiency check: if progress is very slow (< 2 targets per iteration), warn
-    targetsThisIteration = currentAuditedCount - previousAuditedCountBeforeAgent
+    targetsThisIteration = currentAuditedCount - countBeforeUpdate
     if targetsThisIteration == 1 and iteration > 3:
         Print: "WARNING: Only 1 target per iteration — agent may be spending too much context. Consider increasing batch size."
 
