@@ -68,7 +68,7 @@ Detect dependencies declared in `package.json` but never imported:
    - `import ... from '<pkg>'` or `import '<pkg>'`
    - `import('<pkg>')` (dynamic imports)
 3. Skip known implicit dependencies that don't have direct imports:
-   - `@anthropic-ai/tokenizer` — may be used by `@anthropic-ai/sdk`
+   - `@anthropic-ai/tokenizer` — peer dependency of `@anthropic-ai/sdk`; the SDK may require it at runtime without an explicit import in our code (verify against package.json before removing)
    - `tree-sitter-*` and `web-tree-sitter` — loaded dynamically via WASM
    - `@biomejs/biome` — used as CLI tool only
    - `commit-and-tag-version` — used as npm script
@@ -152,13 +152,16 @@ Write a report to `generated/deps-audit/DEPS_AUDIT_<date>.md` with this structur
 If `AUTO_FIX` was set, summarize all changes made:
 1. List each package updated/fixed
 2. Run `npm test` to verify nothing broke
-3. If tests fail, revert with `git checkout -- package.json package-lock.json` and report what failed
+3. If tests fail:
+   - Revert the manifest: `git checkout -- package.json package-lock.json`
+   - Restore `node_modules/` to match the reverted lock file: `npm ci`
+   - Report what failed
 
 ## Rules
 
 - **Never run `npm audit fix --force`** — breaking changes need human review
 - **Never remove a dependency** without asking the user, even if it appears unused — flag it in the report instead
 - **Always run tests** after any auto-fix changes
-- **If `--fix` causes test failures**, revert all changes and report the failure
+- **If `--fix` causes test failures**, revert manifest with `git checkout -- package.json package-lock.json` then run `npm ci` to resync `node_modules/`, and report the failure
 - Treat `optionalDependencies` separately — they're expected to fail on some platforms
 - The report goes in `generated/deps-audit/` — create the directory if it doesn't exist
