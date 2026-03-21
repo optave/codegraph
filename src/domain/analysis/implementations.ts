@@ -11,7 +11,7 @@ import { findMatchingNodes } from './symbol-lookup.js';
  */
 export function implementationsData(
   name: string,
-  customDbPath: string | undefined,
+  customDbPath: string,
   opts: { noTests?: boolean; file?: string; kind?: string; limit?: number; offset?: number } = {},
 ) {
   const db = openReadonlyOrFail(customDbPath);
@@ -56,7 +56,7 @@ export function implementationsData(
  */
 export function interfacesData(
   name: string,
-  customDbPath: string | undefined,
+  customDbPath: string,
   opts: { noTests?: boolean; file?: string; kind?: string; limit?: number; offset?: number } = {},
 ) {
   const db = openReadonlyOrFail(customDbPath);
