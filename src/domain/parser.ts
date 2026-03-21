@@ -48,6 +48,9 @@ let _cachedLanguages: Map<string, Language> | null = null;
 // Query cache for JS/TS/TSX extractors (populated during createParsers)
 const _queryCache: Map<string, Query> = new Map();
 
+// Extensions that need typeMap backfill (type annotations only exist in TS/TSX)
+const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
+
 /**
  * Declarative registry entry for a supported language.
  */
@@ -502,7 +505,6 @@ export async function parseFileAuto(
     const patched = patchNativeResult(result);
     // Only backfill typeMap for TS/TSX — JS files have no type annotations,
     // and the native engine already handles `new Expr()` patterns.
-    const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
     if (
       (!patched.typeMap || patched.typeMap.length === 0) &&
       TS_BACKFILL_EXTS.has(path.extname(filePath))
@@ -554,8 +556,7 @@ export async function parseFilesAuto(
     if (needsTypeMap.length > 0) {
       // Only backfill for languages where WASM extraction can produce typeMap
       // (TS/TSX have type annotations; JS only has `new Expr()` which native already handles)
-      const TS_EXTS = new Set(['.ts', '.tsx']);
-      const tsFiles = needsTypeMap.filter(({ filePath }) => TS_EXTS.has(path.extname(filePath)));
+      const tsFiles = needsTypeMap.filter(({ filePath }) => TS_BACKFILL_EXTS.has(path.extname(filePath)));
       if (tsFiles.length > 0) {
         const parsers = await createParsers();
         for (const { filePath, relPath } of tsFiles) {
@@ -666,7 +667,6 @@ export async function parseFileIncremental(
     const patched = patchNativeResult(result);
     // Only backfill typeMap for TS/TSX — JS files have no type annotations,
     // and the native engine already handles `new Expr()` patterns.
-    const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
     if (
       (!patched.typeMap || patched.typeMap.length === 0) &&
       TS_BACKFILL_EXTS.has(path.extname(filePath))
