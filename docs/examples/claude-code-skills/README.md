@@ -13,16 +13,17 @@ A single AI agent cannot hold an entire large codebase in context. The Titan Par
 3. Next phase reads only those artifacts — not the original sources
 
 ```
-/titan-recon → titan-state.json + GLOBAL_ARCH.md
+/titan-run (orchestrator — runs everything below end-to-end via sub-agents)
       │
-      ▼
-/titan-gauntlet → gauntlet.ndjson (batches of 5, resumes across sessions)
+      ├─→ /titan-recon → titan-state.json + GLOBAL_ARCH.md
       │
-      ▼
-/titan-sync → sync.json (execution plan)
+      ├─→ /titan-gauntlet → gauntlet.ndjson (loops until complete)
       │
-      ▼
-/titan-gate (validates each commit: codegraph + lint/build/test)
+      ├─→ /titan-sync → sync.json (execution plan)
+      │
+      └─→ /titan-forge → code changes + commits (loops phases)
+              │
+              └─→ /titan-gate (validates each commit)
 
 /titan-reset (escape hatch: clean up everything)
 ```
@@ -31,9 +32,11 @@ A single AI agent cannot hold an entire large codebase in context. The Titan Par
 
 | Skill | Phase | What it does | Key artifact |
 |-------|-------|-------------|-------------|
+| `/titan-run` | **ORCHESTRATOR** | Runs the full pipeline end-to-end by dispatching each phase to sub-agents with fresh context windows. Loops gauntlet and forge automatically | — |
 | `/titan-recon` | RECON | Builds graph + embeddings, complexity health baseline, domains, priority queue, work batches, `GLOBAL_ARCH.md`, baseline snapshot | `titan-state.json` |
 | `/titan-gauntlet` | GAUNTLET | 4-pillar audit (17 rules) using full codegraph metrics (`cognitive`, `cyclomatic`, `halstead.bugs`, `halstead.effort`, `mi`, `loc.sloc`). Batches of 5, NDJSON writes, session resume | `gauntlet.ndjson` |
 | `/titan-sync` | GLOBAL SYNC | Dependency clusters, code ownership, shared abstractions, ordered execution plan with logical commits | `sync.json` |
+| `/titan-forge` | FORGE | Executes the sync plan — makes code changes, validates with `/titan-gate`, commits, advances state. One phase per invocation | `titan-state.json` |
 | `/titan-gate` | STATE MACHINE | `codegraph check --staged --cycles --blast-radius 30 --boundaries` + lint/build/test. Snapshot restore on failure | `gate-log.ndjson` |
 | `/titan-reset` | ESCAPE HATCH | Restores baseline snapshot, deletes all artifacts and snapshots, rebuilds graph | — |
 
@@ -56,17 +59,31 @@ codegraph build .
 
 ## Usage
 
-### Full pipeline
+### Fully automated (recommended)
+
+```
+/titan-run             # Runs the entire pipeline hands-free
+```
+
+The orchestrator dispatches each phase to a sub-agent with a fresh context window. Gauntlet and forge are looped automatically until complete. You can also resume from a specific phase:
+
+```
+/titan-run --start-from gauntlet          # Skip recon, resume gauntlet
+/titan-run --start-from forge --yes       # Skip to forge, auto-confirm
+/titan-run --gauntlet-batch-size 10       # Larger batches (if context allows)
+```
+
+### Manual pipeline
 
 ```
 /titan-recon           # Map the codebase, produce priority queue + embeddings
 /titan-gauntlet 5      # Audit top targets in batches of 5
 /titan-sync            # Plan shared abstractions and execution order
-# ... make changes based on sync plan ...
+/titan-forge           # Execute one phase of the sync plan
 /titan-gate            # Validate before each commit
 ```
 
-If GAUNTLET runs out of context, just re-invoke `/titan-gauntlet` — it resumes from the next pending batch.
+If GAUNTLET or FORGE runs out of context, just re-invoke — they resume from where they left off.
 
 ### Standalone phases
 
@@ -97,10 +114,11 @@ All artifacts are written to `.codegraph/titan/` (6 files, no redundancy):
 | File | Format | Written by | Read by |
 |------|--------|-----------|---------|
 | `titan-state.json` | JSON | RECON (init), ALL (update) | ALL |
-| `GLOBAL_ARCH.md` | Markdown | RECON | GAUNTLET, SYNC |
-| `gauntlet.ndjson` | NDJSON | GAUNTLET | SYNC |
+| `GLOBAL_ARCH.md` | Markdown | RECON | GAUNTLET, SYNC, GATE |
+| `gauntlet.ndjson` | NDJSON | GAUNTLET | SYNC, FORGE (diff review) |
 | `gauntlet-summary.json` | JSON | GAUNTLET | SYNC, GATE |
-| `sync.json` | JSON | SYNC | GATE |
+| `sync.json` | JSON | SYNC | FORGE (diff review), GATE |
+| `arch-snapshot.json` | JSON | RUN (pre-forge) | GATE (architectural comparison) |
 | `gate-log.ndjson` | NDJSON | GATE | Audit trail |
 
 NDJSON format (one JSON object per line) means partial results survive crashes mid-batch.

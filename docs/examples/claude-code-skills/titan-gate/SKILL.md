@@ -111,7 +111,114 @@ If any fail → overall verdict is FAIL → proceed to auto-rollback.
 
 ---
 
-## Step 5 — Branch structural diff
+## Step 5 — Semantic assertions (API compatibility)
+
+Verify that code changes don't silently break callers by changing public contracts. This goes beyond structural checks — it catches signature changes, removed exports, and new forbidden dependencies.
+
+### 5a. Export signature stability
+
+Get the list of changed files from diff-impact (Step 1):
+
+```bash
+codegraph exports <changed-file> -T --json
+```
+
+For each **exported** symbol in changed files:
+- Check if the symbol existed before this change: `git show HEAD:<file>` and compare function signatures
+- If a function's **parameter list changed** (added required params, removed params, changed types):
+  ```bash
+  codegraph fn-impact <symbol> -T --json
+  ```
+  Count callers. If callers > 0 and callers are NOT also staged → **FAIL**: "Signature change in `<symbol>` breaks <N> callers not updated in this commit: <caller list>"
+- If an **export was removed entirely** and callers exist → **FAIL**: "Removed export `<symbol>` still imported by <N> files"
+
+### 5b. Import resolution integrity
+
+Verify that all imports still resolve after the change:
+
+```bash
+codegraph check --staged -T --json
+```
+
+If any `unresolved_import` warnings appear for files NOT changed in this commit → **FAIL**: "Change broke import resolution for <file>: <import>"
+
+### 5c. Dependency direction assertions
+
+From diff-impact, extract any **new** edges (imports that didn't exist before):
+
+```bash
+codegraph diff-impact --staged -T --json
+```
+
+For each new dependency:
+- Check against `GLOBAL_ARCH.md` layer rules (if Titan artifacts exist)
+- Check against `codegraph check --boundaries -T --json`
+- New dependency from a lower layer to a higher layer → **FAIL**: "New upward dependency: `<source>` → `<target>` violates layer boundary"
+- New dependency on a module flagged in sync.json as "to be removed" or "to be split" → **WARN**: "New dependency on `<module>` which is scheduled for decomposition"
+
+### 5d. Re-export chain validation
+
+If the change modifies an index/barrel file (e.g., `index.js`, `mod.rs`):
+
+```bash
+codegraph exports <barrel-file> -T --json
+```
+
+Compare export count before and after. If exports were **accidentally dropped** (count decreased and the removed exports have callers) → **FAIL**.
+
+---
+
+## Step 5.5 — Architectural snapshot comparison
+
+Compare the codebase's architectural properties before and after this change. This catches "technically correct but architecturally wrong" changes — e.g., a valid refactor that puts code in the wrong layer.
+
+### Load pre-forge snapshot
+
+Read `.codegraph/titan/arch-snapshot.json` if it exists (created by `/titan-run` before forge begins). If missing, skip this step — it only works within the orchestrated pipeline.
+
+### Capture current state
+
+```bash
+codegraph communities -T --json > /tmp/titan-arch-current-communities.json
+codegraph structure --depth 2 --json > /tmp/titan-arch-current-structure.json
+codegraph communities --drift -T --json > /tmp/titan-arch-current-drift.json
+```
+
+### Compare
+
+**A1. Community stability:**
+Compare community assignments between snapshot and current. For each symbol that **moved** to a different community:
+- If the symbol was the target of this forge phase → **OK** (expected)
+- If the symbol was NOT touched in the diff → **WARN**: "Symbol `<name>` shifted from community <X> to <Y> as a side effect"
+- If > 5 untouched symbols shifted communities → **FAIL**: "Significant community restructuring detected — <N> symbols shifted communities. This change may have unintended architectural impact."
+
+**A2. Dependency direction between domains:**
+From `GLOBAL_ARCH.md`, extract the expected dependency direction between domains (e.g., "presentation depends on features, not the reverse").
+
+Check if any new cross-domain dependency violates the expected direction:
+```bash
+codegraph deps <changed-file> --json
+```
+- New upward dependency (lower layer importing higher layer) not present in snapshot → **FAIL**
+- New lateral dependency within the same layer → **OK**
+
+**A3. Cohesion delta:**
+Compare directory cohesion scores from `structure`:
+- If any directory's cohesion dropped by > 0.2 → **WARN**: "Directory `<dir>` cohesion dropped from <X> to <Y>"
+- If a directory went from above 0.5 to below 0.3 → **FAIL**: "Directory `<dir>` became tangled (cohesion <X> → <Y>)"
+
+**A4. New drift warnings:**
+Compare drift warnings between snapshot and current:
+- New drift warning not in snapshot → **WARN** with details
+- Drift warning resolved → note as positive
+
+### Verdict integration
+
+Architectural failures are reported as part of the overall gate verdict. They participate in the PASS/WARN/FAIL aggregation like all other checks.
+
+---
+
+## Step 6 — Branch structural diff
 
 ```bash
 codegraph branch-compare main HEAD -T --json
@@ -121,7 +228,7 @@ Cumulative structural impact of all changes on this branch (broader than `diff-i
 
 ---
 
-## Step 6 — Sync plan alignment
+## Step 7 — Sync plan alignment
 
 If `.codegraph/titan/sync.json` exists:
 - Are changed files part of the current execution phase?
@@ -132,7 +239,7 @@ Advisory — prevents jumping ahead and creating conflicts.
 
 ---
 
-## Step 7 — Blast radius check
+## Step 8 — Blast radius check
 
 From diff-impact results:
 - Transitive blast radius > 30 → FAIL
@@ -141,7 +248,7 @@ From diff-impact results:
 
 ---
 
-## Step 8 — Verdict and auto-rollback
+## Step 9 — Verdict and auto-rollback
 
 Aggregate all checks:
 
@@ -186,7 +293,7 @@ codegraph snapshot delete titan-batch-<N>   # if any remain
 
 ---
 
-## Step 9 — Update state machine
+## Step 10 — Update state machine
 
 Append to `.codegraph/titan/gate-log.ndjson`:
 
@@ -201,6 +308,8 @@ Append to `.codegraph/titan/gate-log.ndjson`:
     "manifesto": "pass|fail",
     "cycles": "pass|fail",
     "complexity": "pass|warn|fail",
+    "semanticAssertions": "pass|warn|fail|skipped",
+    "archSnapshot": "pass|warn|fail|skipped",
     "lint": "pass|fail|skipped",
     "build": "pass|fail|skipped",
     "tests": "pass|fail|skipped",
@@ -215,13 +324,14 @@ Update `titan-state.json` (if exists): increment `progress.fixed`, update `fileA
 
 ---
 
-## Step 10 — Report to user
+## Step 11 — Report to user
 
 **PASS:**
 ```
 GATE PASS — safe to commit
   Changed: 3 functions across 2 files
   Blast radius: 12 transitive callers
+  Structural: pass | Semantic: pass | Architecture: pass
   Lint: pass | Build: pass | Tests: pass
   Complexity: all within thresholds (worst: halstead.bugs 0.3)
 ```
@@ -233,6 +343,8 @@ GATE WARN — review before committing
   Warnings:
   - utils.js historically co-changes with config.js (not staged)
   - parseConfig MI improved 18 → 35 but still below 50
+  - Semantic: new dependency on module scheduled for decomposition
+  - Architecture: directory src/domain/ cohesion dropped 0.6 → 0.45
 ```
 
 **FAIL:**
@@ -240,6 +352,8 @@ GATE WARN — review before committing
 GATE FAIL — changes unstaged, graph restored
   Failures:
   - Tests: 2 suites failed
+  - Semantic: removed export `parseConfig` still imported by 3 files
+  - Architecture: new upward dependency presentation/ → domain/
   - New cycle: parseConfig → loadConfig → parseConfig
   Fix issues, re-stage, re-run /titan-gate
 ```
