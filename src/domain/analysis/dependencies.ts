@@ -13,7 +13,11 @@ import { normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
-export function fileDepsData(file, customDbPath, opts = {}) {
+export function fileDepsData(
+  file: string,
+  customDbPath: string | undefined,
+  opts: { noTests?: boolean; limit?: number; offset?: number } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;
@@ -33,7 +37,10 @@ export function fileDepsData(file, customDbPath, opts = {}) {
 
       return {
         file: fn.file,
-        imports: importsTo.map((i) => ({ file: i.file, typeOnly: i.edge_kind === 'imports-type' })),
+        imports: importsTo.map((i) => ({
+          file: i.file,
+          typeOnly: i.edge_kind === 'imports-type',
+        })),
         importedBy: importedBy.map((i) => ({ file: i.file })),
         definitions: defs.map((d) => ({ name: d.name, kind: d.kind, line: d.line })),
       };
@@ -50,22 +57,35 @@ export function fileDepsData(file, customDbPath, opts = {}) {
  * BFS transitive caller traversal starting from `callers` of `nodeId`.
  * Returns an object keyed by depth (2..depth) → array of caller descriptors.
  */
-function buildTransitiveCallers(db, callers, nodeId, depth, noTests) {
-  const transitiveCallers = {};
+function buildTransitiveCallers(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+  db: any,
+  // biome-ignore lint/suspicious/noExplicitAny: caller row shape varies
+  callers: any[],
+  nodeId: number,
+  depth: number,
+  noTests: boolean,
+  // biome-ignore lint/suspicious/noExplicitAny: caller row shape varies
+): Record<number, any[]> {
+  // biome-ignore lint/suspicious/noExplicitAny: caller row shape varies
+  const transitiveCallers: Record<number, any[]> = {};
   if (depth <= 1) return transitiveCallers;
 
   const visited = new Set([nodeId]);
   let frontier = callers
     .map((c) => {
+      // biome-ignore lint/suspicious/noExplicitAny: DB row type
       const row = db
         .prepare('SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? AND line = ?')
-        .get(c.name, c.kind, c.file, c.line);
+        .get(c.name, c.kind, c.file, c.line) as any;
       return row ? { ...c, id: row.id } : null;
     })
-    .filter(Boolean);
+    // biome-ignore lint/suspicious/noExplicitAny: filtering nulls
+    .filter(Boolean) as any[];
 
   for (let d = 2; d <= depth; d++) {
-    const nextFrontier = [];
+    // biome-ignore lint/suspicious/noExplicitAny: caller row shape varies
+    const nextFrontier: any[] = [];
     for (const f of frontier) {
       if (visited.has(f.id)) continue;
       visited.add(f.id);
@@ -75,7 +95,8 @@ function buildTransitiveCallers(db, callers, nodeId, depth, noTests) {
           FROM edges e JOIN nodes n ON e.source_id = n.id
           WHERE e.target_id = ? AND e.kind = 'calls'
         `)
-        .all(f.id);
+        // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+        .all(f.id) as any[];
       for (const u of upstream) {
         if (noTests && isTestFile(u.file)) continue;
         const uid = db
@@ -101,7 +122,18 @@ function buildTransitiveCallers(db, callers, nodeId, depth, noTests) {
   return transitiveCallers;
 }
 
-export function fnDepsData(name, customDbPath, opts = {}) {
+export function fnDepsData(
+  name: string,
+  customDbPath: string | undefined,
+  opts: {
+    noTests?: boolean;
+    file?: string;
+    kind?: string;
+    depth?: number;
+    limit?: number;
+    offset?: number;
+  } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const depth = opts.depth || 3;
@@ -145,7 +177,7 @@ export function fnDepsData(name, customDbPath, opts = {}) {
           kind: c.kind,
           file: c.file,
           line: c.line,
-          viaHierarchy: c.viaHierarchy || undefined,
+          viaHierarchy: 'viaHierarchy' in c ? (c.viaHierarchy as string) : undefined,
         })),
         transitiveCallers,
       };
@@ -163,7 +195,23 @@ export function fnDepsData(name, customDbPath, opts = {}) {
  * Returns { sourceNode, targetNode, fromCandidates, toCandidates } on success,
  * or { earlyResult } when a caller-facing error/not-found response should be returned immediately.
  */
-function resolveEndpoints(db, from, to, opts) {
+function resolveEndpoints(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+  db: any,
+  from: string,
+  to: string,
+  opts: { noTests?: boolean; fromFile?: string; toFile?: string; kind?: string },
+): {
+  // biome-ignore lint/suspicious/noExplicitAny: node row shape varies
+  sourceNode?: any;
+  // biome-ignore lint/suspicious/noExplicitAny: node row shape varies
+  targetNode?: any;
+  // biome-ignore lint/suspicious/noExplicitAny: node row shape varies
+  fromCandidates?: any[];
+  // biome-ignore lint/suspicious/noExplicitAny: node row shape varies
+  toCandidates?: any[];
+  earlyResult?: object;
+} {
   const { noTests = false } = opts;
 
   const fromNodes = findMatchingNodes(db, from, {
@@ -224,7 +272,20 @@ function resolveEndpoints(db, from, to, opts) {
  * Returns { found, parent, alternateCount, foundDepth }.
  * `parent` maps nodeId → { parentId, edgeKind }.
  */
-function bfsShortestPath(db, sourceId, targetId, edgeKinds, reverse, maxDepth, noTests) {
+function bfsShortestPath(
+  db: any,
+  sourceId: number,
+  targetId: number,
+  edgeKinds: string[],
+  reverse: boolean,
+  maxDepth: number,
+  noTests: boolean,
+): {
+  found: boolean;
+  parent: Map<number, { parentId: number; edgeKind: string }>;
+  alternateCount: number;
+  foundDepth: number;
+} {
   const kindPlaceholders = edgeKinds.map(() => '?').join(', ');
 
   // Forward: source_id → target_id (A calls... calls B)
@@ -239,16 +300,16 @@ function bfsShortestPath(db, sourceId, targetId, edgeKinds, reverse, maxDepth, n
   const neighborStmt = db.prepare(neighborQuery);
 
   const visited = new Set([sourceId]);
-  const parent = new Map();
+  const parent = new Map<number, { parentId: number; edgeKind: string }>();
   let queue = [sourceId];
   let found = false;
   let alternateCount = 0;
   let foundDepth = -1;
 
   for (let depth = 1; depth <= maxDepth; depth++) {
-    const nextQueue = [];
+    const nextQueue: number[] = [];
     for (const currentId of queue) {
-      const neighbors = neighborStmt.all(currentId, ...edgeKinds);
+      const neighbors = neighborStmt.all(currentId, ...edgeKinds) as any[];
       for (const n of neighbors) {
         if (noTests && isTestFile(n.file)) continue;
         if (n.id === targetId) {
@@ -279,9 +340,13 @@ function bfsShortestPath(db, sourceId, targetId, edgeKinds, reverse, maxDepth, n
  * Walk the parent map from targetId back to sourceId and return an ordered
  * array of node IDs source → target.
  */
-function reconstructPath(db, pathIds, parent) {
-  const nodeCache = new Map();
-  const getNode = (id) => {
+function reconstructPath(
+  db: any,
+  pathIds: number[],
+  parent: Map<number, { parentId: number; edgeKind: string }>,
+): any[] {
+  const nodeCache = new Map<number, any>();
+  const getNode = (id: number) => {
     if (nodeCache.has(id)) return nodeCache.get(id);
     const row = db.prepare('SELECT name, kind, file, line FROM nodes WHERE id = ?').get(id);
     nodeCache.set(id, row);
@@ -290,12 +355,25 @@ function reconstructPath(db, pathIds, parent) {
 
   return pathIds.map((id, idx) => {
     const node = getNode(id);
-    const edgeKind = idx === 0 ? null : parent.get(id).edgeKind;
+    const edgeKind = idx === 0 ? null : parent.get(id)?.edgeKind;
     return { name: node.name, kind: node.kind, file: node.file, line: node.line, edgeKind };
   });
 }
 
-export function pathData(from, to, customDbPath, opts = {}) {
+export function pathData(
+  from: string,
+  to: string,
+  customDbPath: string | undefined,
+  opts: {
+    noTests?: boolean;
+    maxDepth?: number;
+    edgeKinds?: string[];
+    reverse?: boolean;
+    fromFile?: string;
+    toFile?: string;
+    kind?: string;
+  } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;
@@ -368,7 +446,7 @@ export function pathData(from, to, customDbPath, opts = {}) {
     const pathIds = [targetNode.id];
     let cur = targetNode.id;
     while (cur !== sourceNode.id) {
-      const p = parent.get(cur);
+      const p = parent.get(cur)!;
       pathIds.push(p.parentId);
       cur = p.parentId;
     }

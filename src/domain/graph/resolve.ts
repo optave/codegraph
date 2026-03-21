@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadNative } from '../../infrastructure/native.js';
 import { normalizePath } from '../../shared/constants.js';
+import type { BareSpecifier, BatchResolvedMap, ImportBatchItem, PathAliases } from '../../types.js';
 
 // ── package.json exports resolution ─────────────────────────────────
 
 /** Cache: packageDir → parsed exports field (or null) */
-const _exportsCache = new Map();
+// biome-ignore lint/suspicious/noExplicitAny: package.json exports field has no fixed schema
+const _exportsCache: Map<string, any> = new Map();
 
 /**
  * Parse a bare specifier into { packageName, subpath }.
@@ -14,8 +16,8 @@ const _exportsCache = new Map();
  * Plain:  "pkg/sub"        → { packageName: "pkg", subpath: "./sub" }
  * No sub: "pkg"            → { packageName: "pkg", subpath: "." }
  */
-export function parseBareSpecifier(specifier) {
-  let packageName, rest;
+export function parseBareSpecifier(specifier: string): BareSpecifier | null {
+  let packageName: string, rest: string;
   if (specifier.startsWith('@')) {
     const parts = specifier.split('/');
     if (parts.length < 2) return null;
@@ -38,7 +40,7 @@ export function parseBareSpecifier(specifier) {
  * Find the package directory for a given package name, starting from rootDir.
  * Walks up node_modules directories.
  */
-function findPackageDir(packageName, rootDir) {
+function findPackageDir(packageName: string, rootDir: string): string | null {
   let dir = rootDir;
   while (true) {
     const candidate = path.join(dir, 'node_modules', packageName);
@@ -53,7 +55,8 @@ function findPackageDir(packageName, rootDir) {
  * Read and cache the exports field from a package's package.json.
  * Returns the exports value or null.
  */
-function getPackageExports(packageDir) {
+// biome-ignore lint/suspicious/noExplicitAny: package.json exports field has no fixed schema
+function getPackageExports(packageDir: string): any {
   if (_exportsCache.has(packageDir)) return _exportsCache.get(packageDir);
   try {
     const raw = fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8');
@@ -68,13 +71,13 @@ function getPackageExports(packageDir) {
 }
 
 /** Condition names to try, in priority order. */
-const CONDITION_ORDER = ['import', 'require', 'default'];
+const CONDITION_ORDER: readonly string[] = ['import', 'require', 'default'];
 
 /**
  * Resolve a conditional exports value (string, object with conditions, or array).
  * Returns a string target or null.
  */
-function resolveCondition(value) {
+function resolveCondition(value: unknown): string | null {
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -85,7 +88,8 @@ function resolveCondition(value) {
   }
   if (value && typeof value === 'object') {
     for (const cond of CONDITION_ORDER) {
-      if (cond in value) return resolveCondition(value[cond]);
+      if (cond in (value as Record<string, unknown>))
+        return resolveCondition((value as Record<string, unknown>)[cond]);
     }
     return null;
   }
@@ -96,7 +100,7 @@ function resolveCondition(value) {
  * Match a subpath against an exports map key that uses a wildcard pattern.
  * Key: "./lib/*" matches subpath "./lib/foo/bar" → substitution "foo/bar"
  */
-function matchSubpathPattern(pattern, subpath) {
+function matchSubpathPattern(pattern: string, subpath: string): string | null {
   const starIdx = pattern.indexOf('*');
   if (starIdx === -1) return null;
   const prefix = pattern.slice(0, starIdx);
@@ -112,7 +116,7 @@ function matchSubpathPattern(pattern, subpath) {
  * Resolve a bare specifier through the package.json exports field.
  * Returns an absolute path or null.
  */
-export function resolveViaExports(specifier, rootDir) {
+export function resolveViaExports(specifier: string, rootDir: string): string | null {
   const parsed = parseBareSpecifier(specifier);
   if (!parsed) return null;
 
@@ -189,25 +193,26 @@ export function resolveViaExports(specifier, rootDir) {
 }
 
 /** Clear the exports cache (for testing). */
-export function clearExportsCache() {
+export function clearExportsCache(): void {
   _exportsCache.clear();
 }
 
 // ── Monorepo workspace resolution ───────────────────────────────────
 
 /** Cache: rootDir → Map<packageName, { dir, entry }> */
-const _workspaceCache = new Map();
+const _workspaceCache: Map<string, Map<string, { dir: string; entry: string | null }>> = new Map();
 
 /** Set of resolved relative paths that came from workspace resolution. */
-const _workspaceResolvedPaths = new Set();
+const _workspaceResolvedPaths: Set<string> = new Set();
 
 /**
  * Set the workspace map for a given rootDir.
  * Called by the build pipeline after detecting workspaces.
- * @param {string} rootDir
- * @param {Map<string, { dir: string, entry: string|null }>} map
  */
-export function setWorkspaces(rootDir, map) {
+export function setWorkspaces(
+  rootDir: string,
+  map: Map<string, { dir: string; entry: string | null }>,
+): void {
   _workspaceCache.set(rootDir, map);
   _workspaceResolvedPaths.clear();
   _exportsCache.clear();
@@ -216,7 +221,7 @@ export function setWorkspaces(rootDir, map) {
 /**
  * Get workspace packages for a rootDir. Returns empty map if not set.
  */
-function getWorkspaces(rootDir) {
+function getWorkspaces(rootDir: string): Map<string, { dir: string; entry: string | null }> {
   return _workspaceCache.get(rootDir) || new Map();
 }
 
@@ -226,9 +231,9 @@ function getWorkspaces(rootDir) {
  * For "@myorg/utils" → finds the workspace package dir → resolves entry point.
  * For "@myorg/utils/sub" → finds package dir → tries exports field → filesystem probe.
  *
- * @returns {string|null} Absolute path to resolved file, or null.
+ * @returns Absolute path to resolved file, or null.
  */
-export function resolveViaWorkspace(specifier, rootDir) {
+export function resolveViaWorkspace(specifier: string, rootDir: string): string | null {
   const parsed = parseBareSpecifier(specifier);
   if (!parsed) return null;
 
@@ -293,12 +298,12 @@ export function resolveViaWorkspace(specifier, rootDir) {
  * Check if a resolved relative path was resolved via workspace detection.
  * Used by computeConfidence to assign high confidence (0.95) to workspace imports.
  */
-export function isWorkspaceResolved(resolvedPath) {
+export function isWorkspaceResolved(resolvedPath: string): boolean {
   return _workspaceResolvedPaths.has(resolvedPath);
 }
 
 /** Clear workspace caches (for testing). */
-export function clearWorkspaceCache() {
+export function clearWorkspaceCache(): void {
   _workspaceCache.clear();
   _workspaceResolvedPaths.clear();
 }
@@ -309,7 +314,9 @@ export function clearWorkspaceCache() {
  * Convert JS alias format { baseUrl, paths: { pattern: [targets] } }
  * to native format { baseUrl, paths: [{ pattern, targets }] }.
  */
-export function convertAliasesForNative(aliases) {
+export function convertAliasesForNative(
+  aliases: PathAliases | null | undefined,
+): { baseUrl: string; paths: { pattern: string; targets: string[] }[] } | null {
   if (!aliases) return null;
   return {
     baseUrl: aliases.baseUrl || '',
@@ -322,7 +329,11 @@ export function convertAliasesForNative(aliases) {
 
 // ── JS fallback implementations ─────────────────────────────────────
 
-function resolveViaAlias(importSource, aliases, _rootDir) {
+function resolveViaAlias(
+  importSource: string,
+  aliases: PathAliases,
+  _rootDir: string,
+): string | null {
   if (aliases.baseUrl && !importSource.startsWith('.') && !importSource.startsWith('/')) {
     const candidate = path.resolve(aliases.baseUrl, importSource);
     for (const ext of ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js']) {
@@ -355,7 +366,12 @@ function resolveViaAlias(importSource, aliases, _rootDir) {
   return null;
 }
 
-function resolveImportPathJS(fromFile, importSource, rootDir, aliases) {
+function resolveImportPathJS(
+  fromFile: string,
+  importSource: string,
+  rootDir: string,
+  aliases: PathAliases | null,
+): string {
   if (!importSource.startsWith('.') && aliases) {
     const aliasResolved = resolveViaAlias(importSource, aliases, rootDir);
     if (aliasResolved) return normalizePath(path.relative(rootDir, aliasResolved));
@@ -404,7 +420,11 @@ function resolveImportPathJS(fromFile, importSource, rootDir, aliases) {
   return normalizePath(path.relative(rootDir, resolved));
 }
 
-function computeConfidenceJS(callerFile, targetFile, importedFrom) {
+function computeConfidenceJS(
+  callerFile: string,
+  targetFile: string,
+  importedFrom: string | null,
+): number {
   if (!targetFile || !callerFile) return 0.3;
   if (callerFile === targetFile) return 1.0;
   if (importedFrom === targetFile) return 1.0;
@@ -423,7 +443,12 @@ function computeConfidenceJS(callerFile, targetFile, importedFrom) {
  * Resolve a single import path.
  * Tries native, falls back to JS.
  */
-export function resolveImportPath(fromFile, importSource, rootDir, aliases) {
+export function resolveImportPath(
+  fromFile: string,
+  importSource: string,
+  rootDir: string,
+  aliases: PathAliases | null,
+): string {
   const native = loadNative();
   if (native) {
     try {
@@ -445,7 +470,11 @@ export function resolveImportPath(fromFile, importSource, rootDir, aliases) {
  * Compute proximity-based confidence for call resolution.
  * Tries native, falls back to JS.
  */
-export function computeConfidence(callerFile, targetFile, importedFrom) {
+export function computeConfidence(
+  callerFile: string,
+  targetFile: string,
+  importedFrom: string | null,
+): number {
   const native = loadNative();
   if (native) {
     try {
@@ -460,12 +489,13 @@ export function computeConfidence(callerFile, targetFile, importedFrom) {
 /**
  * Batch resolve multiple imports in a single native call.
  * Returns Map<"fromFile|importSource", resolvedPath> or null when native unavailable.
- * @param {Array} inputs - Array of { fromFile, importSource }
- * @param {string} rootDir - Project root
- * @param {object} aliases - Path aliases
- * @param {string[]} [knownFiles] - Optional file paths for FS cache (avoids syscalls)
  */
-export function resolveImportsBatch(inputs, rootDir, aliases, knownFiles) {
+export function resolveImportsBatch(
+  inputs: ImportBatchItem[],
+  rootDir: string,
+  aliases: PathAliases | null,
+  knownFiles?: string[] | null,
+): BatchResolvedMap | null {
   const native = loadNative();
   if (!native) return null;
 
@@ -480,7 +510,7 @@ export function resolveImportsBatch(inputs, rootDir, aliases, knownFiles) {
       convertAliasesForNative(aliases),
       knownFiles || null,
     );
-    const map = new Map();
+    const map: BatchResolvedMap = new Map();
     for (const r of results) {
       map.set(`${r.fromFile}|${r.importSource}`, normalizePath(path.normalize(r.resolvedPath)));
     }

@@ -16,7 +16,12 @@ import {
 } from '../../shared/file-utils.js';
 import { paginateResult } from '../../shared/paginate.js';
 
-export function exportsData(file, customDbPath, opts = {}) {
+export function exportsData(
+  file: string,
+  customDbPath: string | undefined,
+  // biome-ignore lint/suspicious/noExplicitAny: config shape not yet typed
+  opts: { noTests?: boolean; config?: any; unused?: boolean; limit?: number; offset?: number } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;
@@ -63,7 +68,11 @@ export function exportsData(file, customDbPath, opts = {}) {
       totalReexported: first.totalReexported,
       totalReexportedUnused: first.totalReexportedUnused,
     };
-    const paginated = paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
+    // biome-ignore lint/suspicious/noExplicitAny: dynamic pagination shape
+    const paginated: any = paginateResult(base, 'results', {
+      limit: opts.limit,
+      offset: opts.offset,
+    });
     // Paginate reexportedSymbols with the same limit/offset (match paginateResult behaviour)
     if (opts.limit != null) {
       const off = opts.offset || 0;
@@ -83,7 +92,17 @@ export function exportsData(file, customDbPath, opts = {}) {
   }
 }
 
-function exportsFileImpl(db, target, noTests, getFileLines, unused, displayOpts) {
+function exportsFileImpl(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+  db: any,
+  target: string,
+  noTests: boolean,
+  getFileLines: (file: string) => string[] | null,
+  unused: boolean,
+  // biome-ignore lint/suspicious/noExplicitAny: display config shape not yet typed
+  displayOpts: Record<string, any>,
+  // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+): any[] {
   const fileNodes = findFileNodes(db, `%${target}%`);
   if (fileNodes.length === 0) return [];
 
@@ -92,14 +111,15 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused, displayOpts)
   try {
     db.prepare('SELECT exported FROM nodes LIMIT 0').raw();
     hasExportedCol = true;
-  } catch (e) {
-    debug(`exported column not available, using fallback: ${e.message}`);
+  } catch (e: unknown) {
+    debug(`exported column not available, using fallback: ${e instanceof Error ? e.message : e}`);
   }
 
   return fileNodes.map((fn) => {
     const symbols = findNodesByFile(db, fn.file);
 
-    let exported;
+    // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+    let exported: any[];
     if (hasExportedCol) {
       // Use the exported column populated during build
       exported = db
@@ -114,13 +134,15 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused, displayOpts)
     }
     const internalCount = symbols.length - exported.length;
 
-    const buildSymbolResult = (s, fileLines) => {
+    // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+    const buildSymbolResult = (s: any, fileLines: string[] | null) => {
       let consumers = db
         .prepare(
           `SELECT n.name, n.file, n.line FROM edges e JOIN nodes n ON e.source_id = n.id
            WHERE e.target_id = ? AND e.kind = 'calls'`,
         )
-        .all(s.id);
+        // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+        .all(s.id) as any[];
       if (noTests) consumers = consumers.filter((c) => !isTestFile(c.file));
 
       return {
@@ -141,13 +163,15 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused, displayOpts)
     const totalUnused = results.filter((r) => r.consumerCount === 0).length;
 
     // Files that re-export this file (barrel → this file)
-    const reexports = db
-      .prepare(
-        `SELECT DISTINCT n.file FROM edges e JOIN nodes n ON e.source_id = n.id
+    const reexports = (
+      db
+        .prepare(
+          `SELECT DISTINCT n.file FROM edges e JOIN nodes n ON e.source_id = n.id
          WHERE e.target_id = ? AND e.kind = 'reexports'`,
-      )
-      .all(fn.id)
-      .map((r) => ({ file: r.file }));
+        )
+        // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+        .all(fn.id) as any[]
+    ).map((r) => ({ file: r.file }));
 
     // For barrel files: gather symbols re-exported from target modules
     const reexportTargets = db
@@ -157,9 +181,11 @@ function exportsFileImpl(db, target, noTests, getFileLines, unused, displayOpts)
       )
       .all(fn.id);
 
-    const reexportedSymbols = [];
+    // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+    const reexportedSymbols: any[] = [];
     for (const target of reexportTargets) {
-      let targetExported;
+      // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+      let targetExported: any[];
       if (hasExportedCol) {
         targetExported = db
           .prepare(

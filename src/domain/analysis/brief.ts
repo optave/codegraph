@@ -26,10 +26,12 @@ const BRIEF_KINDS = new Set([
 
 /**
  * Compute file risk tier from symbol roles and max fan-in.
- * @param {{ role: string|null, callerCount: number }[]} symbols
- * @returns {'high'|'medium'|'low'}
  */
-function computeRiskTier(symbols, highThreshold = 10, mediumThreshold = 3) {
+function computeRiskTier(
+  symbols: Array<{ role: string | null; callerCount: number }>,
+  highThreshold = 10,
+  mediumThreshold = 3,
+): 'high' | 'medium' | 'low' {
   let maxCallers = 0;
   let hasCoreRole = false;
   for (const s of symbols) {
@@ -45,12 +47,13 @@ function computeRiskTier(symbols, highThreshold = 10, mediumThreshold = 3) {
  * BFS to count transitive callers for a single node.
  * Lightweight variant — only counts, does not collect details.
  */
-function countTransitiveCallers(db, startId, noTests, maxDepth = 5) {
+// biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+function countTransitiveCallers(db: any, startId: number, noTests: boolean, maxDepth = 5): number {
   const visited = new Set([startId]);
   let frontier = [startId];
 
   for (let d = 1; d <= maxDepth; d++) {
-    const nextFrontier = [];
+    const nextFrontier: number[] = [];
     for (const fid of frontier) {
       const callers = findDistinctCallers(db, fid);
       for (const c of callers) {
@@ -71,12 +74,18 @@ function countTransitiveCallers(db, startId, noTests, maxDepth = 5) {
  * Count transitive file-level import dependents via BFS.
  * Depth-bounded to match countTransitiveCallers and keep hook latency predictable.
  */
-function countTransitiveImporters(db, fileNodeIds, noTests, maxDepth = 5) {
+function countTransitiveImporters(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+  db: any,
+  fileNodeIds: number[],
+  noTests: boolean,
+  maxDepth = 5,
+): number {
   const visited = new Set(fileNodeIds);
   let frontier = [...fileNodeIds];
 
   for (let d = 1; d <= maxDepth; d++) {
-    const nextFrontier = [];
+    const nextFrontier: number[] = [];
     for (const current of frontier) {
       const dependents = findImportDependents(db, current);
       for (const dep of dependents) {
@@ -96,13 +105,13 @@ function countTransitiveImporters(db, fileNodeIds, noTests, maxDepth = 5) {
 /**
  * Produce a token-efficient file brief: symbols with roles and caller counts,
  * importer info with transitive count, and file risk tier.
- *
- * @param {string} file - File path (partial match)
- * @param {string} customDbPath - Path to graph.db
- * @param {{ noTests?: boolean }} opts
- * @returns {{ file: string, results: object[] }}
  */
-export function briefData(file, customDbPath, opts = {}) {
+export function briefData(
+  file: string,
+  customDbPath: string | undefined,
+  // biome-ignore lint/suspicious/noExplicitAny: config shape not yet typed
+  opts: { noTests?: boolean; config?: any } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;

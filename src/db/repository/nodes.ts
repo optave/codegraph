@@ -248,7 +248,7 @@ export function findNodesByScope(
     sql += ' AND kind = ?';
     params.push(opts.kind);
   }
-  const fc = buildFileConditionSQL(opts.file, 'file');
+  const fc = buildFileConditionSQL(opts.file ?? '', 'file');
   sql += fc.sql;
   params.push(...fc.params);
   sql += ' ORDER BY file, line';
@@ -263,7 +263,7 @@ export function findNodeByQualifiedName(
   qualifiedName: string,
   opts: { file?: string } = {},
 ): NodeRow[] {
-  const fc = buildFileConditionSQL(opts.file, 'file');
+  const fc = buildFileConditionSQL(opts.file ?? '', 'file');
   if (fc.sql) {
     return db
       .prepare<NodeRow>(`SELECT * FROM nodes WHERE qualified_name = ?${fc.sql} ORDER BY file, line`)

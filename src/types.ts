@@ -487,6 +487,8 @@ export interface TreeSitterNode {
   namedChild(index: number): TreeSitterNode | null;
   childForFieldName(name: string): TreeSitterNode | null;
   parent: TreeSitterNode | null;
+  previousSibling: TreeSitterNode | null;
+  nextSibling: TreeSitterNode | null;
   children: TreeSitterNode[];
   namedChildren: TreeSitterNode[];
 }

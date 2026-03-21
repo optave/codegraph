@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Language, Parser, Query } from 'web-tree-sitter';
 import { debug, warn } from '../infrastructure/logger.js';
 import { getNative, getNativePackageVersion, loadNative } from '../infrastructure/native.js';
+import type { EngineMode, ExtractorOutput, LanguageRegistryEntry } from '../types.js';
 
 // Re-export all extractors for backward compatibility
 export {
@@ -32,23 +33,23 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function grammarPath(name) {
+function grammarPath(name: string): string {
   return path.join(__dirname, '..', '..', 'grammars', name);
 }
 
 let _initialized = false;
 
 // Memoized parsers — avoids reloading WASM grammars on every createParsers() call
-let _cachedParsers = null;
+let _cachedParsers: Map<string, any> | null = null;
 
 // Cached Language objects — WASM-backed, must be .delete()'d explicitly
-let _cachedLanguages = null;
+let _cachedLanguages: Map<string, any> | null = null;
 
 // Query cache for JS/TS/TSX extractors (populated during createParsers)
-const _queryCache = new Map();
+const _queryCache: Map<string, any> = new Map();
 
 // Shared patterns for all JS/TS/TSX (class_declaration excluded — name type differs)
-const COMMON_QUERY_PATTERNS = [
+const COMMON_QUERY_PATTERNS: string[] = [
   '(function_declaration name: (identifier) @fn_name) @fn_node',
   '(variable_declarator name: (identifier) @varfn_name value: (arrow_function) @varfn_value)',
   '(variable_declarator name: (identifier) @varfn_name value: (function_expression) @varfn_value)',
@@ -65,13 +66,13 @@ const COMMON_QUERY_PATTERNS = [
 const JS_CLASS_PATTERN = '(class_declaration name: (identifier) @cls_name) @cls_node';
 
 // TS/TSX: class name is (type_identifier), plus interface and type alias
-const TS_EXTRA_PATTERNS = [
+const TS_EXTRA_PATTERNS: string[] = [
   '(class_declaration name: (type_identifier) @cls_name) @cls_node',
   '(interface_declaration name: (type_identifier) @iface_name) @iface_node',
   '(type_alias_declaration name: (type_identifier) @type_name) @type_node',
 ];
 
-export async function createParsers() {
+export async function createParsers(): Promise<Map<string, any>> {
   if (_cachedParsers) return _cachedParsers;
 
   if (!_initialized) {
@@ -79,8 +80,8 @@ export async function createParsers() {
     _initialized = true;
   }
 
-  const parsers = new Map();
-  const languages = new Map();
+  const parsers: Map<string, any> = new Map();
+  const languages: Map<string, any> = new Map();
   for (const entry of LANGUAGE_REGISTRY) {
     try {
       const lang = await Language.load(grammarPath(entry.grammarFile));
@@ -96,7 +97,7 @@ export async function createParsers() {
           : [...COMMON_QUERY_PATTERNS, JS_CLASS_PATTERN];
         _queryCache.set(entry.id, new Query(lang, patterns.join('\n')));
       }
-    } catch (e) {
+    } catch (e: any) {
       if (entry.required) throw e;
       warn(
         `${entry.id} parser failed to initialize: ${e.message}. ${entry.id} files will be skipped.`,
@@ -114,13 +115,13 @@ export async function createParsers() {
  * Call this between repeated builds in the same process (e.g. benchmarks)
  * to prevent memory accumulation that can cause segfaults.
  */
-export function disposeParsers() {
+export function disposeParsers(_parsers?: Map<string, any>): void {
   if (_cachedParsers) {
     for (const [id, parser] of _cachedParsers) {
       if (parser && typeof parser.delete === 'function') {
         try {
           parser.delete();
-        } catch (e) {
+        } catch (e: any) {
           debug(`Failed to dispose parser ${id}: ${e.message}`);
         }
       }
@@ -131,7 +132,7 @@ export function disposeParsers() {
     if (query && typeof query.delete === 'function') {
       try {
         query.delete();
-      } catch (e) {
+      } catch (e: any) {
         debug(`Failed to dispose query ${id}: ${e.message}`);
       }
     }
@@ -142,7 +143,7 @@ export function disposeParsers() {
       if (lang && typeof lang.delete === 'function') {
         try {
           lang.delete();
-        } catch (e) {
+        } catch (e: any) {
           debug(`Failed to dispose language ${id}: ${e.message}`);
         }
       }
@@ -152,7 +153,7 @@ export function disposeParsers() {
   _initialized = false;
 }
 
-export function getParser(parsers, filePath) {
+export function getParser(parsers: Map<string, any>, filePath: string): any | null {
   const ext = path.extname(filePath);
   const entry = _extToLang.get(ext);
   if (!entry) return null;
@@ -163,11 +164,11 @@ export function getParser(parsers, filePath) {
  * Pre-parse files missing `_tree` via WASM so downstream phases (CFG, dataflow)
  * don't each need to create parsers and re-parse independently.
  * Only parses files whose extension is in SUPPORTED_EXTENSIONS.
- *
- * @param {Map<string, object>} fileSymbols - Map<relPath, { definitions, _tree, _langId, ... }>
- * @param {string} rootDir - absolute project root
  */
-export async function ensureWasmTrees(fileSymbols, rootDir) {
+export async function ensureWasmTrees(
+  fileSymbols: Map<string, ExtractorOutput>,
+  rootDir: string,
+): Promise<void> {
   // Check if any file needs a tree
   let needsParse = false;
   for (const [relPath, symbols] of fileSymbols) {
@@ -192,17 +193,17 @@ export async function ensureWasmTrees(fileSymbols, rootDir) {
     if (!parser) continue;
 
     const absPath = path.join(rootDir, relPath);
-    let code;
+    let code: string;
     try {
       code = fs.readFileSync(absPath, 'utf-8');
-    } catch (e) {
+    } catch (e: any) {
       debug(`ensureWasmTrees: cannot read ${relPath}: ${e.message}`);
       continue;
     }
     try {
       symbols._tree = parser.parse(code);
       symbols._langId = entry.id;
-    } catch (e) {
+    } catch (e: any) {
       debug(`ensureWasmTrees: parse failed for ${relPath}: ${e.message}`);
     }
   }
@@ -211,7 +212,7 @@ export async function ensureWasmTrees(fileSymbols, rootDir) {
 /**
  * Check whether the required WASM grammar files exist on disk.
  */
-export function isWasmAvailable() {
+export function isWasmAvailable(): boolean {
   return LANGUAGE_REGISTRY.filter((e) => e.required).every((e) =>
     fs.existsSync(grammarPath(e.grammarFile)),
   );
@@ -219,7 +220,12 @@ export function isWasmAvailable() {
 
 // ── Unified API ──────────────────────────────────────────────────────────────
 
-function resolveEngine(opts = {}) {
+interface ResolvedEngine {
+  name: string;
+  native: any;
+}
+
+function resolveEngine(opts: { engine?: EngineMode; nativeEngine?: any } = {}): ResolvedEngine {
   const pref = opts.engine || 'auto';
   if (pref === 'wasm') return { name: 'wasm', native: null };
   if (pref === 'native' || pref === 'auto') {
@@ -240,7 +246,7 @@ function resolveEngine(opts = {}) {
  *  - Backward compat for older native binaries missing js_name annotations
  *  - dataflow argFlows/mutations bindingType → binding wrapper
  */
-function patchNativeResult(r) {
+function patchNativeResult(r: any): any {
   // lineCount: napi(js_name) emits "lineCount"; older binaries may emit "line_count"
   r.lineCount = r.lineCount ?? r.line_count ?? null;
   r._lineCount = r.lineCount;
@@ -289,7 +295,7 @@ function patchNativeResult(r) {
  * Declarative registry of all supported languages.
  * Adding a new language requires only a new entry here + its extractor function.
  */
-export const LANGUAGE_REGISTRY = [
+export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   {
     id: 'javascript',
     extensions: ['.js', '.jsx', '.mjs', '.cjs'],
@@ -369,14 +375,14 @@ export const LANGUAGE_REGISTRY = [
   },
 ];
 
-const _extToLang = new Map();
+const _extToLang: Map<string, LanguageRegistryEntry> = new Map();
 for (const entry of LANGUAGE_REGISTRY) {
   for (const ext of entry.extensions) {
     _extToLang.set(ext, entry);
   }
 }
 
-export const SUPPORTED_EXTENSIONS = new Set(_extToLang.keys());
+export const SUPPORTED_EXTENSIONS: Set<string> = new Set(_extToLang.keys());
 
 /**
  * WASM-based typeMap backfill for older native binaries that don't emit typeMap.
@@ -384,7 +390,10 @@ export const SUPPORTED_EXTENSIONS = new Set(_extToLang.keys());
  * matches inside comments and string literals.
  * TODO: Remove once all published native binaries include typeMap extraction (>= 3.2.0)
  */
-async function backfillTypeMap(filePath, source) {
+async function backfillTypeMap(
+  filePath: string,
+  source: string,
+): Promise<{ typeMap: any; backfilled: boolean }> {
   let code = source;
   if (!code) {
     try {
@@ -399,9 +408,9 @@ async function backfillTypeMap(filePath, source) {
     if (!extracted?.symbols?.typeMap) {
       return { typeMap: [], backfilled: false };
     }
-    const tm = extracted.symbols.typeMap;
+    const tm: any = extracted.symbols.typeMap;
     return {
-      typeMap: tm instanceof Map ? tm : new Map(tm.map((e) => [e.name, e.typeName])),
+      typeMap: tm instanceof Map ? tm : new Map(tm.map((e: any) => [e.name, e.typeName])),
       backfilled: true,
     };
   } finally {
@@ -417,14 +426,18 @@ async function backfillTypeMap(filePath, source) {
 /**
  * WASM extraction helper: picks the right extractor based on file extension.
  */
-function wasmExtractSymbols(parsers, filePath, code) {
+function wasmExtractSymbols(
+  parsers: Map<string, any>,
+  filePath: string,
+  code: string,
+): { symbols: ExtractorOutput; tree: any; langId: string } | null {
   const parser = getParser(parsers, filePath);
   if (!parser) return null;
 
-  let tree;
+  let tree: any;
   try {
     tree = parser.parse(code);
-  } catch (e) {
+  } catch (e: any) {
     warn(`Parse error in ${filePath}: ${e.message}`);
     return null;
   }
@@ -439,13 +452,20 @@ function wasmExtractSymbols(parsers, filePath, code) {
 
 /**
  * Parse a single file and return normalized symbols.
- *
- * @param {string} filePath  Absolute path to the file.
- * @param {string} source    Source code string.
- * @param {object} [opts]    Options: { engine: 'native'|'wasm'|'auto' }
- * @returns {Promise<{definitions, calls, imports, classes, exports}|null>}
  */
-export async function parseFileAuto(filePath, source, opts = {}) {
+export async function parseFileAuto(
+  filePath: string,
+  source: string,
+  opts: {
+    engine?: EngineMode;
+    nativeEngine?: any;
+    parsers?: Map<string, any>;
+    rootDir?: string;
+    aliases?: any;
+    dataflow?: boolean;
+    ast?: boolean;
+  } = {},
+): Promise<ExtractorOutput | null> {
   const { native } = resolveEngine(opts);
 
   if (native) {
@@ -474,15 +494,22 @@ export async function parseFileAuto(filePath, source, opts = {}) {
 
 /**
  * Parse multiple files in bulk and return a Map<relPath, symbols>.
- *
- * @param {string[]} filePaths  Absolute paths to files.
- * @param {string}   rootDir    Project root for computing relative paths.
- * @param {object}   [opts]     Options: { engine: 'native'|'wasm'|'auto' }
- * @returns {Promise<Map<string, {definitions, calls, imports, classes, exports}>>}
  */
-export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
+export async function parseFilesAuto(
+  filePaths: string[],
+  rootDir: string,
+  opts: {
+    engine?: EngineMode;
+    nativeEngine?: any;
+    parsers?: Map<string, any>;
+    aliases?: any;
+    signal?: AbortSignal;
+    dataflow?: boolean;
+    ast?: boolean;
+  } = {},
+): Promise<Map<string, ExtractorOutput>> {
   const { native } = resolveEngine(opts);
-  const result = new Map();
+  const result: Map<string, ExtractorOutput> = new Map();
 
   if (native) {
     const nativeResults = native.parseFiles(
@@ -491,7 +518,7 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
       !!opts.dataflow,
       opts.ast !== false,
     );
-    const needsTypeMap = [];
+    const needsTypeMap: { filePath: string; relPath: string }[] = [];
     for (const r of nativeResults) {
       if (!r) continue;
       const patched = patchNativeResult(r);
@@ -510,17 +537,19 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
       if (tsFiles.length > 0) {
         const parsers = await createParsers();
         for (const { filePath, relPath } of tsFiles) {
-          let extracted;
+          let extracted: { symbols: ExtractorOutput; tree: any; langId: string } | null | undefined;
           try {
             const code = fs.readFileSync(filePath, 'utf-8');
             extracted = wasmExtractSymbols(parsers, filePath, code);
             if (extracted?.symbols?.typeMap) {
-              const symbols = result.get(relPath);
-              symbols.typeMap =
+              const symbols = result.get(relPath)!;
+              (symbols as any).typeMap =
                 extracted.symbols.typeMap instanceof Map
                   ? extracted.symbols.typeMap
-                  : new Map(extracted.symbols.typeMap.map((e) => [e.name, e.typeName]));
-              symbols._typeMapBackfilled = true;
+                  : new Map(
+                      (extracted.symbols.typeMap as any).map((e: any) => [e.name, e.typeName]),
+                    );
+              (symbols as any)._typeMapBackfilled = true;
             }
           } catch {
             /* skip — typeMap is a best-effort backfill */
@@ -541,10 +570,10 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
   // WASM path
   const parsers = await createParsers();
   for (const filePath of filePaths) {
-    let code;
+    let code: string;
     try {
       code = fs.readFileSync(filePath, 'utf-8');
-    } catch (err) {
+    } catch (err: any) {
       warn(`Skipping ${path.relative(rootDir, filePath)}: ${err.message}`);
       continue;
     }
@@ -552,7 +581,7 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
     if (extracted) {
       const relPath = path.relative(rootDir, filePath).split(path.sep).join('/');
       extracted.symbols._tree = extracted.tree;
-      extracted.symbols._langId = extracted.langId;
+      extracted.symbols._langId = extracted.langId as any;
       extracted.symbols._lineCount = code.split('\n').length;
       result.set(relPath, extracted.symbols);
     }
@@ -562,13 +591,13 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
 
 /**
  * Report which engine is active.
- *
- * @param {object} [opts]  Options: { engine: 'native'|'wasm'|'auto' }
- * @returns {{ name: 'native'|'wasm', version: string|null }}
  */
-export function getActiveEngine(opts = {}) {
+export function getActiveEngine(opts: { engine?: EngineMode; nativeEngine?: any } = {}): {
+  name: string;
+  version: string | null;
+} {
   const { name, native } = resolveEngine(opts);
-  let version = native
+  let version: string | null = native
     ? typeof native.engineVersion === 'function'
       ? native.engineVersion()
       : null
@@ -578,7 +607,7 @@ export function getActiveEngine(opts = {}) {
   if (native) {
     try {
       version = getNativePackageVersion() ?? version;
-    } catch (e) {
+    } catch (e: any) {
       debug(`getNativePackageVersion failed: ${e.message}`);
     }
   }
@@ -589,7 +618,7 @@ export function getActiveEngine(opts = {}) {
  * Create a native ParseTreeCache for incremental parsing.
  * Returns null if the native engine is unavailable (WASM fallback).
  */
-export function createParseTreeCache() {
+export function createParseTreeCache(): any {
   const native = loadNative();
   if (!native || !native.ParseTreeCache) return null;
   return new native.ParseTreeCache();
@@ -597,14 +626,19 @@ export function createParseTreeCache() {
 
 /**
  * Parse a file incrementally using the cache, or fall back to full parse.
- *
- * @param {object|null} cache  ParseTreeCache instance (or null for full parse)
- * @param {string} filePath    Absolute path to the file
- * @param {string} source      Source code string
- * @param {object} [opts]      Options forwarded to parseFileAuto on fallback
- * @returns {Promise<{definitions, calls, imports, classes, exports}|null>}
  */
-export async function parseFileIncremental(cache, filePath, source, opts = {}) {
+export async function parseFileIncremental(
+  cache: any,
+  filePath: string,
+  source: string,
+  opts: {
+    engine?: EngineMode;
+    nativeEngine?: any;
+    parsers?: Map<string, any>;
+    rootDir?: string;
+    aliases?: any;
+  } = {},
+): Promise<ExtractorOutput | null> {
   if (cache) {
     const result = cache.parseFile(filePath, source);
     if (!result) return null;

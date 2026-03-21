@@ -13,7 +13,11 @@ import { findMatchingNodes } from './symbol-lookup.js';
  * @param {{ noTests?: boolean, file?: string, kind?: string, limit?: number, offset?: number }} opts
  * @returns {{ name: string, results: Array<{ name: string, kind: string, file: string, line: number, implementors: Array<{ name: string, kind: string, file: string, line: number }> }> }}
  */
-export function implementationsData(name, customDbPath, opts = {}) {
+export function implementationsData(
+  name: string,
+  customDbPath: string | undefined,
+  opts: { noTests?: boolean; file?: string; kind?: string; limit?: number; offset?: number } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;
@@ -29,7 +33,8 @@ export function implementationsData(name, customDbPath, opts = {}) {
       return { name, results: [] };
     }
 
-    const results = nodes.map((node) => {
+    // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+    const results = (nodes as any[]).map((node) => {
       let implementors = findImplementors(db, node.id);
       if (noTests) implementors = implementors.filter((n) => !isTestFile(n.file));
 
@@ -57,9 +62,13 @@ export function implementationsData(name, customDbPath, opts = {}) {
  * @param {string} name - Class/struct name (partial match)
  * @param {string|undefined} customDbPath
  * @param {{ noTests?: boolean, file?: string, kind?: string, limit?: number, offset?: number }} opts
- * @returns {{ name: string, results: Array<{ name: string, kind: string, file: string, line: number, interfaces: Array<{ name: string, kind: string, file: string, line: number }> }> }}
+ * @returns Object with name and results array containing interface info
  */
-export function interfacesData(name, customDbPath, opts = {}) {
+export function interfacesData(
+  name: string,
+  customDbPath: string | undefined,
+  opts: { noTests?: boolean; file?: string; kind?: string; limit?: number; offset?: number } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;
@@ -75,7 +84,8 @@ export function interfacesData(name, customDbPath, opts = {}) {
       return { name, results: [] };
     }
 
-    const results = nodes.map((node) => {
+    // biome-ignore lint/suspicious/noExplicitAny: DB row types not yet migrated
+    const results = (nodes as any[]).map((node) => {
       let interfaces = findInterfaces(db, node.id);
       if (noTests) interfaces = interfaces.filter((n) => !isTestFile(n.file));
 

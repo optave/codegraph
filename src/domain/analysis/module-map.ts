@@ -43,35 +43,44 @@ export const FALSE_POSITIVE_CALLER_THRESHOLD = 20;
 // Section helpers
 // ---------------------------------------------------------------------------
 
-function buildTestFileIds(db) {
-  const allFileNodes = db.prepare("SELECT id, file FROM nodes WHERE kind = 'file'").all();
-  const testFileIds = new Set();
-  const testFiles = new Set();
+// biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+function buildTestFileIds(db: any): Set<number> {
+  // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+  const allFileNodes = db.prepare("SELECT id, file FROM nodes WHERE kind = 'file'").all() as any[];
+  const testFileIds = new Set<number>();
+  const testFiles = new Set<string>();
   for (const n of allFileNodes) {
     if (isTestFile(n.file)) {
       testFileIds.add(n.id);
       testFiles.add(n.file);
     }
   }
-  const allNodes = db.prepare('SELECT id, file FROM nodes').all();
+  // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+  const allNodes = db.prepare('SELECT id, file FROM nodes').all() as any[];
   for (const n of allNodes) {
     if (testFiles.has(n.file)) testFileIds.add(n.id);
   }
   return testFileIds;
 }
 
-function countNodesByKind(db, testFileIds) {
-  let nodeRows;
+function countNodesByKind(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+  db: any,
+  testFileIds: Set<number> | null,
+): { total: number; byKind: Record<string, number> } {
+  // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+  let nodeRows: any[];
   if (testFileIds) {
-    const allNodes = db.prepare('SELECT id, kind, file FROM nodes').all();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+    const allNodes = db.prepare('SELECT id, kind, file FROM nodes').all() as any[];
     const filtered = allNodes.filter((n) => !testFileIds.has(n.id));
-    const counts = {};
+    const counts: Record<string, number> = {};
     for (const n of filtered) counts[n.kind] = (counts[n.kind] || 0) + 1;
     nodeRows = Object.entries(counts).map(([kind, c]) => ({ kind, c }));
   } else {
     nodeRows = db.prepare('SELECT kind, COUNT(*) as c FROM nodes GROUP BY kind').all();
   }
-  const byKind = {};
+  const byKind: Record<string, number> = {};
   let total = 0;
   for (const r of nodeRows) {
     byKind[r.kind] = r.c;
@@ -80,20 +89,26 @@ function countNodesByKind(db, testFileIds) {
   return { total, byKind };
 }
 
-function countEdgesByKind(db, testFileIds) {
-  let edgeRows;
+function countEdgesByKind(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+  db: any,
+  testFileIds: Set<number> | null,
+): { total: number; byKind: Record<string, number> } {
+  // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+  let edgeRows: any[];
   if (testFileIds) {
-    const allEdges = db.prepare('SELECT source_id, target_id, kind FROM edges').all();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+    const allEdges = db.prepare('SELECT source_id, target_id, kind FROM edges').all() as any[];
     const filtered = allEdges.filter(
       (e) => !testFileIds.has(e.source_id) && !testFileIds.has(e.target_id),
     );
-    const counts = {};
+    const counts: Record<string, number> = {};
     for (const e of filtered) counts[e.kind] = (counts[e.kind] || 0) + 1;
     edgeRows = Object.entries(counts).map(([kind, c]) => ({ kind, c }));
   } else {
     edgeRows = db.prepare('SELECT kind, COUNT(*) as c FROM edges GROUP BY kind').all();
   }
-  const byKind = {};
+  const byKind: Record<string, number> = {};
   let total = 0;
   for (const r of edgeRows) {
     byKind[r.kind] = r.c;
@@ -102,16 +117,21 @@ function countEdgesByKind(db, testFileIds) {
   return { total, byKind };
 }
 
-function countFilesByLanguage(db, noTests) {
-  const extToLang = new Map();
+function countFilesByLanguage(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+  db: any,
+  noTests: boolean,
+): { total: number; languages: number; byLanguage: Record<string, number> } {
+  const extToLang = new Map<string, string>();
   for (const entry of LANGUAGE_REGISTRY) {
     for (const ext of entry.extensions) {
       extToLang.set(ext, entry.id);
     }
   }
-  let fileNodes = db.prepare("SELECT file FROM nodes WHERE kind = 'file'").all();
+  // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+  let fileNodes = db.prepare("SELECT file FROM nodes WHERE kind = 'file'").all() as any[];
   if (noTests) fileNodes = fileNodes.filter((n) => !isTestFile(n.file));
-  const byLanguage = {};
+  const byLanguage: Record<string, number> = {};
   for (const row of fileNodes) {
     const ext = path.extname(row.file).toLowerCase();
     const lang = extToLang.get(ext) || 'other';
@@ -120,7 +140,12 @@ function countFilesByLanguage(db, noTests) {
   return { total: fileNodes.length, languages: Object.keys(byLanguage).length, byLanguage };
 }
 
-function findHotspots(db, noTests, limit) {
+// biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+function findHotspots(
+  db: any,
+  noTests: boolean,
+  limit: number,
+): { file: string; fanIn: number; fanOut: number }[] {
   const testFilter = testFilterSQL('n.file', noTests);
   const hotspotRows = db
     .prepare(`
@@ -132,7 +157,8 @@ function findHotspots(db, noTests, limit) {
       ORDER BY (SELECT COUNT(*) FROM edges WHERE target_id = n.id)
              + (SELECT COUNT(*) FROM edges WHERE source_id = n.id) DESC
     `)
-    .all();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+    .all() as any[];
   const filtered = noTests ? hotspotRows.filter((r) => !isTestFile(r.file)) : hotspotRows;
   return filtered.slice(0, limit).map((r) => ({
     file: r.file,
@@ -141,27 +167,35 @@ function findHotspots(db, noTests, limit) {
   }));
 }
 
-function getEmbeddingsInfo(db) {
+// biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+function getEmbeddingsInfo(db: any): object | null {
   try {
-    const count = db.prepare('SELECT COUNT(*) as c FROM embeddings').get();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+    const count = db.prepare('SELECT COUNT(*) as c FROM embeddings').get() as any;
     if (count && count.c > 0) {
-      const meta = {};
-      const metaRows = db.prepare('SELECT key, value FROM embedding_meta').all();
+      const meta: Record<string, string> = {};
+      // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+      const metaRows = db.prepare('SELECT key, value FROM embedding_meta').all() as any[];
       for (const r of metaRows) meta[r.key] = r.value;
       return {
         count: count.c,
-        model: meta.model || null,
-        dim: meta.dim ? parseInt(meta.dim, 10) : null,
-        builtAt: meta.built_at || null,
+        model: meta['model'] || null,
+        dim: meta['dim'] ? parseInt(meta['dim'], 10) : null,
+        builtAt: meta['built_at'] || null,
       };
     }
   } catch (e) {
-    debug(`embeddings lookup skipped: ${e.message}`);
+    debug(`embeddings lookup skipped: ${(e as Error).message}`);
   }
   return null;
 }
 
-function computeQualityMetrics(db, testFilter, fpThreshold = FALSE_POSITIVE_CALLER_THRESHOLD) {
+function computeQualityMetrics(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+  db: any,
+  testFilter: string,
+  fpThreshold = FALSE_POSITIVE_CALLER_THRESHOLD,
+): object {
   const qualityTestFilter = testFilter.replace(/n\.file/g, 'file');
 
   const totalCallable = db
@@ -194,7 +228,8 @@ function computeQualityMetrics(db, testFilter, fpThreshold = FALSE_POSITIVE_CALL
       HAVING caller_count > ?
       ORDER BY caller_count DESC
     `)
-    .all(fpThreshold);
+    // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+    .all(fpThreshold) as any[];
   const falsePositiveWarnings = fpRows
     .filter((r) =>
       FALSE_POSITIVE_NAMES.has(r.name.includes('.') ? r.name.split('.').pop() : r.name),
@@ -225,12 +260,17 @@ function computeQualityMetrics(db, testFilter, fpThreshold = FALSE_POSITIVE_CALL
   };
 }
 
-function countRoles(db, noTests) {
-  let roleRows;
+// biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+function countRoles(db: any, noTests: boolean): Record<string, number> {
+  // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+  let roleRows: any[];
   if (noTests) {
-    const allRoleNodes = db.prepare('SELECT role, file FROM nodes WHERE role IS NOT NULL').all();
+    const allRoleNodes = db
+      .prepare('SELECT role, file FROM nodes WHERE role IS NOT NULL')
+      // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+      .all() as any[];
     const filtered = allRoleNodes.filter((n) => !isTestFile(n.file));
-    const counts = {};
+    const counts: Record<string, number> = {};
     for (const n of filtered) counts[n.role] = (counts[n.role] || 0) + 1;
     roleRows = Object.entries(counts).map(([role, c]) => ({ role, c }));
   } else {
@@ -238,17 +278,18 @@ function countRoles(db, noTests) {
       .prepare('SELECT role, COUNT(*) as c FROM nodes WHERE role IS NOT NULL GROUP BY role')
       .all();
   }
-  const roles = {};
+  const roles: Record<string, number> = {};
   let deadTotal = 0;
   for (const r of roleRows) {
     roles[r.role] = r.c;
     if (r.role.startsWith(DEAD_ROLE_PREFIX)) deadTotal += r.c;
   }
-  if (deadTotal > 0) roles.dead = deadTotal;
+  if (deadTotal > 0) roles['dead'] = deadTotal;
   return roles;
 }
 
-function getComplexitySummary(db, testFilter) {
+// biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
+function getComplexitySummary(db: any, testFilter: string): object | null {
   try {
     const cRows = db
       .prepare(
@@ -256,21 +297,26 @@ function getComplexitySummary(db, testFilter) {
          FROM function_complexity fc JOIN nodes n ON fc.node_id = n.id
          WHERE n.kind IN ('function','method') ${testFilter}`,
       )
-      .all();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+      .all() as any[];
     if (cRows.length > 0) {
       const miValues = cRows.map((r) => r.maintainability_index || 0);
       return {
         analyzed: cRows.length,
-        avgCognitive: +(cRows.reduce((s, r) => s + r.cognitive, 0) / cRows.length).toFixed(1),
-        avgCyclomatic: +(cRows.reduce((s, r) => s + r.cyclomatic, 0) / cRows.length).toFixed(1),
+        avgCognitive: +(cRows.reduce((s: number, r) => s + r.cognitive, 0) / cRows.length).toFixed(
+          1,
+        ),
+        avgCyclomatic: +(
+          cRows.reduce((s: number, r) => s + r.cyclomatic, 0) / cRows.length
+        ).toFixed(1),
         maxCognitive: Math.max(...cRows.map((r) => r.cognitive)),
         maxCyclomatic: Math.max(...cRows.map((r) => r.cyclomatic)),
-        avgMI: +(miValues.reduce((s, v) => s + v, 0) / miValues.length).toFixed(1),
+        avgMI: +(miValues.reduce((s: number, v: number) => s + v, 0) / miValues.length).toFixed(1),
         minMI: +Math.min(...miValues).toFixed(1),
       };
     }
   } catch (e) {
-    debug(`complexity summary skipped: ${e.message}`);
+    debug(`complexity summary skipped: ${(e as Error).message}`);
   }
   return null;
 }
@@ -279,7 +325,11 @@ function getComplexitySummary(db, testFilter) {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function moduleMapData(customDbPath, limit = 20, opts = {}) {
+export function moduleMapData(
+  customDbPath: string | undefined,
+  limit = 20,
+  opts: { noTests?: boolean } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;
@@ -297,7 +347,8 @@ export function moduleMapData(customDbPath, limit = 20, opts = {}) {
       ORDER BY (SELECT COUNT(*) FROM edges WHERE target_id = n.id AND kind NOT IN ('contains', 'parameter_of', 'receiver')) DESC
       LIMIT ?
     `)
-      .all(limit);
+      // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
+      .all(limit) as any[];
 
     const topNodes = nodes.map((n) => ({
       file: n.file,
@@ -317,7 +368,11 @@ export function moduleMapData(customDbPath, limit = 20, opts = {}) {
   }
 }
 
-export function statsData(customDbPath, opts = {}) {
+export function statsData(
+  customDbPath: string | undefined,
+  // biome-ignore lint/suspicious/noExplicitAny: config shape varies by caller
+  opts: { noTests?: boolean; config?: any } = {},
+): object {
   const db = openReadonlyOrFail(customDbPath);
   try {
     const noTests = opts.noTests || false;
