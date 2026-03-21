@@ -27,7 +27,7 @@ export function implementationsData(
       noTests,
       file: opts.file,
       kind: opts.kind,
-      kinds: opts.kind ? undefined : CORE_SYMBOL_KINDS,
+      kinds: opts.kind ? undefined : [...CORE_SYMBOL_KINDS],
     });
     if (nodes.length === 0) {
       return { name, results: [] };
@@ -78,7 +78,7 @@ export function interfacesData(
       noTests,
       file: opts.file,
       kind: opts.kind,
-      kinds: opts.kind ? undefined : CORE_SYMBOL_KINDS,
+      kinds: opts.kind ? undefined : [...CORE_SYMBOL_KINDS],
     });
     if (nodes.length === 0) {
       return { name, results: [] };

@@ -286,7 +286,7 @@ export class InMemoryRepository extends Repository {
   }
 
   findNodesForTriage(opts: TriageQueryOpts = {}): NodeRow[] {
-    if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
+    if (opts.kind && !(EVERY_SYMBOL_KIND as readonly string[]).includes(opts.kind)) {
       throw new ConfigError(
         `Invalid kind: ${opts.kind} (expected one of ${EVERY_SYMBOL_KIND.join(', ')})`,
       );
@@ -563,7 +563,7 @@ export class InMemoryRepository extends Repository {
 
   getCallableNodes(): CallableNodeRow[] {
     return [...this.#nodes.values()]
-      .filter((n) => CORE_SYMBOL_KINDS.includes(n.kind))
+      .filter((n) => (CORE_SYMBOL_KINDS as readonly string[]).includes(n.kind))
       .map((n) => ({ id: n.id, name: n.name, kind: n.kind, file: n.file }));
   }
 

@@ -46,7 +46,7 @@ export function findNodesForTriage(
   db: BetterSqlite3Database,
   opts: TriageQueryOpts = {},
 ): NodeRow[] {
-  if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
+  if (opts.kind && !(EVERY_SYMBOL_KIND as readonly string[]).includes(opts.kind)) {
     throw new ConfigError(
       `Invalid kind: ${opts.kind} (expected one of ${EVERY_SYMBOL_KIND.join(', ')})`,
     );
