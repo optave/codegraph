@@ -25,7 +25,7 @@ export const command = {
       const knownBinaryVersion = binaryVersion !== 'unknown' ? binaryVersion : null;
       if (pkgVersion && knownBinaryVersion && pkgVersion !== knownBinaryVersion) {
         console.log(
-          `  Native version: ${pkgVersion} (binary reports ${knownBinaryVersion} — stale)`,
+          `  Native version: ${pkgVersion} (binary built as ${knownBinaryVersion}, engine loaded OK)`,
         );
       } else {
         console.log(`  Native version: ${pkgVersion ?? binaryVersion}`);
@@ -36,7 +36,7 @@ export const command = {
     console.log();
 
     try {
-      const { findDbPath, getBuildMeta } = await import('../../db.js');
+      const { findDbPath, getBuildMeta } = await import('../../db/index.js');
       const Database = (await import('better-sqlite3')).default;
       const dbPath = findDbPath();
       const fs = await import('node:fs');

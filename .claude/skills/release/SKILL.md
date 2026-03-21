@@ -15,6 +15,20 @@ You are preparing a release for `@optave/codegraph`.
 
 ---
 
+## Step 0: Isolate and sync
+
+1. **Create a worktree** — run `/worktree` to get an isolated copy of the repo. All subsequent steps run inside the worktree.
+2. **Sync with main** — fetch origin and check how far behind the current branch is:
+   ```bash
+   git fetch origin
+   git rev-list --count HEAD..origin/main
+   ```
+   If the count is > 0 (behind main), detach to `origin/main` so all subsequent work starts from the latest main:
+   ```bash
+   git checkout origin/main
+   ```
+   Do **not** create the `release/VERSION` branch here — Step 8 creates it once VERSION is known.
+
 ## Step 1a: Gather context
 
 Run these in parallel:
@@ -51,9 +65,10 @@ If `$ARGUMENTS` was provided, use it directly as `VERSION`.
 
 Edit `package.json` to set `"version": "VERSION"`.
 
+Also bump `crates/codegraph-core/Cargo.toml` — set the `version` field in `[package]` to match `VERSION`. This keeps the Rust crate version in sync with the npm package.
+
 **Do NOT bump:**
-- `crates/codegraph-core/Cargo.toml` — synced automatically by `scripts/sync-native-versions.js` during the publish workflow
-- `optionalDependencies` versions — also synced automatically by the same script
+- `optionalDependencies` versions — synced automatically by `scripts/sync-native-versions.js` during the publish workflow
 
 Then run `npm install --package-lock-only` to update `package-lock.json`.
 
@@ -130,9 +145,22 @@ Read `README.md` and check if any new user-facing features from this release nee
 
 Run `grep` to confirm the new version appears in `package-lock.json` and that all `@optave/codegraph-*` optional dependency entries are complete (have version, resolved, integrity, cpu, os fields). Flag any incomplete entries — they indicate an unpublished platform binary.
 
+**Critical: verify `libc` fields on Linux entries.** Some npm versions (notably v11+) silently strip the `libc` field when regenerating the lock file via `npm install --package-lock-only`. Without `libc`, npm may install glibc binaries on musl systems (Alpine) and vice versa. Check:
+
+```bash
+grep -A12 'codegraph-linux' package-lock.json | grep -c libc
+# Expected: 3 (one each for linux-arm64-gnu, linux-x64-gnu, linux-x64-musl)
+```
+
+If the count is less than 3, manually restore the missing fields:
+- `-gnu` packages: `"libc": ["glibc"]`
+- `-musl` packages: `"libc": ["musl"]`
+
+Place the `libc` array after the `cpu` array in each entry.
+
 ## Step 8: Create branch, commit, push, PR
 
-1. Create branch: `git checkout -b release/VERSION`
+1. Create branch: `git checkout -b release/VERSION` (if on detached HEAD from Step 0, this creates the branch at the current commit)
 2. Stage only the files you changed: `CHANGELOG.md`, `package.json`, `package-lock.json`, `docs/roadmap/ROADMAP.md`, `docs/roadmap/BACKLOG.md` if changed, `README.md` if changed
 3. Commit: `chore: release vVERSION`
 4. Push: `git push -u origin release/VERSION`
@@ -157,5 +185,5 @@ EOF
 
 - **No co-author lines** in commit messages
 - **No Claude Code references** in commit messages or PR descriptions
-- The publish workflow (`publish.yml`) handles: Cargo.toml version sync, optionalDependencies version sync, npm publishing, git tagging, and the post-publish version bump PR
+- The publish workflow (`publish.yml`) handles: optionalDependencies version sync, npm publishing, git tagging, and the post-publish version bump PR
 - If you find issues (incomplete lock entries, phantom packages), fix them in a separate commit with a descriptive message

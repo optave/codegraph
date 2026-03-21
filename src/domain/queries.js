@@ -22,6 +22,7 @@ export {
 } from '../shared/kinds.js';
 // ── Shared utilities ─────────────────────────────────────────────────────
 export { kindIcon, normalizeSymbol } from '../shared/normalize.js';
+export { briefData } from './analysis/brief.js';
 export { contextData, explainData } from './analysis/context.js';
 export { fileDepsData, fnDepsData, pathData } from './analysis/dependencies.js';
 export { exportsData } from './analysis/exports.js';
@@ -31,6 +32,7 @@ export {
   fnImpactData,
   impactAnalysisData,
 } from './analysis/impact.js';
+export { implementationsData, interfacesData } from './analysis/implementations.js';
 export {
   FALSE_POSITIVE_CALLER_THRESHOLD,
   FALSE_POSITIVE_NAMES,

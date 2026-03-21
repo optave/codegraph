@@ -1,13 +1,15 @@
+import { collectFile } from '../../db/query-builder.js';
 import { VALID_ROLES } from '../../domain/queries.js';
 import { roles } from '../../presentation/queries-cli.js';
 
 export const command = {
   name: 'roles',
-  description: 'Show node role classification: entry, core, utility, adapter, dead, leaf',
+  description:
+    'Show node role classification: entry, core, utility, adapter, dead (dead-leaf, dead-entry, dead-ffi, dead-unresolved), leaf',
   options: [
     ['-d, --db <path>', 'Path to graph.db'],
     ['--role <role>', `Filter by role (${VALID_ROLES.join(', ')})`],
-    ['-f, --file <path>', 'Scope to a specific file (partial match)'],
+    ['-f, --file <path>', 'Scope to a specific file (partial match, repeatable)', collectFile],
     ['-T, --no-tests', 'Exclude test/spec files'],
     ['--include-tests', 'Include test/spec files (overrides excludeTests config)'],
     ['-j, --json', 'Output as JSON'],

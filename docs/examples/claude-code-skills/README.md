@@ -79,8 +79,8 @@ The orchestrator dispatches each phase to a sub-agent with a fresh context windo
 /titan-recon           # Map the codebase, produce priority queue + embeddings
 /titan-gauntlet 5      # Audit top targets in batches of 5
 /titan-sync            # Plan shared abstractions and execution order
-/titan-forge           # Execute one phase of the sync plan
-/titan-gate            # Validate before each commit
+/titan-forge            # Execute next phase (re-run for each phase)
+                       # (calls /titan-gate automatically per commit)
 ```
 
 If GAUNTLET or FORGE runs out of context, just re-invoke — they resume from where they left off.
@@ -100,11 +100,10 @@ If GAUNTLET or FORGE runs out of context, just re-invoke — they resume from wh
 /titan-gauntlet           # Once (or multiple sessions): audit everything
 /titan-sync               # Once: plan the work
 
-# Then for each fix:
-# 1. Make changes based on sync plan
-# 2. Stage changes
-/titan-gate               # Validate
-# 3. Commit if PASS
+# Then for each phase:
+/titan-forge               # Executes one phase, validates, commits
+/titan-forge               # Re-run for next phase
+/titan-forge               # ...until all phases complete
 ```
 
 ## Artifacts

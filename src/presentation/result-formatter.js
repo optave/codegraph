@@ -1,3 +1,4 @@
+import { loadConfig } from '../infrastructure/config.js';
 import { printNdjson } from '../shared/paginate.js';
 import { formatTable, truncEnd } from './table.js';
 
@@ -85,11 +86,13 @@ const MAX_COL_WIDTH = 40;
  * Print data as an aligned table to stdout.
  * @param {object} data - Result object from a *Data() function
  * @param {string} field - Array field name (e.g. 'results')
+ * @param {{ maxColWidth?: number }} [displayOpts]
  */
-function printAutoTable(data, field) {
+function printAutoTable(data, field, displayOpts = {}) {
   const prepared = prepareFlatItems(data, field);
   if (!prepared) return false;
   const { flatItems, columns } = prepared;
+  const colWidth = displayOpts.maxColWidth ?? MAX_COL_WIDTH;
 
   const colDefs = columns.map((col) => {
     const maxLen = flatItems.reduce(
@@ -104,13 +107,13 @@ function printAutoTable(data, field) {
       });
     return {
       header: col,
-      width: Math.min(maxLen, MAX_COL_WIDTH),
+      width: Math.min(maxLen, colWidth),
       align: isNumeric ? 'right' : 'left',
     };
   });
 
   const rows = flatItems.map((item) =>
-    columns.map((col) => truncEnd(String(item[col] ?? ''), MAX_COL_WIDTH)),
+    columns.map((col) => truncEnd(String(item[col] ?? ''), colWidth)),
   );
 
   console.log(formatTable({ columns: colDefs, rows }));
@@ -122,7 +125,7 @@ function printAutoTable(data, field) {
  *
  * @param {object} data   - Result object from a *Data() function
  * @param {string} field  - Array field name for NDJSON streaming (e.g. 'results')
- * @param {object} opts   - CLI options ({ json?, ndjson?, table?, csv? })
+ * @param {object} opts   - CLI options ({ json?, ndjson?, table?, csv?, display?: { maxColWidth? } })
  * @returns {boolean} true if output was handled (caller should return early)
  */
 export function outputResult(data, field, opts) {
@@ -138,7 +141,8 @@ export function outputResult(data, field, opts) {
     return printCsv(data, field) !== false;
   }
   if (opts.table) {
-    return printAutoTable(data, field) !== false;
+    const displayOpts = opts.display ?? loadConfig().display;
+    return printAutoTable(data, field, displayOpts) !== false;
   }
   return false;
 }

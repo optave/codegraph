@@ -12,11 +12,123 @@ impl SymbolExtractor for JsExtractor {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_node(&tree.root_node(), source, &mut symbols);
         walk_ast_nodes(&tree.root_node(), source, &mut symbols.ast_nodes);
+        extract_type_map(&tree.root_node(), source, &mut symbols);
         symbols
     }
 }
 
+// ── Type inference helpers ──────────────────────────────────────────────────
+
+/// Extract simple type name from a type_annotation node.
+/// Returns the type name for simple types and generics, None for unions/intersections/arrays.
+fn extract_simple_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "type_identifier" | "identifier" => return Some(node_text(&child, source)),
+                "generic_type" => {
+                    return child.child(0).map(|n| node_text(&n, source));
+                }
+                "parenthesized_type" => return extract_simple_type_name(&child, source),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Extract constructor type name from a new_expression node.
+fn extract_new_expr_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
+    if node.kind() != "new_expression" {
+        return None;
+    }
+    let ctor = node.child_by_field_name("constructor").or_else(|| node.child(1))?;
+    match ctor.kind() {
+        "identifier" => Some(node_text(&ctor, source)),
+        "member_expression" => {
+            ctor.child_by_field_name("property").map(|p| node_text(&p, source))
+        }
+        _ => None,
+    }
+}
+
+/// Walk the entire tree to extract type annotations and new-expression type inferences.
+fn extract_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    extract_type_map_depth(node, source, symbols, 0);
+}
+
+fn extract_type_map_depth(node: &Node, source: &[u8], symbols: &mut FileSymbols, depth: usize) {
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
+    match node.kind() {
+        "variable_declarator" => {
+            if let Some(name_n) = node.child_by_field_name("name") {
+                if name_n.kind() == "identifier" {
+                    let var_name = node_text(&name_n, source);
+                    // Type annotation takes priority
+                    if let Some(type_anno) = find_child(node, "type_annotation") {
+                        if let Some(type_name) = extract_simple_type_name(&type_anno, source) {
+                            symbols.type_map.push(TypeMapEntry {
+                                name: var_name.to_string(),
+                                type_name: type_name.to_string(),
+                            });
+                            // Skip new_expression check — annotation wins
+                            return walk_type_map_children(node, source, symbols, depth);
+                        }
+                    }
+                    // Fall back to new expression inference
+                    if let Some(value_n) = node.child_by_field_name("value") {
+                        if value_n.kind() == "new_expression" {
+                            if let Some(type_name) = extract_new_expr_type_name(&value_n, source) {
+                                symbols.type_map.push(TypeMapEntry {
+                                    name: var_name.to_string(),
+                                    type_name: type_name.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "required_parameter" | "optional_parameter" => {
+            let name_node = node.child_by_field_name("pattern")
+                .or_else(|| node.child_by_field_name("left"))
+                .or_else(|| node.child(0));
+            if let Some(name_node) = name_node {
+                if name_node.kind() == "identifier" {
+                    if let Some(type_anno) = find_child(node, "type_annotation") {
+                        if let Some(type_name) = extract_simple_type_name(&type_anno, source) {
+                            symbols.type_map.push(TypeMapEntry {
+                                name: node_text(&name_node, source).to_string(),
+                                type_name: type_name.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    walk_type_map_children(node, source, symbols, depth);
+}
+
+fn walk_type_map_children(node: &Node, source: &[u8], symbols: &mut FileSymbols, depth: usize) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_type_map_depth(&child, source, symbols, depth + 1);
+        }
+    }
+}
+
 fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    walk_node_depth(node, source, symbols, 0);
+}
+
+fn walk_node_depth(node: &Node, source: &[u8], symbols: &mut FileSymbols, depth: usize) {
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
     match node.kind() {
         "function_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -397,7 +509,7 @@ fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            walk_node(&child, source, symbols);
+            walk_node_depth(&child, source, symbols, depth + 1);
         }
     }
 }
@@ -409,6 +521,13 @@ const TEXT_MAX: usize = 200;
 /// Walk the tree collecting new/throw/await/string/regex AST nodes.
 /// Mirrors `walkAst()` in `ast.js:216-276`.
 fn walk_ast_nodes(node: &Node, source: &[u8], ast_nodes: &mut Vec<AstNode>) {
+    walk_ast_nodes_depth(node, source, ast_nodes, 0);
+}
+
+fn walk_ast_nodes_depth(node: &Node, source: &[u8], ast_nodes: &mut Vec<AstNode>, depth: usize) {
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
     match node.kind() {
         "new_expression" => {
             let name = extract_new_name(node, source);
@@ -459,7 +578,7 @@ fn walk_ast_nodes(node: &Node, source: &[u8], ast_nodes: &mut Vec<AstNode>) {
                 // Still recurse children (template_string may have nested expressions)
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        walk_ast_nodes(&child, source, ast_nodes);
+                        walk_ast_nodes_depth(&child, source, ast_nodes, depth + 1);
                     }
                 }
                 return;
@@ -493,7 +612,7 @@ fn walk_ast_nodes(node: &Node, source: &[u8], ast_nodes: &mut Vec<AstNode>) {
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            walk_ast_nodes(&child, source, ast_nodes);
+            walk_ast_nodes_depth(&child, source, ast_nodes, depth + 1);
         }
     }
 }
@@ -763,13 +882,20 @@ fn extract_implements(heritage: &Node, source: &[u8]) -> Vec<String> {
 }
 
 fn extract_implements_from_node(node: &Node, source: &[u8], result: &mut Vec<String>) {
+    extract_implements_depth(node, source, result, 0);
+}
+
+fn extract_implements_depth(node: &Node, source: &[u8], result: &mut Vec<String>, depth: usize) {
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "identifier" || child.kind() == "type_identifier" {
                 result.push(node_text(&child, source).to_string());
             }
             if child.child_count() > 0 {
-                extract_implements_from_node(&child, source, result);
+                extract_implements_depth(&child, source, result, depth + 1);
             }
         }
     }
@@ -1113,6 +1239,13 @@ fn extract_import_names(node: &Node, source: &[u8]) -> Vec<String> {
 }
 
 fn scan_import_names(node: &Node, source: &[u8], names: &mut Vec<String>) {
+    scan_import_names_depth(node, source, names, 0);
+}
+
+fn scan_import_names_depth(node: &Node, source: &[u8], names: &mut Vec<String>, depth: usize) {
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
     match node.kind() {
         "import_specifier" | "export_specifier" => {
             let name_node = node
@@ -1138,7 +1271,7 @@ fn scan_import_names(node: &Node, source: &[u8], names: &mut Vec<String>) {
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            scan_import_names(&child, source, names);
+            scan_import_names_depth(&child, source, names, depth + 1);
         }
     }
 }

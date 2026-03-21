@@ -1,7 +1,7 @@
 ---
 name: titan-forge
 description: Execute the sync.json plan — refactor code, validate with /titan-gate, commit, and advance state (Titan Paradigm Phase 4)
-argument-hint: <--phase N> <--target name> <--dry-run>
+argument-hint: <--phase N> <--target name> <--dry-run> <--yes>
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Agent
 ---
 
@@ -52,7 +52,9 @@ Your goal: read `sync.json`, find the next incomplete execution phase, make the 
        "currentTarget": null,
        "completedTargets": [],
        "failedTargets": [],
-       "commits": []
+       "commits": [],
+       "currentSubphase": null,
+       "completedSubphases": []
      }
    }
    ```
