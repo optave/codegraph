@@ -1,4 +1,3 @@
-import type BetterSqlite3 from 'better-sqlite3';
 import {
   countCrossFileCallers,
   findAllIncomingEdges,
@@ -22,24 +21,28 @@ import { getFileHash, normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
 import type {
   AdjacentEdgeRow,
+  BetterSqlite3Database,
   ChildNodeRow,
   ImportEdgeRow,
   NodeRow,
   NodeRowWithFanIn,
+  SymbolKind,
 } from '../../types.js';
 
-const FUNCTION_KINDS = ['function', 'method', 'class', 'constant'];
+const FUNCTION_KINDS: SymbolKind[] = ['function', 'method', 'class', 'constant'];
 
 /**
  * Find nodes matching a name query, ranked by relevance.
  * Scoring: exact=100, prefix=60, word-boundary=40, substring=10, plus fan-in tiebreaker.
  */
 export function findMatchingNodes(
-  dbOrRepo: BetterSqlite3.Database | InstanceType<typeof Repository>,
+  dbOrRepo: BetterSqlite3Database | InstanceType<typeof Repository>,
   name: string,
   opts: { noTests?: boolean; file?: string; kind?: string; kinds?: readonly string[] } = {},
 ): Array<NodeRowWithFanIn & { _relevance: number }> {
-  const kinds = opts.kind ? [opts.kind] : opts.kinds?.length ? [...opts.kinds] : FUNCTION_KINDS;
+  const kinds = (
+    opts.kind ? [opts.kind] : opts.kinds?.length ? [...opts.kinds] : FUNCTION_KINDS
+  ) as SymbolKind[];
 
   const isRepo = dbOrRepo instanceof Repository;
   const rows = (
@@ -48,7 +51,7 @@ export function findMatchingNodes(
           kinds,
           file: opts.file,
         })
-      : findNodesWithFanIn(dbOrRepo as BetterSqlite3.Database, `%${name}%`, {
+      : findNodesWithFanIn(dbOrRepo as BetterSqlite3Database, `%${name}%`, {
           kinds,
           file: opts.file,
         })
@@ -133,7 +136,7 @@ export function queryNameData(
   }
 }
 
-function whereSymbolImpl(db: BetterSqlite3.Database, target: string, noTests: boolean) {
+function whereSymbolImpl(db: BetterSqlite3Database, target: string, noTests: boolean) {
   const placeholders = EVERY_SYMBOL_KIND.map(() => '?').join(', ');
   let nodes = db
     .prepare(
@@ -158,7 +161,7 @@ function whereSymbolImpl(db: BetterSqlite3.Database, target: string, noTests: bo
   });
 }
 
-function whereFileImpl(db: BetterSqlite3.Database, target: string) {
+function whereFileImpl(db: BetterSqlite3Database, target: string) {
   const fileNodes = findFileNodes(db, `%${target}%`) as NodeRow[];
   if (fileNodes.length === 0) return [];
 

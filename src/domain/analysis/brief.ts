@@ -1,4 +1,3 @@
-import type BetterSqlite3 from 'better-sqlite3';
 import {
   findDistinctCallers,
   findFileNodes,
@@ -10,7 +9,7 @@ import {
 } from '../../db/index.js';
 import { loadConfig } from '../../infrastructure/config.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
-import type { ImportEdgeRow, NodeRow, RelatedNodeRow } from '../../types.js';
+import type { BetterSqlite3Database, ImportEdgeRow, NodeRow, RelatedNodeRow } from '../../types.js';
 
 /** Symbol kinds meaningful for a file brief — excludes parameters, properties, constants. */
 const BRIEF_KINDS = new Set([
@@ -50,7 +49,7 @@ function computeRiskTier(
  * Lightweight variant — only counts, does not collect details.
  */
 function countTransitiveCallers(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   startId: number,
   noTests: boolean,
   maxDepth = 5,
@@ -81,7 +80,7 @@ function countTransitiveCallers(
  * Depth-bounded to match countTransitiveCallers and keep hook latency predictable.
  */
 function countTransitiveImporters(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   fileNodeIds: number[],
   noTests: boolean,
   maxDepth = 5,

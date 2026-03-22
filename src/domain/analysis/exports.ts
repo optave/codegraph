@@ -1,5 +1,4 @@
 import path from 'node:path';
-import type BetterSqlite3 from 'better-sqlite3';
 import {
   findCrossFileCallTargets,
   findDbPath,
@@ -16,10 +15,10 @@ import {
   extractSummary,
 } from '../../shared/file-utils.js';
 import { paginateResult } from '../../shared/paginate.js';
-import type { NodeRow } from '../../types.js';
+import type { BetterSqlite3Database, NodeRow } from '../../types.js';
 
 /** Cache the schema probe for the `exported` column per db handle. */
-const _hasExportedColCache: WeakMap<BetterSqlite3.Database, boolean> = new WeakMap();
+const _hasExportedColCache: WeakMap<BetterSqlite3Database, boolean> = new WeakMap();
 
 export function exportsData(
   file: string,
@@ -104,7 +103,7 @@ export function exportsData(
 }
 
 function exportsFileImpl(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   target: string,
   noTests: boolean,
   getFileLines: (file: string) => string[] | null,

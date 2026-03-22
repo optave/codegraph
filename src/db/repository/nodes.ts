@@ -286,7 +286,7 @@ const _getLineCountForNodeStmt = new WeakMap();
  * @param {number} nodeId
  * @returns {{ line_count: number } | undefined}
  */
-export function getLineCountForNode(db, nodeId) {
+export function getLineCountForNode(db: BetterSqlite3Database, nodeId: number) {
   return cachedStmt(
     _getLineCountForNodeStmt,
     db,
@@ -302,7 +302,7 @@ const _getMaxEndLineForFileStmt = new WeakMap();
  * @param {string} file
  * @returns {{ max_end: number | null } | undefined}
  */
-export function getMaxEndLineForFile(db, file) {
+export function getMaxEndLineForFile(db: BetterSqlite3Database, file: string) {
   return cachedStmt(
     _getMaxEndLineForFileStmt,
     db,

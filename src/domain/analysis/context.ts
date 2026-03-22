@@ -1,5 +1,4 @@
 import path from 'node:path';
-import type BetterSqlite3 from 'better-sqlite3';
 import {
   findCallees,
   findCallers,
@@ -33,6 +32,7 @@ import { resolveMethodViaHierarchy } from '../../shared/hierarchy.js';
 import { normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
 import type {
+  BetterSqlite3Database,
   ChildNodeRow,
   ImportEdgeRow,
   IntraFileCallEdge,
@@ -48,7 +48,7 @@ interface DisplayOpts {
 }
 
 function buildCallees(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   node: NodeRow,
   repoRoot: string,
   getFileLines: (file: string) => string[] | null,
@@ -110,7 +110,7 @@ function buildCallees(
   return callees;
 }
 
-function buildCallers(db: BetterSqlite3.Database, node: NodeRow, noTests: boolean) {
+function buildCallers(db: BetterSqlite3Database, node: NodeRow, noTests: boolean) {
   let callerRows: Array<RelatedNodeRow & { viaHierarchy?: string }> = findCallers(
     db,
     node.id,
@@ -139,7 +139,7 @@ function buildCallers(db: BetterSqlite3.Database, node: NodeRow, noTests: boolea
 const INTERFACE_LIKE_KINDS = new Set(['interface', 'trait']);
 const IMPLEMENTOR_KINDS = new Set(['class', 'struct', 'record', 'enum']);
 
-function buildImplementationInfo(db: BetterSqlite3.Database, node: NodeRow, noTests: boolean) {
+function buildImplementationInfo(db: BetterSqlite3Database, node: NodeRow, noTests: boolean) {
   // For interfaces/traits: show who implements them
   if (INTERFACE_LIKE_KINDS.has(node.kind)) {
     let impls = findImplementors(db, node.id) as RelatedNodeRow[];
@@ -162,7 +162,7 @@ function buildImplementationInfo(db: BetterSqlite3.Database, node: NodeRow, noTe
 }
 
 function buildRelatedTests(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   node: NodeRow,
   getFileLines: (file: string) => string[] | null,
   includeTests: boolean,
@@ -203,7 +203,7 @@ function buildRelatedTests(
   return relatedTests;
 }
 
-function getComplexityMetrics(db: BetterSqlite3.Database, nodeId: number) {
+function getComplexityMetrics(db: BetterSqlite3Database, nodeId: number) {
   try {
     const cRow = getComplexityForNode(db, nodeId);
     if (!cRow) return null;
@@ -220,7 +220,7 @@ function getComplexityMetrics(db: BetterSqlite3.Database, nodeId: number) {
   }
 }
 
-function getNodeChildrenSafe(db: BetterSqlite3.Database, nodeId: number) {
+function getNodeChildrenSafe(db: BetterSqlite3Database, nodeId: number) {
   try {
     return (findNodeChildren(db, nodeId) as ChildNodeRow[]).map((c) => ({
       name: c.name,
@@ -235,7 +235,7 @@ function getNodeChildrenSafe(db: BetterSqlite3.Database, nodeId: number) {
 }
 
 function explainFileImpl(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   target: string,
   getFileLines: (file: string) => string[] | null,
   displayOpts: DisplayOpts,
@@ -304,7 +304,7 @@ const _explainNodeStmtCache: StmtCache<NodeRow> = new WeakMap();
 const _EXPLAIN_NODE_SQL = `SELECT * FROM nodes WHERE name LIKE ? AND kind IN ('function','method','class','interface','type','struct','enum','trait','record','module','constant') ORDER BY file, line`;
 
 function explainFunctionImpl(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   target: string,
   noTests: boolean,
   getFileLines: (file: string) => string[] | null,
@@ -362,7 +362,7 @@ function explainCallees(
   parentResults: any[],
   currentDepth: number,
   visited: Set<string>,
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   noTests: boolean,
   getFileLines: (file: string) => string[] | null,
   displayOpts: DisplayOpts,

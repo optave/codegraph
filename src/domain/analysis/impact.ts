@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type BetterSqlite3 from 'better-sqlite3';
 import {
   findDbPath,
   findDistinctCallers,
@@ -19,7 +18,7 @@ import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
-import type { NodeRow, RelatedNodeRow } from '../../types.js';
+import type { BetterSqlite3Database, NodeRow, RelatedNodeRow } from '../../types.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
 // --- Shared BFS: transitive callers ---
@@ -30,8 +29,8 @@ const INTERFACE_LIKE_KINDS = new Set(['interface', 'trait']);
  * Check whether the graph contains any 'implements' edges.
  * Cached per db handle so the query runs at most once per connection.
  */
-const _hasImplementsCache: WeakMap<BetterSqlite3.Database, boolean> = new WeakMap();
-function hasImplementsEdges(db: BetterSqlite3.Database): boolean {
+const _hasImplementsCache: WeakMap<BetterSqlite3Database, boolean> = new WeakMap();
+function hasImplementsEdges(db: BetterSqlite3Database): boolean {
   if (_hasImplementsCache.has(db)) return _hasImplementsCache.get(db)!;
   const row = db.prepare("SELECT 1 FROM edges WHERE kind = 'implements' LIMIT 1").get();
   const result = !!row;
@@ -46,7 +45,7 @@ function hasImplementsEdges(db: BetterSqlite3.Database): boolean {
  * so that changes to an interface signature propagate to all implementors.
  */
 export function bfsTransitiveCallers(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   startId: number,
   {
     noTests = false,
@@ -334,7 +333,7 @@ function parseGitDiff(diffOutput: string) {
  * Find all function/method/class nodes whose line ranges overlap any changed range.
  */
 function findAffectedFunctions(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   changedRanges: Map<string, Array<{ start: number; end: number }>>,
   noTests: boolean,
 ): NodeRow[] {
@@ -364,7 +363,7 @@ function findAffectedFunctions(
  * Run BFS per affected function, collecting per-function results and the full affected set.
  */
 function buildFunctionImpactResults(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   affectedFunctions: NodeRow[],
   noTests: boolean,
   maxDepth: number,
@@ -407,7 +406,7 @@ function buildFunctionImpactResults(
  * Returns an empty array if the co_changes table is unavailable.
  */
 function lookupCoChanges(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   changedRanges: Map<string, unknown>,
   affectedFiles: Set<string>,
   noTests: boolean,
@@ -458,7 +457,7 @@ function lookupOwnership(
  * Returns `{ boundaryViolations, boundaryViolationCount }`.
  */
 function checkBoundaryViolations(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   changedRanges: Map<string, unknown>,
   noTests: boolean,
   // biome-ignore lint/suspicious/noExplicitAny: opts shape varies by caller

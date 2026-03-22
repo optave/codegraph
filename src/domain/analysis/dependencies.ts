@@ -1,4 +1,3 @@
-import type BetterSqlite3 from 'better-sqlite3';
 import {
   findCallees,
   findCallers,
@@ -12,7 +11,7 @@ import { isTestFile } from '../../infrastructure/test-filter.js';
 import { resolveMethodViaHierarchy } from '../../shared/hierarchy.js';
 import { normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
-import type { ImportEdgeRow, NodeRow, RelatedNodeRow } from '../../types.js';
+import type { BetterSqlite3Database, ImportEdgeRow, NodeRow, RelatedNodeRow } from '../../types.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
 export function fileDepsData(
@@ -57,7 +56,7 @@ export function fileDepsData(
  * Returns an object keyed by depth (2..depth) -> array of caller descriptors.
  */
 function buildTransitiveCallers(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   callers: Array<{ id: number; name: string; kind: string; file: string; line: number }>,
   nodeId: number,
   depth: number,
@@ -189,7 +188,7 @@ export function fnDepsData(
  * or { earlyResult } when a caller-facing error/not-found response should be returned immediately.
  */
 function resolveEndpoints(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   from: string,
   to: string,
   opts: { noTests?: boolean; fromFile?: string; toFile?: string; kind?: string },
@@ -255,7 +254,7 @@ function resolveEndpoints(
  * `parent` maps nodeId -> { parentId, edgeKind }.
  */
 function bfsShortestPath(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   sourceId: number,
   targetId: number,
   edgeKinds: string[],
@@ -325,7 +324,7 @@ function bfsShortestPath(
  * array of node IDs source -> target.
  */
 function reconstructPath(
-  db: BetterSqlite3.Database,
+  db: BetterSqlite3Database,
   pathIds: number[],
   parent: Map<number, { parentId: number; edgeKind: string }>,
 ) {
