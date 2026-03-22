@@ -9,8 +9,9 @@
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import { EngineError } from '../shared/errors.js';
+import type { NativeAddon } from '../types.js';
 
-let _cached: object | null | undefined; // undefined = not yet tried, null = failed, object = module
+let _cached: NativeAddon | null | undefined; // undefined = not yet tried, null = failed, object = module
 let _loadError: Error | null = null;
 const _require = createRequire(import.meta.url);
 
@@ -55,13 +56,13 @@ function resolvePlatformPackage(): string | null {
  * Try to load the native napi addon.
  * Returns the module on success, null on failure.
  */
-export function loadNative(): object | null {
+export function loadNative(): NativeAddon | null {
   if (_cached !== undefined) return _cached;
 
   const pkg = resolvePlatformPackage();
   if (pkg) {
     try {
-      _cached = _require(pkg) as object;
+      _cached = _require(pkg) as NativeAddon;
       return _cached;
     } catch (err) {
       _loadError = err as Error;
@@ -99,7 +100,7 @@ export function getNativePackageVersion(): string | null {
 /**
  * Return the native module or throw if not available.
  */
-export function getNative(): object {
+export function getNative(): NativeAddon {
   const mod = loadNative();
   if (!mod) {
     throw new EngineError(
