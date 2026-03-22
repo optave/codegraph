@@ -1678,19 +1678,13 @@ export interface NativeAddon {
     dataflow: boolean,
     ast: boolean,
   ): unknown[];
-  resolveImport(
-    fromFile: string,
-    importSource: string,
-    rootDir: string,
-    extensions: string[],
-    aliases: unknown,
-  ): string | null;
+  resolveImport(fromFile: string, importSource: string, rootDir: string, aliases: unknown): string;
   resolveImports(
     items: Array<{ fromFile: string; importSource: string }>,
     rootDir: string,
-    extensions: string[],
     aliases: unknown,
-  ): Array<{ key: string; resolved: string | null }>;
+    knownFiles: string[] | null,
+  ): Array<{ fromFile: string; importSource: string; resolvedPath: string }>;
   computeConfidence(callerFile: string, targetFile: string, importedFrom: string | null): number;
   detectCycles(edges: Array<{ source: string; target: string }>): string[][];
   buildCallEdges(files: unknown[], nodes: unknown[], builtinReceivers: string[]): unknown[];

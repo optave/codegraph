@@ -74,9 +74,9 @@ function buildTransitiveCallers(
   const visited = new Set([nodeId]);
   let frontier = callers
     .map((c) => {
-      // biome-ignore lint/suspicious/noExplicitAny: DB row type
       const row = db
         .prepare('SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? AND line = ?')
+        // biome-ignore lint/suspicious/noExplicitAny: DB row type
         .get(c.name, c.kind, c.file, c.line) as any;
       return row ? { ...c, id: row.id } : null;
     })

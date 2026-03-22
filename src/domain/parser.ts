@@ -115,7 +115,7 @@ export async function createParsers(): Promise<Map<string, any>> {
  * Call this between repeated builds in the same process (e.g. benchmarks)
  * to prevent memory accumulation that can cause segfaults.
  */
-export function disposeParsers(_parsers?: Map<string, any>): void {
+export function disposeParsers(): void {
   if (_cachedParsers) {
     for (const [id, parser] of _cachedParsers) {
       if (parser && typeof parser.delete === 'function') {
