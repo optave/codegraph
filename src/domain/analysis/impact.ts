@@ -338,13 +338,12 @@ function findAffectedFunctions(
   noTests: boolean,
 ): NodeRow[] {
   const affectedFunctions: NodeRow[] = [];
+  const defsStmt = db.prepare(
+    `SELECT * FROM nodes WHERE file = ? AND kind IN ('function', 'method', 'class') ORDER BY line`,
+  );
   for (const [file, ranges] of changedRanges) {
     if (noTests && isTestFile(file)) continue;
-    const defs = db
-      .prepare(
-        `SELECT * FROM nodes WHERE file = ? AND kind IN ('function', 'method', 'class') ORDER BY line`,
-      )
-      .all(file) as NodeRow[];
+    const defs = defsStmt.all(file) as NodeRow[];
     for (let i = 0; i < defs.length; i++) {
       const def = defs[i]!;
       const endLine = def.end_line || (defs[i + 1] ? defs[i + 1]!.line - 1 : 999999);
