@@ -18,7 +18,7 @@ You are the **orchestrator** for the full Titan Paradigm pipeline. Your job is t
 - `--skip-gauntlet` → skip gauntlet (assumes artifacts exist)
 - `--start-from <phase>` → jump to phase: `recon`, `gauntlet`, `sync`, `forge`
 - `--gauntlet-batch-size <N>` → batch size for gauntlet (default: 5)
-- `--yes` → skip confirmation prompts (passed through to forge)
+- `--yes` → skip all confirmation prompts in the orchestrator (pre-pipeline, forge checkpoint, and resume prompts)
 
 ---
 
