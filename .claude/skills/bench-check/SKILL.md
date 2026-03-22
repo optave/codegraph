@@ -131,7 +131,7 @@ Skip this phase if `SAVE_ONLY=true` or no baseline exists.
 For each metric in the current run:
 
 1. Look up the same metric in the baseline
-2. Guard against division-by-zero: if `baseline == 0`, mark the delta as `"N/A � baseline was zero"` and treat the metric as **informational only** (not a regression or improvement)
+2. Guard against division-by-zero: if `baseline == 0`, mark the delta as `"N/A � baseline was zero"` and treat the metric as **informational only** (not a regression or improvement)
 3. Otherwise compute: `delta_pct = ((current - baseline) / baseline) * 100`
 4. Classify:
    - **Regression**: metric increased by more than `THRESHOLD`% (for time metrics) or decreased by more than `THRESHOLD`% (for recall/quality metrics)
@@ -165,8 +165,8 @@ Based on comparison results:
   - Re-run individual benchmarks to confirm (not flaky)
 
 ### First run (no baseline)
-- Print: `BENCH-CHECK — initial baseline saved`
-- Save current results as baseline
+- If `COMPARE_ONLY` is set: print a warning that no baseline exists and exit without saving
+- Otherwise: print `BENCH-CHECK — initial baseline saved` and save current results as baseline
 
 ## Phase 5 — Save Baseline
 
@@ -178,7 +178,7 @@ Write to `generated/bench-check/baseline.json`:
   "savedAt": "<ISO 8601>",
   "version": "<package version>",
   "gitRef": "<HEAD short SHA>",
-  "threshold": 15,
+  "threshold": $THRESHOLD,
   "metrics": { ... }
 }
 ```
