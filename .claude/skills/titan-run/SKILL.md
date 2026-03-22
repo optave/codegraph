@@ -18,7 +18,7 @@ You are the **orchestrator** for the full Titan Paradigm pipeline. Your job is t
 - `--skip-gauntlet` → skip gauntlet (assumes artifacts exist)
 - `--start-from <phase>` → jump to phase: `recon`, `gauntlet`, `sync`, `forge`
 - `--gauntlet-batch-size <N>` → batch size for gauntlet (default: 5)
-- `--yes` → skip all confirmation prompts in the orchestrator (pre-pipeline, forge checkpoint, and resume prompts)
+- `--yes` → skip all confirmation prompts in the orchestrator (pre-pipeline, forge checkpoint, and resume prompts) and in forge (per-phase confirmation)
 
 ---
 
@@ -92,6 +92,26 @@ Before every sub-agent dispatch, back up the current state file:
 cp .codegraph/titan/titan-state.json .codegraph/titan/titan-state.json.bak 2>/dev/null || true
 ```
 If a sub-agent corrupts the state, G3 on the next iteration will detect it and restore from `.bak`.
+
+---
+
+## Step 0.5 — Artifact pre-validation (--start-from only)
+
+**Only run this step if `--start-from` was specified.** Phases before the start point are being skipped — their artifacts must exist and be valid before proceeding.
+
+For each phase BEFORE `startPhase`, run the corresponding V-checks:
+
+| Skipped phase | Required artifacts + checks |
+|---------------|-----------------------------|
+| `recon` | V1 (titan-state.json structure), V2 (GLOBAL_ARCH.md), V4 (cross-check counts) |
+| `gauntlet` | V5 (coverage ≥ 50%), V6 (entry completeness sample), V7 (summary consistency); also run NDJSON integrity check (2c) |
+| `sync` | V8 (sync.json structure), V9 (targets trace to gauntlet), V10 (dependency order) |
+
+If ANY required artifact is **missing** → stop: "Cannot start from `<phase>` — `<artifact>` is missing. Run the full pipeline or start from an earlier phase."
+
+If ANY V-check that is normally VALIDATION FAILED would fail → stop with the same message as it would during normal execution.
+
+WARN-level V-checks from skipped phases are surfaced as prefixed warnings: "[skipped-phase pre-validation] <warning text>" — they do not stop the pipeline.
 
 ---
 
