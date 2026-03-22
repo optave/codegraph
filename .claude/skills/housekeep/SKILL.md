@@ -53,8 +53,8 @@ git worktree prune
 ```
 
 For stale worktrees with merged branches:
-- List them and ask the user for confirmation before removing
-- If confirmed (or `--full` without `--dry-run`):
+- List them and **always ask the user for confirmation before removing**, regardless of `--full`
+- If confirmed:
   ```bash
   git worktree remove <path>
   git branch -d <branch>  # only if fully merged
