@@ -22,7 +22,9 @@ Audit the project's dependency tree for security vulnerabilities, outdated packa
 5. **If `AUTO_FIX` is set:** Save the original manifests now, before any npm commands run, so pre-existing unstaged changes are preserved:
    ```bash
    git stash push -m "deps-audit-backup" -- package.json package-lock.json
+   STASH_CREATED=$?
    ```
+   Track `STASH_CREATED` — when `0`, a stash entry was actually created; when `1`, the files had no changes so nothing was stashed.
 
 ## Phase 1 — Security Vulnerabilities
 
@@ -158,9 +160,14 @@ If `AUTO_FIX` was set:
 Summarize all changes made:
 1. List each package updated/fixed
 2. Run `npm test` to verify nothing broke
-3. If tests pass: drop the saved state (`git stash drop`)
-4. If tests fail:
+3. If tests pass and `STASH_CREATED` is `0`: drop the saved state (`git stash drop`)
+   If tests pass and `STASH_CREATED` is `1`: discard manifest changes with `git checkout -- package.json package-lock.json` (no stash entry exists)
+4. If tests fail and `STASH_CREATED` is `0`:
    - Restore the saved manifests: `git stash pop`
+   - Restore `node_modules/` to match the reverted lock file: `npm ci`
+   - Report what failed
+5. If tests fail and `STASH_CREATED` is `1`:
+   - Discard manifest changes: `git checkout -- package.json package-lock.json`
    - Restore `node_modules/` to match the reverted lock file: `npm ci`
    - Report what failed
 
@@ -169,6 +176,6 @@ Summarize all changes made:
 - **Never run `npm audit fix --force`** — breaking changes need human review
 - **Never remove a dependency** without asking the user, even if it appears unused — flag it in the report instead
 - **Always run tests** after any auto-fix changes
-- **If `--fix` causes test failures**, restore manifests from the saved state (`git stash pop`) then run `npm ci` to resync `node_modules/`, and report the failure
+- **If `--fix` causes test failures**, restore manifests from the saved state (git stash pop if `STASH_CREATED=0`, or `git checkout` if stash was a no-op) then run `npm ci` to resync `node_modules/`, and report the failure
 - Treat `optionalDependencies` separately — they're expected to fail on some platforms
 - The report goes in `generated/deps-audit/` — create the directory if it doesn't exist
