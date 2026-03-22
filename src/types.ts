@@ -1658,7 +1658,8 @@ export interface BetterSqlite3Database {
   exec(sql: string): void;
   close(): void;
   pragma(sql: string): unknown;
-  transaction<T>(fn: (...args: unknown[]) => T): (...args: unknown[]) => T;
+  // biome-ignore lint/suspicious/noExplicitAny: must be compatible with better-sqlite3's generic Transaction<F> return type
+  transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T;
   readonly open: boolean;
   readonly name: string;
 }
@@ -1673,11 +1674,7 @@ export type StmtCache<TRow = unknown> = WeakMap<BetterSqlite3Database, SqliteSta
 /** The native napi-rs addon interface (crates/codegraph-core). */
 export interface NativeAddon {
   parseFile(filePath: string, source: string, dataflow: boolean, ast: boolean): unknown;
-  parseFiles(
-    files: Array<{ filePath: string; source: string }>,
-    dataflow: boolean,
-    ast: boolean,
-  ): unknown[];
+  parseFiles(files: string[], rootDir: string, dataflow: boolean, ast: boolean): unknown[];
   resolveImport(fromFile: string, importSource: string, rootDir: string, aliases: unknown): string;
   resolveImports(
     items: Array<{ fromFile: string; importSource: string }>,
