@@ -203,6 +203,7 @@ export function purgeFilesFromGraph(
   files: string[],
   options: Record<string, unknown> = {},
 ): void {
+  // Double-cast needed: better-sqlite3 types don't declare `open`/`name` properties
   purgeFilesData(db as unknown as BetterSqlite3Database, files, options);
 }
 
