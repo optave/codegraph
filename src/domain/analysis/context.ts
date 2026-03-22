@@ -18,6 +18,7 @@ import {
   getMaxEndLineForFile,
   openReadonlyOrFail,
 } from '../../db/index.js';
+import { cachedStmt } from '../../db/repository/cached-stmt.js';
 import { loadConfig } from '../../infrastructure/config.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
@@ -37,6 +38,7 @@ import type {
   IntraFileCallEdge,
   NodeRow,
   RelatedNodeRow,
+  StmtCache,
 } from '../../types.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
@@ -298,6 +300,9 @@ function explainFileImpl(
   });
 }
 
+const _explainNodeStmtCache: StmtCache<NodeRow> = new WeakMap();
+const _EXPLAIN_NODE_SQL = `SELECT * FROM nodes WHERE name LIKE ? AND kind IN ('function','method','class','interface','type','struct','enum','trait','record','module','constant') ORDER BY file, line`;
+
 function explainFunctionImpl(
   db: BetterSqlite3.Database,
   target: string,
@@ -305,11 +310,8 @@ function explainFunctionImpl(
   getFileLines: (file: string) => string[] | null,
   displayOpts: DisplayOpts,
 ) {
-  let nodes = db
-    .prepare(
-      `SELECT * FROM nodes WHERE name LIKE ? AND kind IN ('function','method','class','interface','type','struct','enum','trait','record','module','constant') ORDER BY file, line`,
-    )
-    .all(`%${target}%`) as NodeRow[];
+  const stmt = cachedStmt(_explainNodeStmtCache, db, _EXPLAIN_NODE_SQL);
+  let nodes = stmt.all(`%${target}%`) as NodeRow[];
   if (noTests) nodes = nodes.filter((n) => !isTestFile(n.file));
   if (nodes.length === 0) return [];
 

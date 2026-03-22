@@ -330,9 +330,10 @@ function reconstructPath(
   parent: Map<number, { parentId: number; edgeKind: string }>,
 ) {
   const nodeCache = new Map<number, { name: string; kind: string; file: string; line: number }>();
+  const nodeByIdStmt = db.prepare('SELECT name, kind, file, line FROM nodes WHERE id = ?');
   const getNode = (id: number) => {
     if (nodeCache.has(id)) return nodeCache.get(id)!;
-    const row = db.prepare('SELECT name, kind, file, line FROM nodes WHERE id = ?').get(id) as {
+    const row = nodeByIdStmt.get(id) as {
       name: string;
       kind: string;
       file: string;

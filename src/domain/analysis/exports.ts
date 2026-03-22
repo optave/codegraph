@@ -18,6 +18,9 @@ import {
 import { paginateResult } from '../../shared/paginate.js';
 import type { NodeRow } from '../../types.js';
 
+/** Cache the schema probe for the `exported` column per db handle. */
+const _hasExportedColCache: WeakMap<BetterSqlite3.Database, boolean> = new WeakMap();
+
 export function exportsData(
   file: string,
   customDbPath: string,
@@ -111,13 +114,19 @@ function exportsFileImpl(
   const fileNodes = findFileNodes(db, `%${target}%`) as NodeRow[];
   if (fileNodes.length === 0) return [];
 
-  // Detect whether exported column exists
-  let hasExportedCol = false;
-  try {
-    db.prepare('SELECT exported FROM nodes LIMIT 0').raw(true);
-    hasExportedCol = true;
-  } catch (e: unknown) {
-    debug(`exported column not available, using fallback: ${(e as Error).message}`);
+  // Detect whether exported column exists (cached per db handle)
+  let hasExportedCol: boolean;
+  if (_hasExportedColCache.has(db)) {
+    hasExportedCol = _hasExportedColCache.get(db)!;
+  } else {
+    hasExportedCol = false;
+    try {
+      db.prepare('SELECT exported FROM nodes LIMIT 0').raw(true);
+      hasExportedCol = true;
+    } catch (e: unknown) {
+      debug(`exported column not available, using fallback: ${(e as Error).message}`);
+    }
+    _hasExportedColCache.set(db, hasExportedCol);
   }
 
   const exportedNodesStmt = db.prepare(
