@@ -327,7 +327,9 @@ function explainFunctionImpl(
       line: c.line,
     }));
 
-    let callers = (findCallers(db, node.id) as RelatedNodeRow[]).map((c) => ({
+    const allCallerRows = findCallers(db, node.id) as RelatedNodeRow[];
+
+    let callers = allCallerRows.map((c) => ({
       name: c.name,
       kind: c.kind,
       file: c.file,
@@ -335,9 +337,8 @@ function explainFunctionImpl(
     }));
     if (noTests) callers = callers.filter((c) => !isTestFile(c.file));
 
-    const testCallerRows = findCallers(db, node.id) as RelatedNodeRow[];
     const seenFiles = new Set<string>();
-    const relatedTests = testCallerRows
+    const relatedTests = allCallerRows
       .filter((r) => isTestFile(r.file) && !seenFiles.has(r.file) && seenFiles.add(r.file))
       .map((r) => ({ file: r.file }));
 

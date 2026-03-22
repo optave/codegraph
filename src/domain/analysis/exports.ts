@@ -138,13 +138,13 @@ function exportsFileImpl(
     }
     const internalCount = symbols.length - exported.length;
 
-    const buildSymbolResult = (s: NodeRow, fileLines: string[] | null) => {
-      let consumers = db
-        .prepare(
-          `SELECT n.name, n.file, n.line FROM edges e JOIN nodes n ON e.source_id = n.id
+    const consumersStmt = db.prepare(
+      `SELECT n.name, n.file, n.line FROM edges e JOIN nodes n ON e.source_id = n.id
            WHERE e.target_id = ? AND e.kind = 'calls'`,
-        )
-        .all(s.id) as Array<{ name: string; file: string; line: number }>;
+    );
+
+    const buildSymbolResult = (s: NodeRow, fileLines: string[] | null) => {
+      let consumers = consumersStmt.all(s.id) as Array<{ name: string; file: string; line: number }>;
       if (noTests) consumers = consumers.filter((c) => !isTestFile(c.file));
 
       return {
