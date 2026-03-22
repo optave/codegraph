@@ -24,7 +24,7 @@ Your goal is to install the published package, exercise every feature, compare e
    npm init -y && npm install @optave/codegraph@$ARGUMENTS
    ```
 
-   **Dev build** (version contains `-dev.`, e.g. `2.5.33-dev.3c36ef7`):
+   **Dev build** (version contains `-dev.`, e.g. `3.1.6-dev.12`):
    Dev builds are **not published to npm**. They are attached as tarballs to GitHub pre-releases. Install from the GitHub release:
    ```bash
    npm init -y
@@ -69,7 +69,17 @@ Your goal is to install the published package, exercise every feature, compare e
    ```
    This should report `engine: native`. If it falls back to `wasm`, record why.
 5. Record: platform, OS version, Node version, native binary package name + version, engine reported by `info`.
-6. **Do NOT rebuild the graph yet.** The first phase tests commands against the codegraph source repo without a pre-existing graph.
+6. **Update the native binary in the source repo.** The source repo's `node_modules` may have a stale native binary from a previous release. Since Phases 1–4 run commands against the source repo (using `--db` or directly), a version mismatch produces wrong results for **all phases**, not just benchmarks. Check and fix immediately:
+   ```bash
+   # In the codegraph source repo:
+   node -e "const p = require('@optave/codegraph-win32-x64-msvc/package.json'); console.log('Source repo native binary:', p.version)"
+   ```
+   If the version does **not** match `$ARGUMENTS`, install the correct binary now:
+   - **Stable release:** `npm install @optave/codegraph-win32-x64-msvc@$ARGUMENTS` (adjust platform suffix)
+   - **Dev build:** `npm install https://github.com/optave/codegraph/releases/download/dev-v$ARGUMENTS/optave-codegraph-win32-x64-msvc-$ARGUMENTS.tgz`
+
+   Verify with `npx codegraph info` in the source repo. Revert `package.json` / `package-lock.json` changes after the session (do not commit them on the fix branch).
+7. **Do NOT rebuild the graph yet.** The first phase tests commands against the codegraph source repo without a pre-existing graph.
 
 ---
 
@@ -100,15 +110,14 @@ Test each with `-j`/`--json` and `-T`/`--no-tests` where supported:
 | `map` | `-n/--limit <number>` |
 | `stats` | |
 | `deps <file>` | |
-| `fn <name>` | `--depth <n>`, `-f/--file <path>`, `-k/--kind <kind>` |
 | `fn-impact <name>` | `--depth <n>`, `-f/--file`, `-k/--kind` |
 | `context <name>` | `--depth <n>`, `-f/--file`, `-k/--kind`, `--no-source`, `--include-tests` |
-| `explain <target>` | test with both a file path and a function name |
+| `audit <target>` | test with both a file path and a function name; replaces the old `explain` command |
 | `where <name>` | also test `where -f <file>` for file-overview mode |
 | `diff-impact [ref]` | `--staged`, test vs `main`, vs `HEAD`, and with no arg (unstaged) |
 | `cycles` | `--functions` for function-level cycles |
 | `structure [dir]` | `--depth <n>`, `--sort cohesion\|fan-in\|fan-out\|density\|files` |
-| `hotspots` | `--metric fan-in\|fan-out\|density\|coupling`, `--level file\|directory`, `-n/--limit` |
+| `triage` | `--level file\|function\|directory`, `-n/--limit`, `--json` |
 
 ### Export commands
 | Command | Flags |
@@ -139,7 +148,7 @@ Test each with `-j`/`--json` and `-T`/`--no-tests` where supported:
 |----------|----------|
 | Non-existent symbol: `query nonexistent` | Graceful "No results" message |
 | Non-existent file: `deps nonexistent.js` | Graceful "No file matching" message |
-| Non-existent function: `fn nonexistent` | Graceful message |
+| Non-existent function: `fn-impact nonexistent` | Graceful message |
 | `structure .` | Should work (was a bug in v2.2.0 — verify fix) |
 | `--json` on every command that supports it | Valid JSON output |
 | `--no-tests` effect: compare counts with/without | Test file count should drop |
@@ -149,6 +158,8 @@ Test each with `-j`/`--json` and `-T`/`--no-tests` where supported:
 | `search` with no embeddings | Should warn, not crash |
 | `embed` then `search` with dimension mismatch model | Should warn about mismatch |
 | Pipe output: `codegraph map --json \| head -1` | Clean JSON, no status messages in stdout |
+| Embed → rebuild → search pipeline: `embed -m minilm`, modify a file, `build`, `search "build graph"` without re-embedding | Results should still return; stale embeddings should be detected or warned about |
+| Watch mode lifecycle: start `watch`, modify a file, run a query to verify update, then Ctrl+C | Watcher detects change, graph reflects it, graceful shutdown (journal flush, no crash) |
 
 ---
 
@@ -184,7 +195,7 @@ Test that incremental rebuilds, full rebuilds, and cross-feature state remain co
    - `context parseFileAuto` — compare source extraction
    - `cycles --functions` — compare cycle detection
    - `stats --json` — full metric comparison
-   - `hotspots --metric fan-in --json` — compare rankings
+   - `triage --json` — compare risk rankings
 
 ---
 
@@ -201,30 +212,13 @@ Run all four benchmark scripts from the codegraph source repo and record results
 
 ### Pre-flight: verify native binary version
 
-**Before running any benchmarks**, confirm the native binary in the source repo matches the version being dogfooded. A stale binary will produce misleading results (e.g., the Rust engine may lack features added in the release, causing silent WASM fallback during the complexity phase).
+If you followed Phase 0 step 6, the source repo's native binary should already match `$ARGUMENTS`. Double-check before benchmarking:
 
 ```bash
-# In the codegraph source repo — adjust the platform package name as needed:
-node -e "const r=require('module').createRequire(require('url').pathToFileURL(__filename).href); const pkg=r.resolve('@optave/codegraph-win32-x64-msvc/package.json'); const p=require(pkg); console.log('Native binary version:', p.version)"
+node -e "const p = require('@optave/codegraph-win32-x64-msvc/package.json'); console.log('Native binary version:', p.version)"
 ```
 
-If the version does **not** match `$ARGUMENTS`:
-
-**Stable release** (no `-dev.` in version):
-1. Update `optionalDependencies` in `package.json` to pin all `@optave/codegraph-*` packages to `$ARGUMENTS`.
-2. Run `npm install` to fetch the correct binaries.
-3. Verify with `npx codegraph info` that the native engine loads at the correct version.
-4. Revert the `package.json` / `package-lock.json` changes after benchmarking (do not commit them on the fix branch).
-
-**Dev build** (version contains `-dev.`):
-Native binaries for dev builds are not on npm — they are in the GitHub release tarballs. Install the platform binary directly:
-1. Download the platform tarball into the source repo:
-   ```bash
-   # Example for Windows x64 — adjust platform suffix as needed:
-   npm install https://github.com/optave/codegraph/releases/download/dev-v$ARGUMENTS/optave-codegraph-win32-x64-msvc-$ARGUMENTS.tgz
-   ```
-2. Verify with `npx codegraph info` that the native engine loads at the correct version.
-3. Revert the `package.json` / `package-lock.json` changes after benchmarking (do not commit them on the fix branch).
+If it doesn't match, go back to Phase 0 step 6 and fix it — **all benchmark results with a stale binary are invalid.**
 
 **Why this matters:** The native engine computes complexity metrics during the Rust parse phase. If the binary is from an older release that lacks this, the complexity phase silently falls back to WASM — inflating native complexity time by 50-100x and making native appear slower than WASM.
 
@@ -265,8 +259,8 @@ Before writing the report, **stop and think** about:
 
 - What testing approaches am I missing?
 - **Cross-command pipelines:** Have I tested `build` → `embed` → `search` → modify → `build` → `search`? Have I tested `watch` detecting changes then `diff-impact`?
-- **MCP server:** Have I tested the `mcp` command? Initialize via JSON-RPC on stdin, send `tools/list`, verify all 24 tools are present (23 in single-repo mode; 24 with `list_repos` in multi-repo). Test single-repo mode (default — `list_repos` should be absent, no `repo` parameter on tools) vs `--multi-repo` mode.
-- **Programmatic API:** Have I tested `require('@optave/codegraph')` or `import` from `index.js`? Key exports to verify: `buildGraph`, `loadConfig`, `openDb`, `findDbPath`, `contextData`, `explainData`, `whereData`, `fnDepsData`, `diffImpactData`, `statsData`, `isNativeAvailable`, `EXTENSIONS`, `IGNORE_DIRS`, `ALL_SYMBOL_KINDS`, `MODELS`.
+- **MCP server:** Have I tested the `mcp` command? Initialize via JSON-RPC on stdin, send `tools/list`, verify all 33 tools are present (32 in single-repo mode; 33 with `list_repos` in multi-repo). Test single-repo mode (default — `list_repos` should be absent, no `repo` parameter on tools) vs `--multi-repo` mode.
+- **Programmatic API:** Have I tested `require('@optave/codegraph')` or `import` from `index.js`? Key exports to verify: `buildGraph`, `loadConfig`, `contextData`, `explainData`, `whereData`, `fnDepsData`, `fnImpactData`, `diffImpactData`, `statsData`, `queryNameData`, `rolesData`, `auditData`, `triageData`, `complexityData`, `EXTENSIONS`, `IGNORE_DIRS`, `EVERY_SYMBOL_KIND`.
 - **Config options:** Have I tested `.codegraphrc.json`? Create one with `include`/`exclude` patterns, custom `aliases`, `build.incremental: false`, `query.defaultDepth`, `search.defaultMinScore`. Verify overrides work.
 - **Env var overrides:** `CODEGRAPH_LLM_PROVIDER`, `CODEGRAPH_LLM_API_KEY`, `CODEGRAPH_LLM_MODEL`, `CODEGRAPH_REGISTRY_PATH`.
 - **Credential resolution:** `apiKeyCommand` in config — does it shell out via `execFileSync` correctly? Test with a simple `echo` command.

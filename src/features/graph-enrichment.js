@@ -42,8 +42,8 @@ function prepareFunctionLevelData(db, noTests, minConf, cfg) {
       FROM edges e
       JOIN nodes n1 ON e.source_id = n1.id
       JOIN nodes n2 ON e.target_id = n2.id
-      WHERE n1.kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module')
-        AND n2.kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module')
+      WHERE n1.kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')
+        AND n2.kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')
         AND e.kind = 'calls'
         AND e.confidence >= ?
     `,
@@ -162,7 +162,7 @@ function prepareFunctionLevelData(db, noTests, minConf, cfg) {
     const community = communityMap.get(n.id) ?? null;
     const directory = path.dirname(n.file);
     const risk = [];
-    if (n.role === 'dead') risk.push('dead-code');
+    if (n.role?.startsWith('dead')) risk.push('dead-code');
     if (fanIn >= (cfg.riskThresholds?.highBlastRadius ?? 10)) risk.push('high-blast-radius');
     if (cx && cx.maintainabilityIndex < (cfg.riskThresholds?.lowMI ?? 40)) risk.push('low-mi');
 

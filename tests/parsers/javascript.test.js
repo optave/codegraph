@@ -96,6 +96,84 @@ describe('JavaScript parser', () => {
     expect(c.receiver).toBe('a.b');
   });
 
+  describe('typeMap extraction', () => {
+    function parseTS(code) {
+      const parser = parsers.get('typescript');
+      const tree = parser.parse(code);
+      return extractSymbols(tree, 'test.ts');
+    }
+
+    it('extracts typeMap from type annotations with confidence 0.9', () => {
+      const symbols = parseTS(`const x: Router = express.Router();`);
+      expect(symbols.typeMap).toBeInstanceOf(Map);
+      expect(symbols.typeMap.get('x')).toEqual({ type: 'Router', confidence: 0.9 });
+    });
+
+    it('extracts typeMap from generic types', () => {
+      const symbols = parseTS(`const m: Map<string, number> = new Map();`);
+      expect(symbols.typeMap.get('m')).toEqual(
+        expect.objectContaining({ type: 'Map', confidence: 1.0 }),
+      );
+    });
+
+    it('infers type from new expressions with confidence 1.0', () => {
+      const symbols = parseTS(`const r = new Router();`);
+      expect(symbols.typeMap.get('r')).toEqual({ type: 'Router', confidence: 1.0 });
+    });
+
+    it('extracts parameter types into typeMap with confidence 0.9', () => {
+      const symbols = parseTS(`function process(req: Request, res: Response) {}`);
+      expect(symbols.typeMap.get('req')).toEqual({ type: 'Request', confidence: 0.9 });
+      expect(symbols.typeMap.get('res')).toEqual({ type: 'Response', confidence: 0.9 });
+    });
+
+    it('returns empty typeMap when no annotations', () => {
+      const symbols = parseJS(`const x = 42; function foo(a, b) {}`);
+      expect(symbols.typeMap).toBeInstanceOf(Map);
+      expect(symbols.typeMap.size).toBe(0);
+    });
+
+    it('skips union and intersection types', () => {
+      const symbols = parseTS(`const x: string | number = 42;`);
+      expect(symbols.typeMap.has('x')).toBe(false);
+    });
+
+    it('handles let/var declarations with type annotations', () => {
+      const symbols = parseTS(`let app: Express = createApp();`);
+      expect(symbols.typeMap.get('app')).toEqual({ type: 'Express', confidence: 0.9 });
+    });
+
+    it('prefers constructor (1.0) over type annotation (0.9)', () => {
+      const symbols = parseTS(`const x: Base = new Derived();`);
+      // Deliberate: constructor (1.0) beats annotation (0.9) because the runtime
+      // type is what matters for call resolution. In `const x: Base = new Derived()`,
+      // x.method() dispatches to Derived.method, not Base.method. This is a
+      // semantic reversal from the previous behaviour (annotation-first).
+      expect(symbols.typeMap.get('x')).toEqual({ type: 'Derived', confidence: 1.0 });
+    });
+
+    it('extracts factory method patterns with confidence 0.7', () => {
+      const symbols = parseJS(`const client = HttpClient.create();`);
+      expect(symbols.typeMap.get('client')).toEqual({ type: 'HttpClient', confidence: 0.7 });
+    });
+
+    it('ignores lowercase factory calls', () => {
+      const symbols = parseJS(`const result = utils.create();`);
+      expect(symbols.typeMap.has('result')).toBe(false);
+    });
+
+    it('ignores built-in globals like Math, JSON, Promise', () => {
+      const symbols = parseJS(`
+        const r = Math.random();
+        const d = JSON.parse('{}');
+        const p = Promise.resolve(42);
+      `);
+      expect(symbols.typeMap.has('r')).toBe(false);
+      expect(symbols.typeMap.has('d')).toBe(false);
+      expect(symbols.typeMap.has('p')).toBe(false);
+    });
+  });
+
   it('does not set receiver for .call()/.apply()/.bind() unwrapped calls', () => {
     const symbols = parseJS(`fn.call(null, arg);`);
     const fnCall = symbols.calls.find((c) => c.name === 'fn');

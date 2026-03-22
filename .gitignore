@@ -1,5 +1,7 @@
 node_modules/
 .codegraph/
+dist/
+.tsbuildinfo
 *.db
 coverage/
 .env
@@ -7,6 +9,7 @@ grammars/*.wasm
 .claude/session-edits.log
 generated/DEPENDENCIES.md
 generated/DEPENDENCIES.json
+generated/titan/
 artifacts/
 pkg/
 generated/DEPENDENCIES.md

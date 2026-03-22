@@ -100,6 +100,19 @@ const BASE_TOOLS = [
     },
   },
   {
+    name: 'brief',
+    description:
+      'Token-efficient file summary: symbols with roles and transitive caller counts, importer counts, and file risk tier (high/medium/low). Designed for context injection.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'File path (partial match supported)' },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+      },
+      required: ['file'],
+    },
+  },
+  {
     name: 'file_exports',
     description:
       'Show exported symbols of a file with per-symbol consumers — who calls each export and from where',
@@ -349,7 +362,7 @@ const BASE_TOOLS = [
   {
     name: 'node_roles',
     description:
-      'Show node role classification (entry, core, utility, adapter, dead, leaf) based on connectivity patterns',
+      'Show node role classification (entry, core, utility, adapter, dead [dead-leaf, dead-entry, dead-ffi, dead-unresolved], leaf) based on connectivity patterns',
     inputSchema: {
       type: 'object',
       properties: {
@@ -743,6 +756,45 @@ const BASE_TOOLS = [
         no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
         ...PAGINATION_PROPS,
       },
+    },
+  },
+  {
+    name: 'implementations',
+    description:
+      'List all concrete types (classes, structs, records) that implement a given interface or trait',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Interface/trait name (partial match)' },
+        file: { type: 'string', description: 'Scope to file (partial match)' },
+        kind: {
+          type: 'string',
+          enum: EVERY_SYMBOL_KIND,
+          description: 'Filter by symbol kind',
+        },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+        ...PAGINATION_PROPS,
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'interfaces',
+    description: 'List all interfaces and traits that a given class, struct, or record implements',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Class/struct name (partial match)' },
+        file: { type: 'string', description: 'Scope to file (partial match)' },
+        kind: {
+          type: 'string',
+          enum: EVERY_SYMBOL_KIND,
+          description: 'Filter by symbol kind',
+        },
+        no_tests: { type: 'boolean', description: 'Exclude test files', default: false },
+        ...PAGINATION_PROPS,
+      },
+      required: ['name'],
     },
   },
   {

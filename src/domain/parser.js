@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Language, Parser, Query } from 'web-tree-sitter';
-import { warn } from '../infrastructure/logger.js';
+import { debug, warn } from '../infrastructure/logger.js';
 import { getNative, getNativePackageVersion, loadNative } from '../infrastructure/native.js';
 
 // Re-export all extractors for backward compatibility
@@ -116,29 +116,35 @@ export async function createParsers() {
  */
 export function disposeParsers() {
   if (_cachedParsers) {
-    for (const [, parser] of _cachedParsers) {
+    for (const [id, parser] of _cachedParsers) {
       if (parser && typeof parser.delete === 'function') {
         try {
           parser.delete();
-        } catch {}
+        } catch (e) {
+          debug(`Failed to dispose parser ${id}: ${e.message}`);
+        }
       }
     }
     _cachedParsers = null;
   }
-  for (const [, query] of _queryCache) {
+  for (const [id, query] of _queryCache) {
     if (query && typeof query.delete === 'function') {
       try {
         query.delete();
-      } catch {}
+      } catch (e) {
+        debug(`Failed to dispose query ${id}: ${e.message}`);
+      }
     }
   }
   _queryCache.clear();
   if (_cachedLanguages) {
-    for (const [, lang] of _cachedLanguages) {
+    for (const [id, lang] of _cachedLanguages) {
       if (lang && typeof lang.delete === 'function') {
         try {
           lang.delete();
-        } catch {}
+        } catch (e) {
+          debug(`Failed to dispose language ${id}: ${e.message}`);
+        }
       }
     }
     _cachedLanguages = null;
@@ -189,14 +195,15 @@ export async function ensureWasmTrees(fileSymbols, rootDir) {
     let code;
     try {
       code = fs.readFileSync(absPath, 'utf-8');
-    } catch {
+    } catch (e) {
+      debug(`ensureWasmTrees: cannot read ${relPath}: ${e.message}`);
       continue;
     }
     try {
       symbols._tree = parser.parse(code);
       symbols._langId = entry.id;
-    } catch {
-      // skip files that fail to parse
+    } catch (e) {
+      debug(`ensureWasmTrees: parse failed for ${relPath}: ${e.message}`);
     }
   }
 }
@@ -313,7 +320,7 @@ export const LANGUAGE_REGISTRY = [
   },
   {
     id: 'python',
-    extensions: ['.py'],
+    extensions: ['.py', '.pyi'],
     grammarFile: 'tree-sitter-python.wasm',
     extractor: extractPythonSymbols,
     required: false,
@@ -348,14 +355,14 @@ export const LANGUAGE_REGISTRY = [
   },
   {
     id: 'ruby',
-    extensions: ['.rb'],
+    extensions: ['.rb', '.rake', '.gemspec'],
     grammarFile: 'tree-sitter-ruby.wasm',
     extractor: extractRubySymbols,
     required: false,
   },
   {
     id: 'php',
-    extensions: ['.php'],
+    extensions: ['.php', '.phtml'],
     grammarFile: 'tree-sitter-php.wasm',
     extractor: extractPHPSymbols,
     required: false,
@@ -370,6 +377,42 @@ for (const entry of LANGUAGE_REGISTRY) {
 }
 
 export const SUPPORTED_EXTENSIONS = new Set(_extToLang.keys());
+
+/**
+ * WASM-based typeMap backfill for older native binaries that don't emit typeMap.
+ * Uses tree-sitter AST extraction instead of regex to avoid false positives from
+ * matches inside comments and string literals.
+ * TODO: Remove once all published native binaries include typeMap extraction (>= 3.2.0)
+ */
+async function backfillTypeMap(filePath, source) {
+  let code = source;
+  if (!code) {
+    try {
+      code = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      return { typeMap: [], backfilled: false };
+    }
+  }
+  const parsers = await createParsers();
+  const extracted = wasmExtractSymbols(parsers, filePath, code);
+  try {
+    if (!extracted?.symbols?.typeMap) {
+      return { typeMap: [], backfilled: false };
+    }
+    const tm = extracted.symbols.typeMap;
+    return {
+      typeMap: tm instanceof Map ? tm : new Map(tm.map((e) => [e.name, e.typeName])),
+      backfilled: true,
+    };
+  } finally {
+    // Free the WASM tree to prevent memory accumulation across repeated builds
+    if (extracted?.tree && typeof extracted.tree.delete === 'function') {
+      try {
+        extracted.tree.delete();
+      } catch {}
+    }
+  }
+}
 
 /**
  * WASM extraction helper: picks the right extractor based on file extension.
@@ -407,7 +450,20 @@ export async function parseFileAuto(filePath, source, opts = {}) {
 
   if (native) {
     const result = native.parseFile(filePath, source, !!opts.dataflow, opts.ast !== false);
-    return result ? patchNativeResult(result) : null;
+    if (!result) return null;
+    const patched = patchNativeResult(result);
+    // Only backfill typeMap for TS/TSX — JS files have no type annotations,
+    // and the native engine already handles `new Expr()` patterns.
+    const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
+    if (
+      (!patched.typeMap || patched.typeMap.length === 0) &&
+      TS_BACKFILL_EXTS.has(path.extname(filePath))
+    ) {
+      const { typeMap, backfilled } = await backfillTypeMap(filePath, source);
+      patched.typeMap = typeMap;
+      if (backfilled) patched._typeMapBackfilled = true;
+    }
+    return patched;
   }
 
   // WASM path
@@ -435,10 +491,49 @@ export async function parseFilesAuto(filePaths, rootDir, opts = {}) {
       !!opts.dataflow,
       opts.ast !== false,
     );
+    const needsTypeMap = [];
     for (const r of nativeResults) {
       if (!r) continue;
+      const patched = patchNativeResult(r);
       const relPath = path.relative(rootDir, r.file).split(path.sep).join('/');
-      result.set(relPath, patchNativeResult(r));
+      result.set(relPath, patched);
+      if (!patched.typeMap || patched.typeMap.length === 0) {
+        needsTypeMap.push({ filePath: r.file, relPath });
+      }
+    }
+    // Backfill typeMap via WASM for native binaries that predate the type-map feature
+    if (needsTypeMap.length > 0) {
+      // Only backfill for languages where WASM extraction can produce typeMap
+      // (TS/TSX have type annotations; JS only has `new Expr()` which native already handles)
+      const TS_EXTS = new Set(['.ts', '.tsx']);
+      const tsFiles = needsTypeMap.filter(({ filePath }) => TS_EXTS.has(path.extname(filePath)));
+      if (tsFiles.length > 0) {
+        const parsers = await createParsers();
+        for (const { filePath, relPath } of tsFiles) {
+          let extracted;
+          try {
+            const code = fs.readFileSync(filePath, 'utf-8');
+            extracted = wasmExtractSymbols(parsers, filePath, code);
+            if (extracted?.symbols?.typeMap) {
+              const symbols = result.get(relPath);
+              symbols.typeMap =
+                extracted.symbols.typeMap instanceof Map
+                  ? extracted.symbols.typeMap
+                  : new Map(extracted.symbols.typeMap.map((e) => [e.name, e.typeName]));
+              symbols._typeMapBackfilled = true;
+            }
+          } catch {
+            /* skip — typeMap is a best-effort backfill */
+          } finally {
+            // Free the WASM tree to prevent memory accumulation across repeated builds
+            if (extracted?.tree && typeof extracted.tree.delete === 'function') {
+              try {
+                extracted.tree.delete();
+              } catch {}
+            }
+          }
+        }
+      }
     }
     return result;
   }
@@ -483,7 +578,9 @@ export function getActiveEngine(opts = {}) {
   if (native) {
     try {
       version = getNativePackageVersion() ?? version;
-    } catch {}
+    } catch (e) {
+      debug(`getNativePackageVersion failed: ${e.message}`);
+    }
   }
   return { name, version };
 }
@@ -510,7 +607,20 @@ export function createParseTreeCache() {
 export async function parseFileIncremental(cache, filePath, source, opts = {}) {
   if (cache) {
     const result = cache.parseFile(filePath, source);
-    return result ? patchNativeResult(result) : null;
+    if (!result) return null;
+    const patched = patchNativeResult(result);
+    // Only backfill typeMap for TS/TSX — JS files have no type annotations,
+    // and the native engine already handles `new Expr()` patterns.
+    const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
+    if (
+      (!patched.typeMap || patched.typeMap.length === 0) &&
+      TS_BACKFILL_EXTS.has(path.extname(filePath))
+    ) {
+      const { typeMap, backfilled } = await backfillTypeMap(filePath, source);
+      patched.typeMap = typeMap;
+      if (backfilled) patched._typeMapBackfilled = true;
+    }
+    return patched;
   }
   return parseFileAuto(filePath, source, opts);
 }

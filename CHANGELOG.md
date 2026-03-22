@@ -2,6 +2,107 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [3.3.1](https://github.com/optave/codegraph/compare/v3.3.0...v3.3.1) (2026-03-20)
+
+**Incremental rebuild accuracy and post-3.3.0 stabilization.** This patch fixes a critical edge gap in the file watcher's single-file rebuild path where call edges were silently dropped during incremental rebuilds, aligns the native Rust engine's edge builder kind filters with the JS engine for parity, plugs a WASM tree memory leak in native engine typeMap backfill, and restores query performance to pre-3.1.4 levels. Several post-reorganization import path issues are also corrected.
+
+### Bug Fixes
+
+* **watcher:** close edge gap in single-file rebuild — incremental rebuilds now correctly preserve call edges by coercing native typeMap arrays to Maps and rebuilding edges for reverse-dependency files ([#533](https://github.com/optave/codegraph/pull/533), [#542](https://github.com/optave/codegraph/pull/542))
+* **native:** align edge builder kind filters with JS engine parity — ensures native and WASM engines produce identical edge sets ([#541](https://github.com/optave/codegraph/pull/541))
+* **native:** free leaked WASM trees in native engine typeMap backfill ([#534](https://github.com/optave/codegraph/pull/534))
+* **cli:** correct `ast` command import path after src/ reorganization ([#532](https://github.com/optave/codegraph/pull/532))
+* **benchmarks:** stabilize benchmark targets across engines and preserve README links ([#527](https://github.com/optave/codegraph/pull/527))
+* **benchmarks:** update benchmark script import paths after src/ restructure ([#521](https://github.com/optave/codegraph/pull/521))
+* **ci:** sync Cargo.toml version before native binary build ([#538](https://github.com/optave/codegraph/pull/538))
+
+### Performance
+
+* **queries:** reduce query latency regression from 3.1.4 to 3.3.0 — cached prepared statements for `findReverseDeps` and `deleteOutgoingEdges` ([#528](https://github.com/optave/codegraph/pull/528))
+
+### Tests
+
+* **watcher:** incremental edge parity CI check — ensures watcher rebuilds produce identical edge sets to full builds ([#539](https://github.com/optave/codegraph/pull/539))
+
+### Chores
+
+* **ci:** add dynamic import verification to catch stale paths ([#540](https://github.com/optave/codegraph/pull/540))
+
+## [3.3.0](https://github.com/optave/codegraph/compare/v3.2.0...v3.3.0) (2026-03-19)
+
+**Resolution accuracy reaches a new level.** This release delivers Phase 4 resolution improvements — type inference across all typed languages, receiver type tracking with graded confidence, `package.json` exports field resolution, and monorepo workspace resolution. Method calls like `repo.findCallers()` now resolve through receiver types instead of matching any `findCallers` in scope. Barrel files correctly show re-exported symbols. A precision/recall benchmark suite tracks call resolution accuracy across versions. On the infrastructure side, all hardcoded behavioral constants are centralized into `DEFAULTS` with recursive deep merge, and the TypeScript migration begins with project setup and core type definitions.
+
+### Features
+
+* **resolution:** type inference for all typed languages (TS, Java, Go, Rust, C#, PHP, Python) — `obj.method()` resolves through declared types in both WASM and native engines ([#501](https://github.com/optave/codegraph/pull/501))
+* **resolution:** receiver type tracking with graded confidence — constructors (`new Foo()`) at 1.0, annotations at 0.9, factory methods at 0.7; highest-confidence assignment wins per variable ([#505](https://github.com/optave/codegraph/pull/505))
+* **resolution:** `package.json` `exports` field and monorepo workspace resolution — conditional exports, subpath patterns, npm/pnpm/Yarn workspaces resolved with high confidence instead of brute-force filesystem probing ([#509](https://github.com/optave/codegraph/pull/509))
+* **exports:** show re-exported symbols for barrel files — `codegraph exports` now traces through re-exports to show the actual consumers of each symbol ([#515](https://github.com/optave/codegraph/pull/515))
+* **roles:** dead role sub-categories — `dead-leaf`, `dead-entry`, `dead-ffi`, `dead-unresolved` replace the coarse `dead` role for more precise dead code classification ([#504](https://github.com/optave/codegraph/pull/504))
+* **config:** centralize all hardcoded behavioral constants into `DEFAULTS` with recursive deep merge — partial `.codegraphrc.json` overrides now preserve sibling keys ([#506](https://github.com/optave/codegraph/pull/506))
+* **benchmarks:** call resolution precision/recall benchmark suite — hand-annotated fixtures per language with expected-edges manifests, CI gate on accuracy regression ([#507](https://github.com/optave/codegraph/pull/507))
+* **benchmarks:** child-process isolation for benchmarks — benchmark runner spawns builds in separate processes to prevent state leaks ([#512](https://github.com/optave/codegraph/pull/512))
+* **typescript:** project setup for incremental migration — `tsconfig.json`, build pipeline, `dist/` output with source maps ([#508](https://github.com/optave/codegraph/pull/508))
+* **typescript:** core type definitions (`src/types.ts`) — comprehensive types for symbols, edges, nodes, config, queries, and all domain model interfaces ([#516](https://github.com/optave/codegraph/pull/516))
+* **languages:** add `.pyi`, `.phtml`, `.rake`, `.gemspec` extensions to Python, PHP, and Ruby parsers ([#502](https://github.com/optave/codegraph/pull/502))
+
+### Bug Fixes
+
+* **cli:** reword misleading 'stale' warning in `codegraph info` — no longer implies the graph is broken when it's simply older than some files ([#510](https://github.com/optave/codegraph/pull/510))
+* **skills:** update dogfood and release skill templates to match current CLI surface ([#511](https://github.com/optave/codegraph/pull/511))
+
+## [3.2.0](https://github.com/optave/codegraph/compare/v3.1.5...v3.2.0) (2026-03-17)
+
+**Post-Phase 3 decomposition and dead code accuracy.** This release completes a thorough decomposition of the remaining monolithic modules — language extractors, AST analysis visitors, domain analysis functions, and feature modules are all broken into focused, single-responsibility helpers. Dead code detection now correctly classifies symbols that are only referenced by tests as "test-only" instead of "dead", and constants are properly included in edge building so they no longer appear as false-positive dead exports. A new `brief` command provides token-efficient file summaries designed for AI hook context injection. The native engine gains a MAX_WALK_DEPTH guard to prevent stack overflows on deeply nested ASTs.
+
+### Features
+
+* **cli:** `codegraph brief <file>` command — token-efficient file summary with symbols, roles, caller counts, and risk tiers; designed for hook-based context injection ([#480](https://github.com/optave/codegraph/pull/480))
+
+### Bug Fixes
+
+* **roles:** classify test-only-called symbols as "test-only" instead of "dead" — reduces false positives in dead code detection ([#497](https://github.com/optave/codegraph/pull/497))
+* **builder:** include constant nodes in edge building — constants no longer appear as false-positive dead exports ([#495](https://github.com/optave/codegraph/pull/495))
+* **native:** add MAX_WALK_DEPTH guard to native engine AST walkers — prevents stack overflows on deeply nested files ([#484](https://github.com/optave/codegraph/pull/484))
+* **cli:** support repeated `--file` flag for multi-file scoping across all commands ([#498](https://github.com/optave/codegraph/pull/498))
+* **versioning:** use semver-compliant dev version numbering (`-dev.0` suffix instead of non-standard format) ([#479](https://github.com/optave/codegraph/pull/479))
+
+### Refactors
+
+* **extractors:** decompose monolithic language extractors (JS/TS, Python, Java) into per-category handlers ([#490](https://github.com/optave/codegraph/pull/490))
+* **ast-analysis:** decompose AST analysis visitors and domain builder stages into focused helpers ([#491](https://github.com/optave/codegraph/pull/491))
+* **domain:** decompose domain analysis and feature modules into single-responsibility functions ([#492](https://github.com/optave/codegraph/pull/492))
+* **presentation:** split data fetching from formatting and extract CLI/MCP subcommand dispatch ([#493](https://github.com/optave/codegraph/pull/493))
+* **cleanup:** dead code removal, shared abstractions, and empty catch block replacement across all layers ([#489](https://github.com/optave/codegraph/pull/489))
+
+## [3.1.5](https://github.com/optave/codegraph/compare/v3.1.4...v3.1.5) (2026-03-16)
+
+**Phase 3 architectural refactoring completes.** This release finishes the remaining two Phase 3 roadmap tasks — domain directory grouping (3.15) and CLI composability (3.16) — bringing Phase 3 to 14 of 14 tasks complete. The `src/` directory is now reorganized into `domain/`, `features/`, and `presentation/` layers. A new `openGraph()` helper eliminates DB-open/close boilerplate across CLI commands, and a universal output formatter adds `--table` and `--csv` output to all commands. Several post-reorganization bugs are fixed: complexity/CFG/dataflow analysis restored after the move, MCP server imports corrected, worktree boundary escapes prevented, CJS `require()` support added, and LIKE wildcard injection in queries patched.
+
+### Features
+
+* **cli:** `openGraph()` helper and universal output formatter with `--table` and `--csv` output formats — eliminates per-command DB boilerplate and format-switching logic ([#461](https://github.com/optave/codegraph/pull/461))
+
+### Bug Fixes
+
+* **builder:** restore complexity/CFG/dataflow analysis that silently stopped running after src/ reorganization ([#469](https://github.com/optave/codegraph/pull/469))
+* **db:** prevent `findDbPath` from escaping git worktree boundary — stops codegraph from accidentally using a parent repo's database ([#457](https://github.com/optave/codegraph/pull/457))
+* **mcp:** update MCP server import path after src/ reorganization ([#466](https://github.com/optave/codegraph/pull/466))
+* **api:** add CJS `require()` support to package exports — fixes `ERR_REQUIRE_ESM` for CommonJS consumers ([#472](https://github.com/optave/codegraph/pull/472))
+* **db:** escape LIKE wildcards in `NodeQuery.fileFilter` and `nameLike` — prevents filenames containing `%` or `_` from matching unrelated rows ([#446](https://github.com/optave/codegraph/pull/446))
+
+### Refactors
+
+* **architecture:** reorganize `src/` into `domain/`, `features/`, `presentation/` layers — completes Phase 3.15 domain directory grouping ([#456](https://github.com/optave/codegraph/pull/456))
+* **architecture:** move remaining flat `src/` files into subdirectories ([#458](https://github.com/optave/codegraph/pull/458))
+* **architecture:** resolve three post-reorganization issues (circular imports, barrel exports, path corrections) ([#459](https://github.com/optave/codegraph/pull/459))
+* **queries:** deduplicate BFS impact traversal and centralize config loading ([#463](https://github.com/optave/codegraph/pull/463))
+* **tests:** migrate integration tests to InMemoryRepository for faster execution ([#462](https://github.com/optave/codegraph/pull/462))
+
+### Tests
+
+* **db:** add `findRepoRoot` and `findDbPath` ceiling boundary tests ([#475](https://github.com/optave/codegraph/pull/475))
+
 ## [3.1.4](https://github.com/optave/codegraph/compare/v3.1.3...v3.1.4) (2026-03-16)
 
 **Phase 3 architectural refactoring reaches near-completion.** This release delivers 11 of 14 roadmap tasks in Phase 3 (Vertical Slice Architecture), restructuring the codebase from a flat collection of large files into a modular subsystem layout. The 3,395-line `queries.js` is decomposed into `src/analysis/` and `src/shared/` modules. The MCP tool registry becomes composable. CLI commands are self-contained modules under `src/commands/`. A domain error hierarchy replaces ad-hoc throws. The build pipeline is decomposed into named stages. The embedder is extracted into `src/embeddings/` with pluggable stores and search strategies. A unified graph model (`src/graph/`) consolidates four parallel graph representations. Nodes gain qualified names, hierarchical scoping, and visibility metadata. An `InMemoryRepository` enables fast unit testing without SQLite. The presentation layer (`src/presentation/`) separates all output formatting from domain logic. `better-sqlite3` is bumped to 12.8.0.

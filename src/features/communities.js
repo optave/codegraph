@@ -2,6 +2,7 @@ import path from 'node:path';
 import { openRepo } from '../db/index.js';
 import { louvainCommunities } from '../graph/algorithms/louvain.js';
 import { buildDependencyGraph } from '../graph/builders/dependency.js';
+import { loadConfig } from '../infrastructure/config.js';
 import { paginateResult } from '../shared/paginate.js';
 
 // ─── Directory Helpers ────────────────────────────────────────────────
@@ -9,6 +10,104 @@ import { paginateResult } from '../shared/paginate.js';
 function getDirectory(filePath) {
   const dir = path.dirname(filePath);
   return dir === '.' ? '(root)' : dir;
+}
+
+// ─── Community Building ──────────────────────────────────────────────
+
+/**
+ * Group graph nodes by Louvain community assignment and build structured objects.
+ * @param {object} graph - The dependency graph
+ * @param {Map<string, number>} assignments - Node key → community ID
+ * @param {object} opts
+ * @param {boolean} [opts.drift] - If true, omit member lists
+ * @returns {{ communities: object[], communityDirs: Map<number, Set<string>> }}
+ */
+function buildCommunityObjects(graph, assignments, opts) {
+  const communityMap = new Map();
+  for (const [key] of graph.nodes()) {
+    const cid = assignments.get(key);
+    if (cid == null) continue;
+    if (!communityMap.has(cid)) communityMap.set(cid, []);
+    communityMap.get(cid).push(key);
+  }
+
+  const communities = [];
+  const communityDirs = new Map();
+
+  for (const [cid, members] of communityMap) {
+    const dirCounts = {};
+    const memberData = [];
+    for (const key of members) {
+      const attrs = graph.getNodeAttrs(key);
+      const dir = getDirectory(attrs.file);
+      dirCounts[dir] = (dirCounts[dir] || 0) + 1;
+      memberData.push({
+        name: attrs.label,
+        file: attrs.file,
+        ...(attrs.kind ? { kind: attrs.kind } : {}),
+      });
+    }
+
+    communityDirs.set(cid, new Set(Object.keys(dirCounts)));
+
+    communities.push({
+      id: cid,
+      size: members.length,
+      directories: dirCounts,
+      ...(opts.drift ? {} : { members: memberData }),
+    });
+  }
+
+  communities.sort((a, b) => b.size - a.size);
+  return { communities, communityDirs };
+}
+
+// ─── Drift Analysis ──────────────────────────────────────────────────
+
+/**
+ * Compute split/merge candidates and drift score from community directory data.
+ * @param {object[]} communities - Community objects with `directories`
+ * @param {Map<number, Set<string>>} communityDirs - Community ID → directory set
+ * @returns {{ splitCandidates: object[], mergeCandidates: object[], driftScore: number }}
+ */
+function analyzeDrift(communities, communityDirs) {
+  const dirToCommunities = new Map();
+  for (const [cid, dirs] of communityDirs) {
+    for (const dir of dirs) {
+      if (!dirToCommunities.has(dir)) dirToCommunities.set(dir, new Set());
+      dirToCommunities.get(dir).add(cid);
+    }
+  }
+
+  const splitCandidates = [];
+  for (const [dir, cids] of dirToCommunities) {
+    if (cids.size >= 2) {
+      splitCandidates.push({ directory: dir, communityCount: cids.size });
+    }
+  }
+  splitCandidates.sort((a, b) => b.communityCount - a.communityCount);
+
+  const mergeCandidates = [];
+  for (const c of communities) {
+    const dirCount = Object.keys(c.directories).length;
+    if (dirCount >= 2) {
+      mergeCandidates.push({
+        communityId: c.id,
+        size: c.size,
+        directoryCount: dirCount,
+        directories: Object.keys(c.directories),
+      });
+    }
+  }
+  mergeCandidates.sort((a, b) => b.directoryCount - a.directoryCount);
+
+  const totalDirs = dirToCommunities.size;
+  const splitRatio = totalDirs > 0 ? splitCandidates.length / totalDirs : 0;
+  const totalComms = communities.length;
+  const mergeRatio = totalComms > 0 ? mergeCandidates.length / totalComms : 0;
+  const driftScore = Math.round(((splitRatio + mergeRatio) / 2) * 100);
+
+  return { splitCandidates, mergeCandidates, driftScore };
 }
 
 // ─── Core Analysis ────────────────────────────────────────────────────
@@ -37,7 +136,6 @@ export function communitiesData(customDbPath, opts = {}) {
     close();
   }
 
-  // Handle empty or trivial graphs
   if (graph.nodeCount === 0 || graph.edgeCount === 0) {
     return {
       communities: [],
@@ -47,93 +145,20 @@ export function communitiesData(customDbPath, opts = {}) {
     };
   }
 
-  // Run Louvain
-  const resolution = opts.resolution ?? 1.0;
-  const { assignments, modularity } = louvainCommunities(graph, { resolution });
+  const config = opts.config || loadConfig();
+  const resolution = opts.resolution ?? config.community?.resolution ?? 1.0;
+  const maxLevels = opts.maxLevels ?? config.community?.maxLevels;
+  const maxLocalPasses = opts.maxLocalPasses ?? config.community?.maxLocalPasses;
+  const refinementTheta = opts.refinementTheta ?? config.community?.refinementTheta;
+  const { assignments, modularity } = louvainCommunities(graph, {
+    resolution,
+    maxLevels,
+    maxLocalPasses,
+    refinementTheta,
+  });
 
-  // Group nodes by community
-  const communityMap = new Map(); // community id → node keys[]
-  for (const [key] of graph.nodes()) {
-    const cid = assignments.get(key);
-    if (cid == null) continue;
-    if (!communityMap.has(cid)) communityMap.set(cid, []);
-    communityMap.get(cid).push(key);
-  }
-
-  // Build community objects
-  const communities = [];
-  const communityDirs = new Map(); // community id → Set<dir>
-
-  for (const [cid, members] of communityMap) {
-    const dirCounts = {};
-    const memberData = [];
-    for (const key of members) {
-      const attrs = graph.getNodeAttrs(key);
-      const dir = getDirectory(attrs.file);
-      dirCounts[dir] = (dirCounts[dir] || 0) + 1;
-      memberData.push({
-        name: attrs.label,
-        file: attrs.file,
-        ...(attrs.kind ? { kind: attrs.kind } : {}),
-      });
-    }
-
-    communityDirs.set(cid, new Set(Object.keys(dirCounts)));
-
-    communities.push({
-      id: cid,
-      size: members.length,
-      directories: dirCounts,
-      ...(opts.drift ? {} : { members: memberData }),
-    });
-  }
-
-  // Sort by size descending
-  communities.sort((a, b) => b.size - a.size);
-
-  // ─── Drift Analysis ─────────────────────────────────────────────
-
-  // Split candidates: directories with members in 2+ communities
-  const dirToCommunities = new Map(); // dir → Set<community id>
-  for (const [cid, dirs] of communityDirs) {
-    for (const dir of dirs) {
-      if (!dirToCommunities.has(dir)) dirToCommunities.set(dir, new Set());
-      dirToCommunities.get(dir).add(cid);
-    }
-  }
-  const splitCandidates = [];
-  for (const [dir, cids] of dirToCommunities) {
-    if (cids.size >= 2) {
-      splitCandidates.push({ directory: dir, communityCount: cids.size });
-    }
-  }
-  splitCandidates.sort((a, b) => b.communityCount - a.communityCount);
-
-  // Merge candidates: communities spanning 2+ directories
-  const mergeCandidates = [];
-  for (const c of communities) {
-    const dirCount = Object.keys(c.directories).length;
-    if (dirCount >= 2) {
-      mergeCandidates.push({
-        communityId: c.id,
-        size: c.size,
-        directoryCount: dirCount,
-        directories: Object.keys(c.directories),
-      });
-    }
-  }
-  mergeCandidates.sort((a, b) => b.directoryCount - a.directoryCount);
-
-  // Drift score: 0-100 based on how much directory structure diverges from communities
-  const totalDirs = dirToCommunities.size;
-  const splitDirs = splitCandidates.length;
-  const splitRatio = totalDirs > 0 ? splitDirs / totalDirs : 0;
-
-  const totalComms = communities.length;
-  const mergeComms = mergeCandidates.length;
-  const mergeRatio = totalComms > 0 ? mergeComms / totalComms : 0;
-
-  const driftScore = Math.round(((splitRatio + mergeRatio) / 2) * 100);
+  const { communities, communityDirs } = buildCommunityObjects(graph, assignments, opts);
+  const { splitCandidates, mergeCandidates, driftScore } = analyzeDrift(communities, communityDirs);
 
   const base = {
     communities: opts.drift ? [] : communities,

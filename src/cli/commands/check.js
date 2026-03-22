@@ -1,6 +1,23 @@
+import { collectFile } from '../../db/query-builder.js';
 import { EVERY_SYMBOL_KIND } from '../../domain/queries.js';
 import { ConfigError } from '../../shared/errors.js';
 import { config } from '../shared/options.js';
+
+function validateKind(kind) {
+  if (kind && !EVERY_SYMBOL_KIND.includes(kind)) {
+    throw new ConfigError(`Invalid kind "${kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`);
+  }
+}
+
+async function runManifesto(opts, qOpts) {
+  validateKind(opts.kind);
+  const { manifesto } = await import('../../presentation/manifesto.js');
+  manifesto(opts.db, {
+    file: opts.file,
+    kind: opts.kind,
+    ...qOpts,
+  });
+}
 
 export const command = {
   name: 'check [ref]',
@@ -15,7 +32,7 @@ export const command = {
     ['--signatures', 'Assert no function declaration lines were modified'],
     ['--boundaries', 'Assert no cross-owner boundary violations'],
     ['--depth <n>', 'Max BFS depth for blast radius (default: 3)'],
-    ['-f, --file <path>', 'Scope to file (partial match, manifesto mode)'],
+    ['-f, --file <path>', 'Scope to file (partial match, repeatable, manifesto mode)', collectFile],
     ['-k, --kind <kind>', 'Filter by symbol kind (manifesto mode)'],
     ['-T, --no-tests', 'Exclude test/spec files from results'],
     ['--include-tests', 'Include test/spec files (overrides excludeTests config)'],
@@ -29,17 +46,7 @@ export const command = {
     const qOpts = ctx.resolveQueryOpts(opts);
 
     if (!isDiffMode && !opts.rules) {
-      if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-        throw new ConfigError(
-          `Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`,
-        );
-      }
-      const { manifesto } = await import('../../presentation/manifesto.js');
-      manifesto(opts.db, {
-        file: opts.file,
-        kind: opts.kind,
-        ...qOpts,
-      });
+      await runManifesto(opts, qOpts);
       return;
     }
 
@@ -58,17 +65,7 @@ export const command = {
     });
 
     if (opts.rules) {
-      if (opts.kind && !EVERY_SYMBOL_KIND.includes(opts.kind)) {
-        throw new ConfigError(
-          `Invalid kind "${opts.kind}". Valid: ${EVERY_SYMBOL_KIND.join(', ')}`,
-        );
-      }
-      const { manifesto } = await import('../../presentation/manifesto.js');
-      manifesto(opts.db, {
-        file: opts.file,
-        kind: opts.kind,
-        ...qOpts,
-      });
+      await runManifesto(opts, qOpts);
     }
   },
 };

@@ -2,9 +2,27 @@
  * MCP middleware helpers — pagination defaults and limits.
  */
 
-import { MCP_DEFAULTS, MCP_MAX_LIMIT } from '../shared/paginate.js';
+import { getMcpDefaults, MCP_DEFAULTS, MCP_MAX_LIMIT } from '../shared/paginate.js';
 
 export { MCP_DEFAULTS, MCP_MAX_LIMIT };
+
+/** Resolved MCP defaults (may include config overrides). Set via initMcpDefaults(). */
+let resolvedDefaults = MCP_DEFAULTS;
+
+/**
+ * Initialize MCP defaults from config. Call once at server startup.
+ * @param {object} [configMcpDefaults] - config.mcp.defaults overrides
+ */
+export function initMcpDefaults(configMcpDefaults) {
+  resolvedDefaults = getMcpDefaults(configMcpDefaults);
+}
+
+/**
+ * Reset MCP defaults back to the base defaults. Useful for test isolation.
+ */
+export function resetMcpDefaults() {
+  resolvedDefaults = MCP_DEFAULTS;
+}
 
 /**
  * Resolve effective limit for a tool call.
@@ -13,7 +31,7 @@ export { MCP_DEFAULTS, MCP_MAX_LIMIT };
  * @returns {number}
  */
 export function effectiveLimit(args, toolName) {
-  return Math.min(args.limit ?? MCP_DEFAULTS[toolName] ?? 100, MCP_MAX_LIMIT);
+  return Math.min(args.limit ?? resolvedDefaults[toolName] ?? 100, MCP_MAX_LIMIT);
 }
 
 /**

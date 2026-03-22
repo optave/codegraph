@@ -67,8 +67,11 @@ jobs:
             NPM_TAG="latest"
             echo "Stable release (manual retry): $VERSION"
           else
-            # Use git describe to find the nearest release tag — same strategy
-            # as scripts/bench-version.js so versions are always consistent.
+            # Dev versions use the NEXT patch with a prerelease suffix:
+            #   v3.1.5 tag + 12 commits → 3.1.6-dev.12
+            # This keeps dev versions in the correct semver range (between
+            # the current release and the next) and avoids inflating the
+            # patch number (old scheme produced 3.1.17 for 12 commits after 3.1.5).
             RELEASE_TAG=$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || echo "")
             if [ -n "$RELEASE_TAG" ]; then
               COMMITS=$(git rev-list "${RELEASE_TAG}..HEAD" --count)
@@ -78,7 +81,7 @@ jobs:
               IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
             fi
             if [ "$COMMITS" -eq 0 ]; then
-              VERSION="${MAJOR}.${MINOR}.${PATCH}"
+              VERSION="${MAJOR}.${MINOR}.${PATCH}-dev.0"
             else
               VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))-dev.${COMMITS}"
             fi
@@ -90,7 +93,7 @@ jobs:
           echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
 
   build-native:
-    needs: preflight
+    needs: [preflight, compute-version]
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +177,16 @@ jobs:
           sudo ln -sf /lib/x86_64-linux-gnu/libgcc_s.so.1 "${GNU_LIB}/libgcc_s.so"
           sudo ln -sf /lib/x86_64-linux-gnu/libgcc_s.so.1 "${GNU_LIB}/libgcc_s.so.1"
 
+      - name: Sync Cargo.toml version
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+        shell: bash
+        run: |
+          [[ -n "$VERSION" ]] || { echo "::error::VERSION is empty — compute-version output missing"; exit 1; }
+          CARGO="crates/codegraph-core/Cargo.toml"
+          awk -v v="$VERSION" '!done && /^version =/{$0="version = \""v"\""; done=1}1' "$CARGO" > "${CARGO}.tmp"
+          mv "${CARGO}.tmp" "$CARGO"
+
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli@3
 
@@ -213,6 +226,9 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           node scripts/sync-native-versions.js --strip
           echo "Packaging version $VERSION"
+
+      - name: Build TypeScript
+        run: npm run build
 
       - name: Disable prepublishOnly
         run: npm pkg delete scripts.prepublishOnly
@@ -391,6 +407,9 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           node scripts/sync-native-versions.js
           echo "Publishing version $VERSION"
+
+      - name: Build TypeScript
+        run: npm run build
 
       - name: Disable prepublishOnly
         run: npm pkg delete scripts.prepublishOnly

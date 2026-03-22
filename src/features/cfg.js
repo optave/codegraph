@@ -23,9 +23,9 @@ import {
   hasCfgTables,
   openReadonlyOrFail,
 } from '../db/index.js';
-import { info } from '../infrastructure/logger.js';
-import { isTestFile } from '../infrastructure/test-filter.js';
+import { debug, info } from '../infrastructure/logger.js';
 import { paginateResult } from '../shared/paginate.js';
+import { findNodes } from './shared/find-nodes.js';
 
 // Re-export for backward compatibility
 export { _makeCfgRules as makeCfgRules, CFG_RULES };
@@ -68,30 +68,15 @@ export function buildFunctionCFG(functionNode, langId) {
   return { blocks: r.blocks, edges: r.edges, cyclomatic: r.cyclomatic };
 }
 
-// ─── Build-Time: Compute CFG for Changed Files ─────────────────────────
+// ─── Build-Time Helpers ─────────────────────────────────────────────────
 
-/**
- * Build CFG data for all function/method definitions and persist to DB.
- *
- * @param {object} db - open better-sqlite3 database (read-write)
- * @param {Map<string, object>} fileSymbols - Map<relPath, { definitions, _tree, _langId }>
- * @param {string} rootDir - absolute project root path
- * @param {object} [_engineOpts] - engine options (unused; always uses WASM for AST)
- */
-export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
-  // Lazily init WASM parsers if needed
-  let parsers = null;
+async function initCfgParsers(fileSymbols) {
   let needsFallback = false;
-
-  // Always build ext→langId map so native-only builds (where _langId is unset)
-  // can still derive the language from the file extension.
-  const extToLang = buildExtToLangMap();
 
   for (const [relPath, symbols] of fileSymbols) {
     if (!symbols._tree) {
       const ext = path.extname(relPath).toLowerCase();
       if (CFG_EXTENSIONS.has(ext)) {
-        // Check if all function/method defs already have native CFG data
         const hasNativeCfg = symbols.definitions
           .filter((d) => (d.kind === 'function' || d.kind === 'method') && d.line)
           .every((d) => d.cfg === null || d.cfg?.blocks?.length);
@@ -103,18 +88,131 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
     }
   }
 
+  let parsers = null;
+  let getParserFn = null;
+
   if (needsFallback) {
     const { createParsers } = await import('../domain/parser.js');
     parsers = await createParsers();
-  }
-
-  let getParserFn = null;
-  if (parsers) {
     const mod = await import('../domain/parser.js');
     getParserFn = mod.getParser;
   }
 
-  // findFunctionNode imported from ./ast-analysis/shared.js at module level
+  return { parsers, getParserFn };
+}
+
+function getTreeAndLang(symbols, relPath, rootDir, extToLang, parsers, getParserFn) {
+  const ext = path.extname(relPath).toLowerCase();
+  let tree = symbols._tree;
+  let langId = symbols._langId;
+
+  const allNative = symbols.definitions
+    .filter((d) => (d.kind === 'function' || d.kind === 'method') && d.line)
+    .every((d) => d.cfg === null || d.cfg?.blocks?.length);
+
+  if (!tree && !allNative) {
+    if (!getParserFn) return null;
+    langId = extToLang.get(ext);
+    if (!langId || !CFG_RULES.has(langId)) return null;
+
+    const absPath = path.join(rootDir, relPath);
+    let code;
+    try {
+      code = fs.readFileSync(absPath, 'utf-8');
+    } catch (e) {
+      debug(`cfg: cannot read ${relPath}: ${e.message}`);
+      return null;
+    }
+
+    const parser = getParserFn(parsers, absPath);
+    if (!parser) return null;
+
+    try {
+      tree = parser.parse(code);
+    } catch (e) {
+      debug(`cfg: parse failed for ${relPath}: ${e.message}`);
+      return null;
+    }
+  }
+
+  if (!langId) {
+    langId = extToLang.get(ext);
+    if (!langId) return null;
+  }
+
+  return { tree, langId };
+}
+
+function buildVisitorCfgMap(tree, cfgRules, symbols, langId) {
+  const needsVisitor =
+    tree &&
+    symbols.definitions.some(
+      (d) =>
+        (d.kind === 'function' || d.kind === 'method') &&
+        d.line &&
+        d.cfg !== null &&
+        !d.cfg?.blocks?.length,
+    );
+  if (!needsVisitor) return null;
+
+  const visitor = createCfgVisitor(cfgRules);
+  const walkerOpts = {
+    functionNodeTypes: new Set(cfgRules.functionNodes),
+    nestingNodeTypes: new Set(),
+    getFunctionName: (node) => {
+      const nameNode = node.childForFieldName('name');
+      return nameNode ? nameNode.text : null;
+    },
+  };
+  const walkResults = walkWithVisitors(tree.rootNode, [visitor], langId, walkerOpts);
+  const cfgResults = walkResults.cfg || [];
+  const visitorCfgByLine = new Map();
+  for (const r of cfgResults) {
+    if (r.funcNode) {
+      const line = r.funcNode.startPosition.row + 1;
+      if (!visitorCfgByLine.has(line)) visitorCfgByLine.set(line, []);
+      visitorCfgByLine.get(line).push(r);
+    }
+  }
+  return visitorCfgByLine;
+}
+
+function persistCfg(cfg, nodeId, insertBlock, insertEdge) {
+  const blockDbIds = new Map();
+  for (const block of cfg.blocks) {
+    const result = insertBlock.run(
+      nodeId,
+      block.index,
+      block.type,
+      block.startLine,
+      block.endLine,
+      block.label,
+    );
+    blockDbIds.set(block.index, result.lastInsertRowid);
+  }
+
+  for (const edge of cfg.edges) {
+    const sourceDbId = blockDbIds.get(edge.sourceIndex);
+    const targetDbId = blockDbIds.get(edge.targetIndex);
+    if (sourceDbId && targetDbId) {
+      insertEdge.run(nodeId, sourceDbId, targetDbId, edge.kind);
+    }
+  }
+}
+
+// ─── Build-Time: Compute CFG for Changed Files ─────────────────────────
+
+/**
+ * Build CFG data for all function/method definitions and persist to DB.
+ *
+ * @param {object} db - open better-sqlite3 database (read-write)
+ * @param {Map<string, object>} fileSymbols - Map<relPath, { definitions, _tree, _langId }>
+ * @param {string} rootDir - absolute project root path
+ * @param {object} [_engineOpts] - engine options (unused; always uses WASM for AST)
+ */
+export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
+  const extToLang = buildExtToLangMap();
+  const { parsers, getParserFn } = await initCfgParsers(fileSymbols);
 
   const insertBlock = db.prepare(
     `INSERT INTO cfg_blocks (function_node_id, block_index, block_type, start_line, end_line, label)
@@ -131,79 +229,14 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
       const ext = path.extname(relPath).toLowerCase();
       if (!CFG_EXTENSIONS.has(ext)) continue;
 
-      let tree = symbols._tree;
-      let langId = symbols._langId;
-
-      // Check if all defs already have native CFG — skip WASM parse if so
-      const allNative = symbols.definitions
-        .filter((d) => (d.kind === 'function' || d.kind === 'method') && d.line)
-        .every((d) => d.cfg === null || d.cfg?.blocks?.length);
-
-      // WASM fallback if no cached tree and not all native
-      if (!tree && !allNative) {
-        if (!getParserFn) continue;
-        langId = extToLang.get(ext);
-        if (!langId || !CFG_RULES.has(langId)) continue;
-
-        const absPath = path.join(rootDir, relPath);
-        let code;
-        try {
-          code = fs.readFileSync(absPath, 'utf-8');
-        } catch {
-          continue;
-        }
-
-        const parser = getParserFn(parsers, absPath);
-        if (!parser) continue;
-
-        try {
-          tree = parser.parse(code);
-        } catch {
-          continue;
-        }
-      }
-
-      if (!langId) {
-        langId = extToLang.get(ext);
-        if (!langId) continue;
-      }
+      const treeLang = getTreeAndLang(symbols, relPath, rootDir, extToLang, parsers, getParserFn);
+      if (!treeLang) continue;
+      const { tree, langId } = treeLang;
 
       const cfgRules = CFG_RULES.get(langId);
       if (!cfgRules) continue;
 
-      // WASM fallback: run file-level visitor walk to compute CFG for all functions
-      // that don't already have pre-computed data (from native engine or unified walk)
-      let visitorCfgByLine = null;
-      const needsVisitor =
-        tree &&
-        symbols.definitions.some(
-          (d) =>
-            (d.kind === 'function' || d.kind === 'method') &&
-            d.line &&
-            d.cfg !== null &&
-            !d.cfg?.blocks?.length,
-        );
-      if (needsVisitor) {
-        const visitor = createCfgVisitor(cfgRules);
-        const walkerOpts = {
-          functionNodeTypes: new Set(cfgRules.functionNodes),
-          nestingNodeTypes: new Set(),
-          getFunctionName: (node) => {
-            const nameNode = node.childForFieldName('name');
-            return nameNode ? nameNode.text : null;
-          },
-        };
-        const walkResults = walkWithVisitors(tree.rootNode, [visitor], langId, walkerOpts);
-        const cfgResults = walkResults.cfg || [];
-        visitorCfgByLine = new Map();
-        for (const r of cfgResults) {
-          if (r.funcNode) {
-            const line = r.funcNode.startPosition.row + 1;
-            if (!visitorCfgByLine.has(line)) visitorCfgByLine.set(line, []);
-            visitorCfgByLine.get(line).push(r);
-          }
-        }
-      }
+      const visitorCfgByLine = buildVisitorCfgMap(tree, cfgRules, symbols, langId);
 
       for (const def of symbols.definitions) {
         if (def.kind !== 'function' && def.kind !== 'method') continue;
@@ -212,7 +245,6 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
         const nodeId = getFunctionNodeId(db, def.name, relPath, def.line);
         if (!nodeId) continue;
 
-        // Use pre-computed CFG (native engine or unified walk), then visitor fallback
         let cfg = null;
         if (def.cfg?.blocks?.length) {
           cfg = def.cfg;
@@ -231,36 +263,10 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
 
         if (!cfg || cfg.blocks.length === 0) continue;
 
-        // Clear old CFG data for this function
         deleteCfgForNode(db, nodeId);
-
-        // Insert blocks and build index→dbId mapping
-        const blockDbIds = new Map();
-        for (const block of cfg.blocks) {
-          const result = insertBlock.run(
-            nodeId,
-            block.index,
-            block.type,
-            block.startLine,
-            block.endLine,
-            block.label,
-          );
-          blockDbIds.set(block.index, result.lastInsertRowid);
-        }
-
-        // Insert edges
-        for (const edge of cfg.edges) {
-          const sourceDbId = blockDbIds.get(edge.sourceIndex);
-          const targetDbId = blockDbIds.get(edge.targetIndex);
-          if (sourceDbId && targetDbId) {
-            insertEdge.run(nodeId, sourceDbId, targetDbId, edge.kind);
-          }
-        }
-
+        persistCfg(cfg, nodeId, insertBlock, insertEdge);
         analyzed++;
       }
-
-      // Don't release _tree here — complexity/dataflow may still need it
     }
   });
 
@@ -273,27 +279,7 @@ export async function buildCFGData(db, fileSymbols, rootDir, _engineOpts) {
 
 // ─── Query-Time Functions ───────────────────────────────────────────────
 
-function findNodes(db, name, opts = {}) {
-  const kinds = opts.kind ? [opts.kind] : ['function', 'method'];
-  const placeholders = kinds.map(() => '?').join(', ');
-  const params = [`%${name}%`, ...kinds];
-
-  let fileCondition = '';
-  if (opts.file) {
-    fileCondition = ' AND n.file LIKE ?';
-    params.push(`%${opts.file}%`);
-  }
-
-  const rows = db
-    .prepare(
-      `SELECT n.id, n.name, n.kind, n.file, n.line, n.end_line
-       FROM nodes n
-       WHERE n.name LIKE ? AND n.kind IN (${placeholders})${fileCondition}`,
-    )
-    .all(...params);
-
-  return opts.noTests ? rows.filter((n) => !isTestFile(n.file)) : rows;
-}
+const CFG_DEFAULT_KINDS = ['function', 'method'];
 
 /**
  * Load CFG data for a function from the database.
@@ -317,7 +303,12 @@ export function cfgData(name, customDbPath, opts = {}) {
       };
     }
 
-    const nodes = findNodes(db, name, { noTests, file: opts.file, kind: opts.kind });
+    const nodes = findNodes(
+      db,
+      name,
+      { noTests, file: opts.file, kind: opts.kind },
+      CFG_DEFAULT_KINDS,
+    );
     if (nodes.length === 0) {
       return { name, results: [] };
     }

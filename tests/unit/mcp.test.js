@@ -40,6 +40,9 @@ const ALL_TOOL_NAMES = [
   'dataflow',
   'check',
   'ast_query',
+  'brief',
+  'implementations',
+  'interfaces',
   'list_repos',
 ];
 

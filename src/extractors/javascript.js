@@ -1,6 +1,63 @@
 import { debug } from '../infrastructure/logger.js';
 import { findChild, nodeEndLine } from './helpers.js';
 
+/** Built-in globals that start with uppercase but are not user-defined types. */
+const BUILTIN_GLOBALS = new Set([
+  'Math',
+  'JSON',
+  'Promise',
+  'Array',
+  'Object',
+  'Date',
+  'Error',
+  'Symbol',
+  'Map',
+  'Set',
+  'RegExp',
+  'Number',
+  'String',
+  'Boolean',
+  'WeakMap',
+  'WeakSet',
+  'WeakRef',
+  'Proxy',
+  'Reflect',
+  'Intl',
+  'ArrayBuffer',
+  'SharedArrayBuffer',
+  'DataView',
+  'Atomics',
+  'BigInt',
+  'Float32Array',
+  'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Uint8Array',
+  'Uint16Array',
+  'Uint32Array',
+  'Uint8ClampedArray',
+  'URL',
+  'URLSearchParams',
+  'TextEncoder',
+  'TextDecoder',
+  'AbortController',
+  'AbortSignal',
+  'Headers',
+  'Request',
+  'Response',
+  'FormData',
+  'Blob',
+  'File',
+  'ReadableStream',
+  'WritableStream',
+  'TransformStream',
+  'console',
+  'Buffer',
+  'EventEmitter',
+  'Stream',
+]);
+
 /**
  * Extract symbols from a JS/TS parsed AST.
  * When a compiled tree-sitter Query is provided (from parser.js),
@@ -19,6 +76,7 @@ function extractSymbolsQuery(tree, query) {
   const imports = [];
   const classes = [];
   const exps = [];
+  const typeMap = new Map();
 
   const matches = query.matches(tree.rootNode);
 
@@ -179,7 +237,10 @@ function extractSymbolsQuery(tree, query) {
   // Extract dynamic import() calls via targeted walk (query patterns don't match `import` function type)
   extractDynamicImportsWalk(tree.rootNode, imports);
 
-  return { definitions, calls, imports, classes, exports: exps };
+  // Extract typeMap from type annotations and new expressions
+  extractTypeMapWalk(tree.rootNode, typeMap);
+
+  return { definitions, calls, imports, classes, exports: exps, typeMap };
 }
 
 /**
@@ -320,333 +381,307 @@ function handleCommonJSAssignment(left, right, node, imports) {
 // ── Manual tree walk (fallback when Query not available) ────────────────────
 
 function extractSymbolsWalk(tree) {
-  const definitions = [];
-  const calls = [];
-  const imports = [];
-  const classes = [];
-  const exports = [];
+  const ctx = {
+    definitions: [],
+    calls: [],
+    imports: [],
+    classes: [],
+    exports: [],
+    typeMap: new Map(),
+  };
 
-  function walkJavaScriptNode(node) {
-    switch (node.type) {
-      case 'function_declaration': {
-        const nameNode = node.childForFieldName('name');
-        if (nameNode) {
-          const fnChildren = extractParameters(node);
-          definitions.push({
-            name: nameNode.text,
-            kind: 'function',
-            line: node.startPosition.row + 1,
-            endLine: nodeEndLine(node),
-            children: fnChildren.length > 0 ? fnChildren : undefined,
-          });
-        }
-        break;
-      }
+  walkJavaScriptNode(tree.rootNode, ctx);
+  // Populate typeMap for variables and parameter type annotations
+  extractTypeMapWalk(tree.rootNode, ctx.typeMap);
+  return ctx;
+}
 
-      case 'class_declaration': {
-        const nameNode = node.childForFieldName('name');
-        if (nameNode) {
-          const className = nameNode.text;
-          const startLine = node.startPosition.row + 1;
-          const clsChildren = extractClassProperties(node);
-          definitions.push({
-            name: className,
-            kind: 'class',
-            line: startLine,
-            endLine: nodeEndLine(node),
-            children: clsChildren.length > 0 ? clsChildren : undefined,
-          });
-          const heritage = node.childForFieldName('heritage') || findChild(node, 'class_heritage');
-          if (heritage) {
-            const superName = extractSuperclass(heritage);
-            if (superName) {
-              classes.push({ name: className, extends: superName, line: startLine });
-            }
-            const implementsList = extractImplements(heritage);
-            for (const iface of implementsList) {
-              classes.push({ name: className, implements: iface, line: startLine });
-            }
-          }
-        }
-        break;
-      }
-
-      case 'method_definition': {
-        const nameNode = node.childForFieldName('name');
-        if (nameNode) {
-          const parentClass = findParentClass(node);
-          const fullName = parentClass ? `${parentClass}.${nameNode.text}` : nameNode.text;
-          const methChildren = extractParameters(node);
-          const methVis = extractVisibility(node);
-          definitions.push({
-            name: fullName,
-            kind: 'method',
-            line: node.startPosition.row + 1,
-            endLine: nodeEndLine(node),
-            children: methChildren.length > 0 ? methChildren : undefined,
-            visibility: methVis,
-          });
-        }
-        break;
-      }
-
-      case 'interface_declaration': {
-        const nameNode = node.childForFieldName('name');
-        if (nameNode) {
-          definitions.push({
-            name: nameNode.text,
-            kind: 'interface',
-            line: node.startPosition.row + 1,
-            endLine: nodeEndLine(node),
-          });
-          const body =
-            node.childForFieldName('body') ||
-            findChild(node, 'interface_body') ||
-            findChild(node, 'object_type');
-          if (body) {
-            extractInterfaceMethods(body, nameNode.text, definitions);
-          }
-        }
-        break;
-      }
-
-      case 'type_alias_declaration': {
-        const nameNode = node.childForFieldName('name');
-        if (nameNode) {
-          definitions.push({
-            name: nameNode.text,
-            kind: 'type',
-            line: node.startPosition.row + 1,
-            endLine: nodeEndLine(node),
-          });
-        }
-        break;
-      }
-
-      case 'lexical_declaration':
-      case 'variable_declaration': {
-        const isConst = node.text.startsWith('const ');
-        for (let i = 0; i < node.childCount; i++) {
-          const declarator = node.child(i);
-          if (declarator && declarator.type === 'variable_declarator') {
-            const nameN = declarator.childForFieldName('name');
-            const valueN = declarator.childForFieldName('value');
-            if (nameN && valueN) {
-              const valType = valueN.type;
-              if (
-                valType === 'arrow_function' ||
-                valType === 'function_expression' ||
-                valType === 'function'
-              ) {
-                const varFnChildren = extractParameters(valueN);
-                definitions.push({
-                  name: nameN.text,
-                  kind: 'function',
-                  line: node.startPosition.row + 1,
-                  endLine: nodeEndLine(valueN),
-                  children: varFnChildren.length > 0 ? varFnChildren : undefined,
-                });
-              } else if (isConst && nameN.type === 'identifier' && isConstantValue(valueN)) {
-                definitions.push({
-                  name: nameN.text,
-                  kind: 'constant',
-                  line: node.startPosition.row + 1,
-                  endLine: nodeEndLine(node),
-                });
-              }
-            } else if (isConst && nameN && nameN.type === 'identifier' && !valueN) {
-              // const with no value (shouldn't happen but be safe)
-            }
-          }
-        }
-        break;
-      }
-
-      case 'enum_declaration': {
-        // TypeScript enum
-        const nameNode = node.childForFieldName('name');
-        if (nameNode) {
-          const enumChildren = [];
-          const body = node.childForFieldName('body') || findChild(node, 'enum_body');
-          if (body) {
-            for (let i = 0; i < body.childCount; i++) {
-              const member = body.child(i);
-              if (!member) continue;
-              if (member.type === 'enum_assignment' || member.type === 'property_identifier') {
-                const mName = member.childForFieldName('name') || member.child(0);
-                if (mName) {
-                  enumChildren.push({
-                    name: mName.text,
-                    kind: 'constant',
-                    line: member.startPosition.row + 1,
-                  });
-                }
-              }
-            }
-          }
-          definitions.push({
-            name: nameNode.text,
-            kind: 'enum',
-            line: node.startPosition.row + 1,
-            endLine: nodeEndLine(node),
-            children: enumChildren.length > 0 ? enumChildren : undefined,
-          });
-        }
-        break;
-      }
-
-      case 'call_expression': {
-        const fn = node.childForFieldName('function');
-        if (fn) {
-          // Dynamic import(): import('./foo.js') → extract as an import entry
-          if (fn.type === 'import') {
-            const args = node.childForFieldName('arguments') || findChild(node, 'arguments');
-            if (args) {
-              const strArg = findChild(args, 'string');
-              if (strArg) {
-                const modPath = strArg.text.replace(/['"]/g, '');
-                // Extract destructured names from parent context:
-                //   const { a, b } = await import('./foo.js')
-                // (standalone import('./foo.js').then(...) calls produce an edge with empty names)
-                const names = extractDynamicImportNames(node);
-                imports.push({
-                  source: modPath,
-                  names,
-                  line: node.startPosition.row + 1,
-                  dynamicImport: true,
-                });
-              } else {
-                debug(
-                  `Skipping non-static dynamic import() at line ${node.startPosition.row + 1} (template literal or variable)`,
-                );
-              }
-            }
-          } else {
-            const callInfo = extractCallInfo(fn, node);
-            if (callInfo) calls.push(callInfo);
-            if (fn.type === 'member_expression') {
-              const cbDef = extractCallbackDefinition(node, fn);
-              if (cbDef) definitions.push(cbDef);
-            }
-          }
-        }
-        break;
-      }
-
-      case 'import_statement': {
-        const isTypeOnly = node.text.startsWith('import type');
-        const source = node.childForFieldName('source') || findChild(node, 'string');
-        if (source) {
-          const modPath = source.text.replace(/['"]/g, '');
-          const names = extractImportNames(node);
-          imports.push({
-            source: modPath,
-            names,
-            line: node.startPosition.row + 1,
-            typeOnly: isTypeOnly,
-          });
-        }
-        break;
-      }
-
-      case 'export_statement': {
-        const exportLine = node.startPosition.row + 1;
-        const decl = node.childForFieldName('declaration');
-        if (decl) {
-          const declType = decl.type;
-          const kindMap = {
-            function_declaration: 'function',
-            class_declaration: 'class',
-            interface_declaration: 'interface',
-            type_alias_declaration: 'type',
-          };
-          const kind = kindMap[declType];
-          if (kind) {
-            const n = decl.childForFieldName('name');
-            if (n) exports.push({ name: n.text, kind, line: exportLine });
-          }
-        }
-        const source = node.childForFieldName('source') || findChild(node, 'string');
-        if (source && !decl) {
-          const modPath = source.text.replace(/['"]/g, '');
-          const reexportNames = extractImportNames(node);
-          const nodeText = node.text;
-          const isWildcard = nodeText.includes('export *') || nodeText.includes('export*');
-          imports.push({
-            source: modPath,
-            names: reexportNames,
-            line: exportLine,
-            reexport: true,
-            wildcardReexport: isWildcard && reexportNames.length === 0,
-          });
-        }
-        break;
-      }
-
-      case 'expression_statement': {
-        const expr = node.child(0);
-        if (expr && expr.type === 'assignment_expression') {
-          const left = expr.childForFieldName('left');
-          const right = expr.childForFieldName('right');
-          if (left && right) {
-            const leftText = left.text;
-            if (leftText.startsWith('module.exports') || leftText === 'exports') {
-              if (right.type === 'call_expression') {
-                const fn = right.childForFieldName('function');
-                const args = right.childForFieldName('arguments') || findChild(right, 'arguments');
-                if (fn && fn.text === 'require' && args) {
-                  const strArg = findChild(args, 'string');
-                  if (strArg) {
-                    imports.push({
-                      source: strArg.text.replace(/['"]/g, ''),
-                      names: [],
-                      line: node.startPosition.row + 1,
-                      reexport: true,
-                      wildcardReexport: true,
-                    });
-                  }
-                }
-              }
-              if (right.type === 'object') {
-                for (let ci = 0; ci < right.childCount; ci++) {
-                  const child = right.child(ci);
-                  if (child && child.type === 'spread_element') {
-                    const spreadExpr = child.child(1) || child.childForFieldName('value');
-                    if (spreadExpr && spreadExpr.type === 'call_expression') {
-                      const fn2 = spreadExpr.childForFieldName('function');
-                      const args2 =
-                        spreadExpr.childForFieldName('arguments') ||
-                        findChild(spreadExpr, 'arguments');
-                      if (fn2 && fn2.text === 'require' && args2) {
-                        const strArg2 = findChild(args2, 'string');
-                        if (strArg2) {
-                          imports.push({
-                            source: strArg2.text.replace(/['"]/g, ''),
-                            names: [],
-                            line: node.startPosition.row + 1,
-                            reexport: true,
-                            wildcardReexport: true,
-                          });
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        break;
-      }
-    }
-
-    for (let i = 0; i < node.childCount; i++) {
-      walkJavaScriptNode(node.child(i));
-    }
+function walkJavaScriptNode(node, ctx) {
+  switch (node.type) {
+    case 'function_declaration':
+      handleFunctionDecl(node, ctx);
+      break;
+    case 'class_declaration':
+      handleClassDecl(node, ctx);
+      break;
+    case 'method_definition':
+      handleMethodDef(node, ctx);
+      break;
+    case 'interface_declaration':
+      handleInterfaceDecl(node, ctx);
+      break;
+    case 'type_alias_declaration':
+      handleTypeAliasDecl(node, ctx);
+      break;
+    case 'lexical_declaration':
+    case 'variable_declaration':
+      handleVariableDecl(node, ctx);
+      break;
+    case 'enum_declaration':
+      handleEnumDecl(node, ctx);
+      break;
+    case 'call_expression':
+      handleCallExpr(node, ctx);
+      break;
+    case 'import_statement':
+      handleImportStmt(node, ctx);
+      break;
+    case 'export_statement':
+      handleExportStmt(node, ctx);
+      break;
+    case 'expression_statement':
+      handleExpressionStmt(node, ctx);
+      break;
   }
 
-  walkJavaScriptNode(tree.rootNode);
-  return { definitions, calls, imports, classes, exports };
+  for (let i = 0; i < node.childCount; i++) {
+    walkJavaScriptNode(node.child(i), ctx);
+  }
+}
+
+// ── Walk-path per-node-type handlers ────────────────────────────────────────
+
+function handleFunctionDecl(node, ctx) {
+  const nameNode = node.childForFieldName('name');
+  if (nameNode) {
+    const fnChildren = extractParameters(node);
+    ctx.definitions.push({
+      name: nameNode.text,
+      kind: 'function',
+      line: node.startPosition.row + 1,
+      endLine: nodeEndLine(node),
+      children: fnChildren.length > 0 ? fnChildren : undefined,
+    });
+  }
+}
+
+function handleClassDecl(node, ctx) {
+  const nameNode = node.childForFieldName('name');
+  if (!nameNode) return;
+  const className = nameNode.text;
+  const startLine = node.startPosition.row + 1;
+  const clsChildren = extractClassProperties(node);
+  ctx.definitions.push({
+    name: className,
+    kind: 'class',
+    line: startLine,
+    endLine: nodeEndLine(node),
+    children: clsChildren.length > 0 ? clsChildren : undefined,
+  });
+  const heritage = node.childForFieldName('heritage') || findChild(node, 'class_heritage');
+  if (heritage) {
+    const superName = extractSuperclass(heritage);
+    if (superName) {
+      ctx.classes.push({ name: className, extends: superName, line: startLine });
+    }
+    const implementsList = extractImplements(heritage);
+    for (const iface of implementsList) {
+      ctx.classes.push({ name: className, implements: iface, line: startLine });
+    }
+  }
+}
+
+function handleMethodDef(node, ctx) {
+  const nameNode = node.childForFieldName('name');
+  if (nameNode) {
+    const parentClass = findParentClass(node);
+    const fullName = parentClass ? `${parentClass}.${nameNode.text}` : nameNode.text;
+    const methChildren = extractParameters(node);
+    const methVis = extractVisibility(node);
+    ctx.definitions.push({
+      name: fullName,
+      kind: 'method',
+      line: node.startPosition.row + 1,
+      endLine: nodeEndLine(node),
+      children: methChildren.length > 0 ? methChildren : undefined,
+      visibility: methVis,
+    });
+  }
+}
+
+function handleInterfaceDecl(node, ctx) {
+  const nameNode = node.childForFieldName('name');
+  if (!nameNode) return;
+  ctx.definitions.push({
+    name: nameNode.text,
+    kind: 'interface',
+    line: node.startPosition.row + 1,
+    endLine: nodeEndLine(node),
+  });
+  const body =
+    node.childForFieldName('body') ||
+    findChild(node, 'interface_body') ||
+    findChild(node, 'object_type');
+  if (body) {
+    extractInterfaceMethods(body, nameNode.text, ctx.definitions);
+  }
+}
+
+function handleTypeAliasDecl(node, ctx) {
+  const nameNode = node.childForFieldName('name');
+  if (nameNode) {
+    ctx.definitions.push({
+      name: nameNode.text,
+      kind: 'type',
+      line: node.startPosition.row + 1,
+      endLine: nodeEndLine(node),
+    });
+  }
+}
+
+function handleVariableDecl(node, ctx) {
+  const isConst = node.text.startsWith('const ');
+  for (let i = 0; i < node.childCount; i++) {
+    const declarator = node.child(i);
+    if (declarator && declarator.type === 'variable_declarator') {
+      const nameN = declarator.childForFieldName('name');
+      const valueN = declarator.childForFieldName('value');
+
+      if (nameN && valueN) {
+        const valType = valueN.type;
+        if (
+          valType === 'arrow_function' ||
+          valType === 'function_expression' ||
+          valType === 'function'
+        ) {
+          const varFnChildren = extractParameters(valueN);
+          ctx.definitions.push({
+            name: nameN.text,
+            kind: 'function',
+            line: node.startPosition.row + 1,
+            endLine: nodeEndLine(valueN),
+            children: varFnChildren.length > 0 ? varFnChildren : undefined,
+          });
+        } else if (isConst && nameN.type === 'identifier' && isConstantValue(valueN)) {
+          ctx.definitions.push({
+            name: nameN.text,
+            kind: 'constant',
+            line: node.startPosition.row + 1,
+            endLine: nodeEndLine(node),
+          });
+        }
+      }
+    }
+  }
+}
+
+function handleEnumDecl(node, ctx) {
+  const nameNode = node.childForFieldName('name');
+  if (!nameNode) return;
+  const enumChildren = [];
+  const body = node.childForFieldName('body') || findChild(node, 'enum_body');
+  if (body) {
+    for (let i = 0; i < body.childCount; i++) {
+      const member = body.child(i);
+      if (!member) continue;
+      if (member.type === 'enum_assignment' || member.type === 'property_identifier') {
+        const mName = member.childForFieldName('name') || member.child(0);
+        if (mName) {
+          enumChildren.push({
+            name: mName.text,
+            kind: 'constant',
+            line: member.startPosition.row + 1,
+          });
+        }
+      }
+    }
+  }
+  ctx.definitions.push({
+    name: nameNode.text,
+    kind: 'enum',
+    line: node.startPosition.row + 1,
+    endLine: nodeEndLine(node),
+    children: enumChildren.length > 0 ? enumChildren : undefined,
+  });
+}
+
+function handleCallExpr(node, ctx) {
+  const fn = node.childForFieldName('function');
+  if (!fn) return;
+  if (fn.type === 'import') {
+    const args = node.childForFieldName('arguments') || findChild(node, 'arguments');
+    if (args) {
+      const strArg = findChild(args, 'string');
+      if (strArg) {
+        const modPath = strArg.text.replace(/['"]/g, '');
+        const names = extractDynamicImportNames(node);
+        ctx.imports.push({
+          source: modPath,
+          names,
+          line: node.startPosition.row + 1,
+          dynamicImport: true,
+        });
+      } else {
+        debug(
+          `Skipping non-static dynamic import() at line ${node.startPosition.row + 1} (template literal or variable)`,
+        );
+      }
+    }
+  } else {
+    const callInfo = extractCallInfo(fn, node);
+    if (callInfo) ctx.calls.push(callInfo);
+    if (fn.type === 'member_expression') {
+      const cbDef = extractCallbackDefinition(node, fn);
+      if (cbDef) ctx.definitions.push(cbDef);
+    }
+  }
+}
+
+function handleImportStmt(node, ctx) {
+  const isTypeOnly = node.text.startsWith('import type');
+  const source = node.childForFieldName('source') || findChild(node, 'string');
+  if (source) {
+    const modPath = source.text.replace(/['"]/g, '');
+    const names = extractImportNames(node);
+    ctx.imports.push({
+      source: modPath,
+      names,
+      line: node.startPosition.row + 1,
+      typeOnly: isTypeOnly,
+    });
+  }
+}
+
+function handleExportStmt(node, ctx) {
+  const exportLine = node.startPosition.row + 1;
+  const decl = node.childForFieldName('declaration');
+  if (decl) {
+    const declType = decl.type;
+    const kindMap = {
+      function_declaration: 'function',
+      class_declaration: 'class',
+      interface_declaration: 'interface',
+      type_alias_declaration: 'type',
+    };
+    const kind = kindMap[declType];
+    if (kind) {
+      const n = decl.childForFieldName('name');
+      if (n) ctx.exports.push({ name: n.text, kind, line: exportLine });
+    }
+  }
+  const source = node.childForFieldName('source') || findChild(node, 'string');
+  if (source && !decl) {
+    const modPath = source.text.replace(/['"]/g, '');
+    const reexportNames = extractImportNames(node);
+    const nodeText = node.text;
+    const isWildcard = nodeText.includes('export *') || nodeText.includes('export*');
+    ctx.imports.push({
+      source: modPath,
+      names: reexportNames,
+      line: exportLine,
+      reexport: true,
+      wildcardReexport: isWildcard && reexportNames.length === 0,
+    });
+  }
+}
+
+function handleExpressionStmt(node, ctx) {
+  const expr = node.child(0);
+  if (expr && expr.type === 'assignment_expression') {
+    const left = expr.childForFieldName('left');
+    const right = expr.childForFieldName('right');
+    handleCommonJSAssignment(left, right, node, ctx.imports);
+  }
 }
 
 // ── Child extraction helpers ────────────────────────────────────────────────
@@ -816,6 +851,103 @@ function extractImplementsFromNode(node) {
     if (child.childCount > 0) result.push(...extractImplementsFromNode(child));
   }
   return result;
+}
+
+// ── Type inference helpers ───────────────────────────────────────────────
+
+function extractSimpleTypeName(typeAnnotationNode) {
+  if (!typeAnnotationNode) return null;
+  for (let i = 0; i < typeAnnotationNode.childCount; i++) {
+    const child = typeAnnotationNode.child(i);
+    if (!child) continue;
+    const t = child.type;
+    if (t === 'type_identifier' || t === 'identifier') return child.text;
+    if (t === 'generic_type') return child.child(0)?.text || null;
+    if (t === 'parenthesized_type') return extractSimpleTypeName(child);
+    // Skip union, intersection, and array types — too ambiguous
+  }
+  return null;
+}
+
+function extractNewExprTypeName(newExprNode) {
+  if (!newExprNode || newExprNode.type !== 'new_expression') return null;
+  const ctor = newExprNode.childForFieldName('constructor') || newExprNode.child(1);
+  if (!ctor) return null;
+  if (ctor.type === 'identifier') return ctor.text;
+  if (ctor.type === 'member_expression') {
+    const prop = ctor.childForFieldName('property');
+    return prop ? prop.text : null;
+  }
+  return null;
+}
+
+/**
+ * Extract variable-to-type assignments into a per-file type map.
+ *
+ * Values are `{ type: string, confidence: number }`:
+ *   - 1.0: explicit constructor (`new Foo()`)
+ *   - 0.9: type annotation (`: Foo`) or typed parameter
+ *   - 0.7: factory method call (`Foo.create()` — uppercase-first heuristic)
+ *
+ * Higher-confidence entries take priority when the same variable is seen twice.
+ */
+function extractTypeMapWalk(rootNode, typeMap) {
+  function setIfHigher(name, type, confidence) {
+    const existing = typeMap.get(name);
+    if (!existing || confidence > existing.confidence) {
+      typeMap.set(name, { type, confidence });
+    }
+  }
+
+  function walk(node, depth) {
+    if (depth >= 200) return;
+    const t = node.type;
+    if (t === 'variable_declarator') {
+      const nameN = node.childForFieldName('name');
+      if (nameN && nameN.type === 'identifier') {
+        const typeAnno = findChild(node, 'type_annotation');
+        if (typeAnno) {
+          const typeName = extractSimpleTypeName(typeAnno);
+          if (typeName) setIfHigher(nameN.text, typeName, 0.9);
+        }
+        const valueN = node.childForFieldName('value');
+        if (valueN) {
+          // Constructor: const x = new Foo() → confidence 1.0
+          if (valueN.type === 'new_expression') {
+            const ctorType = extractNewExprTypeName(valueN);
+            if (ctorType) setIfHigher(nameN.text, ctorType, 1.0);
+          }
+          // Factory method: const x = Foo.create() → confidence 0.7
+          else if (valueN.type === 'call_expression') {
+            const fn = valueN.childForFieldName('function');
+            if (fn && fn.type === 'member_expression') {
+              const obj = fn.childForFieldName('object');
+              if (obj && obj.type === 'identifier') {
+                const objName = obj.text;
+                if (objName[0] !== objName[0].toLowerCase() && !BUILTIN_GLOBALS.has(objName)) {
+                  setIfHigher(nameN.text, objName, 0.7);
+                }
+              }
+            }
+          }
+        }
+      }
+    } else if (t === 'required_parameter' || t === 'optional_parameter') {
+      const nameNode =
+        node.childForFieldName('pattern') || node.childForFieldName('left') || node.child(0);
+      if (nameNode && nameNode.type === 'identifier') {
+        const typeAnno = findChild(node, 'type_annotation');
+        if (typeAnno) {
+          const typeName = extractSimpleTypeName(typeAnno);
+          if (typeName) setIfHigher(nameNode.text, typeName, 0.9);
+        }
+      }
+    }
+    for (let i = 0; i < node.childCount; i++) {
+      walk(node.child(i), depth + 1);
+    }
+  }
+  walk(rootNode, 0);
 }
 
 function extractReceiverName(objNode) {
