@@ -160,8 +160,8 @@ If `AUTO_FIX` was set:
 Summarize all changes made:
 1. List each package updated/fixed
 2. Run `npm test` to verify nothing broke
-3. If tests pass and `STASH_CREATED` is `0`: drop the saved state (`git stash drop`)
-   If tests pass and `STASH_CREATED` is `1`: discard manifest changes with `git checkout -- package.json package-lock.json` (no stash entry exists)
+3. If tests pass and `STASH_CREATED` is `0`: drop the saved state (`git stash drop`) — the npm changes are good, no rollback needed
+   If tests pass and `STASH_CREATED` is `1`: no action needed — the npm changes are good and no stash entry exists to clean up
 4. If tests fail and `STASH_CREATED` is `0`:
    - Restore the saved manifests: `git stash pop`
    - Restore `node_modules/` to match the reverted lock file: `npm ci`
