@@ -203,6 +203,7 @@ For each target in the current phase:
 
 13. **On failure (test, gate, or diff-review):**
     ```bash
+    git reset HEAD <changed files>
     git checkout -- <changed files>
     ```
     - Add to `execution.failedTargets` with reason: `{ "target": "<name>", "reason": "<why>", "phase": N }`
