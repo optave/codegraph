@@ -24,9 +24,9 @@ export async function watchProject(rootDir: string, opts: { engine?: string } = 
     throw new DbError('No graph.db found. Run `codegraph build` first.', { file: dbPath });
   }
 
-  // openDb comes from untyped JS — leave as `any` since consumers expect different DB types
-  // biome-ignore lint/suspicious/noExplicitAny: openDb is untyped JS
-  const db: any = openDb(dbPath);
+  const db = openDb(dbPath) as import('better-sqlite3').Database;
+  // Alias for functions expecting the project's BetterSqlite3Database interface
+  const typedDb = db as unknown as import('../../types.js').BetterSqlite3Database;
   initSchema(db);
   const engineOpts = { engine: (opts.engine || 'auto') as import('../../types.js').EngineMode };
   const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
@@ -47,7 +47,7 @@ export async function watchProject(rootDir: string, opts: { engine?: string } = 
     ),
     getNodeId: {
       get: (name: string, kind: string, file: string, line: number) => {
-        const id = getNodeIdQuery(db, name, kind, file, line);
+        const id = getNodeIdQuery(typedDb, name, kind, file, line);
         return id != null ? { id } : undefined;
       },
     },
