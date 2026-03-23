@@ -45,7 +45,10 @@ for i in $(seq 1 $FLAKY_RUNS); do
   if [ $exit_code -eq 124 ]; then
     echo '{"timeout":true}' > "$RUN_DIR/run-$i.json"
   elif [ $exit_code -ne 0 ] && [ $exit_code -ne 1 ]; then
-    echo "{\"error\":true,\"exit_code\":$exit_code,\"stderr\":\"$(cat "$RUN_DIR/run-$i.err")\"}" > "$RUN_DIR/run-$i.json"
+    # Use jq to safely JSON-escape stderr content (may contain quotes, newlines, backslashes)
+    stderr_content=$(cat "$RUN_DIR/run-$i.err")
+    jq -n --argjson code "$exit_code" --arg stderr "$stderr_content" \
+      '{"error":true,"exit_code":$code,"stderr":$stderr}' > "$RUN_DIR/run-$i.json"
   fi
 done
 ```
