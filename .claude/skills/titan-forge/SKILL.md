@@ -173,8 +173,11 @@ For each target in the current phase:
    **D4. Deletion audit:**
    If the diff deletes code (lines removed > 10), identify deleted symbols by comparing the pre-change file against removed lines:
    ```bash
-   # Get the pre-change version's symbols
-   codegraph where --file <(git show HEAD:<changed-file>) -T --json 2>/dev/null
+   # Get the pre-change version's symbols (temp file for shell portability)
+   D4_PRE_TMP=$(mktemp /tmp/titan-d4-pre-XXXXXX)
+   git show HEAD:<changed-file> > "$D4_PRE_TMP"
+   codegraph where --file "$D4_PRE_TMP" -T --json 2>/dev/null
+   rm -f "$D4_PRE_TMP"
    ```
    Cross-reference with `git diff --cached -- <changed-file>` to find symbols whose definitions appear only in removed lines (lines starting with `-`). For each deleted symbol:
    ```bash
