@@ -229,10 +229,9 @@ Compare directory cohesion scores from `structure`:
 - If any directory's cohesion dropped by > 0.2 → **WARN**: "Directory `<dir>` cohesion dropped from <X> to <Y>"
 - If a directory went from above 0.5 to below 0.3 → **FAIL**: "Directory `<dir>` became tangled (cohesion <X> → <Y>)"
 
-**A4. New drift warnings:**
-Compare drift warnings between snapshot and current:
-- New drift warning not in snapshot → **WARN** with details
-- Drift warning resolved → note as positive
+**A4. Resolved drift warnings (positive signal):**
+Compare drift warnings between snapshot and current. A1 already covers new drift warnings — A4 only reports resolved ones:
+- If any drift warning that was present in the snapshot is absent from `$TITAN_ARCH_DIR/current-drift.json` → note as positive: "Symbol `<name>` community drift resolved — architecture improved"
 
 ### Cleanup (MUST run even on failure or early exit)
 
