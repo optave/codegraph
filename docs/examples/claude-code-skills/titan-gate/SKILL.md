@@ -298,7 +298,7 @@ Aggregate all checks:
 
 > "GATE FAIL: [reason]. Graph restored, changes unstaged but preserved. Fix and re-stage."
 
-For structural-only failures (Steps 1-3, 6-8), do NOT auto-rollback — report and let user decide.
+For structural-only and semantic failures (Steps 1-3, 5-8), do NOT auto-rollback — report and let user decide.
 
 ### Snapshot cleanup on pipeline completion
 
