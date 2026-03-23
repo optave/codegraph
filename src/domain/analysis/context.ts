@@ -127,8 +127,8 @@ function buildCallees(
   return callees;
 }
 
-function buildCallers(db: BetterSqlite3Database, node: NodeRow, noTests: boolean) {
-  let callerRows: Array<RelatedNodeRow & { viaHierarchy?: string }> = findCallers(
+function fetchCallerRows(db: BetterSqlite3Database, node: NodeRow) {
+  const callerRows: Array<RelatedNodeRow & { viaHierarchy?: string }> = findCallers(
     db,
     node.id,
   ) as RelatedNodeRow[];
@@ -142,9 +142,16 @@ function buildCallers(db: BetterSqlite3Database, node: NodeRow, noTests: boolean
       callerRows.push(...extraCallers.map((c) => ({ ...c, viaHierarchy: rm.name })));
     }
   }
-  if (noTests) callerRows = callerRows.filter((c) => !isTestFile(c.file));
+  return callerRows;
+}
 
-  return callerRows.map((c) => ({
+function buildCallers(
+  callerRows: Array<RelatedNodeRow & { viaHierarchy?: string }>,
+  noTests: boolean,
+) {
+  const filtered = noTests ? callerRows.filter((c) => !isTestFile(c.file)) : callerRows;
+
+  return filtered.map((c) => ({
     name: c.name,
     kind: c.kind,
     file: c.file,
@@ -179,13 +186,11 @@ function buildImplementationInfo(db: BetterSqlite3Database, node: NodeRow, noTes
 }
 
 function buildRelatedTests(
-  db: BetterSqlite3Database,
-  node: NodeRow,
+  callerRows: RelatedNodeRow[],
   getFileLines: (file: string) => string[] | null,
   includeTests: boolean,
 ) {
-  const testCallerRows = findCallers(db, node.id) as RelatedNodeRow[];
-  const testCallers = testCallerRows.filter((c) => isTestFile(c.file));
+  const testCallers = callerRows.filter((c) => isTestFile(c.file));
 
   const testsByFile = new Map<string, RelatedNodeRow[]>();
   for (const tc of testCallers) {
@@ -464,8 +469,9 @@ export function contextData(
         depth,
         displayOpts,
       });
-      const callers = buildCallers(db, node, noTests);
-      const relatedTests = buildRelatedTests(db, node, getFileLines, includeTests);
+      const allCallerRows = fetchCallerRows(db, node);
+      const callers = buildCallers(allCallerRows, noTests);
+      const relatedTests = buildRelatedTests(allCallerRows, getFileLines, includeTests);
       const complexityMetrics = getComplexityMetrics(db, node.id);
       const nodeChildren = getNodeChildrenSafe(db, node.id);
       const implInfo = buildImplementationInfo(db, node, noTests);

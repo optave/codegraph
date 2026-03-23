@@ -10,6 +10,7 @@ import {
   findNodeById,
   openReadonlyOrFail,
 } from '../../db/index.js';
+import { cachedStmt } from '../../db/repository/cached-stmt.js';
 import { evaluateBoundaries } from '../../features/boundaries.js';
 import { coChangeForFiles } from '../../features/cochange.js';
 import { ownersForFiles } from '../../features/owners.js';
@@ -18,8 +19,10 @@ import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
-import type { BetterSqlite3Database, NodeRow, RelatedNodeRow } from '../../types.js';
+import type { BetterSqlite3Database, NodeRow, RelatedNodeRow, StmtCache } from '../../types.js';
 import { findMatchingNodes } from './symbol-lookup.js';
+
+const _defsStmtCache: StmtCache<NodeRow> = new WeakMap();
 
 // --- Shared BFS: transitive callers ---
 
@@ -338,7 +341,9 @@ function findAffectedFunctions(
   noTests: boolean,
 ): NodeRow[] {
   const affectedFunctions: NodeRow[] = [];
-  const defsStmt = db.prepare(
+  const defsStmt = cachedStmt(
+    _defsStmtCache,
+    db,
     `SELECT * FROM nodes WHERE file = ? AND kind IN ('function', 'method', 'class') ORDER BY line`,
   );
   for (const [file, ranges] of changedRanges) {

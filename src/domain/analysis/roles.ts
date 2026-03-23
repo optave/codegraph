@@ -51,7 +51,9 @@ export function rolesData(
 
     const summary: Record<string, number> = {};
     for (const r of rows) {
-      summary[r.role as string] = (summary[r.role as string] || 0) + 1;
+      // SQL guarantees role IS NOT NULL
+      const role = r.role as string;
+      summary[role] = (summary[role] || 0) + 1;
     }
 
     const hc = new Map();

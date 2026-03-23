@@ -7,12 +7,25 @@ import {
   findNodesByFile,
   openReadonlyOrFail,
 } from '../../db/index.js';
+import { cachedStmt } from '../../db/repository/cached-stmt.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { resolveMethodViaHierarchy } from '../../shared/hierarchy.js';
 import { normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
-import type { BetterSqlite3Database, ImportEdgeRow, NodeRow, RelatedNodeRow } from '../../types.js';
+import type {
+  BetterSqlite3Database,
+  ImportEdgeRow,
+  NodeRow,
+  RelatedNodeRow,
+  StmtCache,
+} from '../../types.js';
 import { findMatchingNodes } from './symbol-lookup.js';
+
+type UpstreamRow = { id: number; name: string; kind: string; file: string; line: number };
+type NodeByIdRow = { name: string; kind: string; file: string; line: number };
+
+const _upstreamStmtCache: StmtCache<UpstreamRow> = new WeakMap();
+const _nodeByIdStmtCache: StmtCache<NodeByIdRow> = new WeakMap();
 
 export function fileDepsData(
   file: string,
@@ -71,11 +84,15 @@ function buildTransitiveCallers(
   const visited = new Set([nodeId]);
   let frontier = callers;
 
-  const upstreamStmt = db.prepare(`
+  const upstreamStmt = cachedStmt(
+    _upstreamStmtCache,
+    db,
+    `
     SELECT n.id, n.name, n.kind, n.file, n.line
     FROM edges e JOIN nodes n ON e.source_id = n.id
     WHERE e.target_id = ? AND e.kind = 'calls'
-  `);
+  `,
+  );
 
   for (let d = 2; d <= depth; d++) {
     const nextFrontier: typeof frontier = [];
@@ -328,8 +345,12 @@ function reconstructPath(
   pathIds: number[],
   parent: Map<number, { parentId: number; edgeKind: string }>,
 ) {
-  const nodeCache = new Map<number, { name: string; kind: string; file: string; line: number }>();
-  const nodeByIdStmt = db.prepare('SELECT name, kind, file, line FROM nodes WHERE id = ?');
+  const nodeCache = new Map<number, NodeByIdRow>();
+  const nodeByIdStmt = cachedStmt(
+    _nodeByIdStmtCache,
+    db,
+    'SELECT name, kind, file, line FROM nodes WHERE id = ?',
+  );
   const getNode = (id: number) => {
     if (nodeCache.has(id)) return nodeCache.get(id)!;
     const row = nodeByIdStmt.get(id) as {
