@@ -123,6 +123,9 @@ For **each** review comment — including minor suggestions, nits, style feedbac
 5. **If the fix is genuinely out of scope** for this PR, you MUST create a GitHub issue to track it before replying. Never reply with "acknowledged as follow-up" or "noted for later" without a tracked issue — untracked deferrals get lost and nobody will ever revisit them. "Genuinely out of scope" means the fix touches a different module not in the PR's diff, requires an architectural decision beyond the PR's mandate, or would introduce unrelated risk. Fixing a variable name, adding a null check, or adjusting a string in a file already in the diff is NOT out of scope — just do it.
 
    ```bash
+   # Ensure the follow-up label exists (safe to re-run)
+   gh label create "follow-up" --color "0e8a16" --description "Deferred from PR review" --repo optave/codegraph 2>/dev/null || true
+
    # Create a tracking issue for the deferred item
    gh issue create \
      --repo optave/codegraph \
