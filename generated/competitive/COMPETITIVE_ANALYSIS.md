@@ -245,16 +245,11 @@ Ranked by weighted score across 6 dimensions (each 1–5):
 - **LLVM IR support**: extends language coverage to any LLVM-compiled language (Rust, Swift, etc.)
 - **Type inference**: can analyze incomplete/partial code — our tree-sitter requires syntactically valid input
 
-### vs glimpse (#10, 349 stars — stagnant)
-- **LLM workflow optimization**: clipboard-first output + token counting + XML output mode — purpose-built for "code → LLM context"
-- **LSP-based call resolution**: compiler-grade accuracy vs our tree-sitter heuristic approach
-- **Web content processing**: can fetch URLs and convert HTML to markdown for context
-
 ### vs arbor (#8, 85 stars)
 - **Native Rust GUI**: Built-in desktop interface for interactive graph exploration — we have HTML viewer but no native GUI
 - **Fuzzy symbol search**: Levenshtein-scored symbol matching tolerates typos and partial names — our search requires exact or substring matches
 - **Built-in confidence scoring**: Graph edges carry confidence weights out of the box — we have confidence scoring on import resolution but not surfaced on all edge types
-- **Architectural role classification**: Automatic labeling of nodes by architectural role (controller, service, repository, etc.) — *(Gap closed: our `roles` command now classifies nodes as core, bridge, leaf, dead, utility)*
+- **Architectural role classification**: Automatic labeling of nodes by architectural role (controller, service, repository, etc.) — *(Gap closed: our `roles` command now classifies nodes as entry, core, utility, adapter, dead, leaf)*
 
 ### vs CKB (#9, 77 stars)
 - **Indexing accuracy**: SCIP provides compiler-grade cross-file references (type-aware), fundamentally more accurate than tree-sitter for supported languages
