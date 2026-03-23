@@ -437,38 +437,6 @@ fn extract_csharp_base_types(
                         });
                     }
                 }
-                "base_list" => {
-                    for j in 0..child.child_count() {
-                        if let Some(base) = child.child(j) {
-                            match base.kind() {
-                                "identifier" | "qualified_name" => {
-                                    symbols.classes.push(ClassRelation {
-                                        name: class_name.to_string(),
-                                        extends: Some(node_text(&base, source).to_string()),
-                                        implements: None,
-                                        line: start_line(node),
-                                    });
-                                }
-                                "generic_name" => {
-                                    let name = base
-                                        .child_by_field_name("name")
-                                        .or_else(|| base.child(0));
-                                    if let Some(name) = name {
-                                        symbols.classes.push(ClassRelation {
-                                            name: class_name.to_string(),
-                                            extends: Some(
-                                                node_text(&name, source).to_string(),
-                                            ),
-                                            implements: None,
-                                            line: start_line(node),
-                                        });
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
                 _ => {}
             }
         }
