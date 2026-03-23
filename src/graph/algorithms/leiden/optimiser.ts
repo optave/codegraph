@@ -466,7 +466,7 @@ function splitDisconnectedCommunities(g: GraphAdapter, partition: Partition): vo
             queue.push(w);
           }
         }
-        if (g.directed && g.inEdges) {
+        if (g.directed) {
           const inc: InEdgeEntry[] = g.inEdges[v]!;
           for (let k = 0; k < inc.length; k++) {
             const w: number = inc[k]!.from;
