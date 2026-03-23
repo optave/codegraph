@@ -209,7 +209,7 @@ Write a human-readable report to `generated/bench-check/BENCH_REPORT_<date>.md`:
 ```markdown
 # Benchmark Report — <date>
 
-**Version:** X.Y.Z | **Git ref:** abc1234 | **Threshold:** 15%
+**Version:** X.Y.Z | **Git ref:** abc1234 | **Threshold:** $THRESHOLD%
 
 ## Verdict: PASSED / FAILED
 
