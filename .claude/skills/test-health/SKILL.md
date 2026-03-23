@@ -107,7 +107,7 @@ Search for duplicate test descriptions within the same `describe` block — thes
 Run vitest with coverage and analyze:
 
 ```bash
-npx vitest run --coverage --coverage.reporter=json 2>&1
+npx vitest run --coverage --coverage.reporter=json-summary 2>&1
 ```
 
 ### 3a. Overall coverage
