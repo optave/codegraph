@@ -140,8 +140,8 @@ function countFilesByLanguage(
   return { total: fileNodes.length, languages: Object.keys(byLanguage).length, byLanguage };
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
 function findHotspots(
+  // biome-ignore lint/suspicious/noExplicitAny: db handle from better-sqlite3
   db: any,
   noTests: boolean,
   limit: number,
@@ -173,15 +173,15 @@ function getEmbeddingsInfo(db: any): object | null {
     // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
     const count = db.prepare('SELECT COUNT(*) as c FROM embeddings').get() as any;
     if (count && count.c > 0) {
-      const meta: Record<string, string> = {};
+      const meta: { model?: string; dim?: string; built_at?: string } = {};
       // biome-ignore lint/suspicious/noExplicitAny: untyped SQLite row
       const metaRows = db.prepare('SELECT key, value FROM embedding_meta').all() as any[];
-      for (const r of metaRows) meta[r.key] = r.value;
+      for (const r of metaRows) (meta as Record<string, string>)[r.key] = r.value;
       return {
         count: count.c,
-        model: meta['model'] || null,
-        dim: meta['dim'] ? parseInt(meta['dim'], 10) : null,
-        builtAt: meta['built_at'] || null,
+        model: meta.model || null,
+        dim: meta.dim ? parseInt(meta.dim, 10) : null,
+        builtAt: meta.built_at || null,
       };
     }
   } catch (e) {
@@ -278,13 +278,13 @@ function countRoles(db: any, noTests: boolean): Record<string, number> {
       .prepare('SELECT role, COUNT(*) as c FROM nodes WHERE role IS NOT NULL GROUP BY role')
       .all();
   }
-  const roles: Record<string, number> = {};
+  const roles: Record<string, number> & { dead?: number } = {};
   let deadTotal = 0;
   for (const r of roleRows) {
     roles[r.role] = r.c;
     if (r.role.startsWith(DEAD_ROLE_PREFIX)) deadTotal += r.c;
   }
-  if (deadTotal > 0) roles['dead'] = deadTotal;
+  if (deadTotal > 0) roles.dead = deadTotal;
   return roles;
 }
 
@@ -358,9 +358,17 @@ export function moduleMapData(
       coupling: n.in_edges + n.out_edges,
     }));
 
-    const totalNodes = db.prepare('SELECT COUNT(*) as c FROM nodes').get().c;
-    const totalEdges = db.prepare('SELECT COUNT(*) as c FROM edges').get().c;
-    const totalFiles = db.prepare("SELECT COUNT(*) as c FROM nodes WHERE kind = 'file'").get().c;
+    const totalNodes = (
+      db.prepare<{ c: number }>('SELECT COUNT(*) as c FROM nodes').get() as { c: number }
+    ).c;
+    const totalEdges = (
+      db.prepare<{ c: number }>('SELECT COUNT(*) as c FROM edges').get() as { c: number }
+    ).c;
+    const totalFiles = (
+      db.prepare<{ c: number }>("SELECT COUNT(*) as c FROM nodes WHERE kind = 'file'").get() as {
+        c: number;
+      }
+    ).c;
 
     return { limit, topNodes, stats: { totalFiles, totalNodes, totalEdges } };
   } finally {

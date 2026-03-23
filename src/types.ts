@@ -1661,7 +1661,7 @@ export interface SqliteStatement<TRow = unknown> {
 /** Minimal database interface matching the better-sqlite3 surface we use. */
 export interface BetterSqlite3Database {
   prepare<TRow = unknown>(sql: string): SqliteStatement<TRow>;
-  exec(sql: string): void;
+  exec(sql: string): this;
   close(): void;
   pragma(sql: string): unknown;
   // biome-ignore lint/suspicious/noExplicitAny: must be compatible with better-sqlite3's generic Transaction<F> return type
