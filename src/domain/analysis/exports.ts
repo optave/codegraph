@@ -134,11 +134,13 @@ function exportsFileImpl(
     _hasExportedColCache.set(db, hasExportedCol);
   }
 
-  const exportedNodesStmt = cachedStmt(
-    _exportedNodesStmtCache,
-    db,
-    "SELECT * FROM nodes WHERE file = ? AND kind != 'file' AND exported = 1 ORDER BY line",
-  );
+  const exportedNodesStmt = hasExportedCol
+    ? cachedStmt(
+        _exportedNodesStmtCache,
+        db,
+        "SELECT * FROM nodes WHERE file = ? AND kind != 'file' AND exported = 1 ORDER BY line",
+      )
+    : null;
   const consumersStmt = cachedStmt(
     _consumersStmtCache,
     db,
@@ -164,7 +166,7 @@ function exportsFileImpl(
     let exported: NodeRow[];
     if (hasExportedCol) {
       // Use the exported column populated during build
-      exported = exportedNodesStmt.all(fn.file) as NodeRow[];
+      exported = exportedNodesStmt!.all(fn.file) as NodeRow[];
     } else {
       // Fallback: symbols that have incoming calls from other files
       const exportedIds = findCrossFileCallTargets(db, fn.file) as Set<number>;
@@ -210,7 +212,7 @@ function exportsFileImpl(
     for (const reexTarget of reexportTargets) {
       let targetExported: NodeRow[];
       if (hasExportedCol) {
-        targetExported = exportedNodesStmt.all(reexTarget.file) as NodeRow[];
+        targetExported = exportedNodesStmt!.all(reexTarget.file) as NodeRow[];
       } else {
         // Fallback: same heuristic as direct exports — symbols called from other files
         const targetSymbols = findNodesByFile(db, reexTarget.file) as NodeRow[];
