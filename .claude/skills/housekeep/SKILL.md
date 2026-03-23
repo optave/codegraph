@@ -85,6 +85,7 @@ Find untracked files larger than 1MB:
 ```bash
 git ls-files --others --exclude-standard | while read f; do
   size=$(stat --format='%s' "$f" 2>/dev/null || stat -f '%z' "$f" 2>/dev/null)
+  [ -z "$size" ] && continue
   if [ "$size" -gt 1048576 ]; then echo "$f ($size bytes)"; fi
 done
 ```
