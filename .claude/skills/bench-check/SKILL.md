@@ -153,6 +153,13 @@ For each metric in the current run:
 
 ## Phase 4 — Verdict
 
+### Pre-condition check
+Before evaluating verdicts, verify that at least one benchmark produced valid numeric results.
+If `metrics` is empty (all suites produced `"error"` or `"timeout"` records):
+- Print: `BENCH-CHECK ABORTED — no valid benchmark results (all suites failed or timed out)`
+- Do NOT proceed to Phase 5 — the baseline must not be overwritten with empty data
+- Stop here and skip to Phase 6 to write the report with verdict `ABORTED`.
+
 Based on comparison results:
 
 ### No regressions found
