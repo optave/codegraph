@@ -117,7 +117,7 @@ git log HEAD..origin/main --oneline
 ```
 
 If main has new commits:
-- If on main: `git pull origin main`
+- If on main: `git pull --no-rebase origin main`
 - If on a feature branch: inform the user how many commits behind main they are
   - Suggest: `git merge origin/main` (never rebase — per project rules)
 
