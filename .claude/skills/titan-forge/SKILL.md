@@ -18,6 +18,7 @@ Your goal: read `sync.json`, find the next incomplete execution phase, make the 
 - `--phase N` → jump to specific phase
 - `--target <name>` → run single target only (for retrying failures)
 - `--dry-run` → show what would be done without changing code
+- `--yes` → skip confirmation prompt (typically passed by `/titan-run` orchestrator)
 
 ---
 
@@ -54,7 +55,8 @@ Your goal: read `sync.json`, find the next incomplete execution phase, make the 
        "failedTargets": [],
        "commits": [],
        "currentSubphase": null,
-       "completedSubphases": []
+       "completedSubphases": [],
+       "diffWarnings": []
      }
    }
    ```
@@ -200,10 +202,12 @@ For each target in the current phase:
     ```
     If tests fail → go to rollback (step 13).
 
+    > **Note:** Gate (Step 11) also runs tests. This pre-gate test is a fast-fail optimization — it catches obvious breakage before running the full gate checks (codegraph analysis, semantic assertions, arch snapshot). For projects with fast test suites the duplication is negligible; for slow suites, the tradeoff is: catch failures ~2x faster at the cost of ~2x test time on passing targets.
+
 11. **Run /titan-gate:**
     Use the Skill tool to invoke `titan-gate`.
     - If FAIL on **test/lint/build** (gate auto-rolls back staged changes) → go to rollback (step 13) to also revert working tree.
-    - If FAIL on **semantic/structural** (gate preserves staged changes per its no-rollback rule) → unstage with `git reset HEAD <files> && git checkout -- <files>`, add to `execution.failedTargets` with reason, log the gate report, and continue to the next target. Do NOT go to step 13 — gate left staged changes intact for potential in-place fixing, and step 13 would silently destroy them.
+    - If FAIL on **semantic/structural** (gate does not auto-rollback its staging area, but forge must clean up for the next target) → unstage with `git reset HEAD <files> && git checkout -- <files>`, add to `execution.failedTargets` with reason, log the gate report, and continue to the next target. Do NOT go to step 13 — that step is for test/gate failures where gate already unstaged; going there again would attempt a duplicate rollback.
 
 12. **On success:**
     ```bash
