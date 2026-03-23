@@ -120,11 +120,12 @@ For **each** review comment — including minor suggestions, nits, style feedbac
 2. **Read the relevant code** at the file and line referenced.
 3. **Make the change.** Even if the comment is marked as "nit" or "suggestion" or "minor" — address it. The goal is zero outstanding comments.
 4. **If you disagree** with a suggestion (e.g., it would introduce a bug or contradicts project conventions), do NOT silently ignore it. Reply to the comment explaining why you chose a different approach.
-5. **If the fix is genuinely out of scope** for this PR (e.g., it affects a different module not touched by this PR, or requires a design decision beyond the PR's purpose), you MUST create a GitHub issue to track it before replying. Never reply with "acknowledged as follow-up" or "noted for later" without a tracked issue — untracked deferrals get lost and nobody will ever revisit them.
+5. **If the fix is genuinely out of scope** for this PR, you MUST create a GitHub issue to track it before replying. Never reply with "acknowledged as follow-up" or "noted for later" without a tracked issue — untracked deferrals get lost and nobody will ever revisit them. "Genuinely out of scope" means the fix touches a different module not in the PR's diff, requires an architectural decision beyond the PR's mandate, or would introduce unrelated risk. Fixing a variable name, adding a null check, or adjusting a string in a file already in the diff is NOT out of scope — just do it.
 
    ```bash
    # Create a tracking issue for the deferred item
    gh issue create \
+     --repo optave/codegraph \
      --title "follow-up: <concise description of what needs to be done>" \
      --body "$(cat <<'EOF'
    Deferred from PR #<number> review.
@@ -137,9 +138,13 @@ For **each** review comment — including minor suggestions, nits, style feedbac
      --label "follow-up"
    ```
 
-   Then reply to the reviewer comment referencing the issue:
+   Then reply to the reviewer comment referencing the issue. Use the same reply mechanism as step 6 below — inline PR review comments use `/pulls/<number>/comments/<comment-id>/replies`, top-level review bodies and issue-style comments use `/issues/<number>/comments`:
    ```bash
+   # For inline PR review comments:
    gh api repos/optave/codegraph/pulls/<number>/comments/<comment-id>/replies \
+     -f body="Out of scope for this PR — tracked in #<issue-number>"
+   # For top-level review bodies or issue-style comments:
+   gh api repos/optave/codegraph/issues/<number>/comments \
      -f body="Out of scope for this PR — tracked in #<issue-number>"
    ```
 6. **Reply to each comment** explaining what you did. The reply mechanism depends on where the comment lives:
