@@ -41,8 +41,11 @@ Run the full test suite `FLAKY_RUNS` times and track per-test pass/fail:
 RUN_DIR=$(mktemp -d /tmp/test-health-XXXXXX)
 for i in $(seq 1 $FLAKY_RUNS); do
   timeout 180 npx vitest run --reporter=json > "$RUN_DIR/run-$i.json" 2>"$RUN_DIR/run-$i.err"
-  if [ $? -eq 124 ]; then
+  exit_code=$?
+  if [ $exit_code -eq 124 ]; then
     echo '{"timeout":true}' > "$RUN_DIR/run-$i.json"
+  elif [ $exit_code -ne 0 ] && [ $exit_code -ne 1 ]; then
+    echo "{\"error\":true,\"exit_code\":$exit_code,\"stderr\":\"$(cat "$RUN_DIR/run-$i.err")\"}" > "$RUN_DIR/run-$i.json"
   fi
 done
 ```
