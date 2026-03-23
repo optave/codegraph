@@ -84,7 +84,14 @@ If `.codegraph/titan/titan-state.json` should exist at this point (i.e., we're p
 ```bash
 node -e "try { JSON.parse(require('fs').readFileSync('.codegraph/titan/titan-state.json','utf8')); console.log('OK'); } catch(e) { console.log('CORRUPT: '+e.message); process.exit(1); }"
 ```
-- If **CORRUPT** → attempt recovery from backup (see State Backup below). If no backup → stop: "State file corrupted with no backup. Run `/titan-reset` and start over."
+- If **CORRUPT** → attempt recovery from backup:
+  1. Check if `.codegraph/titan/titan-state.json.bak` exists.
+  2. If the backup exists, validate it is valid JSON:
+     ```bash
+     node -e "try { JSON.parse(require('fs').readFileSync('.codegraph/titan/titan-state.json.bak','utf8')); console.log('BACKUP OK'); } catch(e) { console.log('BACKUP CORRUPT: '+e.message); process.exit(1); }"
+     ```
+  3. If the backup is valid → restore it: `cp .codegraph/titan/titan-state.json.bak .codegraph/titan/titan-state.json`
+  4. If the backup is also corrupt or missing → stop: "State file corrupted with no valid backup. Run `/titan-reset` and start over."
 
 ### G4. State backup
 Before every sub-agent dispatch, back up the current state file:
