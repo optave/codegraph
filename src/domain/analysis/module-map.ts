@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { openReadonlyOrFail, testFilterSQL } from '../../db/index.js';
+import { cachedStmt } from '../../db/repository/cached-stmt.js';
 import { loadConfig } from '../../infrastructure/config.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { DEAD_ROLE_PREFIX } from '../../shared/kinds.js';
-import type { BetterSqlite3Database } from '../../types.js';
+import type { BetterSqlite3Database, StmtCache } from '../../types.js';
 import { findCycles } from '../graph/cycles.js';
 import { LANGUAGE_REGISTRY } from '../parser.js';
 
@@ -44,11 +45,15 @@ export const FALSE_POSITIVE_CALLER_THRESHOLD = 20;
 // Section helpers
 // ---------------------------------------------------------------------------
 
+const _fileNodesStmt: StmtCache<{ id: number; file: string }> = new WeakMap();
+const _allNodesIdFileStmt: StmtCache<{ id: number; file: string }> = new WeakMap();
+
 function buildTestFileIds(db: BetterSqlite3Database): Set<number> {
-  const allFileNodes = db.prepare("SELECT id, file FROM nodes WHERE kind = 'file'").all() as Array<{
-    id: number;
-    file: string;
-  }>;
+  const allFileNodes = cachedStmt(
+    _fileNodesStmt,
+    db,
+    "SELECT id, file FROM nodes WHERE kind = 'file'",
+  ).all();
   const testFileIds = new Set<number>();
   const testFiles = new Set<string>();
   for (const n of allFileNodes) {
@@ -57,10 +62,7 @@ function buildTestFileIds(db: BetterSqlite3Database): Set<number> {
       testFiles.add(n.file);
     }
   }
-  const allNodes = db.prepare('SELECT id, file FROM nodes').all() as Array<{
-    id: number;
-    file: string;
-  }>;
+  const allNodes = cachedStmt(_allNodesIdFileStmt, db, 'SELECT id, file FROM nodes').all();
   for (const n of allNodes) {
     if (testFiles.has(n.file)) testFileIds.add(n.id);
   }
