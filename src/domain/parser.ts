@@ -509,10 +509,7 @@ export async function parseFileAuto(
     const patched = patchNativeResult(result);
     // Only backfill typeMap for TS/TSX — JS files have no type annotations,
     // and the native engine already handles `new Expr()` patterns.
-    if (
-      (!patched.typeMap || patched.typeMap.size === 0) &&
-      TS_BACKFILL_EXTS.has(path.extname(filePath))
-    ) {
+    if (patched.typeMap.size === 0 && TS_BACKFILL_EXTS.has(path.extname(filePath))) {
       const { typeMap, backfilled } = await backfillTypeMap(filePath, source);
       patched.typeMap = typeMap;
       if (backfilled) patched._typeMapBackfilled = true;
@@ -550,7 +547,7 @@ export async function parseFilesAuto(
       const patched = patchNativeResult(r);
       const relPath = path.relative(rootDir, r.file).split(path.sep).join('/');
       result.set(relPath, patched);
-      if (!patched.typeMap || patched.typeMap.size === 0) {
+      if (patched.typeMap.size === 0) {
         needsTypeMap.push({ filePath: r.file, relPath });
       }
     }
@@ -664,10 +661,7 @@ export async function parseFileIncremental(
     const patched = patchNativeResult(result);
     // Only backfill typeMap for TS/TSX — JS files have no type annotations,
     // and the native engine already handles `new Expr()` patterns.
-    if (
-      (!patched.typeMap || patched.typeMap.size === 0) &&
-      TS_BACKFILL_EXTS.has(path.extname(filePath))
-    ) {
+    if (patched.typeMap.size === 0 && TS_BACKFILL_EXTS.has(path.extname(filePath))) {
       const { typeMap, backfilled } = await backfillTypeMap(filePath, source);
       patched.typeMap = typeMap;
       if (backfilled) patched._typeMapBackfilled = true;
