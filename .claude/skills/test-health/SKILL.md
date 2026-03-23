@@ -145,7 +145,7 @@ Find files with < 50% line coverage. For each:
 Compare against `main` branch to find recently changed files:
 
 ```bash
-git diff --name-only main...HEAD -- src/
+git diff --name-only origin/main...HEAD -- src/
 ```
 
 For each changed source file, check if:
