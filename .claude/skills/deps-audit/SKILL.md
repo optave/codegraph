@@ -25,6 +25,11 @@ Audit the project's dependency tree for security vulnerabilities, outdated packa
    STASH_CREATED=$?
    ```
    Track `STASH_CREATED` — when `0`, a stash entry was actually created; when `1`, the files had no changes so nothing was stashed.
+   If `STASH_CREATED` is `0`, immediately capture the stash ref for later use:
+   ```bash
+   STASH_REF=$(git stash list --format='%gd %s' | grep 'deps-audit-backup' | head -1 | awk '{print $1}')
+   ```
+   Use `$STASH_REF` (not `stash@{0}`) in all later stash drop/pop commands to avoid targeting the wrong entry if other stashes are pushed in the interim.
 
 ## Phase 1 — Security Vulnerabilities
 
@@ -160,10 +165,10 @@ If `AUTO_FIX` was set:
 Summarize all changes made:
 1. List each package updated/fixed
 2. Run `npm test` to verify nothing broke
-3. If tests pass and `STASH_CREATED` is `0`: drop the saved state (`git stash drop`) — the npm changes are good, no rollback needed
+3. If tests pass and `STASH_CREATED` is `0`: drop the saved state (`git stash drop $STASH_REF`) — the npm changes are good, no rollback needed
    If tests pass and `STASH_CREATED` is `1`: no action needed — the npm changes are good and no stash entry exists to clean up
 4. If tests fail and `STASH_CREATED` is `0`:
-   - Restore the saved manifests: `git stash pop`
+   - Restore the saved manifests: `git stash pop $STASH_REF`
    - Restore `node_modules/` to match the reverted lock file: `npm ci`
    - Report what failed
 5. If tests fail and `STASH_CREATED` is `1`:
@@ -176,6 +181,6 @@ Summarize all changes made:
 - **Never run `npm audit fix --force`** — breaking changes need human review
 - **Never remove a dependency** without asking the user, even if it appears unused — flag it in the report instead
 - **Always run tests** after any auto-fix changes
-- **If `--fix` causes test failures**, restore manifests from the saved state (git stash pop if `STASH_CREATED=0`, or `git checkout` if stash was a no-op) then run `npm ci` to resync `node_modules/`, and report the failure
+- **If `--fix` causes test failures**, restore manifests from the saved state (`git stash pop $STASH_REF` if `STASH_CREATED=0`, or `git checkout` if stash was a no-op) then run `npm ci` to resync `node_modules/`, and report the failure
 - Treat `optionalDependencies` separately — they're expected to fail on some platforms
 - The report goes in `generated/deps-audit/` — create the directory if it doesn't exist
