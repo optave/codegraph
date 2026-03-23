@@ -584,7 +584,7 @@ Artifacts:
 
 ## Rules
 
-- **You are the orchestrator, not the executor.** Never run codegraph commands, edit source files, or make commits yourself. Only spawn sub-agents and read state files. Exceptions (pure validation/snapshot, no code changes): the post-forge test run (V13), NDJSON integrity checks, and the pre-forge architectural snapshot capture (Step 3.5a) are run directly by the orchestrator.
+- **You are the orchestrator, not the executor.** Never run codegraph commands, edit source files, or make commits yourself. Only spawn sub-agents and read state files. Exceptions (pure validation/snapshot, no code changes): the post-forge test run (V13), NDJSON integrity checks, the V3 baseline snapshot check (`codegraph snapshot list`), and the pre-forge architectural snapshot capture (Step 3.5a) are run directly by the orchestrator.
 - **Run the Pre-Agent Gate (G1-G4) before EVERY sub-agent.** No exceptions.
 - **One sub-agent at a time.** Phases are sequential — recon before gauntlet, gauntlet before sync, sync before forge.
 - **Fresh context per sub-agent.** This is the whole point — each sub-agent gets a clean context window.
