@@ -165,7 +165,7 @@ If `AUTO_FIX` was set:
 Summarize all changes made:
 1. List each package updated/fixed
 2. Run `npm test` to verify nothing broke
-3. If tests pass and `STASH_CREATED` is `0`: drop the saved state (`git stash drop $STASH_REF`) — the npm changes are good, no rollback needed
+3. If tests pass and `STASH_CREATED` is `0`: pop and merge the saved state (`git stash pop $STASH_REF`) — this restores any pre-existing uncommitted changes alongside the npm fix results. If the pop causes conflicts, resolve them by keeping both the npm fixes and the pre-existing changes.
    If tests pass and `STASH_CREATED` is `1`: no action needed — the npm changes are good and no stash entry exists to clean up
 4. If tests fail and `STASH_CREATED` is `0`:
    - Restore the saved manifests: `git stash pop $STASH_REF`
