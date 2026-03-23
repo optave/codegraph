@@ -419,6 +419,7 @@ Set `stallCount = 0`, `maxStalls = 2` (forge stalls are more serious — fewer r
 
 ```
 previousCompletedPhases = execution.completedPhases (or [])
+previousCompletedTargets = execution.completedTargets (or [])
 iteration = 0
 
 while iteration < maxIterations:
@@ -466,13 +467,16 @@ while iteration < maxIterations:
     newCompletedTargets = execution.completedTargets (or [])
     newFailedTargets = execution.failedTargets (or [])
 
-    if newCompletedPhases == previousCompletedPhases:
+    if newCompletedPhases == previousCompletedPhases and len(newCompletedTargets) == len(previousCompletedTargets):
         stallCount += 1
-        Print: "WARNING: Forge iteration <iteration> did not complete phase <nextPhase> (stall <stallCount>/<maxStalls>)"
+        Print: "WARNING: Forge iteration <iteration> made no progress (stall <stallCount>/<maxStalls>)"
         if stallCount >= maxStalls:
             Stop: "Forge stalled on phase <nextPhase> for <maxStalls> consecutive iterations. Check titan-state.json → execution.failedTargets for details."
     else:
         stallCount = 0
+
+    previousCompletedPhases = newCompletedPhases
+    previousCompletedTargets = newCompletedTargets
 
     # V12. Commit audit — verify commits match expectations
     if headAfter != headBefore:
