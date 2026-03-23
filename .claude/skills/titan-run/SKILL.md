@@ -497,8 +497,6 @@ while iteration < maxIterations:
         Print: "Commits from this phase: git log --oneline <headBefore>..<headAfter>"
         Print: "Consider reverting: git revert <headBefore>..<headAfter>"
         Stop.
-
-    previousCompletedPhases = newCompletedPhases
 ```
 
 ### 4c. Post-loop validation
