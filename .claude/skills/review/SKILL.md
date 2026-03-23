@@ -26,21 +26,30 @@ Record each PR's number, branch, base, merge status, and CI state.
 
 ---
 
-## Step 2: Process Each PR
+## Step 2: Launch Parallel Subagents
 
-For **each** open PR, perform the following steps in order. Process PRs one at a time to avoid cross-contamination.
+Each PR is independent work — **launch one Agent subagent per PR, all in parallel.** Use `isolation: "worktree"` so each agent gets its own copy of the repo with no cross-PR contamination.
 
-### 2a. Switch to the PR branch
+Pass each agent the full PR processing instructions (Steps 2a–2i below) along with the PR number, branch, base, and current state from Step 1. The agent prompt must include **all** the rules from the Rules section at the bottom of this skill.
 
-Ensure the working tree is clean before switching to avoid cross-PR contamination:
-
-```bash
-if [ -n "$(git status --porcelain)" ]; then
-  git stash push -m "pre-checkout stash"
-fi
+```
+For each PR, launch an Agent with:
+- description: "Review PR #<number>"
+- isolation: "worktree"
+- prompt: <the full PR processing instructions below, with PR details filled in>
 ```
 
-Then check out the PR branch:
+Launch **all** PR agents in a single message (one tool call per PR) so they run concurrently. Do NOT wait for one to finish before starting the next.
+
+Each agent will return a result summary. Collect all results for the final summary table in Step 3.
+
+---
+
+## PR Processing Instructions (for each subagent)
+
+The following steps are executed by each subagent for its assigned PR.
+
+### 2a. Check out the PR branch
 
 ```bash
 gh pr checkout <number>
@@ -191,7 +200,7 @@ After addressing all comments for a PR:
 
 ### 2g. Re-trigger reviewers
 
-**Greptile:** Before re-triggering, check if your last reply to Greptile already has a positive emoji reaction (👍, ✅, 🎉, etc.) from `greptileai`. A positive reaction means Greptile is satisfied with your fix — do NOT re-trigger in that case, move on. Only re-trigger if there is no positive reaction on your last comment:
+**Greptile:** Before re-triggering, check if your last reply to Greptile already has a positive emoji reaction (thumbs up, check, party, etc.) from `greptileai`. A positive reaction means Greptile is satisfied with your fix — do NOT re-trigger in that case, move on. Only re-trigger if there is no positive reaction on your last comment:
 
 ```bash
 # Check reactions on your most recent comment to see if Greptile already approved
@@ -219,20 +228,37 @@ After re-triggering:
 1. Wait for the new reviews to come in (check after a reasonable interval).
 2. Fetch new comments again (repeat Step 2d).
 3. If there are **new** comments from Greptile or Claude, go back to Step 2e and address them.
-4. **Repeat this loop for a maximum of 3 rounds.** If after 3 rounds there are still actionable comments, mark the PR as "needs human review" in the summary table and move to the next PR.
+4. **Repeat this loop for a maximum of 3 rounds.** If after 3 rounds there are still actionable comments, mark the PR as "needs human review" in the result.
 5. Verify CI is still green after all changes.
+
+### 2i. Return result
+
+At the end of processing, the subagent MUST return a structured result with these fields so the main agent can build the summary table:
+
+```
+PR: #<number>
+Branch: <branch-name>
+Conflicts: resolved | none
+CI: green | red | pending
+Comments Addressed: <count>
+Reviewers Re-triggered: <list>
+Status: ready | needs-work | needs-human-review | skipped
+Notes: <any issues encountered>
+```
 
 ---
 
-## Step 3: Summary
+## Step 3: Collect Results and Summarize
 
-After processing all PRs, output a summary table:
+After **all** subagents complete, collect their results and output a summary table:
 
 ```
 | PR | Branch | Conflicts | CI | Comments Addressed | Reviewers Re-triggered | Status |
 |----|--------|-----------|----|--------------------|----------------------|--------|
 | #N | branch | resolved/none | green/red | N comments | greptile, claude | ready/needs-work |
 ```
+
+If any subagent failed or returned an error, note it in the Status column as `agent-error` with the failure reason.
 
 ---
 
@@ -242,7 +268,7 @@ After processing all PRs, output a summary table:
 - **Never force-push** unless fixing a commit message that fails commitlint. Amend + force-push is the only way to fix a pushed commit title (messages are part of the SHA). This is safe on feature branches. For all other problems, fix with a new commit.
 - **Address ALL comments from ALL reviewers** (Claude, Greptile, and humans), even minor/nit/optional ones. Leave zero unaddressed. Do not only respond to one reviewer and skip another.
 - **Always reply to comments** explaining what was done. Don't just fix silently. Every reviewer must see a reply on their feedback.
-- **Don't re-trigger Greptile if already approved.** If your last reply to a Greptile comment has a positive emoji reaction (👍, ✅, 🎉) from `greptileai`, it's already satisfied — skip re-triggering.
+- **Don't re-trigger Greptile if already approved.** If your last reply to a Greptile comment has a positive emoji reaction from `greptileai`, it's already satisfied — skip re-triggering.
 - **Only re-trigger Claude** if you addressed Claude's feedback specifically.
 - **No co-author lines** in commit messages.
 - **No Claude Code references** in commit messages or comments.
