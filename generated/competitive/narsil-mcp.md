@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-21
 **Competitors:** `@optave/codegraph` v3.2.0 (Apache-2.0) vs `postrv/narsil-mcp` v1.6.1 (Apache-2.0 OR MIT)
-**Context:** Both are Apache-2.0-licensed code analysis tools with MCP interfaces. Narsil-MCP is ranked #3 in our [competitive analysis](./COMPETITIVE_ANALYSIS.md) with a score of 4.5 vs codegraph's 4.5 at #5.
+**Context:** Both are Apache-2.0-licensed code analysis tools with MCP interfaces. Narsil-MCP is ranked #3 in our [competitive analysis](./COMPETITIVE_ANALYSIS.md) with a score of 4.5 vs codegraph's 4.5 at #4.
 
 ---
 
@@ -327,7 +327,7 @@ Codegraph's foundation document defines the problem as: *"Fast local analysis wi
 | Language support | 11 | 32 | Narsil |
 | Standalone CLI | 41 commands | Config/tools management only | Codegraph |
 | Programmatic API | Full JS API | None | Codegraph |
-| Community & maturity | New | Newer (Dec 2025), growing fast | Tie |
+| Community & maturity | New | Newer (Dec 2025); no activity since Feb 25 | Codegraph |
 | CI/CD readiness | Yes (`check --staged`) | No CI tooling | Codegraph |
 | Visualization | DOT/Mermaid/JSON/GraphML/GraphSON/Neo4j CSV + interactive HTML | Interactive Cytoscape.js web UI | Tie |
 | Search backends | FTS5 + HuggingFace local | Tantivy + TF-IDF + Voyage/OpenAI/ONNX | Narsil |

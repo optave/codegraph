@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-21
 **Competitors:** `@optave/codegraph` v3.2.0 (Apache-2.0) vs `joernio/joern` v4.x (Apache-2.0)
-**Context:** Both are Apache-2.0-licensed code analysis tools with CLI interfaces. Joern is ranked #2 in our [competitive analysis](./COMPETITIVE_ANALYSIS.md) with a score of 4.5 vs codegraph's 4.5 at #5.
+**Context:** Both are Apache-2.0-licensed code analysis tools with CLI interfaces. Joern is ranked #2 in our [competitive analysis](./COMPETITIVE_ANALYSIS.md) with a score of 4.5 vs codegraph's 4.5 at #4.
 
 ---
 
@@ -238,7 +238,7 @@ Codegraph's foundation document defines the problem as: *"Fast local analysis wi
 
 | Feature | Codegraph | Joern | Best Approach |
 |---------|-----------|-------|---------------|
-| **GitHub stars** | 32 (growing) | ~3,021 | **Joern** |
+| **GitHub stars** | Growing | ~3,021 | **Joern** |
 | **Contributors** | Small team | 75 | **Joern** |
 | **Release cadence** | As needed | **Daily automated releases** | **Joern** — impressive automation |
 | **Academic backing** | None | IEEE S&P 2014 paper (Test-of-Time Award 2024), TU Braunschweig, Stellenbosch University | **Joern** |
