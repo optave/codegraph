@@ -178,24 +178,29 @@ Read `.codegraph/titan/arch-snapshot.json` if it exists (created by `/titan-run`
 
 ### Capture current state
 
+Use `mktemp -d` to create a unique temporary directory that persists across Bash invocations (shell variables like `$TITAN_TMP_ID` do not survive between separate Bash tool calls):
+
 ```bash
-TITAN_TMP_ID="$(date +%s)-$$"
-codegraph communities -T --json > /tmp/titan-arch-${TITAN_TMP_ID}-current-communities.json
-codegraph structure --depth 2 --json > /tmp/titan-arch-${TITAN_TMP_ID}-current-structure.json
-codegraph communities --drift -T --json > /tmp/titan-arch-${TITAN_TMP_ID}-current-drift.json
+TITAN_ARCH_DIR=$(mktemp -d /tmp/titan-arch-XXXXXX)
+echo "$TITAN_ARCH_DIR" > .codegraph/titan/.arch-tmpdir
+codegraph communities -T --json > "$TITAN_ARCH_DIR/current-communities.json"
+codegraph structure --depth 2 --json > "$TITAN_ARCH_DIR/current-structure.json"
+codegraph communities --drift -T --json > "$TITAN_ARCH_DIR/current-drift.json"
 ```
 
+> The path is written to `.codegraph/titan/.arch-tmpdir` so subsequent Bash invocations can recover it via `TITAN_ARCH_DIR=$(cat .codegraph/titan/.arch-tmpdir)`.
+
 ### Compare
+
+In a new Bash invocation, recover the temp dir path first:
+```bash
+TITAN_ARCH_DIR=$(cat .codegraph/titan/.arch-tmpdir)
+```
 
 **A1. Community stability:**
 Use the drift output (which uses content-based matching, not raw IDs, to track community movements across runs):
 
-```bash
-# Compare current drift report against snapshot drift baseline
-# New drift warnings not present in arch-snapshot.json → side-effect restructuring
-```
-
-Read `.codegraph/titan/arch-snapshot.json → drift` (the pre-forge drift baseline) and compare against `/tmp/titan-arch-${TITAN_TMP_ID}-current-drift.json`:
+Read `.codegraph/titan/arch-snapshot.json → drift` (the pre-forge drift baseline) and compare against `$TITAN_ARCH_DIR/current-drift.json`:
 - For each **new** drift warning in current that was NOT present in the snapshot: if the drifted symbol was NOT touched in the diff → **WARN**: "Symbol `<name>` drifted community as a side effect"
 - If > 5 untouched symbols appear in new drift warnings → **FAIL**: "Significant community restructuring detected — <N> symbols drifted communities. This change may have unintended architectural impact."
 
@@ -222,9 +227,9 @@ Compare drift warnings between snapshot and current:
 ### Cleanup
 
 ```bash
-rm -f /tmp/titan-arch-${TITAN_TMP_ID}-current-communities.json \
-      /tmp/titan-arch-${TITAN_TMP_ID}-current-structure.json \
-      /tmp/titan-arch-${TITAN_TMP_ID}-current-drift.json
+TITAN_ARCH_DIR=$(cat .codegraph/titan/.arch-tmpdir)
+rm -rf "$TITAN_ARCH_DIR"
+rm -f .codegraph/titan/.arch-tmpdir
 ```
 
 ### Verdict integration
