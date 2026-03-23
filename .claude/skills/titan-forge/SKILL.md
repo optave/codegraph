@@ -171,7 +171,12 @@ For each target in the current phase:
    - Message says "extract X from Y" but diff only modifies Y without creating X → **DIFF FAIL**
 
    **D4. Deletion audit:**
-   If the diff deletes code (lines removed > 10):
+   If the diff deletes code (lines removed > 10), identify deleted symbols by comparing the pre-change file against removed lines:
+   ```bash
+   # Get the pre-change version's symbols
+   codegraph where --file <(git show HEAD:<changed-file>) -T --json 2>/dev/null
+   ```
+   Cross-reference with `git diff --cached -- <changed-file>` to find symbols whose definitions appear only in removed lines (lines starting with `-`). For each deleted symbol:
    ```bash
    codegraph fn-impact <deleted-symbol> -T --json 2>/dev/null
    ```

@@ -135,11 +135,7 @@ For each **exported** symbol in changed files:
 
 ### 5b. Import resolution integrity
 
-Verify that all imports still resolve after the change:
-
-```bash
-codegraph check --staged -T --json
-```
+From the `codegraph check` results already collected in Step 2 (which includes `--staged`), extract any `unresolved_import` warnings.
 
 If any `unresolved_import` warnings appear for files NOT changed in this commit → **FAIL**: "Change broke import resolution for <file>: <import>"
 
@@ -157,9 +153,10 @@ For each new dependency:
 
 If the change modifies an index/barrel file (e.g., `index.js`, `mod.rs`):
 
-Capture the pre-change export list from the committed version:
+Capture the pre-change export list from the committed version (write the temp path to a sidecar file so it persists across Bash invocations):
 ```bash
 BARREL_TMP=$(mktemp /tmp/titan-barrel-XXXXXX)
+echo "$BARREL_TMP" > .codegraph/titan/.barrel-tmp
 git show HEAD:<barrel-file> > "$BARREL_TMP"
 codegraph exports "$BARREL_TMP" -T --json
 ```
@@ -171,9 +168,11 @@ codegraph exports <barrel-file> -T --json
 
 Compare export count before and after. If exports were **accidentally dropped** (count decreased and the removed exports have callers) → **FAIL**.
 
-Clean up the temp file:
+Clean up the temp file (recover path from sidecar):
 ```bash
-rm -f "$BARREL_TMP"
+BARREL_TMP=$(cat .codegraph/titan/.barrel-tmp 2>/dev/null)
+if [ -n "$BARREL_TMP" ]; then rm -f "$BARREL_TMP"; fi
+rm -f .codegraph/titan/.barrel-tmp
 ```
 
 ---
