@@ -251,6 +251,12 @@ Ranked by weighted score across 6 dimensions (each 1–5):
 - **LSP-based call resolution**: compiler-grade accuracy vs our tree-sitter heuristic approach
 - **Web content processing**: can fetch URLs and convert HTML to markdown for context
 
+### vs arbor (#8, 85 stars)
+- **Native Rust GUI**: Built-in desktop interface for interactive graph exploration — we have HTML viewer but no native GUI
+- **Fuzzy symbol search**: Levenshtein-scored symbol matching tolerates typos and partial names — our search requires exact or substring matches
+- **Built-in confidence scoring**: Graph edges carry confidence weights out of the box — we have confidence scoring on import resolution but not surfaced on all edge types
+- **Architectural role classification**: Automatic labeling of nodes by architectural role (controller, service, repository, etc.) — *(Gap closed: our `roles` command now classifies nodes as core, bridge, leaf, dead, utility)*
+
 ### vs CKB (#8, 77 stars)
 - **Indexing accuracy**: SCIP provides compiler-grade cross-file references (type-aware), fundamentally more accurate than tree-sitter for supported languages
 - **Compound operations**: `explore`/`understand`/`prepareChange` batch multiple queries into one call — 83% token reduction. *(Gap closed: our `context`, `audit`, and `batch` commands now serve the same purpose)*
