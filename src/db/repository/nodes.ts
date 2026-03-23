@@ -59,7 +59,8 @@ export function findNodesForTriage(
   const kindsToUse = opts.kind ? [opts.kind] : ['function', 'method', 'class'];
   const q = new NodeQuery()
     .select(
-      `n.id, n.name, n.kind, n.file, n.line, n.end_line, n.role,
+      `n.id, n.name, n.kind, n.file, n.line, n.end_line,
+              n.parent_id, n.exported, n.qualified_name, n.scope, n.visibility, n.role,
               COALESCE(fi.cnt, 0) AS fan_in,
               COALESCE(fc.cognitive, 0) AS cognitive,
               COALESCE(fc.maintainability_index, 0) AS mi,
