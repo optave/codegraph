@@ -162,7 +162,11 @@ Summarize all changes made:
 1. List each package updated/fixed
 2. Run `npm test` to verify nothing broke
 3. If tests pass and `STASH_REF` is non-empty: pop and merge the saved state (`git stash pop $STASH_REF`) — this restores any pre-existing uncommitted changes alongside the npm fix results.
-   - If the pop applies cleanly: run `npm install` to re-sync `node_modules/` with the merged manifest, then confirm the project is consistent.
+   - If the pop applies cleanly:
+     a. Run `npm install` to re-sync `node_modules/` with the merged manifest.
+     b. Re-run `npm test` to confirm nothing broke with the merged dependency state.
+     c. If tests still pass: confirm the project is consistent.
+     d. If tests now fail: warn the user — the pre-existing manifest changes conflict with the audit fixes.
    - If the pop causes conflicts in `package.json`/`package-lock.json`: warn the user, leave conflict markers for manual resolution, and instruct: "After you resolve the conflicts, run `npm install` to re-sync `node_modules/` with the resolved lock file before committing."
    - For conflicts in other files, resolve them by keeping both the npm fixes and the pre-existing changes.
    If tests pass and `STASH_REF` is empty: no action needed — the npm changes are good and no stash entry exists to clean up
