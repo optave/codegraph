@@ -9,6 +9,7 @@ import type {
   NodeRowWithFanIn,
   QueryOpts,
   StmtCache,
+  TriageNodeRow,
   TriageQueryOpts,
 } from '../../types.js';
 import { buildFileConditionSQL, NodeQuery } from '../query-builder.js';
@@ -45,7 +46,7 @@ export function findNodesWithFanIn(
 export function findNodesForTriage(
   db: BetterSqlite3Database,
   opts: TriageQueryOpts = {},
-): NodeRow[] {
+): TriageNodeRow[] {
   if (opts.kind && !(EVERY_SYMBOL_KIND as readonly string[]).includes(opts.kind)) {
     throw new ConfigError(
       `Invalid kind: ${opts.kind} (expected one of ${EVERY_SYMBOL_KIND.join(', ')})`,
