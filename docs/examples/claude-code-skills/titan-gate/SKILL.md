@@ -104,8 +104,11 @@ npm run build 2>&1 || echo "BUILD_FAILED"
 (Skip if no `build` script.)
 
 ```bash
-# Detect test command from package.json scripts (npm test, yarn test, pnpm test, etc.)
-<test-runner> test 2>&1 || echo "TEST_FAILED"
+# Detect test command from package.json scripts
+testCmd=$(node -e "const p=require('./package.json');const s=p.scripts||{};const script=s.test?'test':s['test:ci']?'test:ci':null;if(!script){console.log('NO_TEST_SCRIPT');process.exit(0);}const fs=require('fs');const runner=fs.existsSync('yarn.lock')?'yarn':fs.existsSync('pnpm-lock.yaml')?'pnpm':fs.existsSync('bun.lockb')?'bun':'npm';console.log(runner+(script==='test'?' test':' run '+script));")
+if [ "$testCmd" != "NO_TEST_SCRIPT" ]; then
+  $testCmd 2>&1 || echo "TEST_FAILED"
+fi
 ```
 
 If any fail → overall verdict is FAIL → proceed to auto-rollback.
