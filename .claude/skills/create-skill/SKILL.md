@@ -18,9 +18,11 @@ Set `SKILL_NAME` to the provided name. Validate it is kebab-case (`^[a-z][a-z0-9
 
 ---
 
-## Phase 0 — Discovery
+## Phase 0 — Discovery & Pre-flight
 
-Before writing anything, gather requirements interactively. Ask the user these questions (all at once, not one-by-one):
+**Pre-flight:** Confirm you are in a git repository root (`git rev-parse --show-toplevel` should succeed). Validate `$ARGUMENTS` is set and matches kebab-case (`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`). If not, abort with a clear error.
+
+**Discovery:** Before writing anything, gather requirements interactively. Ask the user these questions (all at once, not one-by-one):
 
 1. **Purpose** — What does this skill do? (one paragraph)
 2. **Arguments** — What CLI arguments should it accept? (e.g. `--fix`, `--dry-run`, `<path>`)
@@ -32,7 +34,7 @@ Before writing anything, gather requirements interactively. Ask the user these q
 
 **Wait for the user's answers before proceeding.** Do not guess or assume.
 
-**Exit condition:** All 7 questions have answers. Purpose, arguments, phases, tools, artifacts, dangerous ops, and resume support are defined.
+**Exit condition:** Pre-flight passed (git repo confirmed, skill name validated). All 7 questions have answers. Purpose, arguments, phases, tools, artifacts, dangerous ops, and resume support are defined.
 
 ---
 
@@ -193,7 +195,7 @@ Every codegraph command or tool invocation in the procedure must be permitted by
 
 ### Pattern 9: No command redundancy
 
-If a phase runs a codegraph command and stores the result, later phases must reference that result — not re-run the command. Add a note: "Using <result> from Phase: <Name>".
+If a phase runs a codegraph command and stores the result, later phases must reference that result — not re-run the command. Add a note like: "Using `impact_report` from Phase: Impact Analysis".
 
 ### Pattern 10: Skip/resume flag validation
 
