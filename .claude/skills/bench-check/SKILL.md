@@ -187,6 +187,7 @@ Based on comparison results:
 
 **Skip this phase if `COMPARE_ONLY` is set.** Compare-only mode never writes or commits baselines.
 **Skip this phase if regressions were detected in Phase 4.** The baseline is only updated on a clean run.
+**Skip this phase if the ABORTED pre-condition was triggered in Phase 4.** The baseline must not be overwritten with empty data.
 
 When saving (initial run, `--save-baseline`, or passed comparison):
 
@@ -218,7 +219,7 @@ git diff --cached --quiet -- generated/bench-check/baseline.json generated/bench
 
 ## Phase 6 — Report
 
-**Skip this phase (write no report) if `COMPARE_ONLY` was set and no baseline existed.** That case was already handled in Phase 4 with an early exit — writing a "BASELINE SAVED" report here would be misleading since no baseline was saved.
+**Skip this phase (write no report) if `COMPARE_ONLY` was set and no baseline existed, AND the ABORTED pre-condition was not triggered.** That early-exit case was already handled in Phase 4 — writing a "BASELINE SAVED" report here would be misleading since no baseline was saved. When ABORTED, always write the ABORTED report regardless of other flags.
 
 Write a human-readable report to `generated/bench-check/BENCH_REPORT_<date>.md`.
 
