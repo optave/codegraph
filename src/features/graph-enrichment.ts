@@ -7,7 +7,7 @@ import {
   DEFAULT_NODE_COLORS,
   DEFAULT_ROLE_COLORS,
 } from '../presentation/colors.js';
-import { DEFAULT_CONFIG, renderPlotHTML } from '../presentation/viewer.js';
+import { DEFAULT_CONFIG, type PlotConfig, renderPlotHTML } from '../presentation/viewer.js';
 import type { BetterSqlite3Database } from '../types.js';
 
 // Re-export presentation utilities for backward compatibility
@@ -16,21 +16,6 @@ export { loadPlotConfig } from '../presentation/viewer.js';
 const DEFAULT_MIN_CONFIDENCE = 0.5;
 
 // ─── Data Preparation ─────────────────────────────────────────────────
-
-interface PlotConfig {
-  filter: {
-    kinds?: string[] | null;
-    files?: string[] | null;
-    roles?: string[] | null;
-  };
-  colorBy?: string;
-  nodeColors: Record<string, string>;
-  roleColors: Record<string, string>;
-  riskThresholds?: { highBlastRadius?: number; lowMI?: number };
-  seedStrategy?: string;
-  seedCount?: number;
-  title?: string;
-}
 
 interface VisNode {
   id: number | string;
@@ -75,7 +60,7 @@ export function prepareGraphData(
   const fileLevel = opts.fileLevel !== false;
   const noTests = opts.noTests || false;
   const minConf = opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
-  const cfg = opts.config || (DEFAULT_CONFIG as unknown as PlotConfig);
+  const cfg = opts.config || DEFAULT_CONFIG;
 
   return fileLevel
     ? prepareFileLevelData(db, noTests, minConf, cfg)
@@ -125,11 +110,11 @@ function prepareFunctionLevelData(
   if (noTests)
     edges = edges.filter((e) => !isTestFile(e.source_file) && !isTestFile(e.target_file));
 
-  if (cfg.filter.kinds) {
+  if (cfg.filter?.kinds) {
     const kinds = new Set(cfg.filter.kinds);
     edges = edges.filter((e) => kinds.has(e.source_kind) && kinds.has(e.target_kind));
   }
-  if (cfg.filter.files) {
+  if (cfg.filter?.files) {
     const patterns = cfg.filter.files;
     edges = edges.filter(
       (e) =>
@@ -165,7 +150,7 @@ function prepareFunctionLevelData(
     }
   }
 
-  if (cfg.filter.roles) {
+  if (cfg.filter?.roles) {
     const roles = new Set(cfg.filter.roles);
     for (const [id, n] of nodeMap) {
       if (n.role === null || !roles.has(n.role)) nodeMap.delete(id);
@@ -253,12 +238,12 @@ function prepareFunctionLevelData(
 
     const color: string =
       cfg.colorBy === 'role' && n.role
-        ? cfg.roleColors[n.role] ||
+        ? cfg.roleColors?.[n.role] ||
           (DEFAULT_ROLE_COLORS as Record<string, string>)[n.role] ||
           '#ccc'
         : cfg.colorBy === 'community' && community !== null
           ? COMMUNITY_COLORS[community % COMMUNITY_COLORS.length] || '#ccc'
-          : cfg.nodeColors[n.kind] ||
+          : cfg.nodeColors?.[n.kind] ||
             (DEFAULT_NODE_COLORS as Record<string, string>)[n.kind] ||
             '#ccc';
 
@@ -371,7 +356,7 @@ function prepareFileLevelData(
     const color: string =
       cfg.colorBy === 'community' && community !== null
         ? COMMUNITY_COLORS[community % COMMUNITY_COLORS.length] || '#ccc'
-        : cfg.nodeColors['file'] ||
+        : cfg.nodeColors?.['file'] ||
           (DEFAULT_NODE_COLORS as Record<string, string>)['file'] ||
           '#ccc';
 
@@ -425,7 +410,7 @@ export function generatePlotHTML(
     config?: PlotConfig;
   } = {},
 ): string {
-  const cfg = opts.config || (DEFAULT_CONFIG as unknown as PlotConfig);
+  const cfg = opts.config || DEFAULT_CONFIG;
   const data = prepareGraphData(db, opts);
   return renderPlotHTML(data, cfg);
 }
