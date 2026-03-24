@@ -404,7 +404,7 @@ Execution plan summary:
 
 Total: <N> phases, <N> targets, <N> estimated commits
 
-Architectural snapshot captured (for post-change comparison).
+Architectural snapshot: <captured | FAILED — gate A1/A3/A4 will be skipped>
 
 Validation layers per commit:
   1. Diff Review — does the change match the gauntlet recommendation and sync plan?
