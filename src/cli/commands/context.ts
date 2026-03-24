@@ -24,7 +24,7 @@ export const command: CommandDefinition = {
     }
   },
   execute([name], opts, ctx) {
-    context(name, opts.db, {
+    context(name!, opts.db, {
       depth: parseInt(opts.depth as string, 10),
       file: opts.file,
       kind: opts.kind,

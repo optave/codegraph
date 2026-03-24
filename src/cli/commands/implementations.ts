@@ -21,7 +21,7 @@ export const command: CommandDefinition = {
     }
   },
   execute([name], opts, ctx) {
-    implementations(name, opts.db, {
+    implementations(name!, opts.db, {
       file: opts.file,
       kind: opts.kind,
       ...ctx.resolveQueryOpts(opts),
