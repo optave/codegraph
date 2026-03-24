@@ -195,7 +195,12 @@ For each target in the current phase:
    - Functions marked for decomposition but original is unchanged → **DIFF WARN**: "Gauntlet recommended decomposing `<symbol>` but original function was not simplified."
    - If all recommended symbols were addressed → **DIFF PASS** (implicit — no warnings emitted)
 
-   **On DIFF FAIL:** Unstage and revert changes, add to `execution.failedTargets` with reason starting with `"diff-review: "`. Continue to next target.
+   **On DIFF FAIL:**
+   ```bash
+   git reset HEAD <changed files>
+   git checkout -- <changed files>
+   ```
+   Add to `execution.failedTargets` with reason starting with `"diff-review: "`. Continue to next target.
    **On DIFF WARN:** Log the warning but proceed to gate. Include the warning in the gate-log entry.
 
 10. **Run tests** (detect the project's test command from package.json scripts — `npm test`, `yarn test`, `pnpm test`, etc.):
@@ -217,7 +222,10 @@ For each target in the current phase:
     ```
     - Record commit SHA in `execution.commits`
     - Add target to `execution.completedTargets`
-    - Record any diff-review warnings in `execution.diffWarnings` (if any)
+    - Record any diff-review warnings in `execution.diffWarnings` (if any). Each entry must follow this schema:
+      ```json
+      { "target": "<target-name>", "check": "D1|D3|D5", "message": "<warning text>", "phase": N }
+      ```
     - Update `titan-state.json`
 
 13. **On failure (test or gate):**
