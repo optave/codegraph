@@ -114,11 +114,11 @@ All artifacts are written to `.codegraph/titan/` (6 files, no redundancy):
 |------|--------|-----------|---------|
 | `titan-state.json` | JSON | RECON (init), ALL (update) | ALL |
 | `GLOBAL_ARCH.md` | Markdown | RECON | GAUNTLET, SYNC, GATE |
-| `gauntlet.ndjson` | NDJSON | GAUNTLET | SYNC, FORGE (diff review) |
-| `gauntlet-summary.json` | JSON | GAUNTLET | SYNC, GATE |
-| `sync.json` | JSON | SYNC | FORGE (diff review), GATE |
+| `gauntlet.ndjson` | NDJSON | GAUNTLET | RUN, SYNC, FORGE (diff review) |
+| `gauntlet-summary.json` | JSON | GAUNTLET | RUN, SYNC, GATE |
+| `sync.json` | JSON | SYNC | RUN, FORGE (diff review), GATE |
 | `arch-snapshot.json` | JSON | RUN (pre-forge) | GATE (architectural comparison) |
-| `gate-log.ndjson` | NDJSON | GATE | Audit trail |
+| `gate-log.ndjson` | NDJSON | GATE | RUN, Audit trail |
 
 NDJSON format (one JSON object per line) means partial results survive crashes mid-batch.
 
