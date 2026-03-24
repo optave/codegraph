@@ -262,7 +262,7 @@ If the skill performs dangerous operations (from Phase 0 discovery), add explici
 - Run lint after changes: detect lint runner:
   ```bash
   if [ -f "biome.json" ]; then LINT_CMD="npx biome check"
-  elif ls eslint.config.* 2>/dev/null | grep -q .; then LINT_CMD="npx eslint ."  # 2>/dev/null: ls exits non-zero when glob matches nothing — intentionally tolerant
+  elif find . -maxdepth 1 -name "eslint.config.*" -print -quit 2>/dev/null | grep -q .; then LINT_CMD="npx eslint ."  # 2>/dev/null: find exits non-zero when path is unreadable — intentionally tolerant
   else LINT_CMD="npm run lint"; fi
   $LINT_CMD
   ```
@@ -346,11 +346,13 @@ Run the skill's Phase 0 (pre-flight) logic in a temporary test directory to veri
 
 ```bash
 TEST_DIR=$(mktemp -d)
+trap 'cd - > /dev/null 2>&1; rm -rf "$TEST_DIR"' EXIT
 cd "$TEST_DIR"
 git init
 # Simulate the Phase 0 checks from the skill here
 cd -
 rm -rf "$TEST_DIR"
+trap - EXIT
 ```
 
 ### Idempotency check
