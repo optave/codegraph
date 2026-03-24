@@ -309,7 +309,7 @@ Run /titan-gate on the full branch to validate.
 - **Gate before commit.** Every commit must pass `/titan-gate`. No exceptions.
 - **One commit per logical unit.** Use commit messages from `sync.json`.
 - **Stage only specific files.** Never `git add .` or `git add -A`.
-- **Rollback on failure is gentle** — `git checkout -- <files>`, not `git reset --hard`.
+- **Rollback on failure is gentle** — `git reset HEAD -- $(git diff --cached --name-only)` to unstage, then `git checkout -- $(git diff --name-only)` to revert working tree. Never `git reset --hard`.
 - **Subphase awareness** — phases 3-6 have subphases. Each subphase = one commit. Track at subphase level.
 - **Never skip `/titan-gate`.** Even for "trivial" changes.
 
