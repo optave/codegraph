@@ -236,8 +236,9 @@ For each target in the current phase:
 
 13. **On failure (test or gate):**
     ```bash
-    git reset HEAD <changed files>
-    git checkout -- <changed files>
+    # Discover dirty files at rollback time (don't rely on carried file list)
+    git reset HEAD -- $(git diff --cached --name-only)
+    git checkout -- $(git diff --name-only)
     ```
     - Add to `execution.failedTargets` with reason: `{ "target": "<name>", "reason": "<why>", "phase": N }`
     - Clear `execution.currentTarget`

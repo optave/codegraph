@@ -320,7 +320,8 @@ Aggregate all checks:
 
 > "GATE FAIL: [reason]. Graph restored, changes unstaged but preserved. Fix and re-stage."
 
-For structural-only and semantic failures (Steps 1-3, 5, 5.5, 6-8), do NOT auto-rollback — report and let user decide.
+For structural-only and semantic **advisory** checks (Steps 1, 3, 5, 5.5, 6-8), do NOT auto-rollback — report and let user decide.
+For Step 2 (new cycle) and Step 4 (lint/build/test), trigger auto-rollback.
 
 ### Snapshot cleanup on pipeline completion
 
