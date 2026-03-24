@@ -397,6 +397,23 @@ First, determine the snapshot status from Step 3.5a:
 snapshotStatus = file_exists('.codegraph/titan/arch-snapshot.json') ? "captured" : "FAILED — gate A1/A3/A4 will be skipped"
 ```
 
+**Divergence check** — compute before printing the checkpoint so the warning appears inline:
+```bash
+if git fetch origin main 2>/dev/null; then
+  mergeBase=$(git merge-base HEAD origin/main)
+  mainAdvance=$(git rev-list --count $mergeBase..origin/main)
+else
+  mainAdvance="unknown"
+fi
+```
+```
+mainAdvanceNote = mainAdvance == "unknown"
+  ? "NOTE: Could not fetch origin/main — skipping divergence check."
+  : mainAdvance > 0
+    ? "WARNING: main has advanced <mainAdvance> commits since initial sync.\nIf significant, consider re-running: /titan-run --start-from recon"
+    : ""
+```
+
 Print:
 ```
 ================================================================
@@ -414,6 +431,7 @@ Execution plan summary:
 Total: <N> phases, <N> targets, <N> estimated commits
 
 Architectural snapshot: <snapshotStatus>
+<mainAdvanceNote>
 
 Validation layers per commit:
   1. Diff Review — does the change match the gauntlet recommendation and sync plan?
@@ -422,25 +440,6 @@ Validation layers per commit:
 Proceed with /titan-forge? [y/n]
 (Use --yes to skip this checkpoint in future runs)
 ================================================================
-```
-
-**Divergence check** — before asking for confirmation, check how far main has advanced since the initial sync:
-```bash
-if git fetch origin main 2>/dev/null; then
-  mergeBase=$(git merge-base HEAD origin/main)
-  mainAdvance=$(git rev-list --count $mergeBase..origin/main)
-else
-  mainAdvance="unknown"
-fi
-```
-If `mainAdvance == "unknown"`, append to the checkpoint output:
-```
-NOTE: Could not fetch origin/main — skipping divergence check.
-```
-If `mainAdvance > 0` (numeric), append to the checkpoint output:
-```
-WARNING: main has advanced <mainAdvance> commits since initial sync.
-If significant, consider re-running: /titan-run --start-from recon
 ```
 
 If `--yes` is NOT set: **stop and wait for user confirmation.** Do NOT proceed.
