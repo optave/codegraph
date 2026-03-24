@@ -34,7 +34,7 @@ You are the **orchestrator** for the full Titan Paradigm pipeline. Your job is t
    - `targetPath` (default: `.`)
    - `startPhase` (default: `recon`)
    - `gauntletBatchSize` (default: `5`)
-   - `autoConfirm` (default: `false`)
+   - `autoConfirm` → `true` if `--yes` is present, otherwise `false`
 
 3. **Check existing state.** Read `.codegraph/titan/titan-state.json` if it exists.
    - If state exists and `--start-from` not specified, ask user: "Existing Titan state found (phase: `<currentPhase>`). Resume from current state, or start fresh with `/titan-reset` first?"
@@ -392,6 +392,11 @@ This snapshot is read by `/titan-gate` Step 5.5 during every commit validation.
 
 **This is a mandatory pause.** Analysis phases (recon, gauntlet, sync) are read-only. FORGE makes real code changes and commits. The user must see the plan.
 
+First, determine the snapshot status from Step 3.5a:
+```
+snapshotStatus = file_exists('.codegraph/titan/arch-snapshot.json') ? "captured" : "FAILED — gate A1/A3/A4 will be skipped"
+```
+
 Print:
 ```
 ================================================================
@@ -408,7 +413,7 @@ Execution plan summary:
 
 Total: <N> phases, <N> targets, <N> estimated commits
 
-Architectural snapshot: <captured | FAILED — gate A1/A3/A4 will be skipped>
+Architectural snapshot: <snapshotStatus>
 
 Validation layers per commit:
   1. Diff Review — does the change match the gauntlet recommendation and sync plan?
@@ -422,13 +427,7 @@ Proceed with /titan-forge? [y/n]
 If `--yes` is NOT set: **stop and wait for user confirmation.** Do NOT proceed.
 If `--yes` IS set: print the summary but continue automatically.
 
-After Step 3.5a completes, determine the snapshot status explicitly:
-```
-snapshotStatus = file_exists('.codegraph/titan/arch-snapshot.json') ? "captured" : "FAILED — gate A1/A3/A4 will be skipped"
-```
-Use `snapshotStatus` in the checkpoint template above.
-
-Once the user confirms (or `--yes` was set), set `autoConfirm = true` for the remainder of the run. The user explicitly approved the forge pipeline at this checkpoint, so forge sub-agents must receive `--yes` to avoid per-phase confirmation prompts that cannot be answered in a sub-agent context.
+Once the user confirms (or `--yes` was set), `autoConfirm` is already `true` (set from `--yes` at parse time). If the user confirmed interactively (without `--yes`), set `autoConfirm = true` now — forge sub-agents must receive `--yes` to avoid per-phase confirmation prompts that cannot be answered in a sub-agent context.
 
 ---
 
