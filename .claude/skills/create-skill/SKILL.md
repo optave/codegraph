@@ -202,7 +202,41 @@ If the skill supports `--start-from` or `--skip-*`:
 - Add a pre-validation table listing which artifacts are required for each entry point
 - Each skip path must be explicitly tested in Phase: Self-Review
 
-**Exit condition:** Every phase body in the SKILL.md follows all 10 patterns. No wrong/correct examples remain as actual instructions — only the correct versions.
+### Pattern 11: Progress indicators
+
+For any phase that takes longer than ~10 seconds (file iteration, API calls, batch operations), emit progress:
+
+```bash
+echo "Processing file $i/$total: $FILE"
+```
+
+Never leave the user staring at a silent terminal during long operations.
+
+### Pattern 12: Artifact reuse
+
+Before running expensive operations (codegraph build, embedding generation, batch analysis), check if usable output already exists:
+
+````markdown
+```bash
+if [ -f ".codegraph/$SKILL_NAME/results.json" ]; then
+  echo "Using cached results from previous run"
+else
+  # run expensive operation
+fi
+```
+````
+
+This supports both idempotent re-runs and resume-after-failure.
+
+### Pattern 13: Platform portability
+
+Avoid shell constructs that behave differently across platforms:
+- Use `find ... -name "*.ext"` instead of glob expansion (`ls *.ext`) which differs between bash versions
+- Use `mktemp` without `-p` (macOS `mktemp` requires a template argument differently than GNU)
+- Use `sed -i.bak` instead of `sed -i ''` (GNU vs BSD incompatibility)
+- Document any platform-specific behavior with a comment: `# NOTE: requires GNU coreutils`
+
+**Exit condition:** Every phase body in the SKILL.md follows all 13 patterns. No wrong/correct examples remain as actual instructions — only the correct versions.
 
 ---
 
@@ -271,14 +305,69 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] **Artifact schema**: If the skill produces files, path/format/schema are documented
 - [ ] **Exit conditions**: Each phase states what must be true before the next phase starts
 - [ ] **Scope boundary**: The skill's purpose is clear — it does one thing, not five
+- [ ] **Examples section**: At least 2-3 realistic usage examples showing common invocations are included
+
+### Safety checks:
+- [ ] **Idempotency**: Re-running the skill on the same state is safe. Existing output files are handled (skip, overwrite with warning, or merge)
+- [ ] **Dependency validation**: Phase 0 verifies all tools listed in `allowed-tools` are available before starting work. "Command not found" is caught before Phase 2, not during Phase 3
+- [ ] **Exit codes**: Every error path uses explicit `exit 1`. No silent early returns that leave the pipeline in an ambiguous state
+- [ ] **State cleanup**: If the skill creates `.codegraph/$SKILL_NAME/*` files, the skill documents when they're cleaned up or how users remove them (e.g., `rm -rf .codegraph/$SKILL_NAME` in a cleanup section)
+- [ ] **Progress indicators**: Phases that iterate over files or run batch operations emit progress (`Processing $i/$total`)
+- [ ] **Platform portability**: No `sed -i ''`, no unquoted globs, no GNU-only flags without fallback or documentation
 
 Read through the entire SKILL.md one more time after checking all items. Fix anything found.
 
 ---
 
-## Phase 5 — Finalize
+## Phase 5 — Smoke Test
 
-1. Read the final SKILL.md end-to-end and confirm it passes all Phase 4 checks
+The self-review is purely theoretical — most real issues (wrong paths, shell syntax, missing tools, argument parsing bugs) only surface when you actually try to run the code. Before finalizing, execute these validation steps:
+
+### Shell syntax validation
+
+Extract every bash code block from the SKILL.md and check for syntax errors:
+
+```bash
+# For each ```bash block in the skill:
+bash -n <<'BLOCK'
+  # paste the block contents here
+BLOCK
+```
+
+Fix any syntax errors found before proceeding.
+
+### Phase 0 dry-run
+
+Run the skill's Phase 0 (pre-flight) logic in a temporary test directory to verify:
+- Argument parsing works for valid inputs and rejects invalid ones
+- Tool availability checks actually detect missing tools (temporarily rename one to confirm)
+- Environment validation produces clear error messages on failure
+
+```bash
+TEST_DIR=$(mktemp -d)
+cd "$TEST_DIR"
+git init
+# Simulate the Phase 0 checks from the skill here
+cd -
+rm -rf "$TEST_DIR"
+```
+
+### Idempotency check
+
+Mentally trace a second execution of the skill on the same state:
+- Does Phase 0 handle pre-existing artifacts (skip, warn, overwrite)?
+- Do file-creation steps fail if the file already exists?
+- Are `mktemp` paths unique across runs (they should be by default)?
+
+Document any idempotency fix applied.
+
+**Exit condition:** All bash blocks pass `bash -n` syntax check. Phase 0 logic runs without errors in a test directory. Idempotency is confirmed or fixed.
+
+---
+
+## Phase 6 — Finalize
+
+1. Read the final SKILL.md end-to-end and confirm it passes all Phase: Self-Review Checklist checks and Phase: Smoke Test validations
 2. Show the user the complete skill for review
 3. Ask: "Ready to commit, or want changes?"
 
@@ -291,7 +380,7 @@ If the user approves:
 ## Rules
 
 - **Never write the skill without Phase 0 discovery answers.** The user must describe what they want before you write anything.
-- **Never skip the self-review checklist.** Phase 4 is mandatory, not optional.
+- **Never skip the self-review checklist or smoke test.** Phase: Self-Review Checklist and Phase: Smoke Test are both mandatory, not optional.
 - **Phase names over step numbers.** All cross-references in the generated skill must use phase names.
 - **One skill = one concern.** If the user's requirements span multiple unrelated workflows, suggest splitting into separate skills.
 - **No co-author lines** in commit messages.
