@@ -1,7 +1,7 @@
 ---
 name: titan-run
 description: Run the full Titan Paradigm pipeline end-to-end by dispatching each phase to sub-agents with fresh context windows. Orchestrates recon → gauntlet → sync → forge automatically.
-argument-hint: <path (default: .)> <--skip-recon> <--skip-gauntlet> <--start-from forge> <--gauntlet-batch-size 5> <--yes>
+argument-hint: <path (default: .)> <--skip-recon> <--skip-gauntlet> <--start-from recon|gauntlet|sync|forge> <--gauntlet-batch-size 5> <--yes>
 allowed-tools: Agent, Read, Bash, Glob, Write, Edit
 ---
 
@@ -426,7 +426,7 @@ Proceed with /titan-forge? [y/n]
 
 **Divergence check** — before asking for confirmation, check how far main has advanced since the initial sync:
 ```bash
-git fetch origin main
+git fetch origin main 2>/dev/null || true
 mergeBase=$(git merge-base HEAD origin/main)
 mainAdvance=$(git rev-list --count $mergeBase..origin/main)
 ```
