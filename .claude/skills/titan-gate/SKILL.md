@@ -332,8 +332,8 @@ Aggregate all checks:
 
 > "GATE FAIL: [reason]. Graph restored, changes unstaged but preserved. Fix and re-stage."
 
-For structural and semantic failures (Steps 1, 3, 5, 5.5, 6-8), do NOT auto-rollback — report the FAIL and let the user decide whether to fix in place or unstage manually.
-For Step 2 (new cycle) and Step 4 (lint/build/test), trigger auto-rollback.
+For structural and semantic failures (Steps 1 [manifesto/blast-radius/boundary only — not cycles], 3, 5, 5.5, 6-8), do NOT auto-rollback — report the FAIL and let the user decide whether to fix in place or unstage manually.
+For Step 2 (new cycle), Step 1 cycle violations (from `--cycles` flag), and Step 4 (lint/build/test), trigger auto-rollback.
 
 ### Snapshot cleanup on pipeline completion
 

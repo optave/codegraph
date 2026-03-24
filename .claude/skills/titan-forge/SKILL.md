@@ -219,7 +219,7 @@ For each target in the current phase:
 
 11. **Run /titan-gate:**
     Use the Skill tool to invoke `titan-gate`.
-    - If FAIL on **cycle/test/lint/build** (gate auto-rolls back staged changes, gate Step 2/4) → go to rollback (step 13) to also revert working tree.
+    - If FAIL on **cycle/test/lint/build** (gate auto-rolls back staged changes on Step 2/4 cycle; Step 1 may also report cycle violation via `--cycles` flag — treat that the same as Step 2) → go to rollback (step 13) to also revert working tree.
     - If FAIL on **any other check** — complexity (Step 3), semantic (Step 5), structural/arch (Steps 1, 5.5, 6-8) — gate does NOT auto-rollback its staging area; forge must clean up for the next target → unstage with `git reset HEAD -- $(git diff --cached --name-only) && git checkout -- $(git diff --name-only)`, add to `execution.failedTargets` with reason, log the gate report, and continue to the next target. Do NOT go to step 13 — that step is for Step 2/4 failures where gate already unstaged; going there again would attempt a duplicate rollback.
 
 12. **On success:**
