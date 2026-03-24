@@ -184,9 +184,20 @@ rm -f .codegraph/titan/.barrel-tmp
 
 Compare the codebase's architectural properties before and after this change. This catches "technically correct but architecturally wrong" changes — e.g., a valid refactor that puts code in the wrong layer.
 
-### Load pre-forge snapshot
+### A2. Dependency direction between domains (runs unconditionally)
 
-Read `.codegraph/titan/arch-snapshot.json` if it exists (created by `/titan-run` before forge begins). If missing, skip this step — it only works within the orchestrated pipeline.
+A2 does NOT require `arch-snapshot.json` — it uses only the Step 1 diff-impact results and `GLOBAL_ARCH.md`. Run it even on standalone gate invocations.
+
+From `GLOBAL_ARCH.md`, extract the expected dependency direction between domains (e.g., "presentation depends on features, not the reverse").
+
+Check if any new cross-domain dependency violates the expected direction. Use the Step 1 diff-impact results to extract only the edges introduced by the staged changes — do not re-run `codegraph deps` on the full file (that returns all dependencies including pre-existing ones). For each new edge in the diff-impact output, the source and target file paths are already present in the edge data. Resolve the domain/layer of each endpoint by matching its file path against the domain map in `GLOBAL_ARCH.md` (e.g., `src/presentation/` → presentation layer, `src/features/` → features layer). No additional codegraph command is needed — the diff-impact edge output contains the file paths directly.
+- New upward dependency (lower layer importing higher layer) introduced in this diff → **FAIL**
+- Pre-existing boundary violations not surfaced by Step 5c's staged-diff results → advisory-only (not gating)
+- New lateral dependency within the same layer → **OK**
+
+### Load pre-forge snapshot (A1, A3, A4 — snapshot-dependent)
+
+Read `.codegraph/titan/arch-snapshot.json` if it exists (created by `/titan-run` before forge begins). If missing, skip the remaining assertions (A1, A3, A4) in this step — they require the pre-forge baseline. A2 above already ran unconditionally.
 
 ### Capture current state
 
@@ -218,14 +229,6 @@ Read `.codegraph/titan/arch-snapshot.json → drift` (the pre-forge drift baseli
 - For each **new** drift warning in current that was NOT present in the snapshot: if the drifted symbol was NOT touched in the diff → **WARN**: "Symbol `<name>` drifted community as a side effect"
 - If > 5 untouched symbols appear in new drift warnings → **FAIL**: "Significant community restructuring detected — <N> symbols drifted communities. This change may have unintended architectural impact."
 
-**A2. Dependency direction between domains:**
-From `GLOBAL_ARCH.md`, extract the expected dependency direction between domains (e.g., "presentation depends on features, not the reverse").
-
-Check if any new cross-domain dependency violates the expected direction. Use the Step 1 diff-impact results to extract only the edges introduced by the staged changes — do not re-run `codegraph deps` on the full file (that returns all dependencies including pre-existing ones). For each new edge in the diff-impact output, the source and target file paths are already present in the edge data. Resolve the domain/layer of each endpoint by matching its file path against the domain map in `GLOBAL_ARCH.md` (e.g., `src/presentation/` → presentation layer, `src/features/` → features layer). No additional codegraph command is needed — the diff-impact edge output contains the file paths directly.
-- New upward dependency (lower layer importing higher layer) introduced in this diff → **FAIL**
-- Pre-existing boundary violations not surfaced by Step 5c's staged-diff results → advisory-only (not gating)
-- New lateral dependency within the same layer → **OK**
-
 **A3. Cohesion delta:**
 Compare directory cohesion scores from `structure`:
 - If any directory's cohesion dropped by > 0.2 → **WARN**: "Directory `<dir>` cohesion dropped from <X> to <Y>"
@@ -235,7 +238,7 @@ Compare directory cohesion scores from `structure`:
 Compare drift warnings between snapshot and current. A1 already covers new drift warnings — A4 only reports resolved ones:
 - If any drift warning that was present in the snapshot is absent from `$TITAN_ARCH_DIR/current-drift.json` → note as positive: "Symbol `<name>` community drift resolved — architecture improved"
 
-> **Note:** A3 and A4 compare the pre-forge baseline against the *committed* state at gate-run time (the graph DB does not include staged-but-uncommitted changes). They catch cumulative architectural drift across all forge commits made so far, not the individual staged change being validated in this gate run. A1 and A2 use staged-change-aware data (diff-impact) and catch per-change violations.
+> **Note:** A3 and A4 compare the pre-forge baseline against the *committed* state at gate-run time (the graph DB does not include staged-but-uncommitted changes). They catch cumulative architectural drift across all forge commits made so far, not the individual staged change being validated in this gate run. A1 uses staged-change-aware data (diff-impact) and catches per-change violations. A2 runs unconditionally above (before the snapshot gate) and also uses diff-impact data.
 
 ### Cleanup (MUST run even on failure or early exit)
 

@@ -341,6 +341,10 @@ Print: `SYNC validated. Execution phases: <N>, Total targets: <N>, Estimated com
 
 ## Step 3.5 — Pre-forge: Architectural Snapshot + Human Checkpoint
 
+**Skip if:** `--start-from` is `forge` AND `.codegraph/titan/arch-snapshot.json` already exists. The existing snapshot is the correct pre-forge baseline — re-capturing it mid-forge would overwrite it with a state that already includes prior forge commits, making gate A1/A3 comparisons inaccurate.
+
+If `--start-from forge` is used **without** an existing snapshot, run Step 3.5a normally (captures a pre-forge baseline from the current committed state).
+
 ### 3.5a. Capture architectural snapshot
 
 Before any code changes, snapshot the codebase's architectural properties. This becomes the baseline for the architectural comparator in `/titan-gate` (Step 5.5).
@@ -417,6 +421,12 @@ Proceed with /titan-forge? [y/n]
 
 If `--yes` is NOT set: **stop and wait for user confirmation.** Do NOT proceed.
 If `--yes` IS set: print the summary but continue automatically.
+
+After Step 3.5a completes, determine the snapshot status explicitly:
+```
+snapshotStatus = file_exists('.codegraph/titan/arch-snapshot.json') ? "captured" : "FAILED — gate A1/A3/A4 will be skipped"
+```
+Use `snapshotStatus` in the checkpoint template above.
 
 Once the user confirms (or `--yes` was set), set `autoConfirm = true` for the remainder of the run. The user explicitly approved the forge pipeline at this checkpoint, so forge sub-agents must receive `--yes` to avoid per-phase confirmation prompts that cannot be answered in a sub-agent context.
 
