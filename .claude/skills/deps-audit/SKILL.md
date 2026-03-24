@@ -167,6 +167,10 @@ Summarize all changes made:
      b. Re-run `npm test` to confirm nothing broke with the merged dependency state.
      c. If tests still pass: confirm the project is consistent.
      d. If tests now fail: warn the user — the pre-existing manifest changes conflict with the audit fixes.
+        Recovery options:
+        - To undo **all** manifest changes (both audit fixes and pre-existing): `git checkout -- package.json package-lock.json && npm ci`
+        - To keep only the audit fixes and discard pre-existing changes: manually edit `package.json`/`package-lock.json` to remove the pre-existing delta, then `npm ci`
+        - To keep only the pre-existing changes and discard the audit fixes: re-run `/deps-audit` without `--fix`
    - If the pop causes conflicts in `package.json`/`package-lock.json`: warn the user, leave conflict markers for manual resolution, and instruct: "After you resolve the conflicts, run `npm install` to re-sync `node_modules/` with the resolved lock file before committing."
    - For conflicts in other files, resolve them by keeping both the npm fixes and the pre-existing changes.
    If tests pass and `STASH_REF` is empty: no action needed — the npm changes are good and no stash entry exists to clean up
