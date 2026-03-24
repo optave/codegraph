@@ -72,10 +72,15 @@ interface ExtractorOutput {
 |-----------|--------|-------|
 | `Definition` | `name`, `kind`, `line`, `endLine?`, `children?`, `visibility?`, `decorators?` | `kind` ∈ symbol kinds (see below). Methods: `ClassName.methodName`. `children` for sub-declarations (params, properties). `visibility`: `'public'` \| `'private'` \| `'protected'` |
 | `Call` | `name`, `line`, `receiver?`, `dynamic?` | `receiver` for method calls (e.g. `obj` in `obj.method()`) |
-| `Import` | `source`, `names[]`, `line`, `typeOnly?`, `reexport?`, `wildcardReexport?`, `dynamicImport?`, `<lang>Import?` | Set a language flag like `pythonImport: true` |
+| `Import` | `source`, `names[]`, `line`, `typeOnly?`, `reexport?`, `wildcardReexport?`, `dynamicImport?`, `<lang><Keyword>?` | Set a language flag (see note below) |
 | `ClassRelation` | `name`, `extends?`, `implements?`, `line` | |
 | `Export` | `name`, `kind`, `line` | |
 | `TypeMapEntry` | `type`, `confidence` | Confidence 0-1 (typically 0.9 for native) |
+
+**Language import flags** use the language's idiomatic keyword, not a fixed
+suffix. Examples: `goImport`, `pythonImport`, `rustUse`, `csharpUsing`,
+`rubyRequire`, `phpUse`. Choose whichever name matches your language's import
+statement (e.g. `swiftImport`, `kotlinImport`, `zigImport`).
 
 **Symbol kinds:** `function`, `method`, `class`, `interface`, `type`, `struct`,
 `enum`, `trait`, `record`, `module`, `parameter`, `property`, `constant`
@@ -142,23 +147,32 @@ re-export it from `src/extractors/index.ts`. Then:
    `parser.ts` itself. (A `export { X } from` re-export does **not** make `X`
    available in the current file — both blocks are required.)
 3. Reference the extractor function in the `LANGUAGE_REGISTRY` array
-   in `src/domain/parser.ts` (see Step 3b).
+   in `src/domain/parser.ts` (see Step 3c).
 
 Write a recursive AST walker that matches tree-sitter node types for your
 language. Copy the pattern from an existing extractor like `extractGoSymbols` in
 `src/extractors/go.ts` or `extractRustSymbols` in `src/extractors/rust.ts`:
 
 ```ts
+import type {
+  ExtractorOutput,
+  TreeSitterNode,
+  TreeSitterTree,
+} from '../types.js';
+import { /* helpers you need, e.g. findChild, nodeEndLine */ } from './helpers.js';
+
 /**
  * Extract symbols from <Lang> files.
  */
 export function extract<Lang>Symbols(tree: TreeSitterTree, _filePath: string): ExtractorOutput {
-  const definitions: Definition[] = [];
-  const calls: Call[] = [];
-  const imports: Import[] = [];
-  const classes: ClassRelation[] = [];
-  const exports: Export[] = [];
-  const typeMap = new Map<string, TypeMapEntry>();
+  const ctx: ExtractorOutput = {
+    definitions: [],
+    calls: [],
+    imports: [],
+    classes: [],
+    exports: [],
+    typeMap: new Map(),
+  };
 
   function walk(node: TreeSitterNode): void {
     switch (node.type) {
@@ -166,7 +180,7 @@ export function extract<Lang>Symbols(tree: TreeSitterTree, _filePath: string): E
       case '<function_node_type>': {
         const nameNode = node.childForFieldName('name');
         if (nameNode) {
-          definitions.push({
+          ctx.definitions.push({
             name: nameNode.text,
             kind: 'function',
             line: node.startPosition.row + 1,
@@ -185,11 +199,11 @@ export function extract<Lang>Symbols(tree: TreeSitterTree, _filePath: string): E
       // ── Imports ──
       case '<import_node_type>': {
         // ...
-        imports.push({
+        ctx.imports.push({
           source: '...',
           names: [...],
           line: node.startPosition.row + 1,
-          <lang>Import: true,        // language flag
+          <lang><Keyword>: true,     // e.g. goImport, rustUse, rubyRequire
         });
         break;
       }
@@ -198,7 +212,7 @@ export function extract<Lang>Symbols(tree: TreeSitterTree, _filePath: string): E
       case 'call_expression': {
         const fn = node.childForFieldName('function');
         if (fn && fn.type === 'identifier') {
-          calls.push({ name: fn.text, line: node.startPosition.row + 1 });
+          ctx.calls.push({ name: fn.text, line: node.startPosition.row + 1 });
         }
         break;
       }
@@ -211,7 +225,7 @@ export function extract<Lang>Symbols(tree: TreeSitterTree, _filePath: string): E
   }
 
   walk(tree.rootNode);
-  return { definitions, calls, imports, classes, exports, typeMap };
+  return ctx;
 }
 ```
 
@@ -225,7 +239,24 @@ tree to find the right `node.type` strings.
 - `pythonVisibility(name)` — `__name` → private, `_name` → protected
 - `extractModifierVisibility(node, modifierTypes?)` — general modifier extraction (Java, C#, PHP). `modifierTypes` is an optional `Set<string>` of node type names; defaults cover the most common cases
 
-#### 3b. Add an entry to `LANGUAGE_REGISTRY`
+#### 3b. Extend the `LanguageId` union in `src/types.ts`
+
+`LanguageRegistryEntry.id` is typed as `LanguageId` — a closed string union in
+`src/types.ts`. Add your language to it before referencing it in the registry:
+
+```ts
+export type LanguageId =
+  | 'javascript' | 'typescript' | 'tsx'
+  | 'python' | 'go' | 'rust'
+  | 'java' | 'csharp' | 'ruby'
+  | 'php' | 'hcl'
+  | '<lang>';              // ← add your language here
+```
+
+Without this, TypeScript will reject your `LANGUAGE_REGISTRY` entry with
+`Type '"<lang>"' is not assignable to type 'LanguageId'`.
+
+#### 3c. Add an entry to `LANGUAGE_REGISTRY`
 
 Add your language to the `LANGUAGE_REGISTRY` array in `src/domain/parser.ts`:
 
@@ -253,11 +284,11 @@ That's it for the WASM engine. The registry automatically:
 
 ### 4. `src/domain/parser.ts` — update `patchNativeResult` (if needed)
 
-If your language's imports use a language-specific flag (e.g. `pythonImport`),
-add the camelCase mapping in `patchNativeResult()`:
+If your language's imports use a language-specific flag (e.g. `pythonImport`,
+`rustUse`), add the camelCase mapping in `patchNativeResult()`:
 
 ```ts
-if (i.<lang>Import === undefined) i.<lang>Import = i.<lang>_import;
+if (i.<lang><Keyword> === undefined) i.<lang><Keyword> = i.<lang>_<keyword>;
 ```
 
 ---
@@ -389,7 +420,7 @@ pub fn extract_symbols_with_opts(..., include_ast_nodes: bool) -> FileSymbols {
 If your imports need a language-specific flag, add it to the `Import` struct:
 
 ```rust
-pub <lang>_import: Option<bool>,
+pub <lang>_<keyword>: Option<bool>,  // e.g. go_import, rust_use, ruby_require
 ```
 
 And update `Import::new()` to default it to `None`.
@@ -484,17 +515,17 @@ codegraph query someFunction
 | 1 | `package.json` | WASM | Add `tree-sitter-<lang>` devDependency |
 | 2 | `scripts/build-wasm.js` | WASM | Add grammar entry to array |
 | 3 | `src/extractors/<lang>.ts` + `src/domain/parser.ts` | WASM | Create extractor in `src/extractors/`, re-export via `index.ts`, add to `parser.ts` re-export block **and** import block, add `LANGUAGE_REGISTRY` entry |
-| 4 | `src/domain/parser.ts` | WASM | Update `patchNativeResult` (if language flag needed) |
-| 5 | `crates/codegraph-core/Cargo.toml` | Native | Add tree-sitter crate |
-| 6 | `crates/.../parser_registry.rs` | Native | Register enum + extension + grammar + `lang_id_str` |
-| 7 | `crates/.../extractors/<lang>.rs` | Native | Implement `SymbolExtractor` trait |
-| 8 | `crates/.../extractors/mod.rs` | Native | Declare module + dispatch arm in `extract_symbols_with_opts()` |
-| 9 | `crates/.../types.rs` | Native | Add language flag to `Import` (if needed) |
-| 10 | `tests/parsers/<lang>.test.js` | WASM | Parser extraction tests |
-| 11 | `tests/engines/parity.test.js` | Both | Cross-engine validation snippets |
+| 4 | `src/types.ts` | Both | Add `'<lang>'` to the `LanguageId` union; add language-specific flag to `Import` if needed |
+| 5 | `src/domain/parser.ts` | WASM | Update `patchNativeResult` (if language flag needed) |
+| 6 | `crates/codegraph-core/Cargo.toml` | Native | Add tree-sitter crate |
+| 7 | `crates/.../parser_registry.rs` | Native | Register enum + extension + grammar + `lang_id_str` |
+| 8 | `crates/.../extractors/<lang>.rs` | Native | Implement `SymbolExtractor` trait |
+| 9 | `crates/.../extractors/mod.rs` | Native | Declare module + dispatch arm in `extract_symbols_with_opts()` |
+| 10 | `crates/.../types.rs` | Native | Add language flag to `Import` (if needed) |
+| 11 | `tests/parsers/<lang>.test.js` | WASM | Parser extraction tests |
+| 12 | `tests/engines/parity.test.js` | Both | Cross-engine validation snippets |
 
 **Files you do NOT need to touch:**
 - `src/shared/constants.ts` — `EXTENSIONS` is derived from the registry automatically
 - `src/shared/kinds.ts` — symbol kinds are universal across languages
 - `src/domain/graph/builder.ts` — build pipeline uses `parseFilesAuto()` from `parser.ts`, no manual routing
-- `src/types.ts` — core types stay the same; only add import flags if needed
