@@ -109,14 +109,14 @@ rm -rf $TMPDIR   # BUG: $TMPDIR is empty here
 ```
 ````
 
-**Correct:** Persist state to a file:
+**Correct:** Persist state to a file (use your actual skill name, not a variable):
 ````markdown
 ```bash
-mktemp -d > .codegraph/$SKILL_NAME/.tmpdir
+mktemp -d > .codegraph/deploy-check/.tmpdir
 ```
 Later:
 ```bash
-rm -rf "$(cat .codegraph/$SKILL_NAME/.tmpdir)"
+rm -rf "$(cat .codegraph/deploy-check/.tmpdir)"
 ```
 ````
 
@@ -138,7 +138,7 @@ git show HEAD:$FILE 2>/dev/null | codegraph where --file -
 **Correct:**
 ````markdown
 ```bash
-PREV_FILE=$(mktemp --suffix=.js)
+PREV_FILE=$(mktemp --suffix=.js)  # adjust extension to match the language of $FILE
 if git show HEAD:$FILE > "$PREV_FILE" 2>&1; then
   codegraph where --file "$PREV_FILE"
 else
@@ -262,7 +262,7 @@ If the skill performs dangerous operations (from Phase 0 discovery), add explici
 - Run lint after changes: detect lint runner:
   ```bash
   if [ -f "biome.json" ]; then LINT_CMD="npx biome check"
-  elif ls eslint.config.* 2>/dev/null | grep -q .; then LINT_CMD="npx eslint ."
+  elif ls eslint.config.* 2>/dev/null | grep -q .; then LINT_CMD="npx eslint ."  # 2>/dev/null: ls exits non-zero when glob matches nothing — intentionally tolerant
   else LINT_CMD="npm run lint"; fi
   $LINT_CMD
   ```
