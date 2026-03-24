@@ -10,11 +10,10 @@ export const command: CommandDefinition = {
   ],
   async execute(_args, opts) {
     const { startMCPServer } = await import('../../mcp/index.js');
-    const mcpOpts: any = {};
-    mcpOpts.multiRepo = opts.multiRepo || !!opts.repos;
-    if (opts.repos) {
-      mcpOpts.allowedRepos = (opts.repos as string).split(',').map((s) => s.trim());
-    }
+    const mcpOpts = {
+      multiRepo: opts.multiRepo || !!opts.repos,
+      allowedRepos: opts.repos ? (opts.repos as string).split(',').map((s) => s.trim()) : undefined,
+    };
     await startMCPServer(opts.db as string | undefined, mcpOpts);
   },
 };

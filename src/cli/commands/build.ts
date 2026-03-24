@@ -16,12 +16,12 @@ export const command: CommandDefinition = {
     const root = path.resolve(dir || '.');
     const engine = ctx.program.opts()['engine'];
     await buildGraph(root, {
-      incremental: opts.incremental,
-      ast: opts.ast,
-      complexity: opts.complexity,
-      engine,
-      dataflow: opts.dataflow,
-      cfg: opts.cfg,
-    } as any);
+      incremental: opts.incremental as boolean,
+      ast: opts.ast as boolean,
+      complexity: opts.complexity as boolean,
+      engine: engine as string,
+      dataflow: opts.dataflow as boolean,
+      cfg: opts.cfg as boolean,
+    });
   },
 };

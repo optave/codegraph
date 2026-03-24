@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import { setVerbose } from '../infrastructure/logger.js';
 import { checkForUpdates, printUpdateNotification } from '../infrastructure/update-check.js';
@@ -15,7 +15,7 @@ import {
 import { outputResult } from './shared/output.js';
 import type { CliContext, CommandDefinition, CommandOpts } from './types.js';
 
-const __cliDir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, '$1'));
+const __cliDir = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__cliDir, '..', '..', 'package.json'), 'utf-8'));
 
 const program = new Command();
@@ -113,15 +113,15 @@ async function discoverCommands(): Promise<void> {
     .sort();
 
   // Deduplicate: prefer .ts over .js when both exist
+  const fileSet = new Set(files);
   const seen = new Set<string>();
   const deduped: string[] = [];
   for (const file of files) {
     const base = file.replace(/\.[jt]s$/, '');
     if (!seen.has(base)) {
       seen.add(base);
-      // Prefer .ts if it exists
       const tsVariant = `${base}.ts`;
-      deduped.push(files.includes(tsVariant) ? tsVariant : file);
+      deduped.push(fileSet.has(tsVariant) ? tsVariant : file);
     }
   }
 
