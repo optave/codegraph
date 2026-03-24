@@ -43,7 +43,7 @@ extractor function. Everything else — extension routing, parser loading, dispa
 - `createParsers()` iterates the registry and builds a `Map<id, Parser>`.
 - `getParser()` uses an extension→registry lookup map (`_extToLang`).
 - `wasmExtractSymbols()` calls `entry.extractor(tree, filePath)` — no ternary chains.
-- `parseFilesAuto()` in `builder.ts` handles all dispatch — no per-language routing needed.
+- `parseFilesAuto()` in `parser.ts` handles all dispatch — no per-language routing needed.
 
 ---
 
@@ -148,7 +148,7 @@ language. Copy the pattern from an existing extractor like `extractGoSymbols` in
 /**
  * Extract symbols from <Lang> files.
  */
-export function extract<Lang>Symbols(tree: TreeSitterTree, filePath: string): ExtractorOutput {
+export function extract<Lang>Symbols(tree: TreeSitterTree, _filePath: string): ExtractorOutput {
   const definitions: Definition[] = [];
   const calls: Call[] = [];
   const imports: Import[] = [];
@@ -243,7 +243,7 @@ That's it for the WASM engine. The registry automatically:
 - Registers the parser in `createParsers()`
 - Routes `getParser()` calls via the extension map
 - Dispatches to your extractor in `wasmExtractSymbols()`
-- Handles `builder.ts` routing via `parseFilesAuto()`
+- Handles `parseFilesAuto()` dispatch in `parser.ts`
 
 **You do not need to edit `shared/constants.ts` or `domain/graph/builder.ts`.**
 
@@ -492,5 +492,5 @@ codegraph query someFunction
 **Files you do NOT need to touch:**
 - `src/shared/constants.ts` — `EXTENSIONS` is derived from the registry automatically
 - `src/shared/kinds.ts` — symbol kinds are universal across languages
-- `src/domain/graph/builder.ts` — `parseFilesAuto()` uses the registry, no manual routing
+- `src/domain/graph/builder.ts` — build pipeline uses `parseFilesAuto()` from `parser.ts`, no manual routing
 - `src/types.ts` — core types stay the same; only add import flags if needed
