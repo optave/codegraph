@@ -1,7 +1,7 @@
 ---
 name: titan-forge
 description: Execute the sync.json plan — refactor code, validate with /titan-gate, commit, and advance state (Titan Paradigm Phase 4)
-argument-hint: <--phase N> <--target name> <--dry-run>
+argument-hint: <--phase N> <--target name> <--dry-run> <--yes>
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Agent
 ---
 
@@ -150,12 +150,12 @@ For each target in the current phase:
    git diff --cached
    ```
 
-   Load the gauntlet entry for this target (from `gauntlet.ndjson`) and the sync plan entry (from `sync.json → executionOrder[currentPhase]`).
+   Load the gauntlet entry for this target (from `gauntlet.ndjson`) and the sync plan entry (from `sync.json → executionOrder.find(e => e.phase === currentPhase)`).
 
    **Check all of the following:**
 
    **D1. Scope — only planned files touched:**
-   Compare staged file paths against `sync.json → executionOrder[currentPhase].targets` and their known file paths (from gauntlet entries). Flag any file NOT associated with the current target or phase.
+   Compare staged file paths against `sync.json → executionOrder.find(e => e.phase === currentPhase).targets` and their known file paths (from gauntlet entries). Flag any file NOT associated with the current target or phase.
    - File in a completely different domain → **DIFF FAIL**
    - File is a direct dependency of the target (consumer or import) → **OK** (expected ripple)
    - Test file for the target → **OK**
