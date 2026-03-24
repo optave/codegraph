@@ -23,7 +23,7 @@ export const command: CommandDefinition = {
     }
   },
   execute([name], opts, ctx) {
-    fnImpact(name, opts.db, {
+    fnImpact(name!, opts.db, {
       depth: parseInt(opts.depth as string, 10),
       file: opts.file,
       kind: opts.kind,

@@ -29,13 +29,13 @@ export const command: CommandDefinition = {
   execute([target], opts, ctx) {
     const qOpts = ctx.resolveQueryOpts(opts);
     if (opts.quick) {
-      explain(target, opts.db, {
+      explain(target!, opts.db, {
         depth: parseInt(opts.depth as string, 10),
         ...qOpts,
       });
       return;
     }
-    audit(target, opts.db, {
+    audit(target!, opts.db, {
       depth: parseInt(opts.depth as string, 10),
       file: opts.file,
       kind: opts.kind,

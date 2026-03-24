@@ -390,6 +390,16 @@ export interface HalsteadMetrics {
   bugs: number;
 }
 
+/** Halstead derived metrics including raw counts. */
+export interface HalsteadDerivedMetrics extends HalsteadMetrics {
+  n1: number;
+  n2: number;
+  bigN1: number;
+  bigN2: number;
+  vocabulary: number;
+  length: number;
+}
+
 /** Lines-of-code metrics. */
 export interface LOCMetrics {
   loc: number;
@@ -490,6 +500,7 @@ export interface LanguageRegistryEntry {
 
 /** tree-sitter opaque types (thin wrappers — real impl is WASM). */
 export interface TreeSitterNode {
+  id: number;
   type: string;
   text: string;
   startPosition: { row: number; column: number };
@@ -635,30 +646,111 @@ export type ASTTypeMap = Map<string, ASTNodeKind>;
 /** Complexity rules for a language. */
 export interface ComplexityRules {
   branchNodes: Set<string>;
+  caseNodes: Set<string>;
+  logicalOperators: Set<string>;
+  logicalNodeType: string | null;
+  optionalChainType: string | null;
   nestingNodes: Set<string>;
   functionNodes: Set<string>;
+  ifNodeType: string | null;
+  elseNodeType: string | null;
+  elifNodeType: string | null;
+  elseViaAlternative: boolean;
+  switchLikeNodes: Set<string>;
 }
 
 /** Halstead rules for a language. */
 export interface HalsteadRules {
-  operators: Set<string>;
-  operands: Set<string>;
+  operatorLeafTypes: Set<string>;
+  operandLeafTypes: Set<string>;
+  compoundOperators: Set<string>;
+  skipTypes: Set<string>;
 }
 
-/** CFG rules for a language. */
-export interface CfgRules {
-  controlFlowNodes: Set<string>;
+/** CFG rules for a language (merged result of CFG_DEFAULTS + overrides). */
+export interface CfgRulesConfig {
+  ifNode: string | null;
+  ifNodes: Set<string> | null;
+  elifNode: string | null;
+  elseClause: string | null;
+  elseViaAlternative: boolean;
+  ifConsequentField: string | null;
+  forNodes: Set<string>;
+  whileNode: string | null;
+  whileNodes: Set<string> | null;
+  doNode: string | null;
+  infiniteLoopNode: string | null;
+  unlessNode: string | null;
+  untilNode: string | null;
+  switchNode: string | null;
+  switchNodes: Set<string> | null;
+  caseNode: string | null;
+  caseNodes: Set<string> | null;
+  defaultNode: string | null;
+  tryNode: string | null;
+  catchNode: string | null;
+  finallyNode: string | null;
+  returnNode: string | null;
+  throwNode: string | null;
+  breakNode: string | null;
+  continueNode: string | null;
+  blockNode: string | null;
+  blockNodes: Set<string> | null;
+  labeledNode: string | null;
   functionNodes: Set<string>;
 }
 
-/** Dataflow rules for a language. */
-export interface DataflowRules {
-  variableDeclarators: Set<string>;
-  parameterNodes: Set<string>;
-  callNodes: Set<string>;
-  memberNodes: Set<string>;
-  returnNodes: Set<string>;
-  awaitNodes: Set<string>;
+/** Dataflow rules for a language (merged result of DATAFLOW_DEFAULTS + overrides). */
+export interface DataflowRulesConfig {
+  functionNodes: Set<string>;
+  nameField: string;
+  varAssignedFnParent: string | null;
+  assignmentFnParent: string | null;
+  pairFnParent: string | null;
+  paramListField: string;
+  paramIdentifier: string;
+  paramWrapperTypes: Set<string>;
+  defaultParamType: string | null;
+  restParamType: string | null;
+  objectDestructType: string | null;
+  arrayDestructType: string | null;
+  shorthandPropPattern: string | null;
+  pairPatternType: string | null;
+  extractParamName: ((node: TreeSitterNode) => string[] | null) | null;
+  returnNode: string | null;
+  varDeclaratorNode: string | null;
+  varDeclaratorNodes: Set<string> | null;
+  varNameField: string;
+  varValueField: string;
+  assignmentNode: string | null;
+  assignLeftField: string;
+  assignRightField: string;
+  callNode: string | null;
+  callNodes: Set<string> | null;
+  callFunctionField: string;
+  callArgsField: string;
+  spreadType: string | null;
+  memberNode: string | null;
+  memberObjectField: string;
+  memberPropertyField: string;
+  optionalChainNode: string | null;
+  awaitNode: string | null;
+  mutatingMethods: Set<string>;
+  expressionStmtNode: string;
+  callObjectField: string | null;
+  expressionListType: string | null;
+  equalsClauseType: string | null;
+  argumentWrapperType: string | null;
+  extraIdentifierTypes: Set<string> | null;
+}
+
+/** Language rule module: exports from each language rule file. */
+export interface LanguageRuleModule {
+  complexity: ComplexityRules;
+  halstead: HalsteadRules;
+  cfg: CfgRulesConfig;
+  dataflow: DataflowRulesConfig;
+  astTypes: Record<string, string> | null;
 }
 
 /** A basic block in a control flow graph. */
@@ -1719,4 +1811,40 @@ export interface NativeParseTreeCache {
   set(filePath: string, tree: unknown): void;
   delete(filePath: string): void;
   clear(): void;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// §14  CLI Command Framework
+// ════════════════════════════════════════════════════════════════════════
+
+/** Shared context passed to every CLI command's execute/validate functions. */
+export interface CommandContext {
+  // biome-ignore lint/suspicious/noExplicitAny: config is a deeply nested dynamic object
+  config: Record<string, any>;
+  // biome-ignore lint/suspicious/noExplicitAny: Commander options are dynamically typed
+  resolveNoTests: (opts: any) => boolean;
+  // biome-ignore lint/suspicious/noExplicitAny: Commander options are dynamically typed
+  resolveQueryOpts: (opts: any) => any;
+  formatSize: (bytes: number) => string;
+  // biome-ignore lint/suspicious/noExplicitAny: data shapes vary per command
+  outputResult: (data: any, key: string, opts: any) => boolean;
+  program: import('commander').Command;
+}
+
+/** Shape of a CLI command definition used by the registerCommand framework. */
+export interface CommandDefinition {
+  name: string;
+  description: string;
+  queryOpts?: boolean;
+  options?: Array<
+    | [string, string]
+    | [string, string, string | boolean | number]
+    // biome-ignore lint/suspicious/noExplicitAny: Commander parse functions accept arbitrary return types
+    | [string, string, (val: string) => any, string | boolean | number]
+  >;
+  // biome-ignore lint/suspicious/noExplicitAny: Commander options are dynamically typed
+  validate?: (args: any[], opts: any, ctx: CommandContext) => string | undefined | void;
+  // biome-ignore lint/suspicious/noExplicitAny: Commander options are dynamically typed
+  execute?: (args: any[], opts: any, ctx: CommandContext) => void | Promise<void>;
+  subcommands?: CommandDefinition[];
 }

@@ -19,6 +19,17 @@ import { initMcpDefaults } from './middleware.js';
 import { buildToolList } from './tool-registry.js';
 import { TOOL_HANDLERS } from './tools/index.js';
 
+export interface McpToolContext {
+  dbPath: string | undefined;
+  // biome-ignore lint/suspicious/noExplicitAny: lazy-loaded queries module
+  getQueries(): Promise<any>;
+  // biome-ignore lint/suspicious/noExplicitAny: lazy-loaded better-sqlite3 constructor
+  getDatabase(): any;
+  findDbPath: typeof findDbPath;
+  allowedRepos: string[] | undefined;
+  MCP_MAX_LIMIT: number;
+}
+
 interface MCPServerOptionsInternal extends MCPServerOptions {
   config?: CodegraphConfig;
 }
@@ -143,9 +154,18 @@ export async function startMCPServer(
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
       }
 
-      const ctx = { dbPath, getQueries, getDatabase, findDbPath, allowedRepos, MCP_MAX_LIMIT };
-      const result = await toolEntry.handler(args, ctx);
-      if (result?.content) return result;
+      const ctx: McpToolContext = {
+        dbPath: dbPath,
+        getQueries,
+        getDatabase,
+        findDbPath,
+        allowedRepos,
+        MCP_MAX_LIMIT,
+      };
+      const result: unknown = await toolEntry.handler(args, ctx);
+      if (result && typeof result === 'object' && 'content' in result) {
+        return result as { content: Array<{ type: string; text: string }> };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (err: unknown) {
       const code = err instanceof CodegraphError ? err.code : 'UNKNOWN_ERROR';

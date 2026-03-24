@@ -18,7 +18,7 @@ export const command: CommandDefinition = {
   },
   async execute([name], opts, ctx) {
     const { cfg } = await import('../../presentation/cfg.js');
-    cfg(name, opts.db, {
+    cfg(name!, opts.db, {
       format: opts.format,
       file: opts.file,
       kind: opts.kind,
