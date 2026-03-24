@@ -232,7 +232,7 @@ Read `.codegraph/titan/arch-snapshot.json → drift` (the pre-forge drift baseli
 - If > 5 untouched symbols appear in new drift warnings → **FAIL**: "Significant community restructuring detected — <N> symbols drifted communities. This change may have unintended architectural impact."
 
 **A3. Cohesion delta:**
-Compare directory cohesion scores from `structure`:
+Compare directory cohesion scores in `arch-snapshot.json → structure` (baseline) against `$TITAN_ARCH_DIR/current-structure.json` (current):
 - If any directory's cohesion dropped by > 0.2 → **WARN**: "Directory `<dir>` cohesion dropped from <X> to <Y>"
 - If a directory went from above 0.5 to below 0.3 → **FAIL**: "Directory `<dir>` became tangled (cohesion <X> → <Y>)"
 

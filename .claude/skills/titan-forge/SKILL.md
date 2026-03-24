@@ -223,7 +223,7 @@ For each target in the current phase:
     ```
     - Record commit SHA in `execution.commits`
     - Add target to `execution.completedTargets`
-    - Record any diff-review warnings in `execution.diffWarnings` (if any). Each entry must follow this schema:
+    - Record any diff-review warnings by **appending** to `execution.diffWarnings` (if any). Each entry must follow this schema:
       ```json
       { "target": "<target-name>", "check": "D3|D5", "message": "<warning text>", "phase": N }
       ```
