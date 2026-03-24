@@ -30,22 +30,16 @@ export const command: CommandDefinition = {
     const fileArr = (opts.file || []) as string[];
     const filePattern =
       fileArr.length === 1 ? fileArr[0] : fileArr.length > 1 ? fileArr : undefined;
-    await search(
-      query!,
-      opts.db as string | undefined,
-      {
-        limit: parseInt(opts.limit as string, 10),
-        offset: opts.offset ? parseInt(opts.offset as string, 10) : undefined,
-        noTests: ctx.resolveNoTests(opts),
-        minScore: parseFloat(opts.minScore as string),
-        model: opts.model as string | undefined,
-        kind: opts.kind as string | undefined,
-        filePattern,
-        rrfK: parseInt(opts.rrfK as string, 10),
-        mode: opts.mode as 'hybrid' | 'semantic' | 'keyword' | undefined,
-        json: opts.json as boolean | undefined,
-        ndjson: opts.ndjson as boolean | undefined,
-      } as any,
-    );
+    await search(query!, opts.db as string | undefined, {
+      limit: parseInt(opts.limit as string, 10),
+      noTests: ctx.resolveNoTests(opts),
+      minScore: parseFloat(opts.minScore as string),
+      model: opts.model as string | undefined,
+      kind: opts.kind as string | undefined,
+      filePattern,
+      rrfK: parseInt(opts.rrfK as string, 10),
+      mode: opts.mode as 'hybrid' | 'semantic' | 'keyword' | undefined,
+      json: opts.json as boolean | undefined,
+    });
   },
 };
