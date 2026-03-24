@@ -92,7 +92,7 @@ allowed-tools: <from user's tool list>
 
 ## Phase 2 — Write the Skill Body
 
-Write each phase following these **mandatory patterns** (derived from the top 10 Greptile review findings):
+Write each phase following these **mandatory patterns** (derived from Greptile review findings across 200+ comments):
 
 ### Pattern 1: No shell variables across code fences
 
@@ -214,11 +214,11 @@ Never leave the user staring at a silent terminal during long operations.
 
 ### Pattern 12: Artifact reuse
 
-Before running expensive operations (codegraph build, embedding generation, batch analysis), check if usable output already exists:
+Before running expensive operations (codegraph build, embedding generation, batch analysis), check if usable output already exists (replace `deploy-check` with your actual skill name):
 
 ````markdown
 ```bash
-if [ -f ".codegraph/$SKILL_NAME/results.json" ]; then
+if [ -f ".codegraph/deploy-check/results.json" ]; then
   echo "Using cached results from previous run"
 else
   # run expensive operation
@@ -283,7 +283,7 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] Rules section exists at the bottom
 - [ ] Every phase has a clear name (not just a number)
 
-### Anti-pattern checks (the top 10):
+### Anti-pattern checks (all 13 patterns):
 - [ ] **Shell variables**: No variable is set in one code fence and used in another. State that must persist is written to a file
 - [ ] **Silent failures**: No `2>/dev/null` without a documented skip rationale. No commands that swallow errors
 - [ ] **Temp file extensions**: Every temp file passed to codegraph has the correct language extension
@@ -294,6 +294,9 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] **Rules sync**: Every command/tool in the procedure is covered by Rules. Every Rules exception maps to a real step
 - [ ] **Redundancy**: No codegraph command is run twice with the same arguments. Later phases reference earlier results
 - [ ] **Skip validation**: If `--start-from`/`--skip-*` is supported, every skip path validates required artifacts
+- [ ] **Progress indicators**: Phases that iterate over files or run batch operations emit progress (`Processing $i/$total`)
+- [ ] **Artifact reuse**: Expensive operations (codegraph build, embedding generation, batch analysis) check for existing output before re-running
+- [ ] **Platform portability**: No `sed -i ''`, no unquoted globs, no GNU-only flags without fallback or documentation
 
 ### Robustness checks:
 - [ ] **Rollback paths**: Every destructive operation has documented undo instructions
@@ -312,8 +315,6 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] **Dependency validation**: Phase 0 verifies all tools listed in `allowed-tools` are available before starting work. "Command not found" is caught before Phase 2, not during Phase 3
 - [ ] **Exit codes**: Every error path uses explicit `exit 1`. No silent early returns that leave the pipeline in an ambiguous state
 - [ ] **State cleanup**: If the skill creates `.codegraph/$SKILL_NAME/*` files, the skill documents when they're cleaned up or how users remove them (e.g., `rm -rf .codegraph/$SKILL_NAME` in a cleanup section)
-- [ ] **Progress indicators**: Phases that iterate over files or run batch operations emit progress (`Processing $i/$total`)
-- [ ] **Platform portability**: No `sed -i ''`, no unquoted globs, no GNU-only flags without fallback or documentation
 
 Read through the entire SKILL.md one more time after checking all items. Fix anything found.
 
@@ -374,6 +375,14 @@ Document any idempotency fix applied.
 If the user approves:
 - Stage only `.claude/skills/$SKILL_NAME/SKILL.md`
 - Commit: `feat(skill): add /$SKILL_NAME skill`
+
+---
+
+## Examples
+
+- `/create-skill deploy-check` — scaffold a deployment validation skill that runs preflight checks before deploying
+- `/create-skill review-pr` — scaffold a PR review skill with API calls and diff analysis
+- `/create-skill db-migrate` — scaffold a database migration skill with dangerous-operation guards and rollback paths
 
 ---
 
