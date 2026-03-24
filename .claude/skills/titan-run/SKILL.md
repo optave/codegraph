@@ -424,6 +424,18 @@ Proceed with /titan-forge? [y/n]
 ================================================================
 ```
 
+**Divergence check** — before asking for confirmation, check how far main has advanced since the initial sync:
+```bash
+git fetch origin main
+mergeBase=$(git merge-base HEAD origin/main)
+mainAdvance=$(git rev-list --count $mergeBase..origin/main)
+```
+If `mainAdvance > 0`, append to the checkpoint output:
+```
+WARNING: main has advanced <mainAdvance> commits since initial sync.
+If significant, consider re-running: /titan-run --start-from recon
+```
+
 If `--yes` is NOT set: **stop and wait for user confirmation.** Do NOT proceed.
 If `--yes` IS set: print the summary but continue automatically.
 
@@ -525,11 +537,11 @@ while iteration < maxIterations:
             Print: "V13: No test script configured — skipping post-forge test run."
         else:
             Run: <testCmd> 2>&1
-    if headAfter != headBefore and testCmd != "NO_TEST_SCRIPT" and tests fail:
-        Print: "CRITICAL: Test suite fails after forge phase <nextPhase>. Stopping pipeline."
-        Print: "Commits from this phase: git log --oneline <headBefore>..<headAfter>"
-        Print: "Consider reverting: git revert <headBefore>..<headAfter>"
-        Stop.
+            if tests fail:
+                Print: "CRITICAL: Test suite fails after forge phase <nextPhase>. Stopping pipeline."
+                Print: "Commits from this phase: git log --oneline <headBefore>..<headAfter>"
+                Print: "Consider reverting: git revert <headBefore>..<headAfter>"
+                Stop.
 ```
 
 ### 4c. Post-loop validation
