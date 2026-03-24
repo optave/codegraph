@@ -25,7 +25,7 @@ export const command: CommandDefinition = {
   },
   async execute([dir], opts, ctx) {
     const root = path.resolve(dir || '.');
-    const embeddingsConfig = (ctx.config as any).embeddings;
+    const embeddingsConfig = ctx.config.embeddings;
     const model = (opts.model as string) || (embeddingsConfig?.model as string) || DEFAULT_MODEL;
     await buildEmbeddings(root, model, opts.db as string | undefined, { strategy: opts.strategy });
   },

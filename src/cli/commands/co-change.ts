@@ -26,8 +26,8 @@ export const command: CommandDefinition = {
     const { formatCoChange, formatCoChangeTop } = await import('../../presentation/cochange.js');
 
     if (opts.analyze) {
-      const coChangeConfig = (ctx.config as any).coChange;
-      const result: any = analyzeCoChanges(opts.db, {
+      const coChangeConfig = ctx.config.coChange;
+      const result = analyzeCoChanges(opts.db, {
         since: opts.since || coChangeConfig?.since,
         minSupport: opts.minSupport
           ? parseInt(opts.minSupport as string, 10)
@@ -37,8 +37,8 @@ export const command: CommandDefinition = {
       });
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
-      } else if (result.error) {
-        throw new AnalysisError(result.error);
+      } else if ('error' in result) {
+        throw new AnalysisError((result as { error: string }).error);
       } else {
         console.log(
           `\nCo-change analysis complete: ${result.pairsFound} pairs from ${result.commitsScanned} commits (since: ${result.since})\n`,
@@ -47,7 +47,7 @@ export const command: CommandDefinition = {
       return;
     }
 
-    const coChangeConfig = (ctx.config as any).coChange;
+    const coChangeConfig = ctx.config.coChange;
     const queryOpts = {
       limit: parseInt(opts.limit as string, 10),
       offset: opts.offset ? parseInt(opts.offset as string, 10) : undefined,
