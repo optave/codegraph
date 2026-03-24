@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **Hooks enforce code quality.** This project uses Claude Code hooks (`.claude/hooks/`) to automatically inject file-level dependency context on reads, rebuild the graph after edits, block commits with cycles or dead exports, run lint on staged files, and show diff-impact before commits. If codegraph reports an error or produces wrong results when analyzing itself, **fix the bug in the codebase**.
 
+> **Never fabricate facts.** Do not state licenses, version numbers, feature claims, or any factual information without first verifying it (read the file, run the command, check the source). If you don't know, say so — do not guess.
+
 ## Codegraph Workflow
 
 Hooks handle: file-level deps on reads, graph rebuild after edits, commit-time checks (cycles, dead exports, diff-impact, lint). **You must actively run these for function-level understanding:**
