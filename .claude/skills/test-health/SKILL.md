@@ -62,7 +62,9 @@ rm -rf "$RUN_DIR"
 
 ### Analysis
 
-A test is **flaky** if it passes in some runs and fails in others.
+Before analyzing, **exclude invalid runs**: skip any run file containing `{"timeout":true}` or `{"error":true}` — these runs produced no reliable per-test data and must not be counted as "all tests failed." Require a **minimum of 2 valid runs** (runs with parseable vitest JSON output) for flaky detection to be conclusive. If fewer than 2 valid runs remain, report that flaky detection was inconclusive due to too many errored/timed-out runs.
+
+A test is **flaky** if it passes in some valid runs and fails in others.
 
 For each flaky test found:
 1. Record: test file, test name, pass count, fail count, failure messages
