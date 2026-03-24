@@ -19,7 +19,7 @@ export const command: CommandDefinition = {
   },
   async execute([name], opts, ctx) {
     const { dataflow } = await import('../../presentation/dataflow.js');
-    dataflow(name, opts.db, {
+    dataflow(name!, opts.db, {
       file: opts.file,
       kind: opts.kind,
       impact: opts.impact,

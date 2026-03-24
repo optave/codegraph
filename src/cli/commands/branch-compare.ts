@@ -12,7 +12,7 @@ export const command: CommandDefinition = {
   ],
   async execute([base, target], opts, ctx) {
     const { branchCompare } = await import('../../presentation/branch-compare.js');
-    await branchCompare(base, target, {
+    await branchCompare(base!, target!, {
       engine: ctx.program.opts()['engine'],
       depth: parseInt(opts.depth as string, 10),
       noTests: ctx.resolveNoTests(opts),

@@ -29,7 +29,7 @@ export const command: CommandDefinition = {
   execute([name], opts, ctx) {
     if (opts.path) {
       console.error('Note: "query --path" is deprecated, use "codegraph path <from> <to>" instead');
-      symbolPath(name, opts.path as string, opts.db, {
+      symbolPath(name!, opts.path as string, opts.db, {
         maxDepth: opts.depth ? parseInt(opts.depth as string, 10) : 10,
         edgeKinds: opts.kinds ? (opts.kinds as string).split(',').map((s) => s.trim()) : undefined,
         reverse: opts.reverse,
@@ -40,7 +40,7 @@ export const command: CommandDefinition = {
         json: opts.json,
       });
     } else {
-      fnDeps(name, opts.db, {
+      fnDeps(name!, opts.db, {
         depth: parseInt(opts.depth as string, 10),
         file: opts.file,
         kind: opts.kind,

@@ -76,7 +76,8 @@ export const command: CommandDefinition = {
         fileLevel: !opts.functions,
         noTests: ctx.resolveNoTests(opts),
         minConfidence: parseFloat(opts.minConfidence as string),
-        config: plotCfg,
+        // PlotConfig shapes are structurally compatible; bridge the two declarations
+        config: plotCfg as never,
       });
     } finally {
       close();

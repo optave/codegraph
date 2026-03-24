@@ -10,9 +10,9 @@ export const command: CommandDefinition = {
   execute([file], opts, ctx) {
     const qOpts = ctx.resolveQueryOpts(opts);
     if (opts.brief) {
-      brief(file, opts.db, qOpts);
+      brief(file!, opts.db, qOpts);
     } else {
-      fileDeps(file, opts.db, qOpts);
+      fileDeps(file!, opts.db, qOpts);
     }
   },
 };

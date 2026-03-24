@@ -19,7 +19,7 @@ export const command: CommandDefinition = {
   },
   async execute([name], opts, ctx) {
     const { sequence } = await import('../../presentation/sequence.js');
-    sequence(name, opts.db, {
+    sequence(name!, opts.db, {
       depth: parseInt(opts.depth as string, 10),
       file: opts.file,
       kind: opts.kind,
