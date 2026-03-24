@@ -53,7 +53,16 @@ interface CheckDataResult {
 }
 
 export function check(customDbPath: string | undefined, opts: CheckCliOpts = {}): void {
-  const data = checkData(customDbPath, opts as any) as CheckDataResult;
+  const data = checkData(customDbPath, {
+    ref: opts.ref,
+    staged: opts.staged,
+    cycles: opts.cycles !== undefined ? Boolean(opts.cycles) : undefined,
+    blastRadius: opts.blastRadius,
+    signatures: opts.signatures,
+    boundaries: opts.boundaries,
+    depth: opts.depth,
+    noTests: opts.noTests,
+  }) as CheckDataResult;
 
   if (data.error) {
     throw new AnalysisError(data.error);
