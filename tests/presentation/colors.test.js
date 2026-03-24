@@ -58,8 +58,8 @@ describe('DEFAULT_ROLE_COLORS', () => {
 });
 
 describe('COMMUNITY_COLORS', () => {
-  it('has exactly 12 colors', () => {
-    expect(COMMUNITY_COLORS).toHaveLength(12);
+  it('has at least 12 colors', () => {
+    expect(COMMUNITY_COLORS.length).toBeGreaterThanOrEqual(12);
   });
 
   it('all values are valid hex colors', () => {

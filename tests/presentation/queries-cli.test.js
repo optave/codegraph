@@ -27,6 +27,11 @@ vi.mock('../../src/domain/queries.js', () => mocks);
 vi.mock('../../src/infrastructure/result-formatter.js', () => ({
   outputResult: () => false, // never short-circuit — always render CLI output
 }));
+// Also mock the canonical path so the tests remain correct if imports
+// are refactored away from the backward-compat re-export.
+vi.mock('../../src/presentation/result-formatter.js', () => ({
+  outputResult: () => false,
+}));
 
 // ── Import modules under test ──────────────────────────────────────
 const { where, queryName, context, children, explain, implementations, interfaces } = await import(
@@ -459,6 +464,8 @@ describe('symbolPath', () => {
     mocks.pathData.mockReturnValue({ error: 'Symbol not found' });
     symbolPath('x', 'y', '/db');
     expect(output()).toContain('Symbol not found');
+    // ensure we stopped after the error — no path-rendering output
+    expect(output()).not.toContain('Path from');
   });
 });
 
