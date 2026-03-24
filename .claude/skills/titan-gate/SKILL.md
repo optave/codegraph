@@ -95,13 +95,20 @@ node -e "const p=require('./package.json');console.log(JSON.stringify(Object.key
 Run in order — stop on first failure:
 
 ```bash
-npm run lint 2>&1 || echo "LINT_FAILED"
+# Detect lint command with package-manager awareness
+lintCmd=$(node -e "const p=require('./package.json');const s=p.scripts||{};if(!s.lint){console.log('NO_LINT_SCRIPT');process.exit(0);}const fs=require('fs');const runner=fs.existsSync('yarn.lock')?'yarn':fs.existsSync('pnpm-lock.yaml')?'pnpm':fs.existsSync('bun.lockb')?'bun':'npm';console.log(runner+' run lint');")
+if [ "$lintCmd" != "NO_LINT_SCRIPT" ]; then
+  $lintCmd 2>&1 || echo "LINT_FAILED"
+fi
 ```
 
 ```bash
-npm run build 2>&1 || echo "BUILD_FAILED"
+# Detect build command with package-manager awareness
+buildCmd=$(node -e "const p=require('./package.json');const s=p.scripts||{};if(!s.build){console.log('NO_BUILD_SCRIPT');process.exit(0);}const fs=require('fs');const runner=fs.existsSync('yarn.lock')?'yarn':fs.existsSync('pnpm-lock.yaml')?'pnpm':fs.existsSync('bun.lockb')?'bun':'npm';console.log(runner+' run build');")
+if [ "$buildCmd" != "NO_BUILD_SCRIPT" ]; then
+  $buildCmd 2>&1 || echo "BUILD_FAILED"
+fi
 ```
-(Skip if no `build` script.)
 
 ```bash
 # Detect test command from package.json scripts
