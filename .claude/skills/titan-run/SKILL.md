@@ -426,11 +426,18 @@ Proceed with /titan-forge? [y/n]
 
 **Divergence check** — before asking for confirmation, check how far main has advanced since the initial sync:
 ```bash
-git fetch origin main 2>/dev/null || true
-mergeBase=$(git merge-base HEAD origin/main)
-mainAdvance=$(git rev-list --count $mergeBase..origin/main)
+if git fetch origin main 2>/dev/null; then
+  mergeBase=$(git merge-base HEAD origin/main)
+  mainAdvance=$(git rev-list --count $mergeBase..origin/main)
+else
+  mainAdvance="unknown"
+fi
 ```
-If `mainAdvance > 0`, append to the checkpoint output:
+If `mainAdvance == "unknown"`, append to the checkpoint output:
+```
+NOTE: Could not fetch origin/main — skipping divergence check.
+```
+If `mainAdvance > 0` (numeric), append to the checkpoint output:
 ```
 WARNING: main has advanced <mainAdvance> commits since initial sync.
 If significant, consider re-running: /titan-run --start-from recon
