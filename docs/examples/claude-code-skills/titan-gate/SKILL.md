@@ -141,15 +141,17 @@ For each such broken edge where the importing file is NOT part of this commit's 
 
 > **Note:** `codegraph check` does not include import resolution predicates — its checks cover cycles, blast-radius, boundaries, and manifesto rules. Import resolution runs during `codegraph build`. This step relies on diff-impact's edge data to detect broken imports indirectly by identifying edges that reference removed symbols.
 
-### 5c. Dependency direction assertions
+### 5c. Dependency direction assertions (codegraph boundary rules)
 
-From the diff-impact results already collected in Step 1, extract any **new** edges (imports that didn't exist before).
+Check the Step 1 `codegraph check --staged --boundaries` results for boundary violations (already collected — do not re-run). This covers `.codegraphrc.json` onion-architecture rules and any custom boundary predicates.
 
-For each new dependency:
-- Check against `GLOBAL_ARCH.md` layer rules (if Titan artifacts exist)
-- Check the Step 1 `codegraph check --staged --boundaries` results for violations on this edge (already collected — do not re-run)
-- New dependency from a lower layer to a higher layer → **FAIL**: "New upward dependency: `<source>` → `<target>` violates layer boundary"
+For each boundary violation reported by `codegraph check`:
+- New dependency that violates a configured boundary rule → **FAIL**: "New upward dependency: `<source>` → `<target>` violates layer boundary"
+
+Additionally, from the diff-impact results already collected in Step 1, extract any **new** edges (imports that didn't exist before):
 - New dependency on a module flagged in sync.json as "to be removed" or "to be split" → **WARN**: "New dependency on `<module>` which is scheduled for decomposition"
+
+> **Note:** Step 5c relies exclusively on `codegraph check --boundaries` results. Domain-direction checks against `GLOBAL_ARCH.md` are handled by Step 5.5 A2 — do not duplicate them here.
 
 ### 5d. Re-export chain validation
 
@@ -193,7 +195,7 @@ If `.codegraph/titan/GLOBAL_ARCH.md` does not exist (standalone invocation witho
 From `GLOBAL_ARCH.md`, extract the expected dependency direction between domains (e.g., "presentation depends on features, not the reverse").
 
 Check if any new cross-domain dependency violates the expected direction. Use the Step 1 diff-impact results to extract only the edges introduced by the staged changes — do not re-run `codegraph deps` on the full file (that returns all dependencies including pre-existing ones). For each new edge in the diff-impact output, the source and target file paths are already present in the edge data. Resolve the domain/layer of each endpoint by matching its file path against the domain map in `GLOBAL_ARCH.md` (e.g., `src/presentation/` → presentation layer, `src/features/` → features layer). No additional codegraph command is needed — the diff-impact edge output contains the file paths directly.
-- New upward dependency (lower layer importing higher layer) introduced in this diff → **FAIL**
+- New upward dependency (lower layer importing higher layer) introduced in this diff → **FAIL** (skip any edge already flagged by Step 5c's `codegraph check --boundaries` results to avoid duplicate verdicts)
 - Pre-existing boundary violations not surfaced by Step 5c's staged-diff results → advisory-only (not gating)
 - New lateral dependency within the same layer → **OK**
 
