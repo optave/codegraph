@@ -18,8 +18,10 @@ export const command: CommandDefinition = {
     await buildGraph(root, {
       incremental: opts.incremental,
       ast: opts.ast,
+      complexity: opts.complexity,
       engine,
       dataflow: opts.dataflow,
+      cfg: opts.cfg,
     } as any);
   },
 };
