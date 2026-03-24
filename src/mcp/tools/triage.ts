@@ -1,3 +1,4 @@
+import type { Role } from '../../types.js';
 import { effectiveLimit, effectiveOffset, MCP_DEFAULTS, MCP_MAX_LIMIT } from '../middleware.js';
 import type { McpToolContext } from '../server.js';
 
@@ -38,7 +39,7 @@ export async function handler(args: TriageArgs, ctx: McpToolContext): Promise<un
   return triageData(ctx.dbPath, {
     sort: args.sort,
     minScore: args.min_score,
-    role: args.role,
+    role: args.role as Role | undefined,
     file: args.file,
     kind: args.kind,
     noTests: args.no_tests,

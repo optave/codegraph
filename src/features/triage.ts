@@ -5,7 +5,7 @@ import { loadConfig } from '../infrastructure/config.js';
 import { warn } from '../infrastructure/logger.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import { paginateResult } from '../shared/paginate.js';
-import type { CodegraphConfig, TriageNodeRow } from '../types.js';
+import type { CodegraphConfig, Role, TriageNodeRow } from '../types.js';
 
 // ─── Scoring ─────────────────────────────────────────────────────────
 
@@ -110,7 +110,7 @@ interface TriageDataOpts {
   weights?: Partial<RiskWeights>;
   file?: string;
   kind?: string;
-  role?: string;
+  role?: Role;
   limit?: number;
   offset?: number;
   repo?: Repository;
@@ -147,7 +147,7 @@ export function triageData(
         noTests,
         file: opts.file || undefined,
         kind: opts.kind || undefined,
-        role: (opts.role || undefined) as TriageDataOpts['role'] & undefined,
+        role: opts.role || undefined,
       });
     } catch (err: unknown) {
       warn(`triage query failed: ${(err as Error).message}`);
