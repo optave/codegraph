@@ -200,7 +200,7 @@ All skills enforce worktree isolation as their first step. If invoked from the m
 | `codegraph co-change` | GAUNTLET, SYNC | Git history coupling |
 | `codegraph path` | SYNC | Dependency paths between targets |
 | `codegraph cycles` | SYNC, GATE | Circular dependency detection |
-| `codegraph deps` | SYNC, GATE | File-level dependency map |
+| `codegraph deps` | SYNC | File-level dependency map |
 | `codegraph context` | SYNC, FORGE | Full function context |
 | `codegraph owners` | SYNC | CODEOWNERS mapping for cross-team coordination |
 | `codegraph branch-compare` | SYNC, GATE | Structural diff between refs |
