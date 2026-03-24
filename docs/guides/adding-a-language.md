@@ -134,10 +134,14 @@ Every language extractor lives in its own file under `src/extractors/` (e.g.
 `go.ts`, `python.ts`, `rust.ts`). Create `src/extractors/<lang>.ts` and
 re-export it from `src/extractors/index.ts`. Then:
 
-1. Add `extract<Lang>Symbols` to the **explicit named re-export block** at the
-   top of `src/domain/parser.ts` (the `export { ... } from '../extractors/index.js'`
-   block) so the extractor is available from `parser.ts` for backward compatibility.
-2. Import and reference the extractor function in the `LANGUAGE_REGISTRY` array
+1. Add `extract<Lang>Symbols` to the **re-export block** at the top of
+   `src/domain/parser.ts` (`export { ... } from '../extractors/index.js'`) so the
+   extractor is available from `parser.ts` for backward compatibility.
+2. Add `extract<Lang>Symbols` to the **import block** directly below
+   (`import { ... } from '../extractors/index.js'`) so it is in scope within
+   `parser.ts` itself. (A `export { X } from` re-export does **not** make `X`
+   available in the current file — both blocks are required.)
+3. Reference the extractor function in the `LANGUAGE_REGISTRY` array
    in `src/domain/parser.ts` (see Step 3b).
 
 Write a recursive AST walker that matches tree-sitter node types for your
@@ -219,7 +223,7 @@ tree to find the right `node.type` strings.
 - `goVisibility(name)` — uppercase → public (Go convention)
 - `rustVisibility(node)` — extract from `visibility_modifier` child
 - `pythonVisibility(name)` — `__name` → private, `_name` → protected
-- `extractModifierVisibility(node, modifierTypes)` — general modifier extraction (Java, C#, PHP)
+- `extractModifierVisibility(node, modifierTypes?)` — general modifier extraction (Java, C#, PHP). `modifierTypes` is an optional `Set<string>` of node type names; defaults cover the most common cases
 
 #### 3b. Add an entry to `LANGUAGE_REGISTRY`
 
@@ -479,7 +483,7 @@ codegraph query someFunction
 |---|------|--------|--------|
 | 1 | `package.json` | WASM | Add `tree-sitter-<lang>` devDependency |
 | 2 | `scripts/build-wasm.js` | WASM | Add grammar entry to array |
-| 3 | `src/extractors/<lang>.ts` + `src/domain/parser.ts` | WASM | Create extractor in `src/extractors/`, re-export via `index.ts`, add to `parser.ts` re-export block, add `LANGUAGE_REGISTRY` entry |
+| 3 | `src/extractors/<lang>.ts` + `src/domain/parser.ts` | WASM | Create extractor in `src/extractors/`, re-export via `index.ts`, add to `parser.ts` re-export block **and** import block, add `LANGUAGE_REGISTRY` entry |
 | 4 | `src/domain/parser.ts` | WASM | Update `patchNativeResult` (if language flag needed) |
 | 5 | `crates/codegraph-core/Cargo.toml` | Native | Add tree-sitter crate |
 | 6 | `crates/.../parser_registry.rs` | Native | Register enum + extension + grammar + `lang_id_str` |
