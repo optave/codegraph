@@ -30,7 +30,7 @@ Record each PR's number, branch, base, merge status, and CI state.
 
 Each PR is independent work — **launch one Agent subagent per PR, all in parallel.** Use `isolation: "worktree"` so each agent gets its own copy of the repo with no cross-PR contamination.
 
-Pass each agent the full PR processing instructions (Steps 2a–2i below) along with the PR number, branch, base, and current state from Step 1. The agent prompt must include **all** the rules from the Rules section at the bottom of this skill.
+Pass each agent the full PR processing instructions (Steps 2a–2i below) along with the PR number, branch, base, and current state from Step 1. The agent prompt must include **all** the rules from the Rules section at the bottom of this skill — copy them **verbatim**, do not paraphrase or summarize.
 
 ```
 For each PR, launch an Agent with:
