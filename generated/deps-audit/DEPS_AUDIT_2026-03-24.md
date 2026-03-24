@@ -60,13 +60,13 @@ All vulnerabilities have fixes available via `npm audit fix`.
 - **Advisory:** [GHSA-23c5-xmqv-rm74](https://github.com/advisories/GHSA-23c5-xmqv-rm74)
 - **Issue:** ReDoS via nested extglobs generating catastrophic backtracking
 - **CVSS:** 7.5
-- **Path:** transitive
+- **Path:** transitive (via `commit-and-tag-version` -> `dotgitignore`)
 - **Fix:** Update to >= 3.1.4
 
 #### 5. `tar` <= 7.5.10 — HIGH (2 advisories)
-- [GHSA-qffp-2rhf-9h96](https://github.com/advisories/GHSA-qffp-2rhf-9h96) — Hardlink path traversal via drive-relative linkpath
-- [GHSA-9ppj-qmqm-q256](https://github.com/advisories/GHSA-9ppj-qmqm-q256) — Symlink path traversal via drive-relative linkpath
-- **Path:** transitive
+- [GHSA-qffp-2rhf-9h96](https://github.com/advisories/GHSA-qffp-2rhf-9h96) — Hardlink path traversal via drive-relative linkpath (CVSS 7.5)
+- [GHSA-9ppj-qmqm-q256](https://github.com/advisories/GHSA-9ppj-qmqm-q256) — Symlink path traversal via drive-relative linkpath (CVSS 7.5)
+- **Path:** transitive (via `@huggingface/transformers` -> `onnxruntime-node`)
 - **Fix:** Update to > 7.5.10
 
 ### Moderate Severity (3 advisories, all in `hono` <= 4.12.6)
