@@ -29,8 +29,9 @@ vi.mock('../../src/infrastructure/result-formatter.js', () => ({
 }));
 
 // ── Import modules under test ──────────────────────────────────────
-const { where, queryName, context, children, explain, implementations, interfaces } =
-  await import('../../src/presentation/queries-cli/inspect.js');
+const { where, queryName, context, children, explain, implementations, interfaces } = await import(
+  '../../src/presentation/queries-cli/inspect.js'
+);
 const { symbolPath } = await import('../../src/presentation/queries-cli/path.js');
 const { fileExports } = await import('../../src/presentation/queries-cli/exports.js');
 const { moduleMap, roles } = await import('../../src/presentation/queries-cli/overview.js');
@@ -60,7 +61,15 @@ describe('where', () => {
     mocks.whereData.mockReturnValue({
       mode: 'symbol',
       results: [
-        { name: 'foo', kind: 'function', role: 'core', file: 'a.js', line: 10, exported: true, uses: [{ file: 'b.js', line: 5 }] },
+        {
+          name: 'foo',
+          kind: 'function',
+          role: 'core',
+          file: 'a.js',
+          line: 10,
+          exported: true,
+          uses: [{ file: 'b.js', line: 5 }],
+        },
       ],
     });
     where('foo', '/db');
@@ -76,7 +85,13 @@ describe('where', () => {
     mocks.whereData.mockReturnValue({
       mode: 'file',
       results: [
-        { file: 'utils.js', symbols: [{ name: 'add', line: 1 }], imports: ['math.js'], importedBy: ['index.js'], exported: ['add'] },
+        {
+          file: 'utils.js',
+          symbols: [{ name: 'add', line: 1 }],
+          imports: ['math.js'],
+          importedBy: ['index.js'],
+          exported: ['add'],
+        },
       ],
     });
     where('utils.js', '/db');
@@ -97,7 +112,17 @@ describe('where', () => {
   it('shows "No uses found" when symbol has no uses', () => {
     mocks.whereData.mockReturnValue({
       mode: 'symbol',
-      results: [{ name: 'lonely', kind: 'function', role: null, file: 'a.js', line: 1, exported: false, uses: [] }],
+      results: [
+        {
+          name: 'lonely',
+          kind: 'function',
+          role: null,
+          file: 'a.js',
+          line: 1,
+          exported: false,
+          uses: [],
+        },
+      ],
     });
     where('lonely', '/db');
     expect(output()).toContain('No uses found');
@@ -111,7 +136,10 @@ describe('queryName', () => {
     mocks.queryNameData.mockReturnValue({
       results: [
         {
-          name: 'build', kind: 'function', file: 'b.js', line: 5,
+          name: 'build',
+          kind: 'function',
+          file: 'b.js',
+          line: 5,
           callees: [{ name: 'parse', edgeKind: 'calls', file: 'p.js', line: 1 }],
           callers: [{ name: 'main', edgeKind: 'calls', file: 'm.js', line: 10 }],
         },
@@ -134,7 +162,10 @@ describe('queryName', () => {
 
   it('truncates at 15 callees with "more" message', () => {
     const callees = Array.from({ length: 20 }, (_, i) => ({
-      name: `fn${i}`, edgeKind: 'calls', file: 'x.js', line: i,
+      name: `fn${i}`,
+      edgeKind: 'calls',
+      file: 'x.js',
+      line: i,
     }));
     mocks.queryNameData.mockReturnValue({
       results: [{ name: 'hub', kind: 'function', file: 'h.js', line: 1, callees, callers: [] }],
@@ -152,7 +183,12 @@ describe('context', () => {
     mocks.contextData.mockReturnValue({
       results: [
         {
-          name: 'parse', kind: 'function', role: 'core', file: 'p.js', line: 1, endLine: 20,
+          name: 'parse',
+          kind: 'function',
+          role: 'core',
+          file: 'p.js',
+          line: 1,
+          endLine: 20,
           signature: { params: 'src: string', returnType: 'AST' },
           children: [{ kind: 'parameter', name: 'src', line: 2 }],
           complexity: { cognitive: 5, cyclomatic: 3, maxNesting: 2, maintainabilityIndex: 80 },
@@ -161,7 +197,9 @@ describe('context', () => {
           callers: [{ kind: 'function', name: 'main', file: 'm.js', line: 10 }],
           implementors: [],
           implements: [],
-          relatedTests: [{ file: 'test/p.test.js', testCount: 3, testNames: ['parses JS'], source: null }],
+          relatedTests: [
+            { file: 'test/p.test.js', testCount: 3, testNames: ['parses JS'], source: null },
+          ],
         },
       ],
     });
@@ -197,7 +235,10 @@ describe('children', () => {
     mocks.childrenData.mockReturnValue({
       results: [
         {
-          name: 'Config', kind: 'class', file: 'c.js', line: 1,
+          name: 'Config',
+          kind: 'class',
+          file: 'c.js',
+          line: 1,
           children: [
             { kind: 'method', name: 'load', line: 5 },
             { kind: 'property', name: 'path', line: 2 },
@@ -229,9 +270,29 @@ describe('explain', () => {
       kind: 'file',
       results: [
         {
-          file: 'utils.js', lineCount: 50, symbolCount: 3,
-          publicApi: [{ kind: 'function', name: 'add', line: 1, signature: { params: 'a, b' }, role: 'utility', summary: 'adds numbers' }],
-          internal: [{ kind: 'function', name: 'helper', line: 30, signature: null, role: null, summary: null }],
+          file: 'utils.js',
+          lineCount: 50,
+          symbolCount: 3,
+          publicApi: [
+            {
+              kind: 'function',
+              name: 'add',
+              line: 1,
+              signature: { params: 'a, b' },
+              role: 'utility',
+              summary: 'adds numbers',
+            },
+          ],
+          internal: [
+            {
+              kind: 'function',
+              name: 'helper',
+              line: 30,
+              signature: null,
+              role: null,
+              summary: null,
+            },
+          ],
           imports: [{ file: 'math.js' }],
           importedBy: [{ file: 'index.js' }],
           dataFlow: [{ caller: 'add', callees: ['helper'] }],
@@ -259,8 +320,15 @@ describe('explain', () => {
       kind: 'function',
       results: [
         {
-          name: 'main', kind: 'function', role: null, file: 'm.js', line: 1, endLine: 10,
-          lineCount: 10, summary: 'entry point', _depth: 0,
+          name: 'main',
+          kind: 'function',
+          role: null,
+          file: 'm.js',
+          line: 1,
+          endLine: 10,
+          lineCount: 10,
+          summary: 'entry point',
+          _depth: 0,
           signature: { params: '', returnType: 'void' },
           complexity: { cognitive: 2, cyclomatic: 1, maxNesting: 0 },
           callees: [{ kind: 'function', name: 'run', file: 'r.js', line: 1 }],
@@ -292,7 +360,10 @@ describe('implementations', () => {
     mocks.implementationsData.mockReturnValue({
       results: [
         {
-          name: 'Parser', kind: 'interface', file: 'p.ts', line: 1,
+          name: 'Parser',
+          kind: 'interface',
+          file: 'p.ts',
+          line: 1,
           implementors: [{ kind: 'class', name: 'JSParser', file: 'js.ts', line: 5 }],
         },
       ],
@@ -318,7 +389,10 @@ describe('interfaces', () => {
     mocks.interfacesData.mockReturnValue({
       results: [
         {
-          name: 'JSParser', kind: 'class', file: 'js.ts', line: 5,
+          name: 'JSParser',
+          kind: 'class',
+          file: 'js.ts',
+          line: 5,
           interfaces: [{ kind: 'interface', name: 'Parser', file: 'p.ts', line: 1 }],
         },
       ],
@@ -336,7 +410,8 @@ describe('interfaces', () => {
 describe('symbolPath', () => {
   it('prints path steps with edge kinds', () => {
     mocks.pathData.mockReturnValue({
-      found: true, hops: 2,
+      found: true,
+      hops: 2,
       path: [
         { name: 'a', kind: 'function', file: 'a.js', line: 1, edgeKind: null },
         { name: 'b', kind: 'function', file: 'b.js', line: 5, edgeKind: 'calls' },
@@ -354,7 +429,8 @@ describe('symbolPath', () => {
 
   it('handles same-symbol (0 hops)', () => {
     mocks.pathData.mockReturnValue({
-      found: true, hops: 0,
+      found: true,
+      hops: 0,
       path: [{ name: 'x', kind: 'function', file: 'x.js', line: 1, edgeKind: null }],
       alternateCount: 0,
     });
@@ -364,7 +440,9 @@ describe('symbolPath', () => {
 
   it('handles not-found with candidate disambiguation', () => {
     mocks.pathData.mockReturnValue({
-      found: false, maxDepth: 5, reverse: false,
+      found: false,
+      maxDepth: 5,
+      reverse: false,
       fromCandidates: [
         { name: 'run', file: 'a.js', line: 1 },
         { name: 'run', file: 'b.js', line: 5 },
@@ -389,15 +467,24 @@ describe('symbolPath', () => {
 describe('fileExports', () => {
   it('renders export list with consumers', () => {
     mocks.exportsData.mockReturnValue({
-      file: 'math.js', totalExported: 2, totalInternal: 1, totalUnused: 0,
+      file: 'math.js',
+      totalExported: 2,
+      totalInternal: 1,
+      totalUnused: 0,
       results: [
         {
-          name: 'add', kind: 'function', line: 1, role: 'utility',
+          name: 'add',
+          kind: 'function',
+          line: 1,
+          role: 'utility',
           signature: { params: 'a, b' },
           consumers: [{ name: 'main', file: 'index.js', line: 5 }],
         },
         {
-          name: 'subtract', kind: 'function', line: 10, role: null,
+          name: 'subtract',
+          kind: 'function',
+          line: 10,
+          role: null,
           signature: null,
           consumers: [],
         },
@@ -419,10 +506,21 @@ describe('fileExports', () => {
 
   it('renders barrel file header when no direct exports', () => {
     mocks.exportsData.mockReturnValue({
-      file: 'index.js', totalExported: 0, totalInternal: 0, totalUnused: 0,
+      file: 'index.js',
+      totalExported: 0,
+      totalInternal: 0,
+      totalUnused: 0,
       results: [],
       reexportedSymbols: [
-        { name: 'add', kind: 'function', line: 1, role: null, signature: null, originFile: 'math.js', consumers: [] },
+        {
+          name: 'add',
+          kind: 'function',
+          line: 1,
+          role: null,
+          signature: null,
+          originFile: 'math.js',
+          consumers: [],
+        },
       ],
       reexports: [],
     });
@@ -434,8 +532,13 @@ describe('fileExports', () => {
 
   it('prints message when no exports found', () => {
     mocks.exportsData.mockReturnValue({
-      file: 'empty.js', totalExported: 0, totalInternal: 0, totalUnused: 0,
-      results: [], reexportedSymbols: [], reexports: [],
+      file: 'empty.js',
+      totalExported: 0,
+      totalInternal: 0,
+      totalUnused: 0,
+      results: [],
+      reexportedSymbols: [],
+      reexports: [],
     });
     fileExports('empty.js', '/db');
     expect(output()).toContain('No exported symbols found');
@@ -443,11 +546,15 @@ describe('fileExports', () => {
 
   it('prints unused header when opts.unused', () => {
     mocks.exportsData.mockReturnValue({
-      file: 'lib.js', totalExported: 3, totalInternal: 0, totalUnused: 1,
+      file: 'lib.js',
+      totalExported: 3,
+      totalInternal: 0,
+      totalUnused: 1,
       results: [
         { name: 'dead', kind: 'function', line: 5, role: 'dead', signature: null, consumers: [] },
       ],
-      reexportedSymbols: [], reexports: [],
+      reexportedSymbols: [],
+      reexports: [],
     });
     fileExports('lib.js', '/db', { unused: true });
     const out = output();
@@ -485,7 +592,11 @@ describe('moduleMap', () => {
 describe('roles', () => {
   it('renders role groups with truncation at 30', () => {
     const symbols = Array.from({ length: 35 }, (_, i) => ({
-      role: 'core', kind: 'function', name: `fn${i}`, file: 'a.js', line: i + 1,
+      role: 'core',
+      kind: 'function',
+      name: `fn${i}`,
+      file: 'a.js',
+      line: i + 1,
     }));
     mocks.rolesData.mockReturnValue({
       count: 35,
