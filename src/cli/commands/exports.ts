@@ -7,7 +7,7 @@ export const command: CommandDefinition = {
   queryOpts: true,
   options: [['--unused', 'Show only exports with zero consumers (dead exports)']],
   execute([file], opts, ctx) {
-    fileExports(file, opts.db, {
+    fileExports(file!, opts.db, {
       unused: opts.unused || false,
       ...ctx.resolveQueryOpts(opts),
     });

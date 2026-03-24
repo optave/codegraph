@@ -60,12 +60,12 @@ export const command: CommandDefinition = {
     if (file) {
       const data = coChangeData(file, opts.db, queryOpts);
       if (!ctx.outputResult(data, 'partners', opts)) {
-        console.log(formatCoChange(data));
+        console.log(formatCoChange(data as unknown as Parameters<typeof formatCoChange>[0]));
       }
     } else {
       const data = coChangeTopData(opts.db, queryOpts);
       if (!ctx.outputResult(data, 'pairs', opts)) {
-        console.log(formatCoChangeTop(data));
+        console.log(formatCoChangeTop(data as unknown as Parameters<typeof formatCoChangeTop>[0]));
       }
     }
   },

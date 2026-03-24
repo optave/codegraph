@@ -23,7 +23,7 @@ export const command: CommandDefinition = {
     }
   },
   execute([from, to], opts, ctx) {
-    symbolPath(from, to, opts.db, {
+    symbolPath(from!, to!, opts.db, {
       maxDepth: opts.depth ? parseInt(opts.depth as string, 10) : 10,
       edgeKinds: opts.kinds ? (opts.kinds as string).split(',').map((s) => s.trim()) : undefined,
       reverse: opts.reverse,

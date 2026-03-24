@@ -79,7 +79,7 @@ export const command: CommandDefinition = {
       const data = multiBatchData(targets as MultiBatchItem[], opts.db, batchOpts);
       console.log(JSON.stringify(data, null, 2));
     } else {
-      batch(command, targets as string[], opts.db, batchOpts);
+      batch(command!, targets as string[], opts.db, batchOpts);
     }
   },
 };

@@ -6,7 +6,7 @@ export const command: CommandDefinition = {
   description: 'Token-efficient file summary: symbols with roles, caller counts, risk tier',
   queryOpts: true,
   execute([file], opts, ctx) {
-    brief(file, opts.db, {
+    brief(file!, opts.db, {
       ...ctx.resolveQueryOpts(opts),
     });
   },
