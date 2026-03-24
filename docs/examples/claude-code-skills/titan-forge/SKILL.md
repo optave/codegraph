@@ -206,7 +206,7 @@ For each target in the current phase:
 
 10. **Run tests** — detect the project's test command from `package.json` (same detection as gate Step 4):
     ```bash
-    testCmd=$(node -e "const p=require('./package.json');const s=p.scripts||{};const cmd=s.test?'npm test':s['test:ci']?'npm run test:ci':null;console.log(cmd||'NO_TEST_SCRIPT');")
+    testCmd=$(node -e "const p=require('./package.json');const s=p.scripts||{};const script=s.test?'test':s['test:ci']?'test:ci':null;if(!script){console.log('NO_TEST_SCRIPT');process.exit(0);}const fs=require('fs');const runner=fs.existsSync('yarn.lock')?'yarn':fs.existsSync('pnpm-lock.yaml')?'pnpm':fs.existsSync('bun.lockb')?'bun':'npm';console.log(runner+(script==='test'?' test':' run '+script));")
     ```
     - If `testCmd == "NO_TEST_SCRIPT"` → skip pre-gate test run (no test script configured).
     - Otherwise:
