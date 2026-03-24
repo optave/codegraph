@@ -3,8 +3,11 @@ import type { TreeSitterNode, Visitor, VisitorContext } from '../../types.js';
 // biome-ignore lint/suspicious/noExplicitAny: CFG rules are opaque language-specific objects
 type AnyRules = any;
 
-function nn(node: TreeSitterNode | null): TreeSitterNode {
-  return node as TreeSitterNode;
+function nn(node: TreeSitterNode | null, context?: string): TreeSitterNode {
+  if (node === null) {
+    throw new Error(`Unexpected null tree-sitter node${context ? ` (${context})` : ''}`);
+  }
+  return node;
 }
 
 interface CfgBlockInternal {
