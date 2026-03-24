@@ -155,7 +155,8 @@ If the change modifies an index/barrel file (e.g., `index.js`, `mod.rs`):
 
 Capture the pre-change export list from the committed version (write the temp path to a sidecar file so it persists across Bash invocations):
 ```bash
-BARREL_TMP=$(mktemp /tmp/titan-barrel-XXXXXX)
+BARREL_EXT="${barrel_file##*.}"
+BARREL_TMP=$(mktemp "/tmp/titan-barrel-XXXXXX.${BARREL_EXT}")
 echo "$BARREL_TMP" > .codegraph/titan/.barrel-tmp
 git show HEAD:<barrel-file> > "$BARREL_TMP"
 codegraph exports "$BARREL_TMP" -T --json

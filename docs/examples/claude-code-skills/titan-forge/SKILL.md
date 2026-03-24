@@ -178,7 +178,8 @@ For each target in the current phase:
    If the diff deletes code (lines removed > 10), identify deleted symbols by comparing the pre-change file against removed lines:
    ```bash
    # Get the pre-change version's symbols (temp file for shell portability)
-   D4_PRE_TMP=$(mktemp /tmp/titan-d4-pre-XXXXXX)
+   D4_PRE_EXT="${changed_file##*.}"
+   D4_PRE_TMP=$(mktemp "/tmp/titan-d4-pre-XXXXXX.${D4_PRE_EXT}")
    git show HEAD:<changed-file> > "$D4_PRE_TMP"
    codegraph where --file "$D4_PRE_TMP" -T --json 2>/dev/null
    rm -f "$D4_PRE_TMP"
