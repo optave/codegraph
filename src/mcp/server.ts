@@ -162,8 +162,10 @@ export async function startMCPServer(
         allowedRepos,
         MCP_MAX_LIMIT,
       };
-      const result = (await toolEntry.handler(args, ctx)) as any;
-      if (result?.content) return result;
+      const result: unknown = await toolEntry.handler(args, ctx);
+      if (result && typeof result === 'object' && 'content' in result) {
+        return result as { content: Array<{ type: string; text: string }> };
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (err: unknown) {
       const code = err instanceof CodegraphError ? err.code : 'UNKNOWN_ERROR';
