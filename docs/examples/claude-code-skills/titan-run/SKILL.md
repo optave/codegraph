@@ -418,6 +418,8 @@ Proceed with /titan-forge? [y/n]
 If `--yes` is NOT set: **stop and wait for user confirmation.** Do NOT proceed.
 If `--yes` IS set: print the summary but continue automatically.
 
+Once the user confirms (or `--yes` was set), set `autoConfirm = true` for the remainder of the run. The user explicitly approved the forge pipeline at this checkpoint, so forge sub-agents must receive `--yes` to avoid per-phase confirmation prompts that cannot be answered in a sub-agent context.
+
 ---
 
 ## Step 4 — FORGE (loop)
