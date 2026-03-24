@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { createRequire, register } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// CJS require goes through Node's native loader — needs Node >= 22.6 for .ts
-const [_major, _minor] = process.versions.node.split('.').map(Number);
-const canStripTypes = _major > 22 || (_major === 22 && _minor >= 6);
+// Register .js → .ts resolve hook so CJS wrapper's import('./index.ts')
+// can resolve the .js import specifiers used throughout the source.
+register(new URL('../../scripts/ts-resolve-hooks.ts', import.meta.url));
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
@@ -26,7 +26,7 @@ describe('index.js re-exports', () => {
     expect(typeof mod).toBe('object');
   });
 
-  it.skipIf(!canStripTypes)('CJS wrapper resolves to the same exports', async () => {
+  it('CJS wrapper resolves to the same exports', async () => {
     const require = createRequire(import.meta.url);
     const cjs = await require('../../src/index.cjs');
     const esm = await import('../../src/index.js');

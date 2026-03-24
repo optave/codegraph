@@ -15,10 +15,6 @@ import {
   unregisterRepo,
 } from '../../src/infrastructure/registry.js';
 
-// Child processes load .ts files natively — requires Node >= 22.6 type stripping
-const [_major, _minor] = process.versions.node.split('.').map(Number);
-const canStripTypes = _major > 22 || (_major === 22 && _minor >= 6);
-
 let tmpDir: string;
 let registryPath: string;
 
@@ -38,11 +34,15 @@ describe('REGISTRY_PATH', () => {
     expect(REGISTRY_PATH).toBe(path.join(os.homedir(), '.codegraph', 'registry.json'));
   });
 
-  it.skipIf(!canStripTypes)('respects CODEGRAPH_REGISTRY_PATH env var', () => {
+  it('respects CODEGRAPH_REGISTRY_PATH env var', () => {
     const customPath = path.join(tmpDir, 'custom', 'registry.json');
+    const loaderUrl = new URL('../../scripts/ts-resolve-loader.ts', import.meta.url).href;
     const result = execFileSync(
       'node',
       [
+        '--experimental-strip-types',
+        '--import',
+        loaderUrl,
         '--input-type=module',
         '-e',
         `import { REGISTRY_PATH } from './src/infrastructure/registry.js'; process.stdout.write(REGISTRY_PATH);`,

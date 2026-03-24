@@ -9,11 +9,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
-// All tests spawn child processes that load .ts files — requires Node >= 22.6
-const [_major, _minor] = process.versions.node.split('.').map(Number);
-const canStripTypes = _major > 22 || (_major === 22 && _minor >= 6);
-
-const CLI = path.resolve('src/cli.js');
+const CLI = path.resolve('src/cli.ts');
+const LOADER = new URL('../../scripts/ts-resolve-loader.ts', import.meta.url).href;
+const NODE_TS_FLAGS = ['--experimental-strip-types', '--import', LOADER];
 
 const FIXTURE_FILES = {
   'math.js': `
@@ -44,7 +42,7 @@ let tmpDir: string, tmpHome: string, dbPath: string;
 
 /** Run the CLI and return stdout as a string. Throws on non-zero exit. */
 function run(...args) {
-  return execFileSync('node', [CLI, ...args], {
+  return execFileSync('node', [...NODE_TS_FLAGS, CLI, ...args], {
     cwd: tmpDir,
     encoding: 'utf-8',
     timeout: 30_000,
@@ -69,7 +67,7 @@ afterAll(() => {
   if (tmpHome) fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
-describe.skipIf(!canStripTypes)('CLI smoke tests', () => {
+describe('CLI smoke tests', () => {
   // ─── Build ───────────────────────────────────────────────────────────
   test('build creates graph.db', () => {
     expect(fs.existsSync(dbPath)).toBe(true);
@@ -200,7 +198,7 @@ describe.skipIf(!canStripTypes)('CLI smoke tests', () => {
     const { spawnSync } = require('node:child_process');
     const result = spawnSync(
       'node',
-      [CLI, 'query', 'sumOfSquares', '--path', 'add', '--db', dbPath, '--json'],
+      [...NODE_TS_FLAGS, CLI, 'query', 'sumOfSquares', '--path', 'add', '--db', dbPath, '--json'],
       {
         cwd: tmpDir,
         encoding: 'utf-8',
@@ -241,12 +239,12 @@ describe.skipIf(!canStripTypes)('CLI smoke tests', () => {
 
 // ─── Registry CLI ───────────────────────────────────────────────────────
 
-describe.skipIf(!canStripTypes)('Registry CLI commands', () => {
+describe('Registry CLI commands', () => {
   let tmpHome: string;
 
   /** Run CLI with isolated HOME to avoid touching real registry */
   function runReg(...args) {
-    return execFileSync('node', [CLI, ...args], {
+    return execFileSync('node', [...NODE_TS_FLAGS, CLI, ...args], {
       cwd: tmpDir,
       encoding: 'utf-8',
       timeout: 30_000,

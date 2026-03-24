@@ -25,10 +25,6 @@ import {
   splitTargets,
 } from '../../src/features/batch.js';
 
-// Child processes load .ts files natively — requires Node >= 22.6 type stripping
-const [_major, _minor] = process.versions.node.split('.').map(Number);
-const canStripTypes = _major > 22 || (_major === 22 && _minor >= 6);
-
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 function insertNode(db, name, kind, file, line) {
@@ -212,17 +208,23 @@ describe('batchData — complexity (dbOnly signature)', () => {
 
 // ─── CLI smoke test ──────────────────────────────────────────────────
 
-describe.skipIf(!canStripTypes)('batch CLI', () => {
+describe('batch CLI', () => {
   const cliPath = path.resolve(
     path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, '$1')),
-    '../../src/cli.js',
+    '../../src/cli.ts',
   );
+  const loaderUrl = new URL('../../scripts/ts-resolve-loader.ts', import.meta.url).href;
+  const NODE_TS_FLAGS = ['--experimental-strip-types', '--import', loaderUrl];
 
   test('outputs valid JSON', () => {
-    const out = execFileSync('node', [cliPath, 'batch', 'query', 'authenticate', '--db', dbPath], {
-      encoding: 'utf-8',
-      timeout: 30_000,
-    });
+    const out = execFileSync(
+      'node',
+      [...NODE_TS_FLAGS, cliPath, 'batch', 'query', 'authenticate', '--db', dbPath],
+      {
+        encoding: 'utf-8',
+        timeout: 30_000,
+      },
+    );
     const parsed = JSON.parse(out);
     expect(parsed.command).toBe('query');
     expect(parsed.total).toBe(1);
@@ -232,7 +234,7 @@ describe.skipIf(!canStripTypes)('batch CLI', () => {
   test('batch accepts comma-separated positional targets', () => {
     const out = execFileSync(
       'node',
-      [cliPath, 'batch', 'where', 'authenticate,validateToken', '--db', dbPath],
+      [...NODE_TS_FLAGS, cliPath, 'batch', 'where', 'authenticate,validateToken', '--db', dbPath],
       { encoding: 'utf-8', timeout: 30_000 },
     );
     const parsed = JSON.parse(out);
