@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import type { Import } from '../../../../types.js';
 import { parseFilesAuto } from '../../../parser.js';
 import { resolveImportPath, resolveImportsBatch } from '../../resolve.js';
 import type { PipelineContext } from '../context.js';
@@ -54,11 +55,11 @@ export async function resolveImports(ctx: PipelineContext): Promise<void> {
         if (fileSym) {
           fileSymbols.set(relPath, fileSym);
           ctx.barrelOnlyFiles.add(relPath);
-          const reexports = fileSym.imports.filter((imp) => imp.reexport);
+          const reexports = fileSym.imports.filter((imp: Import) => imp.reexport);
           if (reexports.length > 0) {
             ctx.reexportMap.set(
               relPath,
-              reexports.map((imp) => ({
+              reexports.map((imp: Import) => ({
                 source: getResolved(ctx, absPath, imp.source),
                 names: imp.names,
                 wildcardReexport: imp.wildcardReexport || false,
