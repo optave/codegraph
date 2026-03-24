@@ -22,14 +22,10 @@ Audit the project's dependency tree for security vulnerabilities, outdated packa
 5. **If `AUTO_FIX` is set:** Save the original manifests now, before any npm commands run, so pre-existing unstaged changes are preserved:
    ```bash
    git stash push -m "deps-audit-backup" -- package.json package-lock.json
-   STASH_CREATED=$?
-   ```
-   Track `STASH_CREATED` — when `0`, a stash entry was actually created; when `1`, the files had no changes so nothing was stashed.
-   If `STASH_CREATED` is `0`, immediately capture the stash ref for later use:
-   ```bash
    STASH_REF=$(git stash list --format='%gd %s' | grep 'deps-audit-backup' | head -1 | awk '{print $1}')
    ```
-   Use `$STASH_REF` (not `stash@{0}`) in all later stash drop/pop commands to avoid targeting the wrong entry if other stashes are pushed in the interim.
+   `STASH_REF` is non-empty if and only if a stash entry was actually created. Do **not** use `$?` — modern git (2.16+) returns 0 even when nothing was stashed.
+   Use `[ -n "$STASH_REF" ]` (stash created) / `[ -z "$STASH_REF" ]` (nothing stashed) for all branching. Use `$STASH_REF` (not `stash@{0}`) in all later stash drop/pop commands to avoid targeting the wrong entry.
 
 ## Phase 1 — Security Vulnerabilities
 
@@ -165,13 +161,25 @@ If `AUTO_FIX` was set:
 Summarize all changes made:
 1. List each package updated/fixed
 2. Run `npm test` to verify nothing broke
-3. If tests pass and `STASH_CREATED` is `0`: drop the saved state (`git stash drop $STASH_REF`) — the npm changes are good, no rollback needed
-   If tests pass and `STASH_CREATED` is `1`: no action needed — the npm changes are good and no stash entry exists to clean up
-4. If tests fail and `STASH_CREATED` is `0`:
-   - Restore the saved manifests: `git stash pop $STASH_REF`
+3. If tests pass and `STASH_REF` is non-empty: pop and merge the saved state (`git stash pop $STASH_REF`) — this restores any pre-existing uncommitted changes alongside the npm fix results. Note: the step 2 test run validated the npm changes alone; step 3b below is the authoritative test of the final merged state.
+   - If the pop applies cleanly:
+     a. Run `npm install` to re-sync `node_modules/` with the merged manifest.
+     b. Re-run `npm test` to confirm the merged state is consistent (this is the authoritative check — step 2 only validated the npm changes in isolation).
+     c. If tests still pass: confirm the project is consistent.
+     d. If tests now fail: warn the user — the pre-existing manifest changes conflict with the audit fixes.
+        Recovery options:
+        - To undo **all** manifest changes (both audit fixes and pre-existing): `git checkout -- package.json package-lock.json && npm ci`
+        - To keep only the audit fixes and discard pre-existing changes: manually edit `package.json`/`package-lock.json` to remove the pre-existing delta, then `npm ci`
+        - To keep only the pre-existing changes and discard the audit fixes: `git checkout HEAD -- package.json package-lock.json && npm ci` to revert manifests to their clean state, then manually re-apply only your pre-existing changes
+   - If the pop causes conflicts in `package.json`/`package-lock.json`: warn the user, leave conflict markers for manual resolution, and instruct: "After you resolve the conflicts, run `npm install` to re-sync `node_modules/` with the resolved lock file before committing."
+   - For conflicts in other files, resolve them by keeping both the npm fixes and the pre-existing changes.
+   If tests pass and `STASH_REF` is empty: no action needed — the npm changes are good and no stash entry exists to clean up
+4. If tests fail and `STASH_REF` is non-empty:
+   - Reset manifests to HEAD first (undoes npm changes): `git checkout HEAD -- package.json package-lock.json`
+   - Then re-apply the pre-existing changes cleanly: `git stash pop $STASH_REF`
    - Restore `node_modules/` to match the reverted lock file: `npm ci`
    - Report what failed
-5. If tests fail and `STASH_CREATED` is `1`:
+5. If tests fail and `STASH_REF` is empty:
    - Discard manifest changes: `git checkout -- package.json package-lock.json`
    - Restore `node_modules/` to match the reverted lock file: `npm ci`
    - Report what failed
@@ -181,6 +189,6 @@ Summarize all changes made:
 - **Never run `npm audit fix --force`** — breaking changes need human review
 - **Never remove a dependency** without asking the user, even if it appears unused — flag it in the report instead
 - **Always run tests** after any auto-fix changes
-- **If `--fix` causes test failures**, restore manifests from the saved state (`git stash pop $STASH_REF` if `STASH_CREATED=0`, or `git checkout` if stash was a no-op) then run `npm ci` to resync `node_modules/`, and report the failure
+- **If `--fix` causes test failures**, first reset manifests to HEAD (`git checkout HEAD -- package.json package-lock.json`), then re-apply pre-existing changes (`git stash pop $STASH_REF` if `STASH_REF` is non-empty, or no-op if nothing was stashed), then run `npm ci` to resync `node_modules/`, and report the failure
 - Treat `optionalDependencies` separately — they're expected to fail on some platforms
 - The report goes in `generated/deps-audit/` — create the directory if it doesn't exist
