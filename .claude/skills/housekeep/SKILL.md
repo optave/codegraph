@@ -86,21 +86,25 @@ Search for and remove files found by the two discovery commands above (never tou
 **Stale lock files** (`.codegraph/*.lock` older than 1 hour): Before removing, first check if `lsof` is available (`command -v lsof`). If `lsof` is **not installed** (common in Docker/CI minimal containers where it exits 127), **skip lock file removal entirely** and print a warning: `"lsof not available — skipping lock file cleanup (cannot verify no process holds the file)"`. When `lsof` IS available, use `lsof "$f"` to verify no process holds the file. If the file is held, **skip it** and warn — concurrent Claude Code sessions may hold legitimate long-lived locks.
 
 ```bash
-for f in .codegraph/*.lock; do
-  [ -f "$f" ] || continue
-  age=$(( $(date +%s) - $(stat --format='%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null) ))
-  [ -z "$age" ] && continue
-  if [ "$age" -gt 3600 ] && ! lsof "$f" > /dev/null 2>&1; then
-    if [ "$DRY_RUN" = "true" ]; then
-      echo "[DRY RUN] Would remove stale lock: $f"
-    else
-      echo "Removing stale lock: $f"
-      rm "$f"
+if ! command -v lsof > /dev/null 2>&1; then
+  echo "lsof not available — skipping lock file cleanup (cannot verify no process holds the file)"
+else
+  for f in .codegraph/*.lock; do
+    [ -f "$f" ] || continue
+    age=$(( $(date +%s) - $(stat --format='%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null) ))
+    [ -z "$age" ] && continue
+    if [ "$age" -gt 3600 ] && ! lsof "$f" > /dev/null 2>&1; then
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[DRY RUN] Would remove stale lock: $f"
+      else
+        echo "Removing stale lock: $f"
+        rm "$f"
+      fi
+    elif [ "$age" -gt 3600 ]; then
+      echo "Lock file $f is old but still held by a process — ask user before removing"
     fi
-  elif [ "$age" -gt 3600 ]; then
-    echo "Lock file $f is old but still held by a process — ask user before removing"
-  fi
-done
+  done
+fi
 ```
 
 ### 2b. Large untracked files
