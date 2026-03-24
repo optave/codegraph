@@ -13,7 +13,7 @@
 | Unused dependencies | 0 | 0 |
 | License risks | 0 | 0 |
 | Duplicates | 0 actionable | 0 actionable |
-| **Health score** | **41/100** | **91/100** |
+| **Health score** | **41/100** | **95/100** |
 
 ## Health Score Calculation
 
@@ -28,47 +28,57 @@
 - 100 base
 - 1 stale dep × -5 = -5
 - 2 aging deps resolved (biome, vitest patched) = 0
-- **Score: 91/100** (estimated; TypeScript 6.0 evaluation deferred)
+- **Score: 95/100** (estimated; TypeScript 6.0 evaluation deferred)
 
 ## Security Vulnerabilities
 
-All 5 are **high** severity and all have fixes available via `npm audit fix`.
+All vulnerabilities have fixes available via `npm audit fix`.
 
-### 1. `@hono/node-server` < 1.19.10 — HIGH
+### High Severity (5 packages)
+
+#### 1. `@hono/node-server` < 1.19.10 — HIGH
 - **Advisory:** [GHSA-wc8c-qw6v-h7f6](https://github.com/advisories/GHSA-wc8c-qw6v-h7f6)
 - **Issue:** Authorization bypass for protected static paths via encoded slashes in Serve Static Middleware
 - **CVSS:** 7.5
 - **Path:** transitive (via `@modelcontextprotocol/sdk`)
 - **Fix:** Update to >= 1.19.10
 
-### 2. `express-rate-limit` 8.2.0–8.2.1 — HIGH
+#### 2. `express-rate-limit` 8.2.0–8.2.1 — HIGH
 - **Advisory:** [GHSA-46wh-pxpv-q5gq](https://github.com/advisories/GHSA-46wh-pxpv-q5gq)
 - **Issue:** IPv4-mapped IPv6 addresses bypass per-client rate limiting on dual-stack networks
 - **CVSS:** 7.5
 - **Path:** transitive (via `@modelcontextprotocol/sdk`)
 - **Fix:** Update to >= 8.2.2
 
-### 3. `hono` <= 4.12.6 — HIGH (5 advisories)
+#### 3. `hono` <= 4.12.6 — HIGH (2 high advisories)
 - [GHSA-xh87-mx6m-69f3](https://github.com/advisories/GHSA-xh87-mx6m-69f3) — Auth bypass via IP spoofing (CVSS 8.2)
 - [GHSA-q5qw-h33p-qvwr](https://github.com/advisories/GHSA-q5qw-h33p-qvwr) — Arbitrary file access via serveStatic (CVSS 7.5)
-- [GHSA-5pq2-9x2x-5p6w](https://github.com/advisories/GHSA-5pq2-9x2x-5p6w) — Cookie attribute injection (CVSS 5.4)
-- [GHSA-p6xx-57qc-3wxr](https://github.com/advisories/GHSA-p6xx-57qc-3wxr) — SSE control field injection (CVSS 6.5)
-- [GHSA-v8w9-8mx6-g223](https://github.com/advisories/GHSA-v8w9-8mx6-g223) — Prototype pollution via parseBody (CVSS 4.8)
 - **Path:** transitive (via `@modelcontextprotocol/sdk`)
 - **Fix:** Update to >= 4.12.7
 
-### 4. `minimatch` < 3.1.4 — HIGH
+#### 4. `minimatch` < 3.1.4 — HIGH
 - **Advisory:** [GHSA-23c5-xmqv-rm74](https://github.com/advisories/GHSA-23c5-xmqv-rm74)
 - **Issue:** ReDoS via nested extglobs generating catastrophic backtracking
 - **CVSS:** 7.5
 - **Path:** transitive
 - **Fix:** Update to >= 3.1.4
 
-### 5. `tar` <= 7.5.10 — HIGH (2 advisories)
+#### 5. `tar` <= 7.5.10 — HIGH (2 advisories)
 - [GHSA-qffp-2rhf-9h96](https://github.com/advisories/GHSA-qffp-2rhf-9h96) — Hardlink path traversal via drive-relative linkpath
 - [GHSA-9ppj-qmqm-q256](https://github.com/advisories/GHSA-9ppj-qmqm-q256) — Symlink path traversal via drive-relative linkpath
 - **Path:** transitive
 - **Fix:** Update to > 7.5.10
+
+### Moderate Severity (3 advisories, all in `hono` <= 4.12.6)
+
+These are sub-advisories of `hono`, resolved by the same update to >= 4.12.7:
+
+1. [GHSA-5pq2-9x2x-5p6w](https://github.com/advisories/GHSA-5pq2-9x2x-5p6w) — Cookie attribute injection (CVSS 5.4)
+2. [GHSA-p6xx-57qc-3wxr](https://github.com/advisories/GHSA-p6xx-57qc-3wxr) — SSE control field injection (CVSS 6.5)
+3. [GHSA-v8w9-8mx6-g223](https://github.com/advisories/GHSA-v8w9-8mx6-g223) — Prototype pollution via parseBody (CVSS 4.8)
+
+- **Path:** transitive (via `@modelcontextprotocol/sdk`)
+- **Fix:** Update `hono` to >= 4.12.7 (same fix as high-severity advisories above)
 
 **Note:** 3 of 5 vulnerable packages (`@hono/node-server`, `express-rate-limit`, `hono`) are transitive deps of `@modelcontextprotocol/sdk`. Updating the MCP SDK should resolve them.
 
