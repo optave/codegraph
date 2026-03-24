@@ -161,10 +161,10 @@ If `AUTO_FIX` was set:
 Summarize all changes made:
 1. List each package updated/fixed
 2. Run `npm test` to verify nothing broke
-3. If tests pass and `STASH_REF` is non-empty: pop and merge the saved state (`git stash pop $STASH_REF`) — this restores any pre-existing uncommitted changes alongside the npm fix results.
+3. If tests pass and `STASH_REF` is non-empty: pop and merge the saved state (`git stash pop $STASH_REF`) — this restores any pre-existing uncommitted changes alongside the npm fix results. Note: the step 2 test run validated the npm changes alone; step 3b below is the authoritative test of the final merged state.
    - If the pop applies cleanly:
      a. Run `npm install` to re-sync `node_modules/` with the merged manifest.
-     b. Re-run `npm test` to confirm nothing broke with the merged dependency state.
+     b. Re-run `npm test` to confirm the merged state is consistent (this is the authoritative check — step 2 only validated the npm changes in isolation).
      c. If tests still pass: confirm the project is consistent.
      d. If tests now fail: warn the user — the pre-existing manifest changes conflict with the audit fixes.
         Recovery options:
