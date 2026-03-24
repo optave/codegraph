@@ -41,8 +41,14 @@ Run the full test suite `FLAKY_RUNS` times and track per-test pass/fail:
 RUN_DIR=$(mktemp -d /tmp/test-health-XXXXXX)
 for i in $(seq 1 $FLAKY_RUNS); do
   timeout 180 npx vitest run --reporter=json > "$RUN_DIR/run-$i.json" 2>"$RUN_DIR/run-$i.err"
-  if [ $? -eq 124 ]; then
+  exit_code=$?
+  if [ $exit_code -eq 124 ]; then
     echo '{"timeout":true}' > "$RUN_DIR/run-$i.json"
+  elif [ $exit_code -ne 0 ] && [ $exit_code -ne 1 ]; then
+    # Use jq to safely JSON-escape stderr content (may contain quotes, newlines, backslashes)
+    stderr_content=$(cat "$RUN_DIR/run-$i.err")
+    jq -n --argjson code "$exit_code" --arg stderr "$stderr_content" \
+      '{"error":true,"exit_code":$code,"stderr":$stderr}' > "$RUN_DIR/run-$i.json"
   fi
 done
 ```
@@ -56,7 +62,9 @@ rm -rf "$RUN_DIR"
 
 ### Analysis
 
-A test is **flaky** if it passes in some runs and fails in others.
+Before analyzing, **exclude invalid runs**: skip any run file containing `{"timeout":true}` or `{"error":true}` — these runs produced no reliable per-test data and must not be counted as "all tests failed." Require a **minimum of 2 valid runs** (runs with parseable vitest JSON output) for flaky detection to be conclusive. If fewer than 2 valid runs remain, report that flaky detection was inconclusive due to too many errored/timed-out runs.
+
+A test is **flaky** if it passes in some valid runs and fails in others.
 
 For each flaky test found:
 1. Record: test file, test name, pass count, fail count, failure messages
@@ -139,7 +147,7 @@ Find files with < 50% line coverage. For each:
 Compare against `main` branch to find recently changed files:
 
 ```bash
-git diff --name-only main...HEAD -- src/
+git diff --name-only origin/main...HEAD -- src/
 ```
 
 For each changed source file, check if:

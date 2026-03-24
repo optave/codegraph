@@ -37,7 +37,7 @@ export function batchQuery(
   const isMulti =
     targets.length > 0 &&
     typeof targets[0] === 'object' &&
-    (targets[0] as MultiBatchTarget).command;
+    !!(targets[0] as MultiBatchTarget).command;
 
   let data: unknown;
   if (isMulti) {

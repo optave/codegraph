@@ -20,7 +20,7 @@ import { buildToolList } from './tool-registry.js';
 import { TOOL_HANDLERS } from './tools/index.js';
 
 export interface McpToolContext {
-  dbPath: string;
+  dbPath: string | undefined;
   // biome-ignore lint/suspicious/noExplicitAny: lazy-loaded queries module
   getQueries(): Promise<any>;
   // biome-ignore lint/suspicious/noExplicitAny: lazy-loaded better-sqlite3 constructor
@@ -155,7 +155,7 @@ export async function startMCPServer(
       }
 
       const ctx: McpToolContext = {
-        dbPath: dbPath!,
+        dbPath: dbPath,
         getQueries,
         getDatabase,
         findDbPath,

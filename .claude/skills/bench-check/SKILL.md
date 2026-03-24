@@ -153,6 +153,13 @@ For each metric in the current run:
 
 ## Phase 4 — Verdict
 
+### Pre-condition check
+Before evaluating verdicts, verify that at least one benchmark produced valid numeric results.
+If `metrics` is empty (all suites produced `"error"` or `"timeout"` records):
+- Print: `BENCH-CHECK ABORTED — no valid benchmark results (all suites failed or timed out)`
+- Do NOT proceed to Phase 5 — the baseline must not be overwritten with empty data
+- Stop here and skip to Phase 6 to write the report with verdict `ABORTED`.
+
 Based on comparison results:
 
 ### No regressions found
@@ -169,7 +176,7 @@ Based on comparison results:
   - Re-run individual benchmarks to confirm (not flaky)
 
 ### First run (no baseline)
-- If `COMPARE_ONLY` is set: print a warning that no baseline exists and exit without saving
+- If `COMPARE_ONLY` is set: print a warning that no baseline exists and **stop here — do not proceed to Phase 5 or Phase 6**. No baseline is saved and no report is written.
 - Otherwise: print `BENCH-CHECK — initial baseline saved` and save current results as baseline
 
 ### Save-baseline with existing baseline (`--save-baseline`)
@@ -180,6 +187,7 @@ Based on comparison results:
 
 **Skip this phase if `COMPARE_ONLY` is set.** Compare-only mode never writes or commits baselines.
 **Skip this phase if regressions were detected in Phase 4.** The baseline is only updated on a clean run.
+**Skip this phase if the ABORTED pre-condition was triggered in Phase 4.** The baseline must not be overwritten with empty data.
 
 When saving (initial run, `--save-baseline`, or passed comparison):
 
@@ -211,7 +219,25 @@ git diff --cached --quiet -- generated/bench-check/baseline.json generated/bench
 
 ## Phase 6 — Report
 
+**Skip this phase (write no report) if `COMPARE_ONLY` was set and no baseline existed, AND the ABORTED pre-condition was not triggered.** That early-exit case was already handled in Phase 4 — writing a "BASELINE SAVED" report here would be misleading since no baseline was saved. When ABORTED, always write the ABORTED report regardless of other flags.
+
 Write a human-readable report to `generated/bench-check/BENCH_REPORT_<date>.md`.
+
+**If the ABORTED pre-condition was triggered (no valid benchmark results):** write a minimal report — this check MUST come before the SAVE_ONLY/first-run check, because when all benchmarks fail on a `--save-baseline` or first run, SAVE_ONLY would also be true but no baseline was actually saved:
+
+```markdown
+# Benchmark Report — <date>
+
+**Version:** X.Y.Z | **Git ref:** abc1234 | **Threshold:** $THRESHOLD%
+
+## Verdict: ABORTED — no valid benchmark results
+
+All benchmark suites failed or timed out. See Phase 1 error records for details.
+
+## Raw Results
+
+<!-- Error/timeout records from each suite -->
+```
 
 **If `SAVE_ONLY` is set or no prior baseline existed (first run):** write a shortened report — omit the "Comparison vs Baseline" and "Regressions" sections since no comparison was performed:
 
@@ -257,7 +283,7 @@ Write a human-readable report to `generated/bench-check/BENCH_REPORT_<date>.md`.
 
 1. If report was written, print its path
 2. If baseline was updated, print confirmation
-3. Print one-line summary: `PASSED (0 regressions) | FAILED (N regressions) | BASELINE SAVED`
+3. Print one-line summary: `PASSED (0 regressions) | FAILED (N regressions) | BASELINE SAVED | ABORTED (all suites failed)`
 
 ## Rules
 
@@ -266,6 +292,6 @@ Write a human-readable report to `generated/bench-check/BENCH_REPORT_<date>.md`.
 - **Don't update baseline on regression** — the user must investigate first
 - **Recall/quality metrics are inverted** — a decrease is a regression
 - **Count metrics are informational** — graph growing isn't a regression
-- **The baseline file is committed to git** — it's a shared reference point; Phase 5 always commits it
+- **The baseline file is committed to git** — it's a shared reference point; Phase 5 commits it on clean (non-regressed) runs where COMPARE_ONLY is not set
 - **history.ndjson is append-only** — never truncate or rewrite it
 - Generated files go in `generated/bench-check/` — create the directory if needed

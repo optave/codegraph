@@ -16,7 +16,11 @@ interface FlowOpts {
   csv?: boolean;
 }
 
-export function flow(name: string, dbPath: string | undefined, opts: FlowOpts = {}): void {
+export function flow(
+  name: string | undefined,
+  dbPath: string | undefined,
+  opts: FlowOpts = {},
+): void {
   if (opts.list) {
     const data = listEntryPointsData(dbPath, {
       noTests: opts.noTests,
@@ -46,7 +50,7 @@ export function flow(name: string, dbPath: string | undefined, opts: FlowOpts = 
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: dynamic shape from flowData
-  const data = flowData(name, dbPath, opts) as any;
+  const data = flowData(name!, dbPath, opts) as any;
   if (outputResult(data, 'steps', opts)) return;
 
   if (!data.entry) {
