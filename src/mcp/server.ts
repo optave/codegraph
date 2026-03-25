@@ -179,5 +179,29 @@ export async function startMCPServer(
 
   // biome-ignore lint/suspicious/noExplicitAny: MCP SDK types are lazy-loaded and untyped
   const transport = new (StdioServerTransport as any)();
-  await server.connect(transport);
+
+  // Graceful shutdown — when the client disconnects (e.g. session clear),
+  // close the server cleanly so the process exits without error.
+  // In production there is exactly one startMCPServer call; bump the limit
+  // to avoid spurious warnings when tests invoke it repeatedly.
+  process.setMaxListeners(process.getMaxListeners() + 5);
+  const shutdown = () => {
+    server.close().catch(() => {});
+    process.exit(0);
+  };
+  const silentExit = () => process.exit(0);
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  process.on('SIGHUP', shutdown);
+
+  // Guard against unhandled async errors from broken stdio pipes
+  process.on('uncaughtException', silentExit);
+  process.on('unhandledRejection', silentExit);
+
+  try {
+    await server.connect(transport);
+  } catch {
+    // Transport failed (broken pipe, EOF) — exit cleanly
+    process.exit(0);
+  }
 }
