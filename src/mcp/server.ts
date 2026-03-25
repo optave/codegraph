@@ -197,8 +197,10 @@ export async function startMCPServer(
   // Register handlers once per process to avoid listener accumulation.
   // Use a process-level flag so it survives vi.resetModules() in tests.
   const g = globalThis as Record<string, unknown>;
-  if (!g.__codegraph_shutdown_installed) {
-    g.__codegraph_shutdown_installed = true;
+  // biome-ignore lint/complexity/useLiteralKeys: bracket notation required by TS noPropertyAccessFromIndexSignature
+  if (!g['__codegraph_shutdown_installed']) {
+    // biome-ignore lint/complexity/useLiteralKeys: bracket notation required by TS noPropertyAccessFromIndexSignature
+    g['__codegraph_shutdown_installed'] = true;
 
     const shutdown = async () => {
       try {
@@ -234,8 +236,14 @@ export async function startMCPServer(
 
   try {
     await server.connect(transport);
-  } catch {
-    // Transport failed (broken pipe, EOF) — exit cleanly
-    process.exit(0);
+  } catch (err) {
+    const code = (err as Error & { code?: string }).code;
+    if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') {
+      process.exit(0);
+    }
+    process.stderr.write(
+      `MCP transport connect failed: ${(err as Error).stack ?? (err as Error).message}\n`,
+    );
+    process.exit(1);
   }
 }
