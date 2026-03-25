@@ -260,7 +260,7 @@ function allCfgNative(fileSymbols: Map<string, FileSymbols>): boolean {
       if (d.kind !== 'function' && d.kind !== 'method') continue;
       if (!d.line) continue;
       // cfg === null means no body (expected), cfg with empty blocks means not computed
-      if (d.cfg !== null && !(d.cfg?.blocks?.length)) return false;
+      if (d.cfg !== null && !d.cfg?.blocks?.length) return false;
     }
   }
   return true;
