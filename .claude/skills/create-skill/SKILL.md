@@ -18,9 +18,22 @@ Set `SKILL_NAME` to the provided name. Validate it is kebab-case (`^[a-z][a-z0-9
 
 ---
 
-## Phase 0 — Discovery
+## Phase 0 — Discovery & Pre-flight
 
-Before writing anything, gather requirements interactively. Ask the user these questions (all at once, not one-by-one):
+**Pre-flight:** Verify required tools and environment:
+
+```bash
+for tool in git mktemp; do
+  command -v "$tool" > /dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found"; exit 1; }
+  # > /dev/null 2>&1: suppress command path on success and shell's "not found" on failure — the || clause provides the error message
+done
+git rev-parse --show-toplevel > /dev/null 2>&1 || { echo "ERROR: not in a git repository — run /create-skill from the repo root"; exit 1; }
+# > /dev/null 2>&1: suppress git's own "fatal: not a git repository" — our || message is more actionable
+```
+
+Parse `$ARGUMENTS` per the Arguments section above. If validation fails, abort with a clear error.
+
+**Discovery:** Before writing anything, gather requirements interactively. Ask the user these questions (all at once, not one-by-one):
 
 1. **Purpose** — What does this skill do? (one paragraph)
 2. **Arguments** — What CLI arguments should it accept? (e.g. `--fix`, `--dry-run`, `<path>`)
@@ -32,11 +45,21 @@ Before writing anything, gather requirements interactively. Ask the user these q
 
 **Wait for the user's answers before proceeding.** Do not guess or assume.
 
-**Exit condition:** All 7 questions have answers. Purpose, arguments, phases, tools, artifacts, dangerous ops, and resume support are defined.
+**Exit condition:** Pre-flight passed (git repo confirmed, skill name validated). All 7 questions have answers. Purpose, arguments, phases, tools, artifacts, dangerous ops, and resume support are defined.
 
 ---
 
 ## Phase 1 — Scaffold
+
+**Idempotency guard:** Before writing, check for an existing skill:
+
+```bash
+if [ -f ".claude/skills/$SKILL_NAME/SKILL.md" ]; then
+  echo "WARN: .claude/skills/$SKILL_NAME/SKILL.md already exists."
+  echo "Proceeding will overwrite it. Confirm (y) or abort (n)."
+  # STOP — ask the user whether to overwrite before continuing. Exit 1 if they decline.
+fi
+```
 
 Create the skill directory and SKILL.md with frontmatter:
 
@@ -65,13 +88,17 @@ allowed-tools: <from user's tool list>
 
 ## Phase 0 — Pre-flight
 
-1. Confirm environment (repo root, node version, required tools)
+1. Confirm environment (repo root, required runtime/toolchain version, required tools)
 2. Parse `$ARGUMENTS` into state variables
 3. Validate preconditions
+
+**Exit condition:** <What must be true before Phase 1 starts, e.g. "git repo confirmed, arguments validated, all required tools present">
 
 ## Phase N — <Name>
 
 <Steps>
+
+**Exit condition:** <What must be true before the next phase starts>
 
 ## Rules
 
@@ -92,7 +119,7 @@ allowed-tools: <from user's tool list>
 
 ## Phase 2 — Write the Skill Body
 
-Write each phase following these **mandatory patterns** (derived from the top 10 Greptile review findings):
+Write each phase following these **mandatory patterns** (derived from Greptile review findings across 200+ comments):
 
 ### Pattern 1: No shell variables across code fences
 
@@ -109,10 +136,12 @@ rm -rf $TMPDIR   # BUG: $TMPDIR is empty here
 ```
 ````
 
-**Correct:** Persist state to a file (use your actual skill name, not a variable):
+**Correct:** Persist state to a file (use your actual skill name, not a variable).
+First ensure the directory exists:
 ````markdown
 ```bash
-mktemp -d > .codegraph/deploy-check/.tmpdir
+mkdir -p .codegraph/deploy-check
+mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX" > .codegraph/deploy-check/.tmpdir
 ```
 Later:
 ```bash
@@ -138,7 +167,8 @@ git show HEAD:$FILE 2>/dev/null | codegraph where --file -
 **Correct:**
 ````markdown
 ```bash
-PREV_FILE=$(mktemp --suffix=.js)  # adjust extension to match the language of $FILE
+PREV_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js")  # adjust extension to match the language of $FILE; template syntax is portable (macOS + Linux)
+# $FILE is expected to be set by the surrounding loop, e.g. for FILE in $(git diff --name-only HEAD); do ... done
 if git show HEAD:$FILE > "$PREV_FILE" 2>&1; then
   codegraph where --file "$PREV_FILE"
 else
@@ -153,7 +183,7 @@ rm -f "$PREV_FILE"
 Codegraph's language detection is extension-based. Temp files passed to codegraph must have the correct extension:
 
 ```bash
-mktemp --suffix=.js    # NOT just mktemp
+mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js"    # NOT just mktemp — template syntax is cross-platform (macOS + Linux)
 ```
 
 ### Pattern 4: No hardcoded temp paths
@@ -178,7 +208,8 @@ Detect the test runner and run in a single block:
 ```bash
 if [ -f "pnpm-lock.yaml" ]; then TEST_CMD="pnpm test"
 elif [ -f "yarn.lock" ]; then TEST_CMD="yarn test"
-else TEST_CMD="npm test"; fi
+elif [ -f "package.json" ]; then TEST_CMD="npm test"
+else echo "WARN: No recognised test runner found — skipping tests"; TEST_CMD="true"; fi
 $TEST_CMD
 ```
 ````
@@ -193,7 +224,7 @@ Every codegraph command or tool invocation in the procedure must be permitted by
 
 ### Pattern 9: No command redundancy
 
-If a phase runs a codegraph command and stores the result, later phases must reference that result — not re-run the command. Add a note: "Using <result> from Phase: <Name>".
+If a phase runs a codegraph command and stores the result, later phases must reference that result — not re-run the command. Add a note like: "Using `impact_report` from Phase: Impact Analysis".
 
 ### Pattern 10: Skip/resume flag validation
 
@@ -207,6 +238,7 @@ If the skill supports `--start-from` or `--skip-*`:
 For any phase that takes longer than ~10 seconds (file iteration, API calls, batch operations), emit progress:
 
 ```bash
+# $i, $total, and $FILE are loop variables, e.g. i=0; total=$(wc -l < filelist); while read FILE; do i=$((i+1)); ...
 echo "Processing file $i/$total: $FILE"
 ```
 
@@ -214,11 +246,11 @@ Never leave the user staring at a silent terminal during long operations.
 
 ### Pattern 12: Artifact reuse
 
-Before running expensive operations (codegraph build, embedding generation, batch analysis), check if usable output already exists:
+Before running expensive operations (codegraph build, embedding generation, batch analysis), check if usable output already exists (replace `deploy-check` with your actual skill name):
 
 ````markdown
 ```bash
-if [ -f ".codegraph/$SKILL_NAME/results.json" ]; then
+if [ -f ".codegraph/deploy-check/results.json" ]; then
   echo "Using cached results from previous run"
 else
   # run expensive operation
@@ -232,7 +264,7 @@ This supports both idempotent re-runs and resume-after-failure.
 
 Avoid shell constructs that behave differently across platforms:
 - Use `find ... -name "*.ext"` instead of glob expansion (`ls *.ext`) which differs between bash versions
-- Use `mktemp` without `-p` (macOS `mktemp` requires a template argument differently than GNU)
+- Use `mktemp` with template syntax (`mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.ext"`) — GNU flags like `--suffix` and `-p` are not available on macOS BSD `mktemp`
 - Use `sed -i.bak` instead of `sed -i ''` (GNU vs BSD incompatibility)
 - Document any platform-specific behavior with a comment: `# NOTE: requires GNU coreutils`
 
@@ -262,8 +294,9 @@ If the skill performs dangerous operations (from Phase 0 discovery), add explici
 - Run lint after changes: detect lint runner:
   ```bash
   if [ -f "biome.json" ]; then LINT_CMD="npx biome check"
-  elif ls eslint.config.* 2>/dev/null | grep -q .; then LINT_CMD="npx eslint ."  # 2>/dev/null: ls exits non-zero when glob matches nothing — intentionally tolerant
-  else LINT_CMD="npm run lint"; fi
+  elif find . -maxdepth 1 -name "eslint.config.*" | grep -q .; then LINT_CMD="npx eslint ."
+  elif [ -f "package.json" ]; then LINT_CMD="npm run lint"
+  else echo "WARN: No recognised lint runner found — skipping lint"; LINT_CMD="true"; fi
   $LINT_CMD
   ```
 
@@ -283,7 +316,7 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] Rules section exists at the bottom
 - [ ] Every phase has a clear name (not just a number)
 
-### Anti-pattern checks (the top 10):
+### Anti-pattern checks (all 13 patterns):
 - [ ] **Shell variables**: No variable is set in one code fence and used in another. State that must persist is written to a file
 - [ ] **Silent failures**: No `2>/dev/null` without a documented skip rationale. No commands that swallow errors
 - [ ] **Temp file extensions**: Every temp file passed to codegraph has the correct language extension
@@ -294,6 +327,9 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] **Rules sync**: Every command/tool in the procedure is covered by Rules. Every Rules exception maps to a real step
 - [ ] **Redundancy**: No codegraph command is run twice with the same arguments. Later phases reference earlier results
 - [ ] **Skip validation**: If `--start-from`/`--skip-*` is supported, every skip path validates required artifacts
+- [ ] **Progress indicators**: Phases that iterate over files or run batch operations emit progress (`Processing $i/$total`)
+- [ ] **Artifact reuse**: Expensive operations (codegraph build, embedding generation, batch analysis) check for existing output before re-running
+- [ ] **Platform portability**: No `sed -i ''`, no unquoted globs, no GNU-only flags without fallback or documentation
 
 ### Robustness checks:
 - [ ] **Rollback paths**: Every destructive operation has documented undo instructions
@@ -309,11 +345,9 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 
 ### Safety checks:
 - [ ] **Idempotency**: Re-running the skill on the same state is safe. Existing output files are handled (skip, overwrite with warning, or merge)
-- [ ] **Dependency validation**: Phase 0 verifies all tools listed in `allowed-tools` are available before starting work. "Command not found" is caught before Phase 2, not during Phase 3
+- [ ] **Dependency validation**: Phase 0 verifies all shell commands used in bash blocks are available before starting work (e.g. `command -v git mktemp jq`). "Command not found" is caught before Phase 2, not during Phase 3
 - [ ] **Exit codes**: Every error path uses explicit `exit 1`. No silent early returns that leave the pipeline in an ambiguous state
 - [ ] **State cleanup**: If the skill creates `.codegraph/$SKILL_NAME/*` files, the skill documents when they're cleaned up or how users remove them (e.g., `rm -rf .codegraph/$SKILL_NAME` in a cleanup section)
-- [ ] **Progress indicators**: Phases that iterate over files or run batch operations emit progress (`Processing $i/$total`)
-- [ ] **Platform portability**: No `sed -i ''`, no unquoted globs, no GNU-only flags without fallback or documentation
 
 Read through the entire SKILL.md one more time after checking all items. Fix anything found.
 
@@ -344,12 +378,14 @@ Run the skill's Phase 0 (pre-flight) logic in a temporary test directory to veri
 - Environment validation produces clear error messages on failure
 
 ```bash
-TEST_DIR=$(mktemp -d)
+TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
+trap 'cd - > /dev/null 2>&1; rm -rf "$TEST_DIR"' EXIT
 cd "$TEST_DIR"
-git init
+git init --quiet
 # Simulate the Phase 0 checks from the skill here
-cd -
+cd - > /dev/null 2>&1
 rm -rf "$TEST_DIR"
+trap - EXIT
 ```
 
 ### Idempotency check
@@ -374,6 +410,14 @@ Document any idempotency fix applied.
 If the user approves:
 - Stage only `.claude/skills/$SKILL_NAME/SKILL.md`
 - Commit: `feat(skill): add /$SKILL_NAME skill`
+
+---
+
+## Examples
+
+- `/create-skill deploy-check` — scaffold a deployment validation skill that runs preflight checks before deploying
+- `/create-skill review-pr` — scaffold a PR review skill with API calls and diff analysis
+- `/create-skill db-migrate` — scaffold a database migration skill with dangerous-operation guards and rollback paths
 
 ---
 
