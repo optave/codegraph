@@ -161,6 +161,7 @@ git show HEAD:$FILE 2>/dev/null | codegraph where --file -
 ````markdown
 ```bash
 PREV_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js")  # adjust extension to match the language of $FILE; template syntax is portable (macOS + Linux)
+# $FILE is expected to be set by the surrounding loop, e.g. for FILE in $(git diff --name-only HEAD); do ... done
 if git show HEAD:$FILE > "$PREV_FILE" 2>&1; then
   codegraph where --file "$PREV_FILE"
 else
@@ -229,6 +230,7 @@ If the skill supports `--start-from` or `--skip-*`:
 For any phase that takes longer than ~10 seconds (file iteration, API calls, batch operations), emit progress:
 
 ```bash
+# $i, $total, and $FILE are loop variables, e.g. i=0; total=$(wc -l < filelist); while read FILE; do i=$((i+1)); ...
 echo "Processing file $i/$total: $FILE"
 ```
 
