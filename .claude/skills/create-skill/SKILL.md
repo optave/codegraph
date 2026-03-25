@@ -40,6 +40,16 @@ Set `SKILL_NAME` to the provided name. Validate it is kebab-case (`^[a-z][a-z0-9
 
 ## Phase 1 — Scaffold
 
+**Idempotency guard:** Before writing, check for an existing skill:
+
+```bash
+if [ -f ".claude/skills/$SKILL_NAME/SKILL.md" ]; then
+  echo "WARN: .claude/skills/$SKILL_NAME/SKILL.md already exists."
+  echo "Proceeding will overwrite it. Confirm or abort."
+  # Prompt user for confirmation before continuing
+fi
+```
+
 Create the skill directory and SKILL.md with frontmatter:
 
 ```bash
@@ -111,9 +121,11 @@ rm -rf $TMPDIR   # BUG: $TMPDIR is empty here
 ```
 ````
 
-**Correct:** Persist state to a file (use your actual skill name, not a variable):
+**Correct:** Persist state to a file (use your actual skill name, not a variable).
+First ensure the directory exists:
 ````markdown
 ```bash
+mkdir -p .codegraph/deploy-check
 mktemp -d > .codegraph/deploy-check/.tmpdir
 ```
 Later:
@@ -352,7 +364,7 @@ trap 'cd - > /dev/null 2>&1; rm -rf "$TEST_DIR"' EXIT
 cd "$TEST_DIR"
 git init
 # Simulate the Phase 0 checks from the skill here
-cd - > /dev/null
+cd - > /dev/null 2>&1
 rm -rf "$TEST_DIR"
 trap - EXIT
 ```
