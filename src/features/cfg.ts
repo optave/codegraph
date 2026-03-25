@@ -329,6 +329,9 @@ export async function buildCFGData(
         continue;
       }
 
+      // When allNative=true, parsers/getParserFn are null. This is safe because
+      // _tree files use symbols._tree directly in getTreeAndLang (the parser
+      // code path is never reached). Non-_tree files are handled by the fast path above.
       const treeLang = getTreeAndLang(symbols, relPath, rootDir, extToLang, parsers, getParserFn);
       if (!treeLang) continue;
       const { tree, langId } = treeLang;
