@@ -93,7 +93,7 @@ jobs:
           if [ "${{ steps.mode.outputs.source }}" = "npm" ]; then
             ARGS="$ARGS --npm"
           fi
-          node --experimental-strip-types scripts/benchmark.ts $ARGS 2>/dev/null > benchmark-result.json
+          node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/benchmark.ts $ARGS 2>/dev/null > benchmark-result.json
 
       - name: Update build report
         if: steps.existing.outputs.skip != 'true'
@@ -244,7 +244,7 @@ jobs:
           if [ "${{ steps.mode.outputs.source }}" = "npm" ]; then
             ARGS="$ARGS --npm"
           fi
-          node --experimental-strip-types scripts/embedding-benchmark.ts $ARGS 2>/dev/null > embedding-benchmark-result.json
+          node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/embedding-benchmark.ts $ARGS 2>/dev/null > embedding-benchmark-result.json
 
       - name: Update embedding report
         if: steps.existing.outputs.skip != 'true'
@@ -381,7 +381,7 @@ jobs:
           if [ "${{ steps.mode.outputs.source }}" = "npm" ]; then
             ARGS="$ARGS --npm"
           fi
-          node --experimental-strip-types scripts/query-benchmark.ts $ARGS 2>/dev/null > query-benchmark-result.json
+          node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/query-benchmark.ts $ARGS 2>/dev/null > query-benchmark-result.json
 
       - name: Update query report
         if: steps.existing.outputs.skip != 'true'
@@ -518,7 +518,7 @@ jobs:
           if [ "${{ steps.mode.outputs.source }}" = "npm" ]; then
             ARGS="$ARGS --npm"
           fi
-          node --experimental-strip-types scripts/incremental-benchmark.ts $ARGS 2>/dev/null > incremental-benchmark-result.json
+          node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/incremental-benchmark.ts $ARGS 2>/dev/null > incremental-benchmark-result.json
 
       - name: Update incremental report
         if: steps.existing.outputs.skip != 'true'
