@@ -23,7 +23,7 @@ Set `SKILL_NAME` to the provided name. Validate it is kebab-case (`^[a-z][a-z0-9
 **Pre-flight:** Verify required tools and environment:
 
 ```bash
-for tool in git mktemp bash; do
+for tool in git mktemp; do
   command -v "$tool" > /dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found"; exit 1; }
 done
 ```
@@ -53,8 +53,8 @@ Confirm you are in a git repository root (`git rev-parse --show-toplevel` should
 ```bash
 if [ -f ".claude/skills/$SKILL_NAME/SKILL.md" ]; then
   echo "WARN: .claude/skills/$SKILL_NAME/SKILL.md already exists."
-  echo "Proceeding will overwrite it. Confirm or abort."
-  # Prompt user for confirmation before continuing
+  echo "Proceeding will overwrite it. Confirm (y) or abort (n)."
+  # STOP — ask the user whether to overwrite before continuing. Exit 1 if they decline.
 fi
 ```
 
@@ -334,7 +334,7 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 
 ### Safety checks:
 - [ ] **Idempotency**: Re-running the skill on the same state is safe. Existing output files are handled (skip, overwrite with warning, or merge)
-- [ ] **Dependency validation**: Phase 0 verifies all tools listed in `allowed-tools` are available before starting work. "Command not found" is caught before Phase 2, not during Phase 3
+- [ ] **Dependency validation**: Phase 0 verifies all shell commands used in bash blocks are available before starting work (e.g. `command -v git mktemp jq`). "Command not found" is caught before Phase 2, not during Phase 3
 - [ ] **Exit codes**: Every error path uses explicit `exit 1`. No silent early returns that leave the pipeline in an ambiguous state
 - [ ] **State cleanup**: If the skill creates `.codegraph/$SKILL_NAME/*` files, the skill documents when they're cleaned up or how users remove them (e.g., `rm -rf .codegraph/$SKILL_NAME` in a cleanup section)
 
