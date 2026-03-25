@@ -10,10 +10,27 @@ fn file_exists(path: &str, known: Option<&HashSet<String>>) -> bool {
     known.map_or_else(|| Path::new(path).exists(), |set| set.contains(path))
 }
 
+/// Resolve `.` and `..` components in a path without touching the filesystem.
+/// Unlike `PathBuf::components().collect()`, this properly collapses `..` by
+/// popping the previous component from the result.
+fn clean_path(p: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => result.push(c),
+        }
+    }
+    result
+}
+
 /// Normalize a path to use forward slashes and clean `.` / `..` segments
 /// (cross-platform consistency).
 fn normalize_path(p: &str) -> String {
-    let cleaned: PathBuf = Path::new(p).components().collect();
+    let cleaned = clean_path(Path::new(p));
     cleaned.display().to_string().replace('\\', "/")
 }
 
@@ -111,7 +128,7 @@ fn resolve_import_path_inner(
 
     // Relative import — normalize immediately to remove `.` / `..` segments
     let dir = Path::new(from_file).parent().unwrap_or(Path::new(""));
-    let resolved: PathBuf = dir.join(import_source).components().collect();
+    let resolved = clean_path(&dir.join(import_source));
     let resolved_str = resolved.display().to_string().replace('\\', "/");
 
     // .js → .ts remap
