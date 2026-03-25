@@ -169,10 +169,11 @@ git show HEAD:$FILE 2>/dev/null | codegraph where --file -
 ```bash
 PREV_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js")  # adjust extension to match the language of $FILE; template syntax is portable (macOS + Linux)
 # $FILE is expected to be set by the surrounding loop, e.g. for FILE in $(git diff --name-only HEAD); do ... done
-if git show HEAD:$FILE > "$PREV_FILE" 2>&1; then
+# 2>/dev/null: suppress git's "fatal: Path X does not exist in HEAD" — the else branch already warns the user
+if git show HEAD:$FILE > "$PREV_FILE" 2>/dev/null; then
   codegraph where --file "$PREV_FILE"
 else
-  echo "WARN: $FILE is new (not in HEAD) — skipping before/after comparison"
+  echo "WARN: $FILE is new or unreadable in HEAD — skipping before/after comparison"
 fi
 rm -f "$PREV_FILE"
 ```
