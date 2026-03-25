@@ -1,8 +1,8 @@
 /**
- * pre-commit-checks.js — Consolidated pre-commit codegraph checks.
+ * pre-commit-checks.ts — Consolidated pre-commit codegraph checks.
  * Single Node.js process that runs all checks and returns structured JSON.
  *
- * Usage: node pre-commit-checks.js <WORK_ROOT> <EDITED_FILES> <STAGED_FILES>
+ * Usage: node pre-commit-checks.ts <WORK_ROOT> <EDITED_FILES> <STAGED_FILES>
  *
  * Output JSON: { action: "deny"|"allow", reason?: string, context?: string[] }
  *
@@ -12,8 +12,11 @@
  *   3. Diff-impact (informational) — shows blast radius of staged changes
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 const root = process.argv[2];
 const editedRaw = process.argv[3] || '';
@@ -124,7 +127,7 @@ try {
 
         // Scan for dynamic import() consumers
         const srcDir = path.join(root, 'src');
-        function scanDynamic(dir) {
+        function scanDynamic(dir: string) {
           for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
             if (ent.isDirectory()) { scanDynamic(path.join(dir, ent.name)); continue; }
             if (!/\.(js|ts|tsx)$/.test(ent.name)) continue;
