@@ -224,7 +224,8 @@ jobs:
           VERSION: ${{ needs.compute-version.outputs.version }}
         run: |
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          node --experimental-strip-types scripts/sync-native-versions.ts --strip
+          STRIP_FLAG=$(node -e "const [M]=process.versions.node.split('.').map(Number); console.log(M>=23?'--strip-types':'--experimental-strip-types')")
+          node $STRIP_FLAG scripts/sync-native-versions.ts --strip
           echo "Packaging version $VERSION"
 
       - name: Build TypeScript
@@ -405,7 +406,8 @@ jobs:
         run: |
           git checkout -- package-lock.json
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          node --experimental-strip-types scripts/sync-native-versions.ts
+          STRIP_FLAG=$(node -e "const [M]=process.versions.node.split('.').map(Number); console.log(M>=23?'--strip-types':'--experimental-strip-types')")
+          node $STRIP_FLAG scripts/sync-native-versions.ts
           echo "Publishing version $VERSION"
 
       - name: Build TypeScript
