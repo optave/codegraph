@@ -444,6 +444,10 @@ fn extract_call_name(node: &Node, source: &[u8]) -> String {
 /// Extract receiver from a call node (e.g. `obj` from `obj.method()`).
 /// Looks for a member-expression-like function child and extracts the object part.
 fn extract_call_receiver(node: &Node, source: &[u8]) -> Option<String> {
+    // PHP: scoped_call_expression — receiver is the "scope" field (e.g. MyClass in MyClass::method())
+    if let Some(scope) = node.child_by_field_name("scope") {
+        return Some(node_text(&scope, source).to_string());
+    }
     // Try "function" field first (JS/TS: call_expression -> member_expression)
     // Then "object" (Go, Python), then "receiver" (Ruby)
     for field in &["function", "object", "receiver"] {
