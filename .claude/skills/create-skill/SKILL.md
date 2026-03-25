@@ -26,9 +26,10 @@ Set `SKILL_NAME` to the provided name. Validate it is kebab-case (`^[a-z][a-z0-9
 for tool in git mktemp; do
   command -v "$tool" > /dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found"; exit 1; }
 done
+git rev-parse --show-toplevel > /dev/null 2>&1 || { echo "ERROR: not in a git repository — run /create-skill from the repo root"; exit 1; }
 ```
 
-Confirm you are in a git repository root (`git rev-parse --show-toplevel` should succeed). Parse `$ARGUMENTS` per the Arguments section above. If validation fails, abort with a clear error.
+Parse `$ARGUMENTS` per the Arguments section above. If validation fails, abort with a clear error.
 
 **Discovery:** Before writing anything, gather requirements interactively. Ask the user these questions (all at once, not one-by-one):
 
@@ -374,7 +375,7 @@ Run the skill's Phase 0 (pre-flight) logic in a temporary test directory to veri
 TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
 trap 'cd - > /dev/null 2>&1; rm -rf "$TEST_DIR"' EXIT
 cd "$TEST_DIR"
-git init
+git init --quiet
 # Simulate the Phase 0 checks from the skill here
 cd - > /dev/null 2>&1
 rm -rf "$TEST_DIR"
