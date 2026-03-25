@@ -92,9 +92,9 @@ while IFS= read -r line; do
     '```bash'*) in_block=true; prev_line="$line"; continue ;;
     '```'*) in_block=false; prev_line="$line"; continue ;;
   esac
-  if $in_block && echo "$line" | grep -qE '2>/dev/null'; then
+  if $in_block && echo "$line" | grep -qE '2>/dev/null|> /dev/null 2>&1'; then
     # Check same line or previous line for justification comment
-    justification_re='#.*intentional|#.*tolera|#.*acceptable|#.*expected|#.*safe to ignore|#.*may fail|#.*optional|#.*fallback|#.*portable'
+    justification_re='#.*intentional|#.*tolera|#.*acceptable|#.*expected|#.*safe to ignore|#.*may fail|#.*optional|#.*fallback|#.*portable|#.*suppress|#.*provid'
     if ! echo "${prev_line}${line}" | grep -qiE "$justification_re"; then
       warn "Line $line_num: '2>/dev/null' without justification comment (Pattern 2)"
     fi

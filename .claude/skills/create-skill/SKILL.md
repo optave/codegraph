@@ -24,11 +24,11 @@ Set `SKILL_NAME` to the provided name. Validate it is kebab-case (`^[a-z][a-z0-9
 
 ```bash
 for tool in git mktemp; do
-  command -v "$tool" > /dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found"; exit 1; }
   # > /dev/null 2>&1: suppress command path on success and shell's "not found" on failure — the || clause provides the error message
+  command -v "$tool" > /dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found"; exit 1; }
 done
-git rev-parse --show-toplevel > /dev/null 2>&1 || { echo "ERROR: not in a git repository — run /create-skill from the repo root"; exit 1; }
 # > /dev/null 2>&1: suppress git's own "fatal: not a git repository" — our || message is more actionable
+git rev-parse --show-toplevel > /dev/null 2>&1 || { echo "ERROR: not in a git repository — run /create-skill from the repo root"; exit 1; }
 ```
 
 Parse `$ARGUMENTS` per the Arguments section above. If validation fails, abort with a clear error.
@@ -285,6 +285,7 @@ For phases that `cd` into a temp directory, clean up both the directory and the 
 
 ```bash
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
+# > /dev/null 2>&1: suppress cd's directory-path output — cleanup should be silent
 trap 'cd - > /dev/null 2>&1; rm -rf "$WORK_DIR"' EXIT
 ```
 
@@ -301,17 +302,30 @@ git stash pop   # BUG: pops wrong entry if stash was no-op or stack changed
 ```
 ````
 
-**Correct:** Use a named stash with STASH_REF lookup:
+**Correct:** Use a named stash with STASH_REF lookup — keep push and pop in one block or persist the ref to a file if other work must happen in between.
+
+Single-block approach (push and pop bracket the work):
 ````markdown
 ```bash
 git stash push -m "deploy-check-backup" -- package.json package-lock.json
 STASH_REF=$(git stash list --format='%gd %s' | grep 'deploy-check-backup' | head -1 | awk '{print $1}')
 # STASH_REF is non-empty only if a stash entry was actually created.
-# Use [ -n "$STASH_REF" ] for all branching. Use $STASH_REF (not stash@{0}) in pop/drop.
+# ... work here ...
+[ -n "$STASH_REF" ] && git stash pop "$STASH_REF"
+```
+````
+
+If the pop must happen in a later code fence, persist the ref to a file (per Pattern 1):
+````markdown
+```bash
+git stash push -m "deploy-check-backup" -- package.json package-lock.json
+git stash list --format='%gd %s' | grep 'deploy-check-backup' | head -1 | awk '{print $1}' > .codegraph/deploy-check/.stash-ref
 ```
 Later:
 ```bash
+STASH_REF=$(cat .codegraph/deploy-check/.stash-ref)
 [ -n "$STASH_REF" ] && git stash pop "$STASH_REF"
+rm -f .codegraph/deploy-check/.stash-ref
 ```
 ````
 
@@ -482,10 +496,12 @@ Run the skill's Phase 0 (pre-flight) logic in a temporary test directory to veri
 
 ```bash
 TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
+# > /dev/null 2>&1: suppress cd's directory-path output — cleanup should be silent
 trap 'cd - > /dev/null 2>&1; rm -rf "$TEST_DIR"' EXIT
 cd "$TEST_DIR"
 git init --quiet
 # Simulate the Phase 0 checks from the skill here
+# > /dev/null 2>&1: suppress cd's directory-path output — returning to original directory
 cd - > /dev/null 2>&1
 rm -rf "$TEST_DIR"
 trap - EXIT
