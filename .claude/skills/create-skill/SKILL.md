@@ -201,7 +201,8 @@ Detect the test runner and run in a single block:
 ```bash
 if [ -f "pnpm-lock.yaml" ]; then TEST_CMD="pnpm test"
 elif [ -f "yarn.lock" ]; then TEST_CMD="yarn test"
-else TEST_CMD="npm test"; fi
+elif [ -f "package.json" ]; then TEST_CMD="npm test"
+else echo "WARN: No recognised test runner found — skipping tests"; TEST_CMD="true"; fi
 $TEST_CMD
 ```
 ````
