@@ -522,16 +522,25 @@ describe.skipIf(!canTestNativeCfg || !hasFixedCfg)('native vs WASM CFG parity', 
 
       const langId = LANG_MAP[ext];
       const complexityRules = COMPLEXITY_RULES.get(langId);
-      if (!complexityRules) return;
+      if (!complexityRules) {
+        ctx.skip();
+        return;
+      }
 
       // Parse with WASM
       const absPath = path.join(tmpDir, relPath);
       const parser = getParser(parsers, absPath);
-      if (!parser) return;
+      if (!parser) {
+        ctx.skip();
+        return;
+      }
 
       const code = fs.readFileSync(absPath, 'utf-8');
       const tree = parser.parse(code);
-      if (!tree) return;
+      if (!tree) {
+        ctx.skip();
+        return;
+      }
 
       const funcDefs = symbols.definitions.filter(
         (d) => (d.kind === 'function' || d.kind === 'method') && funcPattern.test(d.name),

@@ -253,6 +253,7 @@ function persistCfg(
  */
 function allCfgNative(fileSymbols: Map<string, FileSymbols>): boolean {
   for (const [relPath, symbols] of fileSymbols) {
+    if (symbols._tree) continue; // already parsed via WASM; will use _tree in slow path
     const ext = path.extname(relPath).toLowerCase();
     if (!CFG_EXTENSIONS.has(ext)) continue;
 
@@ -303,12 +304,15 @@ export async function buildCFGData(
       if (allNative) {
         for (const def of symbols.definitions) {
           if (def.kind !== 'function' && def.kind !== 'method') continue;
-          if (!def.line || !def.cfg?.blocks?.length) continue;
+          if (!def.line) continue;
 
           const nodeId = getFunctionNodeId(db, def.name, relPath, def.line);
           if (!nodeId) continue;
 
+          // Always delete stale CFG rows (handles body-removed case)
           deleteCfgForNode(db, nodeId);
+          if (!def.cfg?.blocks?.length) continue;
+
           persistCfg(
             def.cfg as unknown as { blocks: CfgBuildBlock[]; edges: CfgBuildEdge[] },
             nodeId,
