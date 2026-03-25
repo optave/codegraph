@@ -100,6 +100,8 @@ pub const AST_TEXT_MAX: usize = 200;
 
 /// Language-specific AST node type configuration.
 pub struct LangAstConfig {
+    /// Node types mapping to `"call"` kind (e.g. `call_expression`, `method_invocation`)
+    pub call_types: &'static [&'static str],
     /// Node types mapping to `"new"` kind (e.g. `new_expression`, `object_creation_expression`)
     pub new_types: &'static [&'static str],
     /// Node types mapping to `"throw"` kind (e.g. `throw_statement`, `raise_statement`)
@@ -120,6 +122,7 @@ pub struct LangAstConfig {
 // ── Per-language configs ─────────────────────────────────────────────────────
 
 pub const PYTHON_AST_CONFIG: LangAstConfig = LangAstConfig {
+    call_types: &["call"],
     new_types: &[],
     throw_types: &["raise_statement"],
     await_types: &["await"],
@@ -130,6 +133,7 @@ pub const PYTHON_AST_CONFIG: LangAstConfig = LangAstConfig {
 };
 
 pub const GO_AST_CONFIG: LangAstConfig = LangAstConfig {
+    call_types: &["call_expression"],
     new_types: &[],
     throw_types: &[],
     await_types: &[],
@@ -140,6 +144,7 @@ pub const GO_AST_CONFIG: LangAstConfig = LangAstConfig {
 };
 
 pub const RUST_AST_CONFIG: LangAstConfig = LangAstConfig {
+    call_types: &["call_expression"],
     new_types: &[],
     throw_types: &[],
     await_types: &["await_expression"],
@@ -150,6 +155,7 @@ pub const RUST_AST_CONFIG: LangAstConfig = LangAstConfig {
 };
 
 pub const JAVA_AST_CONFIG: LangAstConfig = LangAstConfig {
+    call_types: &["method_invocation"],
     new_types: &["object_creation_expression"],
     throw_types: &["throw_statement"],
     await_types: &[],
@@ -160,6 +166,7 @@ pub const JAVA_AST_CONFIG: LangAstConfig = LangAstConfig {
 };
 
 pub const CSHARP_AST_CONFIG: LangAstConfig = LangAstConfig {
+    call_types: &["invocation_expression"],
     new_types: &["object_creation_expression"],
     throw_types: &["throw_statement", "throw_expression"],
     await_types: &["await_expression"],
@@ -170,6 +177,7 @@ pub const CSHARP_AST_CONFIG: LangAstConfig = LangAstConfig {
 };
 
 pub const RUBY_AST_CONFIG: LangAstConfig = LangAstConfig {
+    call_types: &["call", "method_call"],
     new_types: &[],
     throw_types: &[],
     await_types: &[],
@@ -180,6 +188,7 @@ pub const RUBY_AST_CONFIG: LangAstConfig = LangAstConfig {
 };
 
 pub const PHP_AST_CONFIG: LangAstConfig = LangAstConfig {
+    call_types: &["function_call_expression", "member_call_expression", "scoped_call_expression"],
     new_types: &["object_creation_expression"],
     throw_types: &["throw_expression"],
     await_types: &[],
@@ -228,6 +237,36 @@ fn walk_ast_nodes_with_config_depth(
         return;
     }
     let kind = node.kind();
+
+    // Call extraction — checked first since calls are the most common AST node kind.
+    // Do NOT recurse children: prevents double-counting nested calls like `a(b())`.
+    if config.call_types.contains(&kind) {
+        let name = extract_call_name(node, source);
+        let receiver = extract_call_receiver(node, source);
+        let text = truncate(node_text(node, source), AST_TEXT_MAX);
+        ast_nodes.push(AstNode {
+            kind: "call".to_string(),
+            name,
+            line: start_line(node),
+            text: Some(text),
+            receiver,
+        });
+        // Recurse into arguments only — nested calls in args should be captured.
+        // Find the arguments child and walk its children.
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                let ck = child.kind();
+                if ck == "arguments" || ck == "argument_list" || ck == "method_arguments" {
+                    for j in 0..child.child_count() {
+                        if let Some(arg) = child.child(j) {
+                            walk_ast_nodes_with_config_depth(&arg, source, ast_nodes, config, depth + 1);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
 
     if config.new_types.contains(&kind) {
         let name = extract_constructor_name(node, source);
@@ -398,6 +437,26 @@ fn extract_call_name(node: &Node, source: &[u8]) -> String {
     }
     let text = node_text(node, source);
     text.split('(').next().unwrap_or("?").to_string()
+}
+
+/// Extract receiver from a call node (e.g. `obj` from `obj.method()`).
+/// Looks for a member-expression-like function child and extracts the object part.
+fn extract_call_receiver(node: &Node, source: &[u8]) -> Option<String> {
+    // Try "function" field first (JS/TS: call_expression -> member_expression)
+    // Then "object" (Go, Python), then "receiver" (Ruby)
+    for field in &["function", "object", "receiver"] {
+        if let Some(fn_node) = node.child_by_field_name(field) {
+            // If the function/object node is a member_expression, extract its object
+            if let Some(obj) = fn_node.child_by_field_name("object") {
+                return Some(node_text(&obj, source).to_string());
+            }
+            // For Ruby/Go where the receiver is directly a field
+            if *field == "object" || *field == "receiver" {
+                return Some(node_text(&fn_node, source).to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Extract expression text from throw/await — skip the keyword child.
