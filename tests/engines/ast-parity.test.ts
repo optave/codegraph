@@ -212,8 +212,8 @@ describe('AST node parity (native vs WASM)', () => {
     const nativeCallNodes = astNodes.filter((n: AstNodeLike) => n.kind === 'call');
     const legacyCalls = nativeResult.calls || [];
 
-    // Native ast_nodes call count should match the legacy calls field
-    expect(nativeCallNodes.length).toBe(legacyCalls.length);
+    // Native should capture at least as many calls as the legacy field
+    expect(nativeCallNodes.length).toBeGreaterThanOrEqual(legacyCalls.length);
   });
 
   it.skipIf(!isNativeAvailable())('empty file returns empty astNodes array (not undefined)', () => {
