@@ -31,8 +31,9 @@ let native: NativeAddon | null = null;
 let nativeSupportsCallAst = false;
 
 function nativeExtract(code: string, filePath: string): NativeResult {
+  if (!native) throw new Error('nativeExtract called with native === null');
   // 4th arg = include_ast_nodes = true
-  return native?.parseFile(filePath, code, false, true) as NativeResult;
+  return native.parseFile(filePath, code, false, true) as NativeResult;
 }
 
 // ─── Test snippets ──────────────────────────────────────────────────────
@@ -128,26 +129,27 @@ describe('AST node parity (native vs WASM)', () => {
     }
   });
 
-  it.skipIf(!isNativeAvailable() || !nativeSupportsCallAst)(
-    'JS: native astNodes includes call kind',
-    () => {
-      const nativeResult = nativeExtract(JS_SNIPPET, '/test/sample.js');
-      const astNodes = nativeResult.astNodes || [];
-      const callNodes = astNodes.filter((n: AstNodeLike) => n.kind === 'call');
+  it.skipIf(!isNativeAvailable())('JS: native astNodes includes call kind', () => {
+    if (!nativeSupportsCallAst) return; // runtime guard — set by beforeAll
 
-      // JS snippet has: super, console.log, fetch (x2), resp.json
-      expect(callNodes.length).toBeGreaterThan(0);
+    const nativeResult = nativeExtract(JS_SNIPPET, '/test/sample.js');
+    const astNodes = nativeResult.astNodes || [];
+    const callNodes = astNodes.filter((n: AstNodeLike) => n.kind === 'call');
 
-      // Verify call nodes have expected structure
-      for (const node of callNodes) {
-        expect(node.kind).toBe('call');
-        expect(typeof node.name).toBe('string');
-        expect(typeof node.line).toBe('number');
-      }
-    },
-  );
+    // JS snippet has: super, console.log, fetch (x2), resp.json
+    expect(callNodes.length).toBeGreaterThan(0);
 
-  it.skipIf(!isNativeAvailable() || !nativeSupportsCallAst)('JS: call receiver extraction', () => {
+    // Verify call nodes have expected structure
+    for (const node of callNodes) {
+      expect(node.kind).toBe('call');
+      expect(typeof node.name).toBe('string');
+      expect(typeof node.line).toBe('number');
+    }
+  });
+
+  it.skipIf(!isNativeAvailable())('JS: call receiver extraction', () => {
+    if (!nativeSupportsCallAst) return; // runtime guard — set by beforeAll
+
     const nativeResult = nativeExtract(JS_SNIPPET, '/test/sample.js');
     const astNodes = nativeResult.astNodes || [];
     const callNodes = astNodes.filter((n: AstNodeLike) => n.kind === 'call');
@@ -177,44 +179,42 @@ describe('AST node parity (native vs WASM)', () => {
     }
   });
 
-  it.skipIf(!isNativeAvailable() || !nativeSupportsCallAst)(
-    'JS: nested calls are not double-counted',
-    () => {
-      const nativeResult = nativeExtract(MULTI_CALL_SNIPPET, '/test/nested.js');
-      const astNodes = nativeResult.astNodes || [];
-      const callNodes = astNodes.filter((n: AstNodeLike) => n.kind === 'call');
+  it.skipIf(!isNativeAvailable())('JS: nested calls are not double-counted', () => {
+    if (!nativeSupportsCallAst) return; // runtime guard — set by beforeAll
 
-      // foo(bar(baz())) should produce 3 separate call nodes
-      const names = callNodes.map((n: AstNodeLike) => n.name).sort();
-      expect(names).toContain('foo');
-      expect(names).toContain('bar');
-      expect(names).toContain('baz');
-      expect(names).toContain('console.log');
-      expect(names).toContain('obj.method');
-      expect(names).toContain('helper');
+    const nativeResult = nativeExtract(MULTI_CALL_SNIPPET, '/test/nested.js');
+    const astNodes = nativeResult.astNodes || [];
+    const callNodes = astNodes.filter((n: AstNodeLike) => n.kind === 'call');
 
-      // No duplicate lines for the nested chain
-      const fooLine = callNodes.find((n: AstNodeLike) => n.name === 'foo')?.line;
-      const barLine = callNodes.find((n: AstNodeLike) => n.name === 'bar')?.line;
-      const bazLine = callNodes.find((n: AstNodeLike) => n.name === 'baz')?.line;
-      // All on the same line but each as separate nodes
-      expect(fooLine).toBe(barLine);
-      expect(barLine).toBe(bazLine);
-    },
-  );
+    // foo(bar(baz())) should produce 3 separate call nodes
+    const names = callNodes.map((n: AstNodeLike) => n.name).sort();
+    expect(names).toContain('foo');
+    expect(names).toContain('bar');
+    expect(names).toContain('baz');
+    expect(names).toContain('console.log');
+    expect(names).toContain('obj.method');
+    expect(names).toContain('helper');
 
-  it.skipIf(!isNativeAvailable() || !nativeSupportsCallAst)(
-    'JS: native calls match legacy calls field count',
-    () => {
-      const nativeResult = nativeExtract(JS_SNIPPET, '/test/sample.js');
-      const astNodes = nativeResult.astNodes || [];
-      const nativeCallNodes = astNodes.filter((n: AstNodeLike) => n.kind === 'call');
-      const legacyCalls = nativeResult.calls || [];
+    // No duplicate lines for the nested chain
+    const fooLine = callNodes.find((n: AstNodeLike) => n.name === 'foo')?.line;
+    const barLine = callNodes.find((n: AstNodeLike) => n.name === 'bar')?.line;
+    const bazLine = callNodes.find((n: AstNodeLike) => n.name === 'baz')?.line;
+    // All on the same line but each as separate nodes
+    expect(fooLine).toBe(barLine);
+    expect(barLine).toBe(bazLine);
+  });
 
-      // Native ast_nodes call count should match the legacy calls field
-      expect(nativeCallNodes.length).toBe(legacyCalls.length);
-    },
-  );
+  it.skipIf(!isNativeAvailable())('JS: native calls match legacy calls field count', () => {
+    if (!nativeSupportsCallAst) return; // runtime guard — set by beforeAll
+
+    const nativeResult = nativeExtract(JS_SNIPPET, '/test/sample.js');
+    const astNodes = nativeResult.astNodes || [];
+    const nativeCallNodes = astNodes.filter((n: AstNodeLike) => n.kind === 'call');
+    const legacyCalls = nativeResult.calls || [];
+
+    // Native ast_nodes call count should match the legacy calls field
+    expect(nativeCallNodes.length).toBe(legacyCalls.length);
+  });
 
   it.skipIf(!isNativeAvailable())('empty file returns empty astNodes array (not undefined)', () => {
     const nativeResult = nativeExtract('// empty file\n', '/test/empty.js');
