@@ -20,7 +20,15 @@ Set `SKILL_NAME` to the provided name. Validate it is kebab-case (`^[a-z][a-z0-9
 
 ## Phase 0 — Discovery & Pre-flight
 
-**Pre-flight:** Confirm you are in a git repository root (`git rev-parse --show-toplevel` should succeed). Parse `$ARGUMENTS` per the Arguments section above. If validation fails, abort with a clear error.
+**Pre-flight:** Verify required tools and environment:
+
+```bash
+for tool in git mktemp bash; do
+  command -v "$tool" > /dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found"; exit 1; }
+done
+```
+
+Confirm you are in a git repository root (`git rev-parse --show-toplevel` should succeed). Parse `$ARGUMENTS` per the Arguments section above. If validation fails, abort with a clear error.
 
 **Discovery:** Before writing anything, gather requirements interactively. Ask the user these questions (all at once, not one-by-one):
 
@@ -152,7 +160,7 @@ git show HEAD:$FILE 2>/dev/null | codegraph where --file -
 **Correct:**
 ````markdown
 ```bash
-PREV_FILE=$(mktemp --suffix=.js)  # adjust extension to match the language of $FILE
+PREV_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js")  # adjust extension to match the language of $FILE; template syntax is portable (macOS + Linux)
 if git show HEAD:$FILE > "$PREV_FILE" 2>&1; then
   codegraph where --file "$PREV_FILE"
 else
@@ -167,7 +175,7 @@ rm -f "$PREV_FILE"
 Codegraph's language detection is extension-based. Temp files passed to codegraph must have the correct extension:
 
 ```bash
-mktemp --suffix=.js    # NOT just mktemp
+mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js"    # NOT just mktemp — template syntax is cross-platform (macOS + Linux)
 ```
 
 ### Pattern 4: No hardcoded temp paths
@@ -246,7 +254,7 @@ This supports both idempotent re-runs and resume-after-failure.
 
 Avoid shell constructs that behave differently across platforms:
 - Use `find ... -name "*.ext"` instead of glob expansion (`ls *.ext`) which differs between bash versions
-- Use `mktemp` without `-p` (macOS `mktemp` requires a template argument differently than GNU)
+- Use `mktemp` with template syntax (`mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.ext"`) — GNU flags like `--suffix` and `-p` are not available on macOS BSD `mktemp`
 - Use `sed -i.bak` instead of `sed -i ''` (GNU vs BSD incompatibility)
 - Document any platform-specific behavior with a comment: `# NOTE: requires GNU coreutils`
 
