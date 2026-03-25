@@ -113,7 +113,9 @@ jobs:
           node-version: 22
 
       - name: Verify all dynamic imports resolve
-        run: node --experimental-strip-types scripts/verify-imports.ts
+        run: |
+          STRIP_FLAG=$(node -e "const [M]=process.versions.node.split('.').map(Number); console.log(M>=23?'--strip-types':'--experimental-strip-types')")
+          node $STRIP_FLAG scripts/verify-imports.ts
 
   rust-check:
     runs-on: ubuntu-latest
