@@ -325,15 +325,19 @@ const _jsToTsCache: Map<string, string | null> = new Map();
  * `--multi-repo` mode where the same absolute `.js` file may be resolved with
  * different `rootDir` values.
  *
- * Returns the remapped relative path, or the original `resolved` when no TS
- * counterpart is found.
+ * Always returns a normalised relative path from `rootDir` — both the remap
+ * branch and the fallback compute `path.relative(rootDir, abs)` to ensure a
+ * consistent format regardless of whether the native resolver returned an
+ * absolute or relative path.
  */
 function remapJsToTs(resolved: string, rootDir: string): string {
   if (!resolved.endsWith('.js')) return resolved;
   const abs = path.resolve(rootDir, resolved);
   if (_jsToTsCache.has(abs)) {
     const cachedAbs = _jsToTsCache.get(abs);
-    return cachedAbs ? normalizePath(path.relative(rootDir, cachedAbs)) : resolved;
+    return cachedAbs
+      ? normalizePath(path.relative(rootDir, cachedAbs))
+      : normalizePath(path.relative(rootDir, abs));
   }
   const tsAbs = abs.replace(/\.js$/, '.ts');
   if (fs.existsSync(tsAbs)) {
@@ -346,7 +350,9 @@ function remapJsToTs(resolved: string, rootDir: string): string {
     return normalizePath(path.relative(rootDir, tsxAbs));
   }
   _jsToTsCache.set(abs, null);
-  return resolved;
+  // Normalise fallback to relative to stay consistent with the remap branch —
+  // avoids a format mismatch if the native resolver ever returns an absolute path.
+  return normalizePath(path.relative(rootDir, abs));
 }
 
 /** Clear the .js → .ts remap cache (for testing). */
