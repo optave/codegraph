@@ -744,7 +744,7 @@ export function hotspotsData(
     };
 
     const stmt = HOTSPOT_QUERIES[metric] ?? HOTSPOT_QUERIES['fan-in'];
-    const rows = stmt?.all(kind, limit);
+    const rows = stmt.all(kind, limit);
 
     const hotspots = rows.map((r) => ({
       name: r.name,
