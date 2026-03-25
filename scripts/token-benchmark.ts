@@ -12,9 +12,9 @@
  *   ANTHROPIC_API_KEY set in environment
  *
  * Usage:
- *   node scripts/token-benchmark.js > result.json
- *   node scripts/token-benchmark.js --runs 1 --issues csrf-case-insensitive
- *   node scripts/token-benchmark.js --nextjs-dir /tmp/next.js --skip-graph
+ *   node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/token-benchmark.ts > result.json
+ *   node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/token-benchmark.ts --runs 1 --issues csrf-case-insensitive
+ *   node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/token-benchmark.ts --nextjs-dir /tmp/next.js --skip-graph
  */
 
 import { execFileSync, execSync } from 'node:child_process';
