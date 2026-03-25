@@ -57,7 +57,8 @@ while IFS=$'\t' read -r bnum line; do
     assigned_in="${VAR_BLOCK[$var]}"
     if [ "$bnum" -gt "$assigned_in" ]; then
       # Check if this line references the variable ($VAR or ${VAR})
-      if echo "$line" | grep -qF "\$${var}" || echo "$line" | grep -qF "\${${var}}"; then
+      if echo "$line" | grep -qE '\$'"${var}"'([^A-Za-z0-9_]|$)' \
+          || echo "$line" | grep -qF "\${${var}}"; then
         # Check if the same block also assigns it (re-assignment is fine)
         reassigned=false
         while IFS=$'\t' read -r bn2 ln2; do
