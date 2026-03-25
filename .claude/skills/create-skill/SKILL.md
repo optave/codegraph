@@ -287,6 +287,8 @@ For phases that `cd` into a temp directory, clean up both the directory and the 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
 # > /dev/null 2>&1: suppress cd's directory-path output — cleanup should be silent
 trap 'cd - > /dev/null 2>&1; rm -rf "$WORK_DIR"' EXIT
+cd "$WORK_DIR"
+# ... operations inside the temp directory ...
 ```
 
 ### Pattern 15: Git stash safety
