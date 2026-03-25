@@ -252,18 +252,23 @@ function persistCfg(
  * When true, the WASM parser and JS CFG visitor can be fully bypassed.
  */
 function allCfgNative(fileSymbols: Map<string, FileSymbols>): boolean {
+  let hasCfgFile = false;
   for (const [relPath, symbols] of fileSymbols) {
+    if (symbols._tree) continue; // WASM-parsed file — needs visitor path
     const ext = path.extname(relPath).toLowerCase();
     if (!CFG_EXTENSIONS.has(ext)) continue;
+    hasCfgFile = true;
 
     for (const d of symbols.definitions) {
       if (d.kind !== 'function' && d.kind !== 'method') continue;
       if (!d.line) continue;
       // cfg === null means no body (expected), cfg with empty blocks means not computed
-      if (d.cfg !== null && !(d.cfg?.blocks?.length)) return false;
+      if (d.cfg !== null && !d.cfg?.blocks?.length) return false;
     }
   }
-  return true;
+  // Return false when no CFG files found (empty map, all _tree, or all non-CFG
+  // extensions) to avoid vacuously triggering the fast path.
+  return hasCfgFile;
 }
 
 export async function buildCFGData(
@@ -300,15 +305,18 @@ export async function buildCFGData(
       if (!CFG_EXTENSIONS.has(ext)) continue;
 
       // Native fast path: skip tree/visitor setup when all CFG is pre-computed
-      if (allNative) {
+      if (allNative && !symbols._tree) {
         for (const def of symbols.definitions) {
           if (def.kind !== 'function' && def.kind !== 'method') continue;
-          if (!def.line || !def.cfg?.blocks?.length) continue;
+          if (!def.line) continue;
 
           const nodeId = getFunctionNodeId(db, def.name, relPath, def.line);
           if (!nodeId) continue;
 
+          // Always purge stale rows (handles body-removed case)
           deleteCfgForNode(db, nodeId);
+          if (!def.cfg?.blocks?.length) continue;
+
           persistCfg(
             def.cfg as unknown as { blocks: CfgBuildBlock[]; edges: CfgBuildEdge[] },
             nodeId,
@@ -352,9 +360,10 @@ export async function buildCFGData(
           if (r) cfg = { blocks: r.blocks, edges: r.edges };
         }
 
+        // Always purge stale rows (handles body-removed case)
+        deleteCfgForNode(db, nodeId);
         if (!cfg || cfg.blocks.length === 0) continue;
 
-        deleteCfgForNode(db, nodeId);
         persistCfg(cfg, nodeId, insertBlock, insertEdge);
         analyzed++;
       }

@@ -1136,6 +1136,8 @@ impl<'a> CfgBuilder<'a> {
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
+/// Returns true if `node` has a direct child whose node kind equals `kind`.
+/// This is a shallow (one-level) check — it does not recurse into grandchildren.
 fn has_child_of_kind(node: &Node, kind: &str) -> bool {
     let cursor = &mut node.walk();
     node.children(cursor).any(|c| c.kind() == kind)
