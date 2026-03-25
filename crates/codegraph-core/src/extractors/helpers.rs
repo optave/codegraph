@@ -252,16 +252,23 @@ fn walk_ast_nodes_with_config_depth(
             receiver,
         });
         // Recurse into arguments only — nested calls in args should be captured.
-        // Find the arguments child and walk its children.
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let ck = child.kind();
-                if ck == "arguments" || ck == "argument_list" || ck == "method_arguments" {
-                    for j in 0..child.child_count() {
-                        if let Some(arg) = child.child(j) {
-                            walk_ast_nodes_with_config_depth(&arg, source, ast_nodes, config, depth + 1);
-                        }
+        // Use child_by_field_name("arguments") — immune to kind-name variation across grammars.
+        // Falls back to kind-based matching for grammars that don't expose a field name.
+        let args_node = node.child_by_field_name("arguments").or_else(|| {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    let ck = child.kind();
+                    if ck == "arguments" || ck == "argument_list" || ck == "method_arguments" {
+                        return Some(child);
                     }
+                }
+            }
+            None
+        });
+        if let Some(args) = args_node {
+            for j in 0..args.child_count() {
+                if let Some(arg) = args.child(j) {
+                    walk_ast_nodes_with_config_depth(&arg, source, ast_nodes, config, depth + 1);
                 }
             }
         }
@@ -300,9 +307,9 @@ fn walk_ast_nodes_with_config_depth(
             text,
             receiver: None,
         });
-        // Don't fall through — prevents double-counting the awaited call
-        // (consistent with the JS-specific walker which returns early)
-        return;
+        // Fall through to recurse children — captures strings, calls, etc. inside await expr.
+        // The call_types guard at the top of the function already handles `call_expression`
+        // nodes correctly (recurse-into-args-only), so there is no double-counting risk here.
     } else if config.string_types.contains(&kind) {
         let raw = node_text(node, source);
         let is_raw_string = kind.contains("raw_string");
