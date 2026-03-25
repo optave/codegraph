@@ -20,7 +20,7 @@ Set `SKILL_NAME` to the provided name. Validate it is kebab-case (`^[a-z][a-z0-9
 
 ## Phase 0 — Discovery & Pre-flight
 
-**Pre-flight:** Confirm you are in a git repository root (`git rev-parse --show-toplevel` should succeed). Validate `$ARGUMENTS` is set and matches kebab-case (`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`). If not, abort with a clear error.
+**Pre-flight:** Confirm you are in a git repository root (`git rev-parse --show-toplevel` should succeed). Parse `$ARGUMENTS` per the Arguments section above. If validation fails, abort with a clear error.
 
 **Discovery:** Before writing anything, gather requirements interactively. Ask the user these questions (all at once, not one-by-one):
 
@@ -264,7 +264,7 @@ If the skill performs dangerous operations (from Phase 0 discovery), add explici
 - Run lint after changes: detect lint runner:
   ```bash
   if [ -f "biome.json" ]; then LINT_CMD="npx biome check"
-  elif find . -maxdepth 1 -name "eslint.config.*" -print -quit 2>/dev/null | grep -q .; then LINT_CMD="npx eslint ."  # 2>/dev/null: find exits non-zero when path is unreadable — intentionally tolerant
+  elif find . -maxdepth 1 -name "eslint.config.*" -print -quit | grep -q .; then LINT_CMD="npx eslint ."
   else LINT_CMD="npm run lint"; fi
   $LINT_CMD
   ```
@@ -352,7 +352,7 @@ trap 'cd - > /dev/null 2>&1; rm -rf "$TEST_DIR"' EXIT
 cd "$TEST_DIR"
 git init
 # Simulate the Phase 0 checks from the skill here
-cd -
+cd - > /dev/null
 rm -rf "$TEST_DIR"
 trap - EXIT
 ```
