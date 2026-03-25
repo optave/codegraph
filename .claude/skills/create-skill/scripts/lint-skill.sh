@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "lint-skill.sh requires bash 4+ (for associative arrays). On macOS: brew install bash" >&2
+  exit 1
+fi
+
 SKILL_FILE="${1:?Usage: lint-skill.sh <path-to-SKILL.md>}"
 
 if [ ! -f "$SKILL_FILE" ]; then
@@ -38,8 +43,11 @@ awk '
 declare -A VAR_BLOCK
 while IFS=$'\t' read -r bnum line; do
   # Match UPPER_CASE_VAR= assignments (skip lowercase/mixed to reduce false positives)
+  # Store the earliest block that assigns each variable so intermediate references are caught
   for var in $(echo "$line" | grep -oE '\b[A-Z][A-Z0-9_]+=' | sed 's/=$//'); do
-    VAR_BLOCK["$var"]="$bnum"
+    if [ -z "${VAR_BLOCK[$var]+x}" ]; then
+      VAR_BLOCK["$var"]="$bnum"
+    fi
   done
 done < "$BLOCKS_FILE"
 
@@ -73,22 +81,25 @@ done < "$BLOCKS_FILE"
 line_num=0
 in_quad=false
 in_block=false
+prev_line=""
 while IFS= read -r line; do
   line_num=$((line_num + 1))
   case "$line" in
-    '````'*) if $in_quad; then in_quad=false; else in_quad=true; fi; continue ;;
+    '````'*) if $in_quad; then in_quad=false; else in_quad=true; fi; prev_line="$line"; continue ;;
   esac
-  $in_quad && continue
+  $in_quad && { prev_line="$line"; continue; }
   case "$line" in
-    '```bash'*) in_block=true; continue ;;
-    '```'*) in_block=false; continue ;;
+    '```bash'*) in_block=true; prev_line="$line"; continue ;;
+    '```'*) in_block=false; prev_line="$line"; continue ;;
   esac
   if $in_block && echo "$line" | grep -qE '2>/dev/null'; then
     # Check same line or previous line for justification comment
-    if ! echo "$line" | grep -qiE '#.*intentional|#.*tolera|#.*acceptable|#.*expected|#.*safe to ignore|#.*may fail|#.*optional|#.*fallback|#.*portable'; then
+    justification_re='#.*intentional|#.*tolera|#.*acceptable|#.*expected|#.*safe to ignore|#.*may fail|#.*optional|#.*fallback|#.*portable'
+    if ! echo "${prev_line}${line}" | grep -qiE "$justification_re"; then
       warn "Line $line_num: '2>/dev/null' without justification comment (Pattern 2)"
     fi
   fi
+  prev_line="$line"
 done < "$SKILL_FILE"
 
 # ── Check 3: git add . or git add -A (inside bash blocks only) ───────
@@ -156,16 +167,19 @@ fi
 # ── Check 9: Missing exit conditions between phases ──────────────────
 prev_phase=""
 phase_has_exit=true
-in_fence=false
+in_quad=false
+in_block=false
 while IFS= read -r line; do
-  # Skip content inside any code fence (``` or ````)
+  # Skip content inside quadruple-backtick example regions
   case "$line" in
-    '````'*|'```'*)
-      if $in_fence; then in_fence=false; else in_fence=true; fi
-      continue
-      ;;
+    '````'*) if $in_quad; then in_quad=false; else in_quad=true; fi; continue ;;
   esac
-  $in_fence && continue
+  $in_quad && continue
+  # Skip content inside triple-backtick code blocks
+  case "$line" in
+    '```'*) if $in_block; then in_block=false; else in_block=true; fi; continue ;;
+  esac
+  $in_block && continue
 
   if echo "$line" | grep -qE '^## Phase [0-9]'; then
     if [ -n "$prev_phase" ] && [ "$phase_has_exit" = false ]; then

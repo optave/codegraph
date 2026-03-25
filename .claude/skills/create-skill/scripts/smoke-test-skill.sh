@@ -57,12 +57,12 @@ while IFS= read -r line; do
         in_block=false
         # Run syntax check on the collected block
         if [ -s "$TMPBLOCK" ]; then
-          if bash -n "$TMPBLOCK" 2>/dev/null; then
+          if output=$(bash -n "$TMPBLOCK" 2>&1); then
             echo "  OK    block at line $block_start"
             PASS=$((PASS + 1))
           else
             echo "  FAIL  block at line $block_start:"
-            bash -n "$TMPBLOCK" 2>&1 | sed 's/^/        /'
+            echo "$output" | sed 's/^/        /'
             FAIL=$((FAIL + 1))
           fi
         else
