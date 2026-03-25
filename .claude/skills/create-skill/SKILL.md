@@ -1,13 +1,13 @@
 ---
 name: create-skill
-description: Scaffold, write, and validate a new Claude Code skill — enforces quality standards derived from 200+ review comments
+description: Scaffold, write, and validate a new Claude Code skill — enforces quality standards derived from 250+ review comments
 argument-hint: "<skill-name>  (kebab-case, e.g. deploy-check)"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent
 ---
 
 # /create-skill — Skill Factory
 
-Create a new Claude Code skill with correct structure, robust bash, and built-in quality gates. This skill encodes lessons from 200+ Greptile review comments to prevent the most common skill authoring mistakes.
+Create a new Claude Code skill with correct structure, robust bash, and built-in quality gates. This skill encodes lessons from 250+ Greptile review comments to prevent the most common skill authoring mistakes.
 
 ## Arguments
 
@@ -119,7 +119,7 @@ allowed-tools: <from user's tool list>
 
 ## Phase 2 — Write the Skill Body
 
-Write each phase following these **mandatory patterns** (derived from Greptile review findings across 200+ comments):
+Write each phase following these **17 mandatory patterns** (derived from Greptile review findings across 250+ comments):
 
 ### Pattern 1: No shell variables across code fences
 
@@ -268,7 +268,103 @@ Avoid shell constructs that behave differently across platforms:
 - Use `sed -i.bak` instead of `sed -i ''` (GNU vs BSD incompatibility)
 - Document any platform-specific behavior with a comment: `# NOTE: requires GNU coreutils`
 
-**Exit condition:** Every phase body in the SKILL.md follows all 13 patterns. No wrong/correct examples remain as actual instructions — only the correct versions.
+### Pattern 14: Trap-based cleanup
+
+Any phase that creates temp files or modifies repo state must set a cleanup trap. Without it, errors mid-phase leak temp files or leave dirty state:
+
+```bash
+TMPFILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.json")
+trap 'rm -f "$TMPFILE"' EXIT
+# ... operations that might fail ...
+# Reset when done if more work follows:
+trap - EXIT
+```
+
+For phases that `cd` into a temp directory, clean up both the directory and the working directory change:
+
+```bash
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
+trap 'cd - > /dev/null 2>&1; rm -rf "$WORK_DIR"' EXIT
+```
+
+### Pattern 15: Git stash safety
+
+Never rely on `$?` or `stash@{0}` after `git stash push` — modern git (2.16+) returns 0 even when nothing was stashed, and other operations may push to the stash stack between your push and pop.
+
+**Wrong:**
+````markdown
+```bash
+git stash push -- package.json
+# ... operations ...
+git stash pop   # BUG: pops wrong entry if stash was no-op or stack changed
+```
+````
+
+**Correct:** Use a named stash with STASH_REF lookup:
+````markdown
+```bash
+git stash push -m "deploy-check-backup" -- package.json package-lock.json
+STASH_REF=$(git stash list --format='%gd %s' | grep 'deploy-check-backup' | head -1 | awk '{print $1}')
+# STASH_REF is non-empty only if a stash entry was actually created.
+# Use [ -n "$STASH_REF" ] for all branching. Use $STASH_REF (not stash@{0}) in pop/drop.
+```
+Later:
+```bash
+[ -n "$STASH_REF" ] && git stash pop "$STASH_REF"
+```
+````
+
+### Pattern 16: Division-by-zero guards
+
+Every arithmetic division or percentage computation must guard against zero denominators. Common in benchmark comparisons, complexity deltas, and ratio calculations:
+
+**Wrong:**
+````markdown
+```bash
+DELTA=$(( (CURRENT - BASELINE) * 100 / BASELINE ))
+```
+````
+
+**Correct:**
+````markdown
+```bash
+if [ "$BASELINE" -gt 0 ]; then
+  DELTA=$(( (CURRENT - BASELINE) * 100 / BASELINE ))
+else
+  DELTA=0  # no baseline — treat as no change
+fi
+```
+````
+
+### Pattern 17: DRY_RUN consistency
+
+If the skill supports `--dry-run`, every destructive operation must check the flag **at the point of action** — not just at phase entry. A single phase often mixes reads (always run) and writes (skip in dry-run):
+
+**Wrong:**
+````markdown
+```bash
+# Phase skips entirely in dry-run — but the analysis part is useful
+if [ "$DRY_RUN" = "true" ]; then exit 0; fi
+# ... 50 lines of analysis ...
+rm -rf "$OUTPUT_DIR"
+```
+````
+
+**Correct:**
+````markdown
+```bash
+# Analysis always runs
+codegraph audit --quick src/
+# Only the destructive part checks DRY_RUN
+if [ "$DRY_RUN" = "true" ]; then
+  echo "[DRY RUN] Would remove $OUTPUT_DIR"
+else
+  rm -rf "$OUTPUT_DIR"
+fi
+```
+````
+
+**Exit condition:** Every phase body in the SKILL.md follows all 17 patterns. No wrong/correct examples remain as actual instructions — only the correct versions.
 
 ---
 
@@ -316,7 +412,7 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] Rules section exists at the bottom
 - [ ] Every phase has a clear name (not just a number)
 
-### Anti-pattern checks (all 13 patterns):
+### Anti-pattern checks (all 17 patterns):
 - [ ] **Shell variables**: No variable is set in one code fence and used in another. State that must persist is written to a file
 - [ ] **Silent failures**: No `2>/dev/null` without a documented skip rationale. No commands that swallow errors
 - [ ] **Temp file extensions**: Every temp file passed to codegraph has the correct language extension
@@ -330,6 +426,10 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] **Progress indicators**: Phases that iterate over files or run batch operations emit progress (`Processing $i/$total`)
 - [ ] **Artifact reuse**: Expensive operations (codegraph build, embedding generation, batch analysis) check for existing output before re-running
 - [ ] **Platform portability**: No `sed -i ''`, no unquoted globs, no GNU-only flags without fallback or documentation
+- [ ] **Cleanup traps**: Phases that create temp files or modify repo state use `trap ... EXIT` for cleanup on error paths
+- [ ] **Git stash safety**: Every `git stash push` has a named STASH_REF lookup; every `pop`/`drop` is guarded by `[ -n "$STASH_REF" ]`
+- [ ] **Division-by-zero**: Every arithmetic division or percentage computation guards against zero denominators
+- [ ] **DRY_RUN consistency**: If `--dry-run` is supported, every destructive operation is gated on the flag at the point of action, not just at phase entry
 
 ### Robustness checks:
 - [ ] **Rollback paths**: Every destructive operation has documented undo instructions
@@ -348,6 +448,7 @@ Before finalizing, audit the SKILL.md against every item below. **Do not skip an
 - [ ] **Dependency validation**: Phase 0 verifies all shell commands used in bash blocks are available before starting work (e.g. `command -v git mktemp jq`). "Command not found" is caught before Phase 2, not during Phase 3
 - [ ] **Exit codes**: Every error path uses explicit `exit 1`. No silent early returns that leave the pipeline in an ambiguous state
 - [ ] **State cleanup**: If the skill creates `.codegraph/$SKILL_NAME/*` files, the skill documents when they're cleaned up or how users remove them (e.g., `rm -rf .codegraph/$SKILL_NAME` in a cleanup section)
+- [ ] **Git commit safety**: All `git add` calls use explicit file paths (never `.` or `-A`); `git diff --cached --quiet` is checked before committing to avoid empty commits
 
 Read through the entire SKILL.md one more time after checking all items. Fix anything found.
 
@@ -357,18 +458,19 @@ Read through the entire SKILL.md one more time after checking all items. Fix any
 
 The self-review is purely theoretical — most real issues (wrong paths, shell syntax, missing tools, argument parsing bugs) only surface when you actually try to run the code. Before finalizing, execute these validation steps:
 
-### Shell syntax validation
+### Automated validation
 
-Extract every bash code block from the SKILL.md and check for syntax errors:
+Run both validation scripts against the generated SKILL.md:
 
 ```bash
-# For each ```bash block in the skill:
-bash -n <<'BLOCK'
-  # paste the block contents here
-BLOCK
+bash .claude/skills/create-skill/scripts/lint-skill.sh .claude/skills/$SKILL_NAME/SKILL.md
+bash .claude/skills/create-skill/scripts/smoke-test-skill.sh .claude/skills/$SKILL_NAME/SKILL.md
 ```
 
-Fix any syntax errors found before proceeding.
+- **`lint-skill.sh`** checks for cross-fence variable bugs, bare `2>/dev/null`, hardcoded `npm test`, `git add .`, missing frontmatter, missing Phase 0 / Rules, missing exit conditions, GNU-only `find -quit`, hardcoded `/tmp/` paths, and `sed -i` portability issues.
+- **`smoke-test-skill.sh`** extracts every `bash` code block (skipping example regions inside quadruple backticks) and runs `bash -n` syntax checking on each.
+
+Fix all ERROR findings. Review WARN findings — fix or annotate with justification.
 
 ### Phase 0 dry-run
 
@@ -408,7 +510,7 @@ Document any idempotency fix applied.
 3. Ask: "Ready to commit, or want changes?"
 
 If the user approves:
-- Stage only `.claude/skills/$SKILL_NAME/SKILL.md`
+- Stage only `.claude/skills/$SKILL_NAME/SKILL.md` (and any scripts in `.claude/skills/$SKILL_NAME/scripts/` if created)
 - Commit: `feat(skill): add /$SKILL_NAME skill`
 
 ---
