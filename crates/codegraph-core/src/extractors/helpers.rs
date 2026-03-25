@@ -144,7 +144,7 @@ pub const GO_AST_CONFIG: LangAstConfig = LangAstConfig {
 };
 
 pub const RUST_AST_CONFIG: LangAstConfig = LangAstConfig {
-    call_types: &["call_expression"],
+    call_types: &["call_expression", "method_call_expression"],
     new_types: &[],
     throw_types: &[],
     await_types: &["await_expression"],
@@ -300,7 +300,9 @@ fn walk_ast_nodes_with_config_depth(
             text,
             receiver: None,
         });
-        // Fall through to recurse children
+        // Don't fall through — prevents double-counting the awaited call
+        // (consistent with the JS-specific walker which returns early)
+        return;
     } else if config.string_types.contains(&kind) {
         let raw = node_text(node, source);
         let is_raw_string = kind.contains("raw_string");
@@ -446,9 +448,15 @@ fn extract_call_receiver(node: &Node, source: &[u8]) -> Option<String> {
     // Then "object" (Go, Python), then "receiver" (Ruby)
     for field in &["function", "object", "receiver"] {
         if let Some(fn_node) = node.child_by_field_name(field) {
-            // If the function/object node is a member_expression, extract its object
+            // JS/TS/Python: member_expression / attribute with "object" field
             if let Some(obj) = fn_node.child_by_field_name("object") {
                 return Some(node_text(&obj, source).to_string());
+            }
+            // Go: selector_expression uses "operand" not "object"
+            if fn_node.kind() == "selector_expression" {
+                if let Some(operand) = fn_node.child_by_field_name("operand") {
+                    return Some(node_text(&operand, source).to_string());
+                }
             }
             // For Ruby/Go where the receiver is directly a field
             if *field == "object" || *field == "receiver" {
