@@ -128,11 +128,11 @@ Each fenced code block is a **separate shell invocation**. Variables set in one 
 **Wrong:**
 ````markdown
 ```bash
-TMPDIR=$(mktemp -d)
+WORK_DIR=$(mktemp -d)
 ```
 Later:
 ```bash
-rm -rf $TMPDIR   # BUG: $TMPDIR is empty here
+rm -rf $WORK_DIR   # BUG: $WORK_DIR is empty here
 ```
 ````
 
