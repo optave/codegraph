@@ -90,9 +90,13 @@ allowed-tools: <from user's tool list>
 2. Parse `$ARGUMENTS` into state variables
 3. Validate preconditions
 
+**Exit condition:** <What must be true before Phase 1 starts, e.g. "git repo confirmed, arguments validated, all required tools present">
+
 ## Phase N — <Name>
 
 <Steps>
+
+**Exit condition:** <What must be true before the next phase starts>
 
 ## Rules
 
@@ -135,7 +139,7 @@ First ensure the directory exists:
 ````markdown
 ```bash
 mkdir -p .codegraph/deploy-check
-mktemp -d > .codegraph/deploy-check/.tmpdir
+mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX" > .codegraph/deploy-check/.tmpdir
 ```
 Later:
 ```bash
