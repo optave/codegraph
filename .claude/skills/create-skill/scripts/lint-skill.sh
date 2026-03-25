@@ -112,6 +112,7 @@ line_num=0
 in_quad=false
 in_block=false
 in_detect=false
+detect_depth=0
 while IFS= read -r line; do
   line_num=$((line_num + 1))
   case "$line" in
@@ -119,15 +120,22 @@ while IFS= read -r line; do
   esac
   $in_quad && continue
   case "$line" in
-    '```bash'*) in_block=true; in_detect=false; continue ;;
-    '```'*) in_block=false; in_detect=false; continue ;;
+    '```bash'*) in_block=true; in_detect=false; detect_depth=0; continue ;;
+    '```'*) in_block=false; in_detect=false; detect_depth=0; continue ;;
   esac
   if $in_block; then
-    # Track if we're inside an if/elif chain (detection block)
+    # Track if we're inside an if/elif chain (detection block) with depth
     if echo "$line" | grep -qE '^\s*(if|elif)\s.*(-f\s|-d\s|lock|package|command -v|which\s)'; then
       in_detect=true
+      detect_depth=$((detect_depth + 1))
+    elif echo "$line" | grep -qE '^\s*if\b'; then
+      # nested if (not a detection block) — track depth only when inside detection
+      [ "$in_detect" = true ] && detect_depth=$((detect_depth + 1))
     elif echo "$line" | grep -qE '^\s*fi\b'; then
-      in_detect=false
+      if [ "$detect_depth" -gt 0 ]; then
+        detect_depth=$((detect_depth - 1))
+        [ "$detect_depth" -eq 0 ] && in_detect=false
+      fi
     fi
     if ! $in_detect; then
       if echo "$line" | grep -qE '^\s*(npm test|npm run lint)\b'; then
