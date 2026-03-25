@@ -246,14 +246,43 @@ function persistCfg(
 
 // ─── Build-Time: Compute CFG for Changed Files ─────────────────────────
 
+/**
+ * Check if all function/method definitions across all files already have
+ * native CFG data (blocks array populated by the Rust extractor).
+ * When true, the WASM parser and JS CFG visitor can be fully bypassed.
+ */
+function allCfgNative(fileSymbols: Map<string, FileSymbols>): boolean {
+  for (const [relPath, symbols] of fileSymbols) {
+    const ext = path.extname(relPath).toLowerCase();
+    if (!CFG_EXTENSIONS.has(ext)) continue;
+
+    for (const d of symbols.definitions) {
+      if (d.kind !== 'function' && d.kind !== 'method') continue;
+      if (!d.line) continue;
+      // cfg === null means no body (expected), cfg with empty blocks means not computed
+      if (d.cfg !== null && !(d.cfg?.blocks?.length)) return false;
+    }
+  }
+  return true;
+}
+
 export async function buildCFGData(
   db: BetterSqlite3Database,
   fileSymbols: Map<string, FileSymbols>,
   rootDir: string,
   _engineOpts?: unknown,
 ): Promise<void> {
+  // Fast path: when all function/method defs already have native CFG data,
+  // skip WASM parser init, tree parsing, and JS visitor entirely — just persist.
+  const allNative = allCfgNative(fileSymbols);
+
   const extToLang = buildExtToLangMap();
-  const { parsers, getParserFn } = await initCfgParsers(fileSymbols);
+  let parsers: unknown = null;
+  let getParserFn: unknown = null;
+
+  if (!allNative) {
+    ({ parsers, getParserFn } = await initCfgParsers(fileSymbols));
+  }
 
   const insertBlock = db.prepare(
     `INSERT INTO cfg_blocks (function_node_id, block_index, block_type, start_line, end_line, label)
@@ -269,6 +298,27 @@ export async function buildCFGData(
     for (const [relPath, symbols] of fileSymbols) {
       const ext = path.extname(relPath).toLowerCase();
       if (!CFG_EXTENSIONS.has(ext)) continue;
+
+      // Native fast path: skip tree/visitor setup when all CFG is pre-computed
+      if (allNative) {
+        for (const def of symbols.definitions) {
+          if (def.kind !== 'function' && def.kind !== 'method') continue;
+          if (!def.line || !def.cfg?.blocks?.length) continue;
+
+          const nodeId = getFunctionNodeId(db, def.name, relPath, def.line);
+          if (!nodeId) continue;
+
+          deleteCfgForNode(db, nodeId);
+          persistCfg(
+            def.cfg as unknown as { blocks: CfgBuildBlock[]; edges: CfgBuildEdge[] },
+            nodeId,
+            insertBlock,
+            insertEdge,
+          );
+          analyzed++;
+        }
+        continue;
+      }
 
       const treeLang = getTreeAndLang(symbols, relPath, rootDir, extToLang, parsers, getParserFn);
       if (!treeLang) continue;
