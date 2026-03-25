@@ -462,6 +462,12 @@ fn extract_call_receiver(node: &Node, source: &[u8]) -> Option<String> {
                     return Some(node_text(&operand, source).to_string());
                 }
             }
+            // C#: member_access_expression uses "expression" not "object"
+            if fn_node.kind() == "member_access_expression" {
+                if let Some(expr) = fn_node.child_by_field_name("expression") {
+                    return Some(node_text(&expr, source).to_string());
+                }
+            }
             // For Ruby/Go where the receiver is directly a field
             if *field == "object" || *field == "receiver" {
                 return Some(node_text(&fn_node, source).to_string());
