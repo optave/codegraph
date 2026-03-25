@@ -95,8 +95,7 @@ export async function buildAstNodes(
 
     // When native astNodes includes call entries, skip separate symbols.calls processing
     // to avoid duplication. Fall back to symbols.calls for WASM or older native binaries.
-    const nativeHasCalls =
-      Array.isArray(symbols.astNodes) && symbols.astNodes.some((n) => n.kind === 'call');
+    const nativeHasCalls = Array.isArray(symbols.astNodes);
     if (symbols.calls && !nativeHasCalls) {
       for (const call of symbols.calls) {
         const parentDef = findParentDef(defs, call.line);
