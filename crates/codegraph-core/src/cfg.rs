@@ -1138,7 +1138,8 @@ impl<'a> CfgBuilder<'a> {
 
 fn has_child_of_kind(node: &Node, kind: &str) -> bool {
     let mut cursor = node.walk();
-    node.children(&mut cursor).any(|c| c.kind() == kind)
+    let result = node.children(&mut cursor).any(|c| c.kind() == kind);
+    result
 }
 
 fn node_line(node: &Node) -> u32 {
