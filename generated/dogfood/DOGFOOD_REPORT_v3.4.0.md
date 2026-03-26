@@ -155,8 +155,9 @@ All 34+ commands tested without a graph. Every command that requires a graph fai
   - **SUGGESTION:** Warn when the graph DB was built with a different codegraph version
 
 ### Force Full Rebuild
-- `build --no-incremental`: 10885 nodes, 20752 edges
+- `build --no-incremental`: 10,885 nodes, 20,752 edges
 - Matches clean rebuild from scratch: **PASS**
+- **Note:** These counts differ from the engine comparison in Section 5 (native: 10,941 nodes, 20,849 edges) because this rebuild was captured before the final round of v3.4.0 fixes landed (the Section 5 engine comparison was run on a later codebase state with additional commits). The counts are internally consistent within each section.
 
 ### Embed → Rebuild → Search Pipeline
 - Embedded 5097 symbols with minilm
@@ -222,6 +223,8 @@ All 34+ commands tested without a graph. Every command that requires a graph fai
 
 ### Analysis
 The native engine excels at parsing (2.2x) and complexity computation (5.5x — runs in Rust), with higher call confidence (80.9% vs 71.3%). WASM produces ~68 more call edges (4,068 vs 4,000) and 101 more edges overall, indicating a divergence that needs investigation. Either native is missing legitimate call sites or WASM is over-extracting at lower confidence. Filed as #613 for investigation.
+
+**Parity direction reversal from v3.3.1:** In v3.3.1, native produced *more* call edges than WASM (+14). In v3.4.0, the relationship flipped — WASM now produces more (+68). This reversal is consistent with the `findCaller` fallback removal in #607: that fallback was a native-side heuristic that over-attributed calls to file-scope callers, inflating native's call count. With it removed, native's call count dropped, revealing that WASM extracts ~68 additional call edges that native does not.
 
 ---
 
@@ -290,7 +293,7 @@ Changes tested from v3.4.0 CHANGELOG:
 ### BUG 1: tsconfig.json parse failure (Low)
 - **Issue:** Not filed — pre-existing warning
 - **Symptoms:** `Failed to parse tsconfig.json: Bad control character in string literal` on every build
-- **Root cause:** The repo's `tsconfig.json` likely has a comment or special character that `JSON.parse` can't handle
+- **Root cause:** The repo's `tsconfig.json` uses JSONC syntax (inline `/* ... */` comments on 7 lines), which standard `JSON.parse` rejects
 - **Impact:** Low — build succeeds, just a noisy warning
 
 ### BUG 2: No DB version mismatch warning (Low, Suggestion)
