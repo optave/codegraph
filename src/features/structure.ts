@@ -597,7 +597,7 @@ function classifyNodeRolesIncremental(
 
   const globalMedians = { fanIn: median(fanInDist), fanOut: median(fanOutDist) };
 
-  // 2a. Leaf kinds (parameter, property) in affected files � always dead-leaf
+  // 2a. Leaf kinds (parameter, property) in affected files — always dead-leaf
   const leafRows = db
     .prepare(
       `SELECT n.id FROM nodes n
