@@ -191,7 +191,7 @@ while IFS= read -r line; do
   esac
   $in_block && continue
 
-  if echo "$line" | grep -qE '^## Phase [0-9]'; then
+  if echo "$line" | grep -qE '^## Phase [0-9]+'; then
     if [ -n "$prev_phase" ] && [ "$phase_has_exit" = false ]; then
       warn "Phase '$prev_phase' has no 'Exit condition' before the next phase"
     fi
