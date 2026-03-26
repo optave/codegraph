@@ -46,8 +46,14 @@ Scan **every commit message** between the last tag and HEAD. Apply these rules i
 | Condition | Bump |
 |-----------|------|
 | Any commit has a `BREAKING CHANGE:` or `BREAKING-CHANGE:` footer, **or** uses the `!` suffix (e.g. `feat!:`, `fix!:`, `refactor!:`) | **major** |
-| Any commit uses `feat:` or `feat(scope):` | **minor** |
+| Any commit uses `feat:` or `feat(scope):` **with a user-facing scope** | **minor** |
 | Everything else (`fix:`, `refactor:`, `perf:`, `chore:`, `docs:`, `test:`, `ci:`, etc.) | **patch** |
+
+**Internal scopes — treat as patch, not minor:** The following scopes represent internal developer tooling and infrastructure, not user-facing features. A `feat:` commit with one of these scopes counts as a **patch**, not a minor bump:
+
+`titan`, `skills`, `hooks`, `claude`, `ci`, `bench`, `dogfood`, `release`, `housekeep`, `review`, `deps-audit`, `test-health`, `architect`
+
+For example, `feat(titan): first full pipeline run` is internal tooling — patch. But `feat(cfg): control-flow graph generation` is user-facing — minor.
 
 Given the current version `MAJOR.MINOR.PATCH` from `package.json`, compute the new version:
 - **major** → `(MAJOR+1).0.0`
