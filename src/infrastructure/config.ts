@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { toErrorMessage } from '../shared/errors.js';
 import type { CodegraphConfig } from '../types.js';
 import { debug, warn } from './logger.js';
 
@@ -312,7 +313,7 @@ function resolveWorkspaceEntry(pkgDir: string): string | null {
     }
   } catch (e) {
     debug(
-      `resolveWorkspaceEntry: package.json probe failed for ${pkgDir}: ${e instanceof Error ? e.message : String(e)}`,
+      `resolveWorkspaceEntry: package.json probe failed for ${pkgDir}: ${toErrorMessage(e)}`,
     );
   }
   return null;
@@ -348,7 +349,7 @@ export function detectWorkspaces(rootDir: string): Map<string, WorkspaceEntry> {
       }
     } catch (e) {
       debug(
-        `detectWorkspaces: failed to parse pnpm-workspace.yaml: ${e instanceof Error ? e.message : String(e)}`,
+        `detectWorkspaces: failed to parse pnpm-workspace.yaml: ${toErrorMessage(e)}`,
       );
     }
   }
@@ -369,7 +370,7 @@ export function detectWorkspaces(rootDir: string): Map<string, WorkspaceEntry> {
         }
       } catch (e) {
         debug(
-          `detectWorkspaces: failed to parse package.json workspaces: ${e instanceof Error ? e.message : String(e)}`,
+          `detectWorkspaces: failed to parse package.json workspaces: ${toErrorMessage(e)}`,
         );
       }
     }
@@ -387,7 +388,7 @@ export function detectWorkspaces(rootDir: string): Map<string, WorkspaceEntry> {
         }
       } catch (e) {
         debug(
-          `detectWorkspaces: failed to parse lerna.json: ${e instanceof Error ? e.message : String(e)}`,
+          `detectWorkspaces: failed to parse lerna.json: ${toErrorMessage(e)}`,
         );
       }
     }

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { Tree } from 'web-tree-sitter';
 import { Language, Parser, Query } from 'web-tree-sitter';
 import { debug, warn } from '../infrastructure/logger.js';
+import { toErrorMessage } from '../shared/errors.js';
 import { getNative, getNativePackageVersion, loadNative } from '../infrastructure/native.js';
 import type {
   EngineMode,
@@ -444,7 +445,7 @@ async function backfillTypeMap(
       code = fs.readFileSync(filePath, 'utf-8');
     } catch (e) {
       debug(
-        `backfillTypeMap: failed to read ${filePath}: ${e instanceof Error ? e.message : String(e)}`,
+        `backfillTypeMap: failed to read ${filePath}: ${toErrorMessage(e)}`,
       );
       return { typeMap: new Map(), backfilled: false };
     }
@@ -463,7 +464,7 @@ async function backfillTypeMap(
         extracted.tree.delete();
       } catch (e) {
         debug(
-          `backfillTypeMap: WASM tree cleanup failed: ${e instanceof Error ? e.message : String(e)}`,
+          `backfillTypeMap: WASM tree cleanup failed: ${toErrorMessage(e)}`,
         );
       }
     }
@@ -580,7 +581,7 @@ export async function parseFilesAuto(
             }
           } catch (e) {
             debug(
-              `batchExtract: typeMap backfill failed: ${e instanceof Error ? e.message : String(e)}`,
+              `batchExtract: typeMap backfill failed: ${toErrorMessage(e)}`,
             );
           } finally {
             // Free the WASM tree to prevent memory accumulation across repeated builds
@@ -589,7 +590,7 @@ export async function parseFilesAuto(
                 extracted.tree.delete();
               } catch (e) {
                 debug(
-                  `batchExtract: WASM tree cleanup failed: ${e instanceof Error ? e.message : String(e)}`,
+                  `batchExtract: WASM tree cleanup failed: ${toErrorMessage(e)}`,
                 );
               }
             }

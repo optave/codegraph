@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { debug } from '../../infrastructure/logger.js';
+import { toErrorMessage } from '../../shared/errors.js';
 import { loadNative } from '../../infrastructure/native.js';
 import { normalizePath } from '../../shared/constants.js';
 import type { BareSpecifier, BatchResolvedMap, ImportBatchItem, PathAliases } from '../../types.js';
@@ -67,7 +68,7 @@ function getPackageExports(packageDir: string): any {
     return exports;
   } catch (e) {
     debug(
-      `readPackageExports: failed to read package.json in ${packageDir}: ${e instanceof Error ? e.message : String(e)}`,
+      `readPackageExports: failed to read package.json in ${packageDir}: ${toErrorMessage(e)}`,
     );
     _exportsCache.set(packageDir, null);
     return null;
@@ -521,7 +522,7 @@ export function resolveImportPath(
       return remapJsToTs(normalized, rootDir);
     } catch (e) {
       debug(
-        `resolveImportPath: native resolution failed, falling back to JS: ${e instanceof Error ? e.message : String(e)}`,
+        `resolveImportPath: native resolution failed, falling back to JS: ${toErrorMessage(e)}`,
       );
     }
   }
@@ -543,7 +544,7 @@ export function computeConfidence(
       return native.computeConfidence(callerFile, targetFile, importedFrom || null);
     } catch (e) {
       debug(
-        `computeConfidence: native computation failed, falling back to JS: ${e instanceof Error ? e.message : String(e)}`,
+        `computeConfidence: native computation failed, falling back to JS: ${toErrorMessage(e)}`,
       );
     }
   }
@@ -585,7 +586,7 @@ export function resolveImportsBatch(
     return map;
   } catch (e) {
     debug(
-      `batchResolve: native batch resolution failed: ${e instanceof Error ? e.message : String(e)}`,
+      `batchResolve: native batch resolution failed: ${toErrorMessage(e)}`,
     );
     return null;
   }
