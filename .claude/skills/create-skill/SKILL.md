@@ -351,6 +351,7 @@ DELTA=$(( (CURRENT - BASELINE) * 100 / BASELINE ))
 **Correct:**
 ````markdown
 ```bash
+# $BASELINE and $CURRENT are expected to be set by the surrounding context (e.g. from codegraph stats output)
 if [ "$BASELINE" -gt 0 ]; then
   DELTA=$(( (CURRENT - BASELINE) * 100 / BASELINE ))
 else
@@ -376,6 +377,7 @@ rm -rf "$OUTPUT_DIR"
 **Correct:**
 ````markdown
 ```bash
+# $DRY_RUN is expected to be parsed from $ARGUMENTS in Phase 0; $OUTPUT_DIR is set earlier in this phase
 # Analysis always runs
 codegraph audit --quick src/
 # Only the destructive part checks DRY_RUN
