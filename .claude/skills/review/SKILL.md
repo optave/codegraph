@@ -201,17 +201,40 @@ After addressing all comments for a PR:
 
 ### 2g. Re-trigger reviewers
 
-**Greptile:** Before re-triggering, check if your last reply to Greptile already has a positive emoji reaction (thumbs up, check, party, etc.) from `greptileai`. A positive reaction means Greptile is satisfied with your fix — do NOT re-trigger in that case, move on. Only re-trigger if there is no positive reaction on your last comment:
+**Greptile:** Only re-trigger if Greptile has outstanding concerns that you addressed. Before posting `@greptileai`, run these checks — if any says "skip", do NOT re-trigger:
 
-```bash
-# Check reactions on your most recent comment to see if Greptile already approved
-gh api repos/optave/codegraph/issues/<number>/comments --paginate \
-  --jq 'reverse | .[] | select(.user.login != "greptileai") | {id: .id, body: .body[0:80], reactions_url: .reactions_url}' | head -1
+1. **Check if the last `@greptileai` trigger was already approved.** Find the most recent `@greptileai` comment (from anyone), then check if Greptile reacted to it with a thumbsup (+1). If it did, check whether Greptile posted any new inline review comments *after* that reaction. If thumbsup exists AND no new inline comments AND more than 15 minutes have passed since the trigger — Greptile approved. **Skip re-triggering.**
 
-# If no positive reaction from greptileai, re-trigger:
-gh api repos/optave/codegraph/issues/<number>/comments \
-  -f body="@greptileai"
-```
+   ```bash
+   # Find the last @greptileai trigger comment and its reactions
+   trigger_comment=$(gh api repos/optave/codegraph/issues/<number>/comments --paginate \
+     --jq '[.[] | select(.body | test("@greptileai"))] | last | {id: .id, created_at: .created_at}')
+   trigger_id=$(echo "$trigger_comment" | jq -r '.id')
+   trigger_time=$(echo "$trigger_comment" | jq -r '.created_at')
+
+   # Check if greptile-apps[bot] thumbsupped the trigger comment
+   gh api repos/optave/codegraph/issues/comments/$trigger_id/reactions \
+     --jq '[.[] | select(.user.login == "greptile-apps[bot]" and .content == "+1")] | length'
+
+   # Count Greptile inline comments created after the trigger
+   gh api repos/optave/codegraph/pulls/<number>/comments --paginate \
+     --jq "[.[] | select(.user.login == \"greptile-apps[bot]\" and .created_at > \"$trigger_time\")] | length"
+   ```
+
+   **Decision logic:**
+   - Thumbsup exists AND no new inline comments AND >15 min since trigger → **Greptile approved. Skip re-triggering.**
+   - Thumbsup exists AND no new inline comments AND <15 min since trigger → **Greptile is still processing. Wait until 15 min have passed**, then re-check. Do NOT post another `@greptileai`.
+   - No thumbsup AND <15 min since trigger → **Greptile hasn't responded yet. Wait until 15 min have passed**, then re-check.
+   - No thumbsup AND >15 min AND new inline comments exist → **Greptile has concerns. Address them (step 2e), then re-trigger.**
+
+2. **Check if you actually addressed any Greptile feedback.** If you made no code changes in response to Greptile comments (e.g., you only fixed CI or Claude comments), there's nothing new for Greptile to review — **skip re-triggering.**
+
+3. **Only if both checks above indicate outstanding concerns**, re-trigger:
+
+   ```bash
+   gh api repos/optave/codegraph/issues/<number>/comments \
+     -f body="@greptileai"
+   ```
 
 **Claude (claude-code-review / claude bot):** Only re-trigger if you addressed something Claude specifically suggested. If you did:
 
@@ -270,7 +293,7 @@ If any subagent failed or returned an error, note it in the Status column as `ag
 - **Never force-push** unless fixing a commit message that fails commitlint. Amend + force-push is the only way to fix a pushed commit title (messages are part of the SHA). This is safe on feature branches. For all other problems, fix with a new commit.
 - **Address ALL comments from ALL reviewers** (Claude, Greptile, and humans), even minor/nit/optional ones. Leave zero unaddressed. Do not only respond to one reviewer and skip another.
 - **Always reply to comments** explaining what was done. Don't just fix silently. Every reviewer must see a reply on their feedback.
-- **Don't re-trigger Greptile if already approved.** If your last reply to a Greptile comment has a positive emoji reaction from `greptileai`, it's already satisfied — skip re-triggering.
+- **Don't re-trigger Greptile if already approved.** If Greptile thumbsupped the last `@greptileai` trigger and posted no new inline comments, it's approved — skip re-triggering. If less than 15 minutes have passed since the last trigger, **wait** — do NOT post another `@greptileai`. Only re-trigger after confirming Greptile has outstanding concerns and you addressed them.
 - **Only re-trigger Claude** if you addressed Claude's feedback specifically.
 - **No co-author lines** in commit messages.
 - **No Claude Code references** in commit messages or comments.
