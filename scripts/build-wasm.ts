@@ -57,7 +57,6 @@ for (const g of grammars) {
 
 if (failed > 0) {
   console.warn(`\n${failed}/${grammars.length} grammars failed to build (non-fatal — native engine available)`);
-  process.exitCode = 1;
 } else {
   console.log('\nAll grammars built successfully into grammars/');
 }
