@@ -384,6 +384,15 @@ interface RoleSummary {
   [key: string]: number;
 }
 
+/**
+ * Classify every node in the graph into a role (core, entry, utility, etc.).
+ *
+ * When `changedFiles` is provided, only nodes from those files (and their
+ * edge neighbours) are reclassified. The returned `RoleSummary` in that case
+ * reflects **only the affected subset**, not the entire graph. Callers that
+ * need graph-wide totals should perform a full classification (omit
+ * `changedFiles`) or query the DB directly.
+ */
 export function classifyNodeRoles(
   db: BetterSqlite3Database,
   changedFiles?: string[] | null,
