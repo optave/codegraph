@@ -31,13 +31,13 @@ BLOCKS_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.blocks")
 trap 'rm -f "$BLOCKS_FILE"' EXIT
 
 # Extract bash blocks with block index, skipping those inside ```` regions.
-# Patterns use ^\s* to match indented blocks (e.g. inside Markdown list items).
+# Patterns use ^[[:space:]]* to match indented blocks (e.g. inside Markdown list items).
 awk '
-  /^\s*````/       { quad = !quad; next }
-  quad              { next }
-  /^\s*```bash/    { inblock = 1; blocknum++; next }
-  /^\s*```/ && inblock { inblock = 0; next }
-  inblock          { print blocknum "\t" $0 }
+  /^[[:space:]]*````/       { quad = !quad; next }
+  quad                       { next }
+  /^[[:space:]]*```bash/    { inblock = 1; blocknum++; next }
+  /^[[:space:]]*```/ && inblock { inblock = 0; next }
+  inblock                   { print blocknum "\t" $0 }
 ' "$SKILL_FILE" > "$BLOCKS_FILE"
 
 # Collect variable assignments per block and build reassignment lookup (O(1) per check)
@@ -149,7 +149,7 @@ while IFS= read -r line; do
       fi
     fi
     if ! $in_detect; then
-      if echo "$line" | grep -qE '^\s*(npm test|npm run test|npm run lint)\b'; then
+      if echo "$line" | grep -qE '^\s*(npm test|npm run (test|lint))([^:A-Za-z0-9_]|$)'; then
         warn "Line $line_num: Hardcoded '$(echo "$line" | sed 's/^[[:space:]]*//')' — detect package manager first (Pattern 6)"
       fi
     fi
