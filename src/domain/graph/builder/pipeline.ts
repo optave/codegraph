@@ -4,12 +4,12 @@
  * This is the heart of the builder refactor (ROADMAP 3.9): the monolithic buildGraph()
  * is decomposed into independently testable stages that communicate via PipelineContext.
  */
-import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { closeDb, getBuildMeta, initSchema, MIGRATIONS, openDb } from '../../../db/index.js';
 import { detectWorkspaces, loadConfig } from '../../../infrastructure/config.js';
 import { info, warn } from '../../../infrastructure/logger.js';
+import { CODEGRAPH_VERSION } from '../../../shared/version.js';
 import type { BuildGraphOpts, BuildResult } from '../../../types.js';
 import { getActiveEngine } from '../../parser.js';
 import { setWorkspaces } from '../resolve.js';
@@ -25,13 +25,6 @@ import { insertNodes } from './stages/insert-nodes.js';
 import { parseFiles } from './stages/parse-files.js';
 import { resolveImports } from './stages/resolve-imports.js';
 import { runAnalyses } from './stages/run-analyses.js';
-
-const __pipelineDir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, '$1'));
-const CODEGRAPH_VERSION = (
-  JSON.parse(
-    fs.readFileSync(path.join(__pipelineDir, '..', '..', '..', '..', 'package.json'), 'utf-8'),
-  ) as { version: string }
-).version;
 
 // ── Setup helpers ───────────────────────────────────────────────────────
 
