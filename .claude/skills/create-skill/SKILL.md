@@ -168,6 +168,7 @@ git show HEAD:$FILE 2>/dev/null | codegraph where --file -
 ````markdown
 ```bash
 PREV_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js")  # adjust extension to match the language of $FILE; template syntax is portable (macOS + Linux)
+trap 'rm -f "$PREV_FILE"' EXIT
 # $FILE is expected to be set by the surrounding loop, e.g. for FILE in $(git diff --name-only HEAD); do ... done
 # 2>/dev/null: suppress git's "fatal: Path X does not exist in HEAD" — the else branch already warns the user
 if git show HEAD:"$FILE" > "$PREV_FILE" 2>/dev/null; then
@@ -176,6 +177,7 @@ else
   echo "WARN: $FILE is new or unreadable in HEAD — skipping before/after comparison"
 fi
 rm -f "$PREV_FILE"
+trap - EXIT
 ```
 ````
 
@@ -484,7 +486,7 @@ bash .claude/skills/create-skill/scripts/lint-skill.sh ".claude/skills/$SKILL_NA
 bash .claude/skills/create-skill/scripts/smoke-test-skill.sh ".claude/skills/$SKILL_NAME/SKILL.md"
 ```
 
-- **`lint-skill.sh`** checks for cross-fence variable bugs, bare `2>/dev/null`, hardcoded `npm test` / `npm run test` / `npm run lint`, `git add .`, missing frontmatter, missing Phase 0 / Rules, missing exit conditions, GNU-only `find -quit`, hardcoded `/tmp/` paths, and `sed -i` portability issues.
+- **`lint-skill.sh`** checks for cross-fence variable bugs, bare `2>/dev/null`, hardcoded `npm test` / `npm run test` / `npm run lint`, `git add .` / `git add -- .`, missing frontmatter, missing Phase 0 / Rules, missing exit conditions, GNU-only `find -quit`, hardcoded `/tmp/` paths, and `sed -i` portability issues.
 - **`smoke-test-skill.sh`** extracts every `bash` code block (skipping example regions inside quadruple backticks) and runs `bash -n` syntax checking on each.
 
 Fix all ERROR findings. Review WARN findings — fix or annotate with justification.
