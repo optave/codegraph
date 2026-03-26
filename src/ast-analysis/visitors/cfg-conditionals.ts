@@ -1,6 +1,11 @@
 import type { TreeSitterNode } from '../../types.js';
-import type { ProcessStatementsFn } from './cfg-loops.js';
-import type { AnyRules, CfgBlockInternal, FuncState, LoopCtx } from './cfg-shared.js';
+import type {
+  AnyRules,
+  CfgBlockInternal,
+  FuncState,
+  LoopCtx,
+  ProcessStatementsFn,
+} from './cfg-shared.js';
 import { getBodyStatements, isCaseNode, isIfNode, nn } from './cfg-shared.js';
 
 export function processIf(
@@ -41,7 +46,7 @@ export function processIf(
   return joinBlock;
 }
 
-export function processAlternative(
+function processAlternative(
   ifStmt: TreeSitterNode,
   condBlock: CfgBlockInternal,
   joinBlock: CfgBlockInternal,
@@ -87,7 +92,7 @@ export function processAlternative(
   }
 }
 
-export function processElifSiblings(
+function processElifSiblings(
   ifStmt: TreeSitterNode,
   firstCondBlock: CfgBlockInternal,
   joinBlock: CfgBlockInternal,
@@ -195,7 +200,7 @@ export function processSwitch(
   return joinBlock;
 }
 
-export function extractCaseBody(caseClause: TreeSitterNode, cfgRules: AnyRules): TreeSitterNode[] {
+function extractCaseBody(caseClause: TreeSitterNode, cfgRules: AnyRules): TreeSitterNode[] {
   const caseBodyNode =
     caseClause.childForFieldName('body') || caseClause.childForFieldName('consequence');
   if (caseBodyNode) {
