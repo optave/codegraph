@@ -1,6 +1,6 @@
 # Codegraph Roadmap
 
-> **Current version:** 3.4.0 | **Status:** Active development | **Updated:** 2026-03-25
+> **Current version:** 3.4.1 | **Status:** Active development | **Updated:** 2026-03-26
 
 Codegraph is a strong local-first code graph CLI. This roadmap describes planned improvements across twelve phases -- closing gaps with commercial code intelligence platforms while preserving codegraph's core strengths: fully local, open source, zero cloud dependency by default.
 
@@ -1207,11 +1207,13 @@ Structure building is unchanged — at 22ms it's already fast.
 
 ### 6.8 -- Incremental Rebuild Performance
 
-**Not started.** Current native 1-file rebuild is ~802ms. Structure (~18ms) and roles (~255ms) still run full graph-wide recomputation on every 1-file change. Finalize (~80ms) is also significant.
+**In progress.** Roles optimization shipped in v3.4.1 — batch UPDATE by role reduced roles from 255ms → 9ms ([#622](https://github.com/optave/codegraph/pull/622)). Compound DB indexes restored query performance after TS migration ([#632](https://github.com/optave/codegraph/pull/632)).
 
-- **Skip unchanged phases:** Structure and roles should skip full reclassification when only 1 file changes and cross-file degree is unchanged
-- **Incremental edge rebuild:** Only rebuild edges involving the changed file's symbols
-- **Benchmark target:** Sub-100ms native 1-file rebuilds (from current 802ms)
+- ✅ **Roles optimization:** Batch UPDATE grouped by role (255ms → 9ms, −96%) — v3.4.1, [#622](https://github.com/optave/codegraph/pull/622)
+- ✅ **DB index regression:** Compound indexes on nodes/edges tables — v3.4.1, [#632](https://github.com/optave/codegraph/pull/632)
+- 🔲 **Skip unchanged phases:** Structure and roles should skip full reclassification when only 1 file changes and cross-file degree is unchanged
+- 🔲 **Incremental edge rebuild:** Only rebuild edges involving the changed file's symbols
+- 🔲 **Benchmark target:** Sub-100ms native 1-file rebuilds
 
 **Affected files:** `src/domain/graph/builder/stages/build-structure.ts`, `src/domain/graph/builder/stages/build-edges.ts`, `src/domain/graph/builder/pipeline.ts`
 
