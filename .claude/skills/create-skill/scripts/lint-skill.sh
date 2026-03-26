@@ -140,6 +140,9 @@ while IFS= read -r line; do
       if [ "$detect_depth" -gt 0 ]; then
         detect_depth=$((detect_depth - 1))
         [ "$detect_depth" -eq 0 ] && in_detect=false
+      else
+        # Safety reset: in_detect was set by an elif without a preceding detection if
+        in_detect=false
       fi
     fi
     if ! $in_detect; then

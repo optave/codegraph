@@ -532,6 +532,8 @@ If the user approves:
 - Stage only `.claude/skills/$SKILL_NAME/SKILL.md` (and any scripts in `.claude/skills/$SKILL_NAME/scripts/` if created)
 - Commit: `feat(skill): add /$SKILL_NAME skill`
 
+**Exit condition:** User has approved the skill. `.claude/skills/$SKILL_NAME/SKILL.md` is committed to the repo.
+
 ---
 
 ## Examples
