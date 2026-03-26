@@ -485,16 +485,22 @@ export function classifyNodeRoles(db: BetterSqlite3Database): RoleSummary {
 
   // Batch UPDATE: one statement per role instead of one per node
   const ROLE_CHUNK = 500;
+  const roleStmtCache = new Map<number, SqliteStatement>();
   db.transaction(() => {
     db.prepare('UPDATE nodes SET role = NULL').run();
     for (const [role, ids] of idsByRole) {
       for (let i = 0; i < ids.length; i += ROLE_CHUNK) {
         const end = Math.min(i + ROLE_CHUNK, ids.length);
         const chunkSize = end - i;
-        const placeholders = Array.from({ length: chunkSize }, () => '?').join(',');
+        let stmt = roleStmtCache.get(chunkSize);
+        if (!stmt) {
+          const placeholders = Array.from({ length: chunkSize }, () => '?').join(',');
+          stmt = db.prepare(`UPDATE nodes SET role = ? WHERE id IN (${placeholders})`);
+          roleStmtCache.set(chunkSize, stmt);
+        }
         const vals: unknown[] = [role];
         for (let j = i; j < end; j++) vals.push(ids[j]);
-        db.prepare(`UPDATE nodes SET role = ? WHERE id IN (${placeholders})`).run(...vals);
+        stmt.run(...vals);
       }
     }
   })();

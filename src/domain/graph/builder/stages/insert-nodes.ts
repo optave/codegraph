@@ -86,7 +86,7 @@ function insertDefinitionsAndExports(
   }
 }
 
-// ── Phase 2+3: Insert children and containment edges (single nodeIdMap pass) ──
+// ── Phase 2+3: Insert children and containment edges (two nodeIdMap passes) ──
 
 function insertChildrenAndEdges(
   db: BetterSqlite3.Database,
@@ -96,7 +96,7 @@ function insertChildrenAndEdges(
   const edgeRows: unknown[][] = [];
 
   for (const [relPath, symbols] of allSymbols) {
-    // Single bulkNodeIdsByFile call per file, shared across children + edges
+    // First pass: collect file→def edges and child rows
     const nodeIdMap = new Map<string, number>();
     for (const row of bulkNodeIdsByFile(db, relPath)) {
       nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
