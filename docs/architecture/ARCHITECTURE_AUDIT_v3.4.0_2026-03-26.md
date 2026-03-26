@@ -70,7 +70,9 @@ This is the project's type hub: 137 interfaces, 28 type aliases, 1,011 symbols. 
 
 **The good:** Centralizing types avoids circular dependencies between modules that need to share types. TypeScript's structural typing means this file is really just a declaration file — no runtime code.
 
-**The concern:** At 1,851 LOC, it's approaching the point where finding the right type requires scrolling through unrelated definitions. Types for DB schema, MCP tools, graph algorithms, CLI commands, and parser extractors all live in one file. A principal architect would split this into domain-scoped type files (`types/db.ts`, `types/mcp.ts`, `types/graph.ts`, etc.) with a barrel re-export.
+**The nuance:** The file is well-organized internally — 22 logical sections with clear `§` headers (§1-§2: symbol/edge kinds + DB rows, §3-§4: repository/extractor types, §5-§8: parser/AST/analysis, §9-§10: graph model/pipeline, §11: config, §12-§22: features/MCP/CLI). This is a deliberate integration contract, not an accidental dumping ground.
+
+**The concern:** At 1,851 LOC, it's approaching the point where finding the right type requires scrolling through unrelated definitions. A principal architect would split this into domain-scoped type files (`types/db.ts`, `types/mcp.ts`, `types/graph.ts`, etc.) with a barrel re-export — but the current internal organization means this is a maintenance convenience issue, not a design flaw.
 
 **Comparison:** Sourcegraph's type definitions are spread across domain packages. Semgrep uses OCaml's module system for type scoping. Joern uses Scala case classes per domain.
 
@@ -88,9 +90,9 @@ Clean Repository pattern with `SqliteRepository` and `InMemoryRepository` for te
 **The concern:**
 - The `db/index.ts` barrel exports 50+ functions — the abstraction is leaking. External modules import specific low-level functions (`findCallerNames`, `findCallees`, `getCallEdges`) rather than going through a higher-level query API. The domain/analysis layer should be the only consumer of raw DB functions.
 - Schema uses `db.exec()` with string literals for DDL (migrations) — acceptable since these are hardcoded strings, not user input.
-- No WAL mode configuration visible — single-writer SQLite will block on concurrent reads during builds.
+- WAL mode is enabled (`pragma('journal_mode = WAL')`) with advisory locking via `.lock` files and 5000ms busy timeout — good for concurrent reads during builds.
 
-**Scalability:** SQLite is fine for single-repo up to ~500K LOC. Beyond that, or for multi-repo with concurrent access, the single-writer model becomes a bottleneck. For the tool's stated use case (local analysis), this is acceptable.
+**Scalability:** SQLite with WAL is fine for single-repo up to ~500K LOC. Beyond that, or for multi-repo with many concurrent writers, the single-writer model could become a bottleneck. For the tool's stated use case (local analysis), this is acceptable.
 
 ### 3. MCP Layer (`src/mcp/` — 40 files, 352 symbols)
 
@@ -299,33 +301,39 @@ No other single tool combines all of:
 
 ### Verified Competitor Comparison
 
-| Feature | Codegraph | Sourcegraph | Joern | Semgrep | stack-graphs | narsil-mcp |
-|---------|-----------|-------------|-------|---------|--------------|------------|
-| **Open source** | Yes (MIT) | Partially (moved to enterprise) | Yes (Apache 2.0) | Yes (LGPL) | Yes (MIT/Apache) | Yes (MIT) |
-| **MCP server** | Yes (built-in) | No | No | No | No | Yes |
-| **CLI** | Yes | Yes (src) | Yes (joern-cli) | Yes | No (library) | No (MCP only) |
-| **Local-only** | Yes | No (needs server) | Yes | Yes | Yes | Yes |
-| **Zero-cloud** | Yes | No | Yes | Partial (registry) | Yes | Yes |
-| **Deterministic** | Yes | Yes | Yes | Yes | Yes | Depends on config |
-| **Function-level deps** | Yes | Yes (precise) | Yes (CPG) | No (pattern-based) | Yes (scoped) | Yes |
-| **Incremental** | Yes (all langs) | Yes | No | Yes | No | Unknown |
-| **Languages** | 11 | 40+ | 15+ (via Ghidra/tree-sitter) | 30+ | 8 | Varies |
-| **Dependency count** | 3 prod | Hundreds | JVM ecosystem | Python ecosystem | Rust (compiled) | Node.js |
-| **AI agent focus** | Primary use case | Secondary | No | No | No | Primary use case |
-| **Embedding/search** | Yes (optional) | Yes (cloud) | No | No | No | LLM-mediated |
-| **Install** | `npm install` | Docker/K8s | `sbt install` | `pip install` | `cargo build` | `npm install` |
+All claims verified against actual GitHub READMEs and source repositories. Items marked [UNVERIFIED] could not be confirmed from source.
+
+| Feature | Codegraph | Sourcegraph | Joern | Semgrep | stack-graphs | narsil-mcp | CKB | GitNexus |
+|---------|-----------|-------------|-------|---------|--------------|------------|-----|----------|
+| **License** | MIT | **Proprietary** (no longer OSS) | Apache-2.0 | LGPL-2.1 (partial) | Apache/MIT (**archived**) | Apache-2.0 | Custom (free <$25K) | PolyForm NC |
+| **MCP server** | Yes (built-in) | No | No (3rd party only) | Yes (built-in) | No | Yes (MCP-only) | Yes | Yes |
+| **Standalone CLI** | Yes | Yes (src-cli) | Yes (Scala REPL) | Yes | No (library) | No | Yes | Yes |
+| **Fully local** | Yes | No (server req'd) | Yes | Yes (CE) | Yes (library) | Yes | Yes | No (Docker+Memgraph) |
+| **No LLM required** | Yes | Partial (Cody needs LLM) | Yes | Yes (CE) | Yes | Partial (neural search opt.) | Yes | No (RAG agent) |
+| **Deterministic** | Yes | Yes (search) | Yes | Yes | Yes | Yes (core) | Yes | Partial |
+| **Function-level deps** | Yes | No (search+nav) | Yes (CPG) | No (pattern match) | No (name resolution) | Partial (call graph) | Yes (SCIP-based) | Yes |
+| **Incremental** | Yes (all 11 langs) | Via SCIP | No | PR-scoped | Yes (design goal) | File-level watch | **Go only** | [UNVERIFIED] |
+| **Languages** | 11 | 10+ via SCIP | 6-7 core | 30+ | Framework (lang-agnostic) | 32 | 12 (tiered quality) | [UNVERIFIED] |
+| **Prod deps** | 3 | Hundreds | JVM ecosystem | Python ecosystem | Rust (compiled) | Rust (compiled) | Go (compiled) | Node.js |
+| **Storage** | SQLite | PostgreSQL | Custom graph DB | None (stateless) | N/A | In-memory+persist | SCIP index files | LadybugDB |
+| **Stars** | — | 10.3K (archived snapshot) | 3.0K | 14.6K | 873 (archived) | 132 | 79 | 19.9K (very new) |
+| **Status** | Active | Private/proprietary | Active | Active | **Archived** | Active | Active | Active (new, Feb 2026) |
 
 ### Key Competitive Insights
 
-**Sourcegraph** is the gold standard for code intelligence but requires a server deployment (Docker/Kubernetes). It has moved core features behind enterprise licensing. Codegraph's local-only, zero-setup approach is a genuine differentiator for individual developers and small teams.
+**Sourcegraph** is no longer open source. The main repo went private; only an archived public snapshot remains. The last Apache-licensed commit is explicitly marked. Current license is proprietary. Still the gold standard for code intelligence at scale, but no longer a viable open-source alternative. Codegraph's local-only, zero-setup approach is a genuine differentiator.
 
-**Joern** (ShiftLeft) builds a Code Property Graph (CPG) — a superset of what codegraph builds (AST + CFG + PDG + call graph). Joern is more academically rigorous but requires JVM, has no incremental builds, and has no MCP server. For security analysis, Joern is superior. For AI agent integration, codegraph wins.
+**Joern** (ShiftLeft) builds a Code Property Graph (CPG) — a superset of what codegraph builds (AST + CFG + PDG + call graph). Joern is more academically rigorous but requires JDK 21, has no incremental builds, and has no native MCP server (only 3rd-party wrappers). For security analysis, Joern is superior. For AI agent integration, codegraph wins.
 
-**Semgrep** is pattern-based, not graph-based. It finds code patterns, not dependencies. Different tool category despite surface similarity.
+**Semgrep** is pattern-based, not graph-based. It finds code patterns, not dependencies. Different tool category. Notable: Semgrep does have a built-in MCP server (`semgrep mcp`) and Claude Code plugin. Cross-file analysis is proprietary (Pro-only).
 
-**stack-graphs** (GitHub) is the engine behind GitHub's code navigation. It's a Rust library, not a user-facing tool. Extremely precise for supported languages (8) but requires integration work to use. No CLI, no MCP, no standalone usage.
+**stack-graphs** (GitHub) is **archived and abandoned**. README states: "This repository is no longer supported or updated by GitHub." Was a research-grade name resolution library using scope graph theory from TU Delft, not a user-facing tool.
 
-**narsil-mcp** is the closest direct competitor — also MCP-focused code intelligence. However, it's MCP-only (no CLI), and its analysis capabilities are less comprehensive than codegraph's full feature set (no community detection, no complexity metrics, no CFG/dataflow, no architecture boundaries).
+**narsil-mcp** (132 stars) is MCP-native with 90 claimed tools and 32 languages. Closest competitor in the "local code intelligence for AI agents" space. Key gaps vs codegraph: no standalone CLI (MCP-only), optional LLM dependency for neural search, no SQLite persistence model. 90-tool breadth claim is ambitious for its maturity.
+
+**CKB** (`SimplyLiz/CodeMCP`, 79 stars) is the most direct feature competitor — impact analysis, call graphs, dead code detection, MCP server, CLI. Key differences: SCIP-dependent for deep analysis (requires running language-specific indexers), incremental indexing is Go-only, custom restrictive license (free <$25K revenue, paid above).
+
+**GitNexus** (19.9K stars, very new — trending Feb 2026) has an impressive feature set with browser-based zero-server mode and LadybugDB graph storage. However: **PolyForm Noncommercial license** blocks enterprise adoption, and the built-in "Graph RAG Agent" requires an LLM for queries.
 
 ### Competitive Moat Assessment
 
@@ -337,11 +345,17 @@ No other single tool combines all of:
 5. Self-dogfooding (uses itself for quality enforcement) — creates a virtuous cycle
 
 **Not defensible:**
-1. MCP server support is trivial to add to any existing tool
-2. Tree-sitter parsing is available to everyone — the parser layer is not a moat
+1. MCP server support is trivial to add — Semgrep already has `semgrep mcp`
+2. Tree-sitter parsing is available to everyone — narsil-mcp uses it for 32 languages
 3. Community detection and complexity metrics are well-known algorithms, not proprietary
 
-**Verdict:** The moat is the *combination* — no single feature is unique, but no competitor offers the same bundle. The biggest risk is Sourcegraph or JetBrains adding an MCP server to their existing, more precise analysis engines.
+**Threats:**
+1. **GitNexus** (19.9K stars) has momentum but is noncommercial-licensed — if they relicense to MIT/Apache, it becomes the primary threat
+2. **CKB** has the closest feature set but is SCIP-dependent and restrictively licensed
+3. **narsil-mcp** could add a CLI and close the gap quickly (same tech stack, same tree-sitter base)
+4. **JetBrains** or **Cursor** adding built-in code graph MCP tools would commoditize the AI agent integration angle
+
+**Verdict:** The moat is the *combination* — no single feature is unique, but no competitor offers the same bundle with MIT license + zero LLM + all-language incremental + CLI + MCP + programmatic API. The licensing advantage over GitNexus and CKB is significant for enterprise adoption.
 
 ---
 
