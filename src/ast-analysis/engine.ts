@@ -259,8 +259,7 @@ function setupVisitors(
 // ─── Result storage helpers ─────────────────────────────────────────────
 
 function storeComplexityResults(results: WalkResults, defs: Definition[], langId: string): void {
-  // biome-ignore lint/complexity/useLiteralKeys: bracket notation required by noPropertyAccessFromIndexSignature
-  const complexityResults = (results['complexity'] || []) as ComplexityFuncResult[];
+  const complexityResults = (results.complexity || []) as ComplexityFuncResult[];
   const resultByLine = new Map<number, ComplexityFuncResult[]>();
   for (const r of complexityResults) {
     if (r.funcNode) {
@@ -301,8 +300,7 @@ function storeComplexityResults(results: WalkResults, defs: Definition[], langId
 }
 
 function storeCfgResults(results: WalkResults, defs: Definition[]): void {
-  // biome-ignore lint/complexity/useLiteralKeys: bracket notation required by noPropertyAccessFromIndexSignature
-  const cfgResults = (results['cfg'] || []) as CfgFuncResult[];
+  const cfgResults = (results.cfg || []) as CfgFuncResult[];
   const cfgByLine = new Map<number, CfgFuncResult[]>();
   for (const r of cfgResults) {
     if (r.funcNode) {
@@ -450,8 +448,7 @@ export async function runAnalyses(
 
     if (complexityVisitor) storeComplexityResults(results, defs, langId);
     if (cfgVisitor) storeCfgResults(results, defs);
-    // biome-ignore lint/complexity/useLiteralKeys: bracket notation required by noPropertyAccessFromIndexSignature
-    if (dataflowVisitor) symbols.dataflow = results['dataflow'] as DataflowResult;
+    if (dataflowVisitor) symbols.dataflow = results.dataflow as DataflowResult;
   }
 
   timing._unifiedWalkMs = performance.now() - t0walk;

@@ -300,8 +300,7 @@ export function computeAllMetrics(
     nestingNodeTypes: nestingNodes,
   });
 
-  // biome-ignore lint/complexity/useLiteralKeys: noPropertyAccessFromIndexSignature requires bracket notation
-  const rawResult = results['complexity'] as {
+  const rawResult = results.complexity as {
     cognitive: number;
     cyclomatic: number;
     maxNesting: number;

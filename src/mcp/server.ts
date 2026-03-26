@@ -191,10 +191,8 @@ export async function startMCPServer(
   // Register handlers once per process to avoid listener accumulation.
   // Use a process-level flag so it survives vi.resetModules() in tests.
   const g = globalThis as Record<string, unknown>;
-  // biome-ignore lint/complexity/useLiteralKeys: bracket notation required by TS noPropertyAccessFromIndexSignature
-  if (!g['__codegraph_shutdown_installed']) {
-    // biome-ignore lint/complexity/useLiteralKeys: bracket notation required by TS noPropertyAccessFromIndexSignature
-    g['__codegraph_shutdown_installed'] = true;
+  if (!g.__codegraph_shutdown_installed) {
+    g.__codegraph_shutdown_installed = true;
 
     const shutdown = async () => {
       try {

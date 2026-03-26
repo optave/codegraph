@@ -1836,7 +1836,7 @@ export interface CommandDefinition {
     | [string, string, string | boolean | number]
     | [string, string, (val: string) => any, string | boolean | number]
   >;
-  validate?: (args: any[], opts: any, ctx: CommandContext) => string | undefined | undefined;
+  validate?: (args: any[], opts: any, ctx: CommandContext) => string | undefined;
   execute?: (args: any[], opts: any, ctx: CommandContext) => void | Promise<void>;
   subcommands?: CommandDefinition[];
 }
