@@ -1189,7 +1189,7 @@ All test files migrated from `.js` to `.ts`. Vitest TypeScript integration verif
 
 **Complete (JS-side approach).** Batch inserts use `better-sqlite3` multi-value INSERT statements with cached prepared statements (keyed by chunk size to avoid recompilation). Chunk size tuned to 500 rows. Export marking uses batched `UPDATE ... WHERE (name=? AND kind=? AND file=? AND line=?) OR ...` instead of per-export UPDATEs. The insert-nodes stage shares `bulkNodeIdsByFile` maps between children and edge phases. A Rust-side approach was evaluated but JS-side batching proved sufficient — the bottleneck is SQLite I/O, not JS↔native boundary crossings.
 
-**Result:** Native full-build insertMs **429ms → 310ms** (−28%).
+**Result:** Native full-build insertMs **429ms → 310ms** (−28%) as of 6.4; further reduced to **206ms** after v3.3.1 optimizations.
 
 **Key PRs:** #361, #434
 
