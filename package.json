@@ -41,7 +41,7 @@
     "format": "biome format --write src/ tests/",
     "prepack": "npm run build",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('.tsbuildinfo',{force:true})\"",
-    "prepare": "npm run build:wasm && npm run build && husky && npm run deps:tree",
+    "prepare": "(npm run build:wasm || echo 'WARN: WASM grammar build failed (non-fatal — native engine available)') && npm run build && husky && npm run deps:tree",
     "deps:tree": "node scripts/node-ts.js scripts/gen-deps.ts",
     "benchmark": "node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/benchmark.ts",
     "release": "commit-and-tag-version",
