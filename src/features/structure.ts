@@ -384,7 +384,36 @@ interface RoleSummary {
   [key: string]: number;
 }
 
-export function classifyNodeRoles(db: BetterSqlite3Database): RoleSummary {
+export function classifyNodeRoles(
+  db: BetterSqlite3Database,
+  changedFiles?: string[] | null,
+): RoleSummary {
+  const emptySummary: RoleSummary = {
+    entry: 0,
+    core: 0,
+    utility: 0,
+    adapter: 0,
+    dead: 0,
+    'dead-leaf': 0,
+    'dead-entry': 0,
+    'dead-ffi': 0,
+    'dead-unresolved': 0,
+    'test-only': 0,
+    leaf: 0,
+  };
+
+  // Incremental path: only reclassify nodes from affected files
+  if (changedFiles && changedFiles.length > 0) {
+    return classifyNodeRolesIncremental(db, changedFiles, emptySummary);
+  }
+
+  return classifyNodeRolesFull(db, emptySummary);
+}
+
+function classifyNodeRolesFull(
+  db: BetterSqlite3Database,
+  emptySummary: RoleSummary,
+): RoleSummary {
   const rows = db
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file,
@@ -407,20 +436,6 @@ export function classifyNodeRoles(db: BetterSqlite3Database): RoleSummary {
     fan_in: number;
     fan_out: number;
   }[];
-
-  const emptySummary: RoleSummary = {
-    entry: 0,
-    core: 0,
-    utility: 0,
-    adapter: 0,
-    dead: 0,
-    'dead-leaf': 0,
-    'dead-entry': 0,
-    'dead-ffi': 0,
-    'dead-unresolved': 0,
-    'test-only': 0,
-    leaf: 0,
-  };
 
   if (rows.length === 0) return emptySummary;
 
@@ -496,6 +511,155 @@ export function classifyNodeRoles(db: BetterSqlite3Database): RoleSummary {
         if (!stmt) {
           const placeholders = Array.from({ length: chunkSize }, () => '?').join(',');
           stmt = db.prepare(`UPDATE nodes SET role = ? WHERE id IN (${placeholders})`);
+          roleStmtCache.set(chunkSize, stmt);
+        }
+        const vals: unknown[] = [role];
+        for (let j = i; j < end; j++) vals.push(ids[j]);
+        stmt.run(...vals);
+      }
+    }
+  })();
+
+  return summary;
+}
+
+/**
+ * Incremental role classification: only reclassify nodes from changed files.
+ *
+ * Uses indexed point lookups for fan-in/fan-out instead of full table scans.
+ * Global medians are computed from edge distribution (fast GROUP BY on index).
+ * Unchanged files keep their roles from the previous build.
+ */
+function classifyNodeRolesIncremental(
+  db: BetterSqlite3Database,
+  changedFiles: string[],
+  emptySummary: RoleSummary,
+): RoleSummary {
+  const placeholders = changedFiles.map(() => '?').join(',');
+
+  // 1. Compute global medians from edge distribution (fast: scans edge index, no node join)
+  const fanInDist = (
+    db
+      .prepare(`SELECT COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target_id`)
+      .all() as { cnt: number }[]
+  )
+    .map((r) => r.cnt)
+    .sort((a, b) => a - b);
+  const fanOutDist = (
+    db
+      .prepare(`SELECT COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source_id`)
+      .all() as { cnt: number }[]
+  )
+    .map((r) => r.cnt)
+    .sort((a, b) => a - b);
+
+  function median(sorted: number[]): number {
+    if (sorted.length === 0) return 0;
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
+  }
+  const globalMedians = { fanIn: median(fanInDist), fanOut: median(fanOutDist) };
+
+  // 2. Get affected nodes using indexed correlated subqueries (fast point lookups)
+  const rows = db
+    .prepare(
+      `SELECT n.id, n.name, n.kind, n.file,
+        (SELECT COUNT(*) FROM edges WHERE kind = 'calls' AND target_id = n.id) AS fan_in,
+        (SELECT COUNT(*) FROM edges WHERE kind = 'calls' AND source_id = n.id) AS fan_out
+      FROM nodes n
+      WHERE n.kind NOT IN ('file', 'directory')
+        AND n.file IN (${placeholders})`,
+    )
+    .all(...changedFiles) as {
+    id: number;
+    name: string;
+    kind: string;
+    file: string;
+    fan_in: number;
+    fan_out: number;
+  }[];
+
+  if (rows.length === 0) return emptySummary;
+
+  // 3. Get exported status for affected nodes only (scoped to changed files)
+  const exportedIds = new Set(
+    (
+      db
+        .prepare(
+          `SELECT DISTINCT e.target_id
+          FROM edges e
+          JOIN nodes caller ON e.source_id = caller.id
+          JOIN nodes target ON e.target_id = target.id
+          WHERE e.kind = 'calls' AND caller.file != target.file
+            AND target.file IN (${placeholders})`,
+        )
+        .all(...changedFiles) as { target_id: number }[]
+    ).map((r) => r.target_id),
+  );
+
+  // 4. Production fan-in for affected nodes only
+  const prodFanInMap = new Map<number, number>();
+  const prodRows = db
+    .prepare(
+      `SELECT e.target_id, COUNT(*) AS cnt
+      FROM edges e
+      JOIN nodes caller ON e.source_id = caller.id
+      JOIN nodes target ON e.target_id = target.id
+      WHERE e.kind = 'calls'
+        AND target.file IN (${placeholders})
+        ${testFilterSQL('caller.file')}
+      GROUP BY e.target_id`,
+    )
+    .all(...changedFiles) as { target_id: number; cnt: number }[];
+  for (const r of prodRows) {
+    prodFanInMap.set(r.target_id, r.cnt);
+  }
+
+  // 5. Classify affected nodes using global medians
+  const classifierInput = rows.map((r) => ({
+    id: String(r.id),
+    name: r.name,
+    kind: r.kind,
+    file: r.file,
+    fanIn: r.fan_in,
+    fanOut: r.fan_out,
+    isExported: exportedIds.has(r.id),
+    productionFanIn: prodFanInMap.get(r.id) || 0,
+  }));
+
+  const roleMap = classifyRoles(classifierInput, globalMedians);
+
+  // 6. Build summary (only for affected nodes) and update only those nodes
+  const summary: RoleSummary = { ...emptySummary };
+  const idsByRole = new Map<string, number[]>();
+  for (const row of rows) {
+    const role = roleMap.get(String(row.id)) || 'leaf';
+    if (role.startsWith('dead')) summary.dead++;
+    summary[role] = (summary[role] || 0) + 1;
+    let ids = idsByRole.get(role);
+    if (!ids) {
+      ids = [];
+      idsByRole.set(role, ids);
+    }
+    ids.push(row.id);
+  }
+
+  // Only update affected nodes — no global NULL reset
+  const ROLE_CHUNK = 500;
+  const roleStmtCache = new Map<number, SqliteStatement>();
+  db.transaction(() => {
+    // Reset roles only for affected files' nodes
+    db.prepare(
+      `UPDATE nodes SET role = NULL WHERE file IN (${placeholders}) AND kind NOT IN ('file', 'directory')`,
+    ).run(...changedFiles);
+    for (const [role, ids] of idsByRole) {
+      for (let i = 0; i < ids.length; i += ROLE_CHUNK) {
+        const end = Math.min(i + ROLE_CHUNK, ids.length);
+        const chunkSize = end - i;
+        let stmt = roleStmtCache.get(chunkSize);
+        if (!stmt) {
+          const ph = Array.from({ length: chunkSize }, () => '?').join(',');
+          stmt = db.prepare(`UPDATE nodes SET role = ? WHERE id IN (${ph})`);
           roleStmtCache.set(chunkSize, stmt);
         }
         const vals: unknown[] = [role];

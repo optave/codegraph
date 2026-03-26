@@ -167,4 +167,71 @@ describe('Incremental build parity: full vs incremental', () => {
     expect(incrAnalysis.dataflow.length).toBeGreaterThan(0);
     expect(incrAnalysis.dataflow.length).toBe(fullAnalysis.dataflow.length);
   });
+
+  it('preserves node roles after incremental rebuild', () => {
+    function readRoles(dbPath: string) {
+      const db = new Database(dbPath, { readonly: true });
+      const roles = db
+        .prepare(
+          `SELECT name, kind, file, role FROM nodes
+           WHERE kind NOT IN ('file', 'directory') AND role IS NOT NULL
+           ORDER BY name, kind, file`,
+        )
+        .all();
+      db.close();
+      return roles;
+    }
+    const fullRoles = readRoles(path.join(fullDir, '.codegraph', 'graph.db'));
+    const incrRoles = readRoles(path.join(incrDir, '.codegraph', 'graph.db'));
+    expect(incrRoles.length).toBeGreaterThan(0);
+    expect(incrRoles).toEqual(fullRoles);
+  });
+});
+
+describe('Incremental rebuild performance', () => {
+  let tmpDir: string;
+
+  afterAll(() => {
+    try {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it('1-file incremental rebuild completes with timing breakdown', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-incr-perf-'));
+    copyDirSync(FIXTURE_DIR, tmpDir);
+
+    // Full build first
+    await buildGraph(tmpDir, { incremental: false, skipRegistry: true });
+
+    // Touch one file
+    const appPath = path.join(tmpDir, 'app.js');
+    fs.appendFileSync(appPath, '\n// perf-touch\n');
+
+    // Incremental rebuild with timing
+    const result = await buildGraph(tmpDir, { incremental: true, skipRegistry: true });
+
+    expect(result).toBeDefined();
+    expect(result!.phases).toBeDefined();
+
+    const p = result!.phases;
+    // Log timing breakdown for benchmarking
+    const total = Object.values(p).reduce((sum, v) => sum + (v || 0), 0);
+    console.log(`\n  Incremental 1-file rebuild timing:`);
+    console.log(`    Total:     ${total.toFixed(1)}ms`);
+    console.log(`    Parse:     ${p.parseMs}ms`);
+    console.log(`    Insert:    ${p.insertMs}ms`);
+    console.log(`    Resolve:   ${p.resolveMs}ms`);
+    console.log(`    Edges:     ${p.edgesMs}ms`);
+    console.log(`    Structure: ${p.structureMs}ms`);
+    console.log(`    Roles:     ${p.rolesMs}ms`);
+    console.log(`    Finalize:  ${p.finalizeMs}ms`);
+
+    // Performance assertions: structure and roles should be fast for incremental
+    expect(p.rolesMs).toBeLessThan(50);
+    expect(p.structureMs).toBeLessThan(50);
+    expect(p.finalizeMs).toBeLessThan(50);
+  }, 30_000);
 });

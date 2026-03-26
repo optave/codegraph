@@ -138,7 +138,7 @@ export function walkWithVisitors(
       }
       scopeStack.pop();
       context.currentFunction =
-        scopeStack.length > 0 ? scopeStack[scopeStack.length - 1]!.funcNode : null;
+        scopeStack.length > 0 ? scopeStack[scopeStack.length - 1]?.funcNode : null;
     }
   }
 
