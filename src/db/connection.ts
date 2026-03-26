@@ -221,7 +221,7 @@ export function openReadonlyOrFail(customPath?: string): BetterSqlite3Database {
     ) => BetterSqlite3Database
   )(dbPath, { readonly: true });
 
-  // Warn once if the DB was built with a different codegraph version
+  // Warn once per process if the DB was built with a different codegraph version
   if (!_versionWarned) {
     try {
       const row = db
@@ -233,11 +233,11 @@ export function openReadonlyOrFail(customPath?: string): BetterSqlite3Database {
         warn(
           `DB was built with codegraph v${buildVersion}, running v${currentVersion}. Consider: codegraph build --no-incremental`,
         );
-        _versionWarned = true;
       }
     } catch {
       // build_meta table may not exist in older DBs — silently ignore
     }
+    _versionWarned = true;
   }
 
   return db;

@@ -36,7 +36,7 @@ export const IGNORE_DIRS: ArrayCompatSet<string> = withArrayCompat(
   ]),
 );
 
-export const EXTENSIONS: ArrayCompatSet<string> = withArrayCompat(SUPPORTED_EXTENSIONS);
+export const EXTENSIONS: ArrayCompatSet<string> = withArrayCompat(new Set(SUPPORTED_EXTENSIONS));
 
 export function shouldIgnore(dirName: string): boolean {
   return IGNORE_DIRS.has(dirName) || dirName.startsWith('.');
