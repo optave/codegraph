@@ -211,8 +211,11 @@ After addressing all comments for a PR:
      --jq '[.[] | select(.body | test("@greptileai")) | select(.user.login != "greptile-apps[bot]")] | length')
 
    if [ "$trigger_count" -eq 0 ]; then
-     # No prior trigger exists — skip approval check, proceed to check 2
-     echo "No prior @greptileai trigger found. Proceed to re-trigger if needed."
+     # No prior trigger exists — first-ever run. Skip approval check AND check 2.
+     # Trigger Greptile for the first time (there are no prior comments to "respond to").
+     echo "No prior @greptileai trigger found. Triggering Greptile for the first time."
+     gh api repos/optave/codegraph/issues/<number>/comments -f body="@greptileai"
+     # After posting, proceed to step 2h (wait and re-check).
    else
      # Find the last @greptileai trigger comment (excluding Greptile's own responses)
      trigger_comment=$(gh api repos/optave/codegraph/issues/<number>/comments --paginate \
