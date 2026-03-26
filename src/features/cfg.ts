@@ -91,7 +91,14 @@ interface FileSymbols {
  */
 function hasNativeCfgForFile(symbols: FileSymbols): boolean {
   return symbols.definitions
-    .filter((d) => (d.kind === 'function' || d.kind === 'method') && d.line)
+    .filter(
+      (d) =>
+        (d.kind === 'function' || d.kind === 'method') &&
+        d.line > 0 &&
+        d.endLine != null &&
+        d.endLine > d.line &&
+        !d.name.includes('.'),
+    )
     .every((d) => d.cfg === null || (d.cfg?.blocks?.length ?? 0) > 0);
 }
 
@@ -206,7 +213,7 @@ function buildVisitorCfgMap(
       return nameNode ? nameNode.text : null;
     },
   };
-  const walkResults = walkWithVisitors(tree!.rootNode, [visitor], langId, walkerOpts);
+  const walkResults = walkWithVisitors(tree?.rootNode, [visitor], langId, walkerOpts);
   // biome-ignore lint/complexity/useLiteralKeys: noPropertyAccessFromIndexSignature requires bracket notation
   const cfgResults = (walkResults['cfg'] || []) as VisitorCfgResult[];
   const visitorCfgByLine = new Map<number, VisitorCfgResult[]>();
@@ -214,7 +221,7 @@ function buildVisitorCfgMap(
     if (r.funcNode) {
       const line = r.funcNode.startPosition.row + 1;
       if (!visitorCfgByLine.has(line)) visitorCfgByLine.set(line, []);
-      visitorCfgByLine.get(line)!.push(r);
+      visitorCfgByLine.get(line)?.push(r);
     }
   }
   return visitorCfgByLine;
