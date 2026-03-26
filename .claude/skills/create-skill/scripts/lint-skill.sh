@@ -103,7 +103,7 @@ done < "$SKILL_FILE"
 
 # ── Check 3: git add . or git add -A (inside bash blocks only) ───────
 while IFS=$'\t' read -r bnum line; do
-  if echo "$line" | grep -qE '^\s*git add (\.|(-A|--all))'; then
+  if echo "$line" | grep -qE '^\s*git add (--\s+\.|\.|(-A|--all))'; then
     error "bash block $bnum: 'git add .' or 'git add -A' — stage named files only"
   fi
 done < "$BLOCKS_FILE"
