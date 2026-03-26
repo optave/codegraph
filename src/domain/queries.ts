@@ -8,6 +8,7 @@
 
 // ── Re-export from dedicated module for backward compat ───────────────────
 export { isTestFile, TEST_PATTERN } from '../infrastructure/test-filter.js';
+export { diffImpactMermaid } from '../presentation/diff-impact-mermaid.js';
 export { iterListFunctions, iterRoles, iterWhere } from '../shared/generators.js';
 // ── Kind/edge constants (canonical source: kinds.js) ─────────────────────
 export {
@@ -28,7 +29,6 @@ export { fileDepsData, fnDepsData, pathData } from './analysis/dependencies.js';
 export { exportsData } from './analysis/exports.js';
 export {
   diffImpactData,
-  diffImpactMermaid,
   fnImpactData,
   impactAnalysisData,
 } from './analysis/impact.js';

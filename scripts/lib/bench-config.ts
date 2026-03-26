@@ -155,11 +155,14 @@ export async function resolveBenchmarkSource() {
 		console.error(`Warning: failed to install @huggingface/transformers: ${err.message}`);
 	}
 
-	const srcDir = path.join(pkgDir, 'src');
+	// v3.4.0+ publishes compiled JS in dist/ alongside raw TS in src/.
+	// Node cannot strip types from node_modules, so prefer dist/ when available.
+	const distDir = path.join(pkgDir, 'dist');
+	const srcDir = fs.existsSync(distDir) ? distDir : path.join(pkgDir, 'src');
 
 	if (!fs.existsSync(srcDir)) {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
-		throw new Error(`Installed package does not contain src/ at ${srcDir}`);
+		throw new Error(`Installed package does not contain dist/ or src/ at ${pkgDir}`);
 	}
 
 	const resolvedVersion = cliVersion || installedPkg.version;
@@ -183,10 +186,20 @@ export async function resolveBenchmarkSource() {
 /**
  * Build a file:// URL suitable for dynamic import.
  *
+ * After the TypeScript migration, src/ contains .ts files while the .js
+ * extension is still used in import specifiers.  This helper checks for the
+ * .ts variant first (matching the actual source) and falls back to .js so it
+ * works in both local-dev and npm-published layouts.
+ *
  * @param {string} srcDir  Absolute path to the codegraph src/ directory
- * @param {string} file    Relative filename within src/ (e.g. 'builder.js')
+ * @param {string} file    Relative filename within src/ (e.g. 'domain/queries.js')
  * @returns {string}       file:// URL string
  */
-export function srcImport(srcDir, file) {
-	return pathToFileURL(path.join(srcDir, file)).href;
+export function srcImport(srcDir: string, file: string): string {
+	const full = path.join(srcDir, file);
+	if (file.endsWith('.js')) {
+		const tsVariant = full.replace(/\.js$/, '.ts');
+		if (fs.existsSync(tsVariant)) return pathToFileURL(tsVariant).href;
+	}
+	return pathToFileURL(full).href;
 }
