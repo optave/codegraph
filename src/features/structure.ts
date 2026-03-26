@@ -421,11 +421,11 @@ function classifyNodeRolesFull(db: BetterSqlite3Database, emptySummary: RoleSumm
   // Classify them directly as dead-leaf without the expensive fan-in/fan-out JOINs.
   const leafRows = db
     .prepare(
-      `SELECT n.id, n.name, n.kind, n.file
+      `SELECT n.id
       FROM nodes n
       WHERE n.kind IN ('parameter', 'property')`,
     )
-    .all() as { id: number; name: string; kind: string; file: string }[];
+    .all() as { id: number }[];
 
   // Only compute fan-in/fan-out for callable/classifiable nodes
   const rows = db
@@ -597,7 +597,7 @@ function classifyNodeRolesIncremental(
 
   const globalMedians = { fanIn: median(fanInDist), fanOut: median(fanOutDist) };
 
-  // 2a. Leaf kinds (parameter, property) in affected files — always dead-leaf
+  // 2a. Leaf kinds (parameter, property) in affected files ï¿½ always dead-leaf
   const leafRows = db
     .prepare(
       `SELECT n.id FROM nodes n
