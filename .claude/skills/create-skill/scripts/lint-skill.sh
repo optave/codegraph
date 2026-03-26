@@ -45,7 +45,7 @@ declare -A VAR_BLOCK
 declare -A REASSIGNED
 while IFS=$'\t' read -r bnum line; do
   # Match UPPER_CASE_VAR= assignments (skip lowercase/mixed to reduce false positives)
-  for var in $(echo "$line" | grep -oE '\b[A-Z][A-Z0-9_]+=' | sed 's/=$//'); do
+  for var in $(echo "$line" | grep -oE '\b[A-Z][A-Z0-9_]+\+?=' | sed -E 's/\+?=$//'); do
     if [ -z "${VAR_BLOCK[$var]+x}" ]; then
       VAR_BLOCK["$var"]="$bnum"
     else

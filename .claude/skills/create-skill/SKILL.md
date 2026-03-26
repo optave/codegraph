@@ -266,7 +266,7 @@ This supports both idempotent re-runs and resume-after-failure.
 ### Pattern 13: Platform portability
 
 Avoid shell constructs that behave differently across platforms:
-- Use `find ... -name "*.ext"` instead of glob expansion (`ls *.ext`) which differs between bash versions
+- Use `find ... -name "*.ext" | grep -q .` instead of `find ... -quit` (non-portable) or glob expansion (`ls *.ext`) which differs between bash versions
 - Use `mktemp` with template syntax (`mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.ext"`) — GNU flags like `--suffix` and `-p` are not available on macOS BSD `mktemp`
 - Use `sed -i.bak` instead of `sed -i ''` (GNU vs BSD incompatibility)
 - Document any platform-specific behavior with a comment: `# NOTE: requires GNU coreutils`
@@ -291,6 +291,10 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
 trap 'cd - > /dev/null 2>&1; rm -rf "$WORK_DIR"' EXIT
 cd "$WORK_DIR"
 # ... operations inside the temp directory ...
+# > /dev/null 2>&1: suppress cd's directory-path output — cleanup should be silent
+cd - > /dev/null 2>&1
+rm -rf "$WORK_DIR"
+trap - EXIT
 ```
 
 ### Pattern 15: Git stash safety
