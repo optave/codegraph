@@ -1,11 +1,8 @@
 import path from 'node:path';
-import { getNodeId, openReadonlyOrFail, testFilterSQL } from '../db/index.js';
-import { loadConfig } from '../infrastructure/config.js';
+import { getNodeId, testFilterSQL } from '../db/index.js';
 import { debug } from '../infrastructure/logger.js';
-import { isTestFile } from '../infrastructure/test-filter.js';
 import { normalizePath } from '../shared/constants.js';
-import { paginateResult } from '../shared/paginate.js';
-import type { BetterSqlite3Database, CodegraphConfig } from '../types.js';
+import type { BetterSqlite3Database } from '../types.js';
 
 // ─── Build-time helpers ───────────────────────────────────────────────
 
@@ -367,7 +364,7 @@ export function buildStructure(
 // Re-export from classifier for backward compatibility
 export { FRAMEWORK_ENTRY_PREFIXES } from '../graph/classifiers/roles.js';
 
-import { classifyRoles } from '../graph/classifiers/roles.js';
+import { classifyRoles, median } from '../graph/classifiers/roles.js';
 
 interface RoleSummary {
   entry: number;
@@ -384,7 +381,42 @@ interface RoleSummary {
   [key: string]: number;
 }
 
-export function classifyNodeRoles(db: BetterSqlite3Database): RoleSummary {
+/**
+ * Classify every node in the graph into a role (core, entry, utility, etc.).
+ *
+ * When `changedFiles` is provided, only nodes from those files (and their
+ * edge neighbours) are reclassified. The returned `RoleSummary` in that case
+ * reflects **only the affected subset**, not the entire graph. Callers that
+ * need graph-wide totals should perform a full classification (omit
+ * `changedFiles`) or query the DB directly.
+ */
+export function classifyNodeRoles(
+  db: BetterSqlite3Database,
+  changedFiles?: string[] | null,
+): RoleSummary {
+  const emptySummary: RoleSummary = {
+    entry: 0,
+    core: 0,
+    utility: 0,
+    adapter: 0,
+    dead: 0,
+    'dead-leaf': 0,
+    'dead-entry': 0,
+    'dead-ffi': 0,
+    'dead-unresolved': 0,
+    'test-only': 0,
+    leaf: 0,
+  };
+
+  // Incremental path: only reclassify nodes from affected files
+  if (changedFiles && changedFiles.length > 0) {
+    return classifyNodeRolesIncremental(db, changedFiles, emptySummary);
+  }
+
+  return classifyNodeRolesFull(db, emptySummary);
+}
+
+function classifyNodeRolesFull(db: BetterSqlite3Database, emptySummary: RoleSummary): RoleSummary {
   const rows = db
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file,
@@ -407,20 +439,6 @@ export function classifyNodeRoles(db: BetterSqlite3Database): RoleSummary {
     fan_in: number;
     fan_out: number;
   }[];
-
-  const emptySummary: RoleSummary = {
-    entry: 0,
-    core: 0,
-    utility: 0,
-    adapter: 0,
-    dead: 0,
-    'dead-leaf': 0,
-    'dead-entry': 0,
-    'dead-ffi': 0,
-    'dead-unresolved': 0,
-    'test-only': 0,
-    leaf: 0,
-  };
 
   if (rows.length === 0) return emptySummary;
 
@@ -508,372 +526,169 @@ export function classifyNodeRoles(db: BetterSqlite3Database): RoleSummary {
   return summary;
 }
 
-// ─── Query functions (read-only) ──────────────────────────────────────
+/**
+ * Incremental role classification: only reclassify nodes from changed files
+ * plus their immediate edge neighbours (callers and callees in other files).
+ *
+ * Uses indexed point lookups for fan-in/fan-out instead of full table scans.
+ * Global medians are computed from edge distribution (fast GROUP BY on index).
+ * Unchanged files not connected to changed files keep their roles from the
+ * previous build.
+ */
+function classifyNodeRolesIncremental(
+  db: BetterSqlite3Database,
+  changedFiles: string[],
+  emptySummary: RoleSummary,
+): RoleSummary {
+  // Expand affected set: include files containing nodes that are edge neighbours
+  // of changed-file nodes. This ensures that removing a call from file A to a
+  // node in file B causes B's roles to be recalculated (fan_in changed).
+  const seedPlaceholders = changedFiles.map(() => '?').join(',');
+  const neighbourFiles = db
+    .prepare(
+      `SELECT DISTINCT n2.file FROM edges e
+       JOIN nodes n1 ON (e.source_id = n1.id OR e.target_id = n1.id)
+       JOIN nodes n2 ON (e.source_id = n2.id OR e.target_id = n2.id)
+       WHERE e.kind = 'calls'
+         AND n1.file IN (${seedPlaceholders})
+         AND n2.file NOT IN (${seedPlaceholders})
+         AND n2.kind NOT IN ('file', 'directory')`,
+    )
+    .all(...changedFiles, ...changedFiles) as { file: string }[];
+  const allAffectedFiles = [...changedFiles, ...neighbourFiles.map((r) => r.file)];
+  const placeholders = allAffectedFiles.map(() => '?').join(',');
 
-interface DirRow {
-  id: number;
-  name: string;
-  file: string;
-  symbol_count: number | null;
-  fan_in: number | null;
-  fan_out: number | null;
-  cohesion: number | null;
-  file_count: number | null;
-}
+  // 1. Compute global medians from edge distribution (fast: scans edge index, no node join)
+  const fanInDist = (
+    db
+      .prepare(`SELECT COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target_id`)
+      .all() as { cnt: number }[]
+  )
+    .map((r) => r.cnt)
+    .sort((a, b) => a - b);
+  const fanOutDist = (
+    db
+      .prepare(`SELECT COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source_id`)
+      .all() as { cnt: number }[]
+  )
+    .map((r) => r.cnt)
+    .sort((a, b) => a - b);
 
-interface FileMetricRow {
-  name: string;
-  line_count: number | null;
-  symbol_count: number | null;
-  import_count: number | null;
-  export_count: number | null;
-  fan_in: number | null;
-  fan_out: number | null;
-}
+  const globalMedians = { fanIn: median(fanInDist), fanOut: median(fanOutDist) };
 
-interface StructureDataOpts {
-  directory?: string;
-  depth?: number;
-  sort?: string;
-  noTests?: boolean;
-  full?: boolean;
-  fileLimit?: number;
-  limit?: number;
-  offset?: number;
-}
-
-interface DirectoryEntry {
-  directory: string;
-  fileCount: number;
-  symbolCount: number;
-  fanIn: number;
-  fanOut: number;
-  cohesion: number | null;
-  density: number;
-  files: {
+  // 2. Get affected nodes using indexed correlated subqueries (fast point lookups)
+  const rows = db
+    .prepare(
+      `SELECT n.id, n.name, n.kind, n.file,
+        (SELECT COUNT(*) FROM edges WHERE kind = 'calls' AND target_id = n.id) AS fan_in,
+        (SELECT COUNT(*) FROM edges WHERE kind = 'calls' AND source_id = n.id) AS fan_out
+      FROM nodes n
+      WHERE n.kind NOT IN ('file', 'directory')
+        AND n.file IN (${placeholders})`,
+    )
+    .all(...allAffectedFiles) as {
+    id: number;
+    name: string;
+    kind: string;
     file: string;
-    lineCount: number;
-    symbolCount: number;
-    importCount: number;
-    exportCount: number;
-    fanIn: number;
-    fanOut: number;
+    fan_in: number;
+    fan_out: number;
   }[];
-  subdirectories: string[];
-}
 
-export function structureData(
-  customDbPath?: string,
-  opts: StructureDataOpts = {},
-): {
-  directories: DirectoryEntry[];
-  count: number;
-  suppressed?: number;
-  warning?: string;
-} {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
-    const rawDir = opts.directory || null;
-    const filterDir = rawDir && normalizePath(rawDir) !== '.' ? rawDir : null;
-    const maxDepth = opts.depth || null;
-    const sortBy = opts.sort || 'files';
-    const noTests = opts.noTests || false;
-    const full = opts.full || false;
-    const fileLimit = opts.fileLimit || 25;
+  if (rows.length === 0) return emptySummary;
 
-    // Get all directory nodes with their metrics
-    let dirs = db
-      .prepare(`
-        SELECT n.id, n.name, n.file, nm.symbol_count, nm.fan_in, nm.fan_out, nm.cohesion, nm.file_count
-        FROM nodes n
-        LEFT JOIN node_metrics nm ON n.id = nm.node_id
-        WHERE n.kind = 'directory'
-      `)
-      .all() as DirRow[];
-
-    if (filterDir) {
-      const norm = normalizePath(filterDir);
-      dirs = dirs.filter((d) => d.name === norm || d.name.startsWith(`${norm}/`));
-    }
-
-    if (maxDepth) {
-      const baseDepth = filterDir ? normalizePath(filterDir).split('/').length : 0;
-      dirs = dirs.filter((d) => {
-        const depth = d.name.split('/').length - baseDepth;
-        return depth <= maxDepth;
-      });
-    }
-
-    // Sort
-    const sortFn = getSortFn(sortBy);
-    dirs.sort(sortFn);
-
-    // Get file metrics for each directory
-    const result: DirectoryEntry[] = dirs.map((d) => {
-      let files = db
-        .prepare(`
-          SELECT n.name, nm.line_count, nm.symbol_count, nm.import_count, nm.export_count, nm.fan_in, nm.fan_out
+  // 3. Get exported status for affected nodes only (scoped to changed files)
+  const exportedIds = new Set(
+    (
+      db
+        .prepare(
+          `SELECT DISTINCT e.target_id
           FROM edges e
-          JOIN nodes n ON e.target_id = n.id
-          LEFT JOIN node_metrics nm ON n.id = nm.node_id
-          WHERE e.source_id = ? AND e.kind = 'contains' AND n.kind = 'file'
-        `)
-        .all(d.id) as FileMetricRow[];
-      if (noTests) files = files.filter((f) => !isTestFile(f.name));
+          JOIN nodes caller ON e.source_id = caller.id
+          JOIN nodes target ON e.target_id = target.id
+          WHERE e.kind = 'calls' AND caller.file != target.file
+            AND target.file IN (${placeholders})`,
+        )
+        .all(...allAffectedFiles) as { target_id: number }[]
+    ).map((r) => r.target_id),
+  );
 
-      const subdirs = db
-        .prepare(`
-          SELECT n.name
-          FROM edges e
-          JOIN nodes n ON e.target_id = n.id
-          WHERE e.source_id = ? AND e.kind = 'contains' AND n.kind = 'directory'
-        `)
-        .all(d.id) as { name: string }[];
+  // 4. Production fan-in for affected nodes only
+  const prodFanInMap = new Map<number, number>();
+  const prodRows = db
+    .prepare(
+      `SELECT e.target_id, COUNT(*) AS cnt
+      FROM edges e
+      JOIN nodes caller ON e.source_id = caller.id
+      JOIN nodes target ON e.target_id = target.id
+      WHERE e.kind = 'calls'
+        AND target.file IN (${placeholders})
+        ${testFilterSQL('caller.file')}
+      GROUP BY e.target_id`,
+    )
+    .all(...allAffectedFiles) as { target_id: number; cnt: number }[];
+  for (const r of prodRows) {
+    prodFanInMap.set(r.target_id, r.cnt);
+  }
 
-      const fileCount = noTests ? files.length : d.file_count || 0;
-      return {
-        directory: d.name,
-        fileCount,
-        symbolCount: d.symbol_count || 0,
-        fanIn: d.fan_in || 0,
-        fanOut: d.fan_out || 0,
-        cohesion: d.cohesion,
-        density: fileCount > 0 ? (d.symbol_count || 0) / fileCount : 0,
-        files: files.map((f) => ({
-          file: f.name,
-          lineCount: f.line_count || 0,
-          symbolCount: f.symbol_count || 0,
-          importCount: f.import_count || 0,
-          exportCount: f.export_count || 0,
-          fanIn: f.fan_in || 0,
-          fanOut: f.fan_out || 0,
-        })),
-        subdirectories: subdirs.map((s) => s.name),
-      };
-    });
+  // 5. Classify affected nodes using global medians
+  const classifierInput = rows.map((r) => ({
+    id: String(r.id),
+    name: r.name,
+    kind: r.kind,
+    file: r.file,
+    fanIn: r.fan_in,
+    fanOut: r.fan_out,
+    isExported: exportedIds.has(r.id),
+    productionFanIn: prodFanInMap.get(r.id) || 0,
+  }));
 
-    // Apply global file limit unless full mode
-    if (!full) {
-      const totalFiles = result.reduce((sum, d) => sum + d.files.length, 0);
-      if (totalFiles > fileLimit) {
-        let shown = 0;
-        for (const d of result) {
-          const remaining = fileLimit - shown;
-          if (remaining <= 0) {
-            d.files = [];
-          } else if (d.files.length > remaining) {
-            d.files = d.files.slice(0, remaining);
-            shown = fileLimit;
-          } else {
-            shown += d.files.length;
-          }
+  const roleMap = classifyRoles(classifierInput, globalMedians);
+
+  // 6. Build summary (only for affected nodes) and update only those nodes
+  const summary: RoleSummary = { ...emptySummary };
+  const idsByRole = new Map<string, number[]>();
+  for (const row of rows) {
+    const role = roleMap.get(String(row.id)) || 'leaf';
+    if (role.startsWith('dead')) summary.dead++;
+    summary[role] = (summary[role] || 0) + 1;
+    let ids = idsByRole.get(role);
+    if (!ids) {
+      ids = [];
+      idsByRole.set(role, ids);
+    }
+    ids.push(row.id);
+  }
+
+  // Only update affected nodes — no global NULL reset
+  const ROLE_CHUNK = 500;
+  const roleStmtCache = new Map<number, SqliteStatement>();
+  db.transaction(() => {
+    // Reset roles only for affected files' nodes
+    db.prepare(
+      `UPDATE nodes SET role = NULL WHERE file IN (${placeholders}) AND kind NOT IN ('file', 'directory')`,
+    ).run(...allAffectedFiles);
+    for (const [role, ids] of idsByRole) {
+      for (let i = 0; i < ids.length; i += ROLE_CHUNK) {
+        const end = Math.min(i + ROLE_CHUNK, ids.length);
+        const chunkSize = end - i;
+        let stmt = roleStmtCache.get(chunkSize);
+        if (!stmt) {
+          const ph = Array.from({ length: chunkSize }, () => '?').join(',');
+          stmt = db.prepare(`UPDATE nodes SET role = ? WHERE id IN (${ph})`);
+          roleStmtCache.set(chunkSize, stmt);
         }
-        const suppressed = totalFiles - fileLimit;
-        return {
-          directories: result,
-          count: result.length,
-          suppressed,
-          warning: `${suppressed} files omitted (showing ${fileLimit}/${totalFiles}). Use --full to show all files, or narrow with --directory.`,
-        };
+        const vals: unknown[] = [role];
+        for (let j = i; j < end; j++) vals.push(ids[j]);
+        stmt.run(...vals);
       }
     }
+  })();
 
-    const base = { directories: result, count: result.length };
-    return paginateResult(base, 'directories', { limit: opts.limit, offset: opts.offset });
-  } finally {
-    db.close();
-  }
+  return summary;
 }
 
-interface HotspotRow {
-  name: string;
-  kind: string;
-  line_count: number | null;
-  symbol_count: number | null;
-  import_count: number | null;
-  export_count: number | null;
-  fan_in: number | null;
-  fan_out: number | null;
-  cohesion: number | null;
-  file_count: number | null;
-}
-
-interface HotspotsDataOpts {
-  metric?: string;
-  level?: string;
-  limit?: number;
-  offset?: number;
-  noTests?: boolean;
-}
-
-export function hotspotsData(
-  customDbPath?: string,
-  opts: HotspotsDataOpts = {},
-): {
-  metric: string;
-  level: string;
-  limit: number;
-  hotspots: unknown[];
-} {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
-    const metric = opts.metric || 'fan-in';
-    const level = opts.level || 'file';
-    const limit = opts.limit || 10;
-    const noTests = opts.noTests || false;
-
-    const kind = level === 'directory' ? 'directory' : 'file';
-
-    const testFilter = testFilterSQL('n.name', noTests && kind === 'file');
-
-    const HOTSPOT_QUERIES: Record<string, { all(...params: unknown[]): HotspotRow[] }> = {
-      'fan-in': db.prepare(`
-        SELECT n.name, n.kind, nm.line_count, nm.symbol_count, nm.import_count, nm.export_count,
-               nm.fan_in, nm.fan_out, nm.cohesion, nm.file_count
-        FROM nodes n JOIN node_metrics nm ON n.id = nm.node_id
-        WHERE n.kind = ? ${testFilter} ORDER BY nm.fan_in DESC NULLS LAST LIMIT ?`),
-      'fan-out': db.prepare(`
-        SELECT n.name, n.kind, nm.line_count, nm.symbol_count, nm.import_count, nm.export_count,
-               nm.fan_in, nm.fan_out, nm.cohesion, nm.file_count
-        FROM nodes n JOIN node_metrics nm ON n.id = nm.node_id
-        WHERE n.kind = ? ${testFilter} ORDER BY nm.fan_out DESC NULLS LAST LIMIT ?`),
-      density: db.prepare(`
-        SELECT n.name, n.kind, nm.line_count, nm.symbol_count, nm.import_count, nm.export_count,
-               nm.fan_in, nm.fan_out, nm.cohesion, nm.file_count
-        FROM nodes n JOIN node_metrics nm ON n.id = nm.node_id
-        WHERE n.kind = ? ${testFilter} ORDER BY nm.symbol_count DESC NULLS LAST LIMIT ?`),
-      coupling: db.prepare(`
-        SELECT n.name, n.kind, nm.line_count, nm.symbol_count, nm.import_count, nm.export_count,
-               nm.fan_in, nm.fan_out, nm.cohesion, nm.file_count
-        FROM nodes n JOIN node_metrics nm ON n.id = nm.node_id
-        WHERE n.kind = ? ${testFilter} ORDER BY (COALESCE(nm.fan_in, 0) + COALESCE(nm.fan_out, 0)) DESC NULLS LAST LIMIT ?`),
-    };
-
-    const stmt = HOTSPOT_QUERIES[metric] ?? HOTSPOT_QUERIES['fan-in'];
-    // stmt is always defined: metric is a valid key or the fallback is a concrete property
-    const rows = stmt!.all(kind, limit);
-
-    const hotspots = rows.map((r) => ({
-      name: r.name,
-      kind: r.kind,
-      lineCount: r.line_count,
-      symbolCount: r.symbol_count,
-      importCount: r.import_count,
-      exportCount: r.export_count,
-      fanIn: r.fan_in,
-      fanOut: r.fan_out,
-      cohesion: r.cohesion,
-      fileCount: r.file_count,
-      density:
-        (r.file_count ?? 0) > 0
-          ? (r.symbol_count || 0) / (r.file_count ?? 1)
-          : (r.line_count ?? 0) > 0
-            ? (r.symbol_count || 0) / (r.line_count ?? 1)
-            : 0,
-      coupling: (r.fan_in || 0) + (r.fan_out || 0),
-    }));
-
-    const base = { metric, level, limit, hotspots };
-    return paginateResult(base, 'hotspots', { limit: opts.limit, offset: opts.offset });
-  } finally {
-    db.close();
-  }
-}
-
-interface ModuleBoundariesOpts {
-  threshold?: number;
-  config?: CodegraphConfig;
-}
-
-export function moduleBoundariesData(
-  customDbPath?: string,
-  opts: ModuleBoundariesOpts = {},
-): {
-  threshold: number;
-  modules: {
-    directory: string;
-    cohesion: number | null;
-    fileCount: number;
-    symbolCount: number;
-    fanIn: number;
-    fanOut: number;
-    files: string[];
-  }[];
-  count: number;
-} {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
-    const config = opts.config || loadConfig();
-    const threshold =
-      opts.threshold ??
-      (config as unknown as { structure?: { cohesionThreshold?: number } }).structure
-        ?.cohesionThreshold ??
-      0.3;
-
-    const dirs = db
-      .prepare(`
-        SELECT n.id, n.name, nm.symbol_count, nm.fan_in, nm.fan_out, nm.cohesion, nm.file_count
-        FROM nodes n
-        JOIN node_metrics nm ON n.id = nm.node_id
-        WHERE n.kind = 'directory' AND nm.cohesion IS NOT NULL AND nm.cohesion >= ?
-        ORDER BY nm.cohesion DESC
-      `)
-      .all(threshold) as {
-      id: number;
-      name: string;
-      symbol_count: number | null;
-      fan_in: number | null;
-      fan_out: number | null;
-      cohesion: number | null;
-      file_count: number | null;
-    }[];
-
-    const modules = dirs.map((d) => {
-      // Get files inside this directory
-      const files = (
-        db
-          .prepare(`
-          SELECT n.name FROM edges e
-          JOIN nodes n ON e.target_id = n.id
-          WHERE e.source_id = ? AND e.kind = 'contains' AND n.kind = 'file'
-        `)
-          .all(d.id) as { name: string }[]
-      ).map((f) => f.name);
-
-      return {
-        directory: d.name,
-        cohesion: d.cohesion,
-        fileCount: d.file_count || 0,
-        symbolCount: d.symbol_count || 0,
-        fanIn: d.fan_in || 0,
-        fanOut: d.fan_out || 0,
-        files,
-      };
-    });
-
-    return { threshold, modules, count: modules.length };
-  } finally {
-    db.close();
-  }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────
-
-function getSortFn(sortBy: string): (a: DirRow, b: DirRow) => number {
-  switch (sortBy) {
-    case 'cohesion':
-      return (a, b) => (b.cohesion ?? -1) - (a.cohesion ?? -1);
-    case 'fan-in':
-      return (a, b) => (b.fan_in || 0) - (a.fan_in || 0);
-    case 'fan-out':
-      return (a, b) => (b.fan_out || 0) - (a.fan_out || 0);
-    case 'density':
-      return (a, b) => {
-        const da = (a.file_count ?? 0) > 0 ? (a.symbol_count || 0) / (a.file_count ?? 1) : 0;
-        const db_ = (b.file_count ?? 0) > 0 ? (b.symbol_count || 0) / (b.file_count ?? 1) : 0;
-        return db_ - da;
-      };
-    default:
-      return (a, b) => a.name.localeCompare(b.name);
-  }
-}
+// ─── Query functions (re-exported from structure-query.ts) ────────────
+// Split to separate query-time concerns (DB reads, sorting, pagination)
+// from build-time concerns (directory insertion, metrics computation, role classification).
+export { hotspotsData, moduleBoundariesData, structureData } from './structure-query.js';
