@@ -143,6 +143,8 @@ function isSameDirectory(a: string, b: string): boolean {
 }
 
 export function openDb(dbPath: string): LockedDatabase {
+  // Flush any deferred DB close from a previous build (avoids WAL contention)
+  flushDeferredClose();
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   acquireAdvisoryLock(dbPath);
@@ -156,6 +158,54 @@ export function openDb(dbPath: string): LockedDatabase {
 export function closeDb(db: LockedDatabase): void {
   db.close();
   if (db.__lockPath) releaseAdvisoryLock(db.__lockPath);
+}
+
+/** Pending deferred-close DB handles (not yet closed). */
+const _deferredDbs: LockedDatabase[] = [];
+
+/**
+ * Synchronously close any DB handles queued by `closeDbDeferred()`.
+ * Call before deleting DB files or in test teardown to avoid EBUSY on Windows.
+ */
+export function flushDeferredClose(): void {
+  while (_deferredDbs.length > 0) {
+    const db = _deferredDbs.pop()!;
+    try {
+      db.close();
+    } catch {
+      /* ignore — handle may already be closed */
+    }
+  }
+}
+
+/**
+ * Schedule DB close on the next event loop tick. Useful for incremental
+ * builds where the WAL checkpoint in db.close() is expensive (~250ms on
+ * Windows) and doesn't need to block the caller.
+ *
+ * The advisory lock is released immediately so subsequent opens succeed.
+ * The actual handle close (+ WAL checkpoint) happens asynchronously.
+ * Call `flushDeferredClose()` before deleting the DB file.
+ */
+export function closeDbDeferred(db: LockedDatabase): void {
+  // Release the advisory lock immediately so the next open can proceed
+  if (db.__lockPath) {
+    releaseAdvisoryLock(db.__lockPath);
+    db.__lockPath = undefined;
+  }
+  _deferredDbs.push(db);
+  // Defer the expensive WAL checkpoint to after the caller returns
+  setImmediate(() => {
+    const idx = _deferredDbs.indexOf(db);
+    if (idx !== -1) {
+      _deferredDbs.splice(idx, 1);
+      try {
+        db.close();
+      } catch {
+        /* ignore — handle may already be closed by flush */
+      }
+    }
+  });
 }
 
 export function findDbPath(customPath?: string): string {
