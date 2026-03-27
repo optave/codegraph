@@ -332,8 +332,17 @@ export async function buildDataflowEdges(
 
     if (!needsJsFallback) {
       const inserted = native.bulkInsertDataflow(db.name, batches);
-      info(`Dataflow: ${inserted} edges inserted (native bulk)`);
-      return;
+      const expectedEdges = batches.reduce((s, b) => s + b.edges.length, 0);
+      if (inserted === expectedEdges || expectedEdges === 0) {
+        if (inserted > 0) {
+          info(`Dataflow: ${inserted} edges inserted (native bulk)`);
+        }
+        return;
+      }
+      debug(
+        `Dataflow: bulk insert expected ${expectedEdges} edges, got ${inserted} — falling back to JS`,
+      );
+      // fall through to JS path
     }
     // fall through to JS path
   }

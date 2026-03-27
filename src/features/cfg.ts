@@ -356,11 +356,17 @@ export async function buildCFGData(
 
       if (!needsJsFallback) {
         const processed = native.bulkInsertCfg(db.name, batches);
-        const withBlocks = batches.filter((b) => b.blocks.length > 0).length;
-        if (processed > 0) {
-          info(`CFG: ${withBlocks} functions analyzed (native bulk)`);
+        const expectedFunctions = batches.filter((b) => b.blocks.length > 0).length;
+        if (processed === batches.length || expectedFunctions === 0) {
+          if (expectedFunctions > 0) {
+            info(`CFG: ${expectedFunctions} functions analyzed (native bulk)`);
+          }
+          return;
         }
-        return;
+        debug(
+          `CFG: bulk insert expected ${batches.length} functions, got ${processed} — falling back to JS`,
+        );
+        // fall through to JS path
       }
       // fall through to JS path
     }
