@@ -267,7 +267,7 @@ fn do_insert(
     // ── Insert all edges ─────────────────────────────────────────────
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) \
+            "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         for &(src, tgt) in &contains_edges {
