@@ -45,6 +45,10 @@ Metrics are normalized per file for cross-version comparability.
 
 ### Raw totals (latest)
 
+> **Engine parity note:** Native reports 10,982 nodes vs WASM 10,956 (−26 nodes, ~0.24%).
+> DB size also diverges: 26.0 MB native vs 19.1 MB WASM (+36%).
+> Tracked in [#649](https://github.com/optave/codegraph/issues/649).
+
 #### Native (Rust)
 
 | Metric | Value |
