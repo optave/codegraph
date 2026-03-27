@@ -201,7 +201,7 @@ After addressing all comments for a PR:
 
 ### 2g. Re-trigger reviewers
 
-**Greptile:** Always re-trigger after replying to Greptile comments — whether the comment was actionable or not. The **only** exception is if Greptile already reacted to your most recent reply with a positive emoji (thumbs up, check, etc.), which means it is already satisfied.
+**Greptile:** Always re-trigger after replying to Greptile comments — whether the comment was actionable or not. First, run the verification script below to confirm all Greptile comments have replies. Then, skip the actual trigger only if Greptile already reacted to your most recent reply with a positive emoji (thumbs up, check, etc.), which means it is already satisfied.
 
 **CRITICAL — verify all Greptile comments have replies BEFORE triggering.** Posting `@greptileai` without replying to every comment is worse than not triggering at all — it starts a new review cycle while the old one still has unanswered feedback. Run this check first:
 
@@ -215,7 +215,7 @@ greptile_comment_ids=$(echo "$all_comments" \
 unanswered=()
 for cid in $greptile_comment_ids; do
   reply_count=$(echo "$all_comments" \
-    | jq "[.[] | select(.in_reply_to_id == $cid and .user.login != \"greptile-apps[bot]\")] | length")
+    | jq -s "[.[][] | select(.in_reply_to_id == $cid and .user.login != \"greptile-apps[bot]\")] | length")
   if [ "$reply_count" -eq 0 ]; then
     unanswered+=("$cid")
   fi
