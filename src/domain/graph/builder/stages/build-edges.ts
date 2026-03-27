@@ -639,7 +639,11 @@ export async function buildEdges(ctx: PipelineContext): Promise<void> {
   addLazyFallback(ctx, scopedLoad);
 
   const t0 = performance.now();
-  const buildEdgesTx = db.transaction(() => {
+  const native = engineName === 'native' ? loadNative() : null;
+
+  // Phase 1: Compute edges (inside better-sqlite3 transaction for barrel cleanup atomicity)
+  const allEdgeRows: EdgeRowTuple[] = [];
+  const computeEdgesTx = db.transaction(() => {
     // Delete stale outgoing edges for barrel-only files inside the transaction
     // so that deletion and re-creation are atomic (no edge loss on mid-build crash).
     if (ctx.barrelOnlyFiles.size > 0) {
@@ -651,19 +655,42 @@ export async function buildEdges(ctx: PipelineContext): Promise<void> {
       }
     }
 
-    const allEdgeRows: EdgeRowTuple[] = [];
-
     buildImportEdges(ctx, getNodeIdStmt, allEdgeRows);
 
-    const native = engineName === 'native' ? loadNative() : null;
-    if (native?.buildCallEdges) {
-      buildCallEdgesNative(ctx, getNodeIdStmt, allEdgeRows, allNodesBefore, native);
+    // Skip native call-edge path for small incremental builds (≤3 files):
+    // napi-rs marshaling overhead for allNodes exceeds computation savings.
+    const useNativeCallEdges =
+      native?.buildCallEdges && (ctx.isFullBuild || ctx.fileSymbols.size > 3);
+    if (useNativeCallEdges) {
+      buildCallEdgesNative(ctx, getNodeIdStmt, allEdgeRows, allNodesBefore, native!);
     } else {
       buildCallEdgesJS(ctx, getNodeIdStmt, allEdgeRows);
     }
 
-    batchInsertEdges(db, allEdgeRows);
+    // When using native edge insert, skip JS insert here — do it after tx commits.
+    // Otherwise insert edges within this transaction for atomicity.
+    if (!native?.bulkInsertEdges) {
+      batchInsertEdges(db, allEdgeRows);
+    }
   });
-  buildEdgesTx();
+  computeEdgesTx();
+
+  // Phase 2: Native rusqlite bulk insert (outside better-sqlite3 transaction
+  // since rusqlite opens its own connection — avoids SQLITE_BUSY contention)
+  if (native?.bulkInsertEdges && allEdgeRows.length > 0) {
+    const nativeEdges = allEdgeRows.map((r) => ({
+      sourceId: r[0],
+      targetId: r[1],
+      kind: r[2],
+      confidence: r[3],
+      dynamic: r[4],
+    }));
+    const ok = native.bulkInsertEdges(db.name, nativeEdges);
+    if (!ok) {
+      // Fall back to JS path on native failure
+      batchInsertEdges(db, allEdgeRows);
+    }
+  }
+
   ctx.timing.edgesMs = performance.now() - t0;
 }
