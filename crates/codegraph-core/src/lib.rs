@@ -8,6 +8,7 @@ pub mod edge_builder;
 pub mod extractors;
 pub mod import_resolution;
 pub mod incremental;
+pub mod insert_nodes;
 pub mod parallel;
 pub mod parser_registry;
 pub mod types;

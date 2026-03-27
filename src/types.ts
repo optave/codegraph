@@ -1815,6 +1815,29 @@ export interface NativeAddon {
       }>;
     }>,
   ): number;
+  bulkInsertNodes(
+    dbPath: string,
+    batches: Array<{
+      file: string;
+      definitions: Array<{
+        name: string;
+        kind: string;
+        line: number;
+        endLine?: number | null;
+        visibility?: string | null;
+        children: Array<{
+          name: string;
+          kind: string;
+          line: number;
+          endLine?: number | null;
+          visibility?: string | null;
+        }>;
+      }>;
+      exports: Array<{ name: string; kind: string; line: number }>;
+    }>,
+    fileHashes: Array<{ file: string; hash: string; mtime: number; size: number }>,
+    removedFiles: string[],
+  ): boolean;
   engineVersion(): string;
   ParseTreeCache: new () => NativeParseTreeCache;
 }
