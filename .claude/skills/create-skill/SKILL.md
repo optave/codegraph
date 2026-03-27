@@ -498,7 +498,7 @@ if [ "$LINT_RC" -ne 0 ] || [ "$SMOKE_RC" -ne 0 ]; then
 fi
 ```
 
-- **`lint-skill.sh`** checks for cross-fence variable bugs, bare `2>/dev/null`, hardcoded `npm test` / `npm run test` / `npm run lint`, `git add .` / `git add -- .`, missing frontmatter, missing Phase 0 / Rules, missing exit conditions, GNU-only `find -quit`, hardcoded `/tmp/` paths, and `sed -i` portability issues.
+- **`lint-skill.sh`** checks for cross-fence variable bugs, bare `2>/dev/null`, hardcoded `npm test` / `npm run test` / `npm run lint` / `yarn test` / `yarn run test` / `yarn run lint` / `pnpm test` / `pnpm run test` / `pnpm run lint`, `git add .` / `git add -- .`, missing frontmatter, missing Phase 0 / Rules, missing exit conditions, GNU-only `find -quit`, hardcoded `/tmp/` paths, and `sed -i` portability issues.
 - **`smoke-test-skill.sh`** extracts every `bash` code block (skipping example regions inside quadruple backticks) and runs `bash -n` syntax checking on each.
 
 Fix all ERROR findings. Review WARN findings — fix or annotate with justification.
@@ -567,5 +567,5 @@ If the user approves:
 - **No co-author lines** in commit messages.
 - **No Claude Code references** in commit messages or the skill body.
 - **Persist temp state to files, not shell variables** when it must survive across code fences.
-- **Test commands must be detected, not assumed.** Never hardcode `npm test`, `npm run test`, `npm run lint`, `yarn test`, or `pnpm test` — detect the package manager first.
+- **Test commands must be detected, not assumed.** Never hardcode `npm test`, `npm run test`, `npm run lint`, `yarn test`, `yarn run test`, `yarn run lint`, `pnpm test`, `pnpm run test`, or `pnpm run lint` — detect the package manager first.
 - **Every `2>/dev/null` needs a justification comment** in the generated skill.
