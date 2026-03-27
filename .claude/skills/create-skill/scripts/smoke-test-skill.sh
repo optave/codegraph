@@ -65,7 +65,7 @@ while IFS= read -r line; do
         in_block=false
         # Run syntax check on the collected block
         if [ -s "$TMPBLOCK" ]; then
-          if output=$(bash -n "$TMPBLOCK" 2>&1); then
+          if output=$("$BASH" -n "$TMPBLOCK" 2>&1); then
             echo "  OK    block at line $block_start"
             PASS=$((PASS + 1))
           else
