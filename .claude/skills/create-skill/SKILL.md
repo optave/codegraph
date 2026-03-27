@@ -103,6 +103,10 @@ allowed-tools: <from user's tool list>
 ## Rules
 
 - <Hard constraints>
+
+## Examples
+
+- <Usage examples showing common invocations and expected behavior>
 ```
 
 ### Structural requirements to include in every skill:
@@ -111,7 +115,8 @@ allowed-tools: <from user's tool list>
 2. **Every phase has a clear exit condition** — what must be true before moving to the next phase
 3. **Arguments section** — explicit parsing of `$ARGUMENTS` into named state variables
 4. **Rules section** — hard constraints at the bottom, kept in sync with the procedure
-5. **Artifact definitions** — if the skill produces files, specify path, format, and schema
+5. **Examples section** — usage examples showing common invocations and expected behavior
+6. **Artifact definitions** — if the skill produces files, specify path, format, and schema
 
 **Exit condition:** `.claude/skills/$SKILL_NAME/SKILL.md` exists with valid frontmatter, Phase 0, Arguments section, and Rules section.
 
