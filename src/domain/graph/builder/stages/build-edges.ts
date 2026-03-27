@@ -567,7 +567,7 @@ function buildClassHierarchyEdges(
  * their import targets. Falls back to loading ALL nodes for full builds or
  * larger incremental changes.
  */
-function loadNodes(ctx: PipelineContext): QueryNodeRow[] {
+function loadNodes(ctx: PipelineContext): { rows: QueryNodeRow[]; scoped: boolean } {
   const { db, fileSymbols, isFullBuild, batchResolved } = ctx;
   const nodeKindFilter = `kind IN ('function','method','class','interface','struct','type','module','enum','trait','record','constant')`;
 
@@ -590,17 +590,19 @@ function loadNodes(ctx: PipelineContext): QueryNodeRow[] {
       }
 
       const placeholders = [...relevantFiles].map(() => '?').join(',');
-      return db
+      const rows = db
         .prepare(
           `SELECT id, name, kind, file, line FROM nodes WHERE ${nodeKindFilter} AND file IN (${placeholders})`,
         )
         .all(...relevantFiles) as QueryNodeRow[];
+      return { rows, scoped: true };
     }
   }
 
-  return db
+  const rows = db
     .prepare(`SELECT id, name, kind, file, line FROM nodes WHERE ${nodeKindFilter}`)
     .all() as QueryNodeRow[];
+  return { rows, scoped: false };
 }
 
 /**
@@ -632,8 +634,7 @@ export async function buildEdges(ctx: PipelineContext): Promise<void> {
 
   const getNodeIdStmt = makeGetNodeIdStmt(db);
 
-  const allNodesBefore = loadNodes(ctx);
-  const scopedLoad = !ctx.isFullBuild && ctx.fileSymbols.size <= 5 && allNodesBefore.length < 5000;
+  const { rows: allNodesBefore, scoped: scopedLoad } = loadNodes(ctx);
   setupNodeLookups(ctx, allNodesBefore);
   addLazyFallback(ctx, scopedLoad);
 
