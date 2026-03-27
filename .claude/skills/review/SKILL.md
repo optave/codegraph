@@ -201,14 +201,11 @@ After addressing all comments for a PR:
 
 ### 2g. Re-trigger reviewers
 
-**Greptile:** Before re-triggering, check if your last reply to Greptile already has a positive emoji reaction (thumbs up, check, party, etc.) from `greptileai`. A positive reaction means Greptile is satisfied with your fix — do NOT re-trigger in that case, move on. Only re-trigger if there is no positive reaction on your last comment:
+**Greptile:** Always re-trigger after replying to Greptile comments — whether the comment was actionable or not. The **only** exception is if Greptile already reacted to your reply with a positive emoji (thumbs up, check, etc.) — that means it's already satisfied.
 
 ```bash
-# Check reactions on your most recent comment to see if Greptile already approved
-gh api repos/optave/codegraph/issues/<number>/comments --paginate \
-  --jq 'reverse | .[] | select(.user.login != "greptileai") | {id: .id, body: .body[0:80], reactions_url: .reactions_url}' | head -1
-
-# If no positive reaction from greptileai, re-trigger:
+# Check if greptileai left a positive reaction on your most recent reply
+# If yes → skip re-trigger. If no → re-trigger:
 gh api repos/optave/codegraph/issues/<number>/comments \
   -f body="@greptileai"
 ```
@@ -270,7 +267,7 @@ If any subagent failed or returned an error, note it in the Status column as `ag
 - **Never force-push** unless fixing a commit message that fails commitlint. Amend + force-push is the only way to fix a pushed commit title (messages are part of the SHA). This is safe on feature branches. For all other problems, fix with a new commit.
 - **Address ALL comments from ALL reviewers** (Claude, Greptile, and humans), even minor/nit/optional ones. Leave zero unaddressed. Do not only respond to one reviewer and skip another.
 - **Always reply to comments** explaining what was done. Don't just fix silently. Every reviewer must see a reply on their feedback.
-- **Don't re-trigger Greptile if already approved.** If your last reply to a Greptile comment has a positive emoji reaction from `greptileai`, it's already satisfied — skip re-triggering.
+- **Always re-trigger Greptile after replying.** Every time you reply to a Greptile comment — actionable or not — post `@greptileai` to re-trigger a review. The only exception: if Greptile already reacted to your reply with a positive emoji (thumbs up), skip the re-trigger.
 - **Only re-trigger Claude** if you addressed Claude's feedback specifically.
 - **No co-author lines** in commit messages.
 - **No Claude Code references** in commit messages or comments.
