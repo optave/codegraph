@@ -488,8 +488,13 @@ The self-review is purely theoretical — most real issues (wrong paths, shell s
 Run both validation scripts against the generated SKILL.md:
 
 ```bash
-bash .claude/skills/create-skill/scripts/lint-skill.sh ".claude/skills/$SKILL_NAME/SKILL.md"
-bash .claude/skills/create-skill/scripts/smoke-test-skill.sh ".claude/skills/$SKILL_NAME/SKILL.md"
+LINT_RC=0
+bash .claude/skills/create-skill/scripts/lint-skill.sh ".claude/skills/$SKILL_NAME/SKILL.md" || LINT_RC=$?
+SMOKE_RC=0
+bash .claude/skills/create-skill/scripts/smoke-test-skill.sh ".claude/skills/$SKILL_NAME/SKILL.md" || SMOKE_RC=$?
+if [ "$LINT_RC" -ne 0 ] || [ "$SMOKE_RC" -ne 0 ]; then
+  echo "Validation failed — fix ERRORs before proceeding"; exit 1
+fi
 ```
 
 - **`lint-skill.sh`** checks for cross-fence variable bugs, bare `2>/dev/null`, hardcoded `npm test` / `npm run test` / `npm run lint`, `git add .` / `git add -- .`, missing frontmatter, missing Phase 0 / Rules, missing exit conditions, GNU-only `find -quit`, hardcoded `/tmp/` paths, and `sed -i` portability issues.

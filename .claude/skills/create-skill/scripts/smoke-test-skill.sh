@@ -89,6 +89,12 @@ while IFS= read -r line; do
 
 done < "$SKILL_FILE"
 
+# Warn about unclosed bash block (closing fence was never reached)
+if $in_block; then
+  echo "  FAIL  unclosed bash block starting at line $block_start (missing closing fence)"
+  FAIL=$((FAIL + 1))
+fi
+
 echo ""
 echo "smoke-test-skill: $PASS passed, $FAIL failed, $SKIP skipped"
 if [ "$FAIL" -gt 0 ]; then

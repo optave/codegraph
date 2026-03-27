@@ -45,14 +45,16 @@ declare -A VAR_BLOCK
 declare -A REASSIGNED
 while IFS=$'\t' read -r bnum line; do
   # Match UPPER_CASE_VAR= assignments (skip lowercase/mixed to reduce false positives)
-  for var in $(echo "$line" | grep -oE '\b[A-Z][A-Z0-9_]+\+?=' | sed -E 's/\+?=$//'); do
+  # Use while-read instead of for-in-$() to avoid empty-string iteration when grep matches nothing
+  while IFS= read -r var; do
+    [ -z "$var" ] && continue
     if [ -z "${VAR_BLOCK[$var]+x}" ]; then
       VAR_BLOCK["$var"]="$bnum"
     else
       # Track re-assignments in later blocks for O(1) lookup
       REASSIGNED["${var}:${bnum}"]=1
     fi
-  done
+  done < <(echo "$line" | grep -oE '\b[A-Z][A-Z0-9_]+\+?=' | sed -E 's/\+?=$//')
 done < "$BLOCKS_FILE"
 
 # Check for references in later blocks without file persistence
