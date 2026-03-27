@@ -74,8 +74,10 @@ pub fn bulk_insert_ast_nodes(db_path: String, batches: Vec<FileAstBatch>) -> u32
         Err(_) => return 0,
     };
 
-    // Match the JS-side performance pragmas
-    let _ = conn.execute_batch("PRAGMA synchronous = NORMAL");
+    // Match the JS-side performance pragmas (including busy_timeout for WAL contention)
+    let _ = conn.execute_batch(
+        "PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000",
+    );
 
     // Bail out if the ast_nodes table doesn't exist (schema too old)
     let has_table: bool = conn
