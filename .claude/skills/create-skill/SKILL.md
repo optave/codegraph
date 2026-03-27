@@ -326,6 +326,7 @@ STASH_REF=$(git stash list --format='%gd %s' | grep 'deploy-check-backup' | head
 If the pop must happen in a later code fence, persist the ref to a file (per Pattern 1):
 ````markdown
 ```bash
+mkdir -p .codegraph/deploy-check
 git stash push -m "deploy-check-backup" -- package.json package-lock.json
 git stash list --format='%gd %s' | grep 'deploy-check-backup' | head -1 | awk '{print $1}' > .codegraph/deploy-check/.stash-ref
 ```
