@@ -105,7 +105,7 @@ done < "$SKILL_FILE"
 
 # ── Check 3: git add . or git add -A (inside bash blocks only) ───────
 while IFS=$'\t' read -r bnum line; do
-  if echo "$line" | grep -qE '^\s*git add (--\s+\.([ \t;#]|$)|\.([ \t;#]|$)|(-A|--all))'; then
+  if echo "$line" | grep -qE '^\s*git add (--\s+\.([ \t;#]|$)|\.([ \t;#]|$)|(-A|--all)([ \t;#]|$))'; then
     error "bash block $bnum: 'git add .' or 'git add -A' — stage named files only"
   fi
 done < "$BLOCKS_FILE"
@@ -132,12 +132,17 @@ while IFS= read -r line; do
     # Track if we're inside an if/elif chain (detection block) with depth.
     # Only `if` increments depth; `elif` is a sibling branch of the same if-statement,
     # not a new nesting level, so it sets in_detect but does NOT increment depth.
+    # Save in_detect before fi-processing so inline commands on the same line
+    # (e.g. "else npm test; fi") are evaluated in the correct detection context.
+    was_in_detect=$in_detect
     if echo "$line" | grep -qE '^\s*if\s.*(-f\s|-d\s|lock|package|command -v|which\s)'; then
       in_detect=true
+      was_in_detect=true
       detect_depth=$((detect_depth + 1))
     elif echo "$line" | grep -qE '^\s*elif\s.*(-f\s|-d\s|lock|package|command -v|which\s)'; then
       # elif is a sibling branch — set in_detect but do NOT increment depth
       in_detect=true
+      was_in_detect=true
     elif echo "$line" | grep -qE '^\s*if\b'; then
       # nested if (not a detection block) — track depth only when inside detection
       [ "$in_detect" = true ] && detect_depth=$((detect_depth + 1))
@@ -158,7 +163,10 @@ while IFS= read -r line; do
         in_detect=false
       fi
     fi
-    if ! $in_detect; then
+    # Use was_in_detect so commands on the same line as an inline fi
+    # (e.g. "else npm test; fi") are not falsely flagged — the command
+    # was part of the detection block, not after it.
+    if ! $was_in_detect; then
       if echo "$line" | grep -qE '^\s*((npm|yarn|pnpm) test|(npm|yarn|pnpm) run (test|lint))([^:A-Za-z0-9_]|$)'; then
         warn "Line $line_num: Hardcoded '$(echo "$line" | sed 's/^[[:space:]]*//')' — detect package manager first (Pattern 6)"
       fi
