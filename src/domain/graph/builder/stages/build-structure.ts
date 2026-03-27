@@ -96,7 +96,7 @@ export async function buildStructure(ctx: PipelineContext): Promise<void> {
         const dbPath = db.name;
         const nativeResult =
           changedFileList && changedFileList.length > 0
-            ? native.classifyRolesIncremental(dbPath, changedFileList)
+            ? native.classifyRolesIncremental?.(dbPath, changedFileList)
             : native.classifyRolesFull(dbPath);
         if (nativeResult) {
           roleSummary = {
