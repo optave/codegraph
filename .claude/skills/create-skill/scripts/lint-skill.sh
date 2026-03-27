@@ -44,6 +44,8 @@ awk '
 declare -A VAR_BLOCK
 declare -A REASSIGNED
 while IFS=$'\t' read -r bnum line; do
+  # Skip comment lines — they document context but don't register variable assignments
+  echo "$line" | grep -qE '^\s*#' && continue
   # Match UPPER_CASE_VAR= assignments (skip lowercase/mixed to reduce false positives)
   # Use while-read instead of for-in-$() to avoid empty-string iteration when grep matches nothing
   while IFS= read -r var; do

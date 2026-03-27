@@ -89,7 +89,7 @@ allowed-tools: <from user's tool list>
 ## Phase 0 — Pre-flight
 
 ```bash
-for tool in git mktemp; do
+for tool in git mktemp; do  # replace with the actual shell commands your skill uses (e.g. jq, python, curl)
   # > /dev/null 2>&1: suppress command path on success and shell's "not found" on failure — the || clause provides the error message
   command -v "$tool" > /dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found"; exit 1; }
 done
