@@ -773,12 +773,13 @@ See **[ROADMAP.md](docs/roadmap/ROADMAP.md)** for the full development roadmap a
 6. ~~**Resolution Accuracy**~~ — **Complete** (v3.3.1) — type inference, receiver type tracking, dead role sub-categories, resolution benchmarks, `package.json` exports, monorepo workspace resolution
 7. ~~**TypeScript Migration**~~ — **Complete** (v3.4.0) — all 271 source files migrated from JS to TS, zero `.js` remaining
 8. **Native Analysis Acceleration** — **In Progress** (7 of 8 complete) — JS-only build phases moved to Rust, sub-100ms 1-file rebuilds remaining
-9. **Runtime & Extensibility** — event-driven pipeline, plugin system, query caching, pagination
-10. **Intelligent Embeddings** — LLM-generated descriptions, enhanced embeddings, module summaries
-11. **Natural Language Queries** — `codegraph ask` command, conversational sessions
-12. **Expanded Language Support** — 8 new languages (11 → 19)
-13. **GitHub Integration & CI** — reusable GitHub Action, LLM-enhanced PR review, SARIF output
-14. **Visualization & Advanced** — web UI, dead code detection, monorepo, agentic search
+9. **Expanded Language Support** — 8 new languages (11 → 19)
+10. **Runtime & Extensibility** — event-driven pipeline, plugin system, query caching, pagination
+11. **Quality, Security & Technical Debt** — supply-chain security (SBOM, SLSA), CI coverage gates, timer cleanup, tech debt kill list
+12. **Intelligent Embeddings** — LLM-generated descriptions, enhanced embeddings, module summaries
+13. **Natural Language Queries** — `codegraph ask` command, conversational sessions
+14. **GitHub Integration & CI** — reusable GitHub Action, LLM-enhanced PR review, SARIF output
+15. **Advanced Features** — dead code detection, monorepo support, agentic search
 
 ## 🤝 Contributing
 
