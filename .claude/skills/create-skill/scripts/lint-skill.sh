@@ -159,7 +159,7 @@ while IFS= read -r line; do
       fi
     fi
     if ! $in_detect; then
-      if echo "$line" | grep -qE '^\s*(npm test|npm run (test|lint))([^:A-Za-z0-9_]|$)'; then
+      if echo "$line" | grep -qE '^\s*((npm|yarn|pnpm) test|(npm|yarn|pnpm) run (test|lint))([^:A-Za-z0-9_]|$)'; then
         warn "Line $line_num: Hardcoded '$(echo "$line" | sed 's/^[[:space:]]*//')' — detect package manager first (Pattern 6)"
       fi
     fi

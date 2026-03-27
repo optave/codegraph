@@ -567,5 +567,5 @@ If the user approves:
 - **No co-author lines** in commit messages.
 - **No Claude Code references** in commit messages or the skill body.
 - **Persist temp state to files, not shell variables** when it must survive across code fences.
-- **Test commands must be detected, not assumed.** Never hardcode `npm test` — detect the package manager first.
+- **Test commands must be detected, not assumed.** Never hardcode `npm test`, `npm run test`, `npm run lint`, `yarn test`, or `pnpm test` — detect the package manager first.
 - **Every `2>/dev/null` needs a justification comment** in the generated skill.
