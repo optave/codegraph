@@ -314,7 +314,7 @@ while IFS= read -r line; do
   if $in_block; then
     # Strip shell comments (# preceded by whitespace) but not # inside strings
     stripped="${line%%[[:space:]]#*}"
-    if [[ "$stripped" =~ [\"\'\/]/tmp/[a-zA-Z] ]]; then
+    if [[ "$stripped" =~ (^|[^A-Za-z0-9_])/tmp/[a-zA-Z] ]]; then
       # Allow ${TMPDIR:-/tmp} pattern
       if [[ "$stripped" != *'${TMPDIR:-/tmp}'* ]]; then
         warn "Line $line_num: Hardcoded '/tmp/' path — use mktemp instead (Pattern 4)"
