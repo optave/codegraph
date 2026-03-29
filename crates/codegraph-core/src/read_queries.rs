@@ -1108,7 +1108,8 @@ impl NativeDatabase {
         let conn = self.conn()?;
         match conn.prepare("SELECT 1 FROM cfg_blocks LIMIT 0") {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Err(rusqlite::Error::SqliteFailure(_, _)) => Ok(false),
+            Err(e) => Err(napi::Error::from_reason(format!("has_cfg_tables: {e}"))),
         }
     }
 
@@ -1121,7 +1122,9 @@ impl NativeDatabase {
             .and_then(|mut stmt| stmt.query_row([], |_| Ok(())))
         {
             Ok(()) => Ok(true),
-            Err(_) => Ok(false),
+            Err(rusqlite::Error::SqliteFailure(_, _)) => Ok(false),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(napi::Error::from_reason(format!("has_embeddings: {e}"))),
         }
     }
 
@@ -1134,7 +1137,8 @@ impl NativeDatabase {
             .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i32>(0)))
         {
             Ok(c) => Ok(c > 0),
-            Err(_) => Ok(false),
+            Err(rusqlite::Error::SqliteFailure(_, _)) => Ok(false),
+            Err(e) => Err(napi::Error::from_reason(format!("has_dataflow_table: {e}"))),
         }
     }
 
