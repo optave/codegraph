@@ -1223,7 +1223,7 @@ Structure building is unchanged — at 22ms it's already fast.
 
 **Result:** Native 1-file incremental rebuilds: **466ms → 67–80ms** (target was sub-100ms). Roles incremental path: **255ms → 9ms** via edge-neighbour expansion with indexed correlated subqueries.
 
-**Key PRs:** #622, #632
+**Key PRs:** #622, #632, #644
 
 **Affected files:** `src/domain/graph/builder/stages/build-structure.ts`, `src/domain/graph/builder/stages/build-edges.ts`, `src/domain/graph/builder/pipeline.ts`
 
@@ -1253,17 +1253,9 @@ Structure building is unchanged — at 22ms it's already fast.
 
 ### 6.13 -- NativeDatabase Class (rusqlite Connection Lifecycle) ✅
 
-**Not started.** Foundation for moving all DB operations to `rusqlite` on the native engine path. Currently `better-sqlite3` (JS) handles all DB operations for both engines, and `rusqlite` is only used for bulk AST node insertion (6.9/PR #651). The goal is: **native engine → rusqlite for all DB; WASM engine → better-sqlite3 for all DB** — eliminating the dual-SQLite-in-one-process problem and unlocking Rust-speed for every query.
+**Complete.** `NativeDatabase` napi-rs class in `crates/codegraph-core/src/native_db.rs` holding a persistent `rusqlite::Connection`. Factory methods (`openReadWrite`/`openReadonly`), lifecycle (`close`/`exec`/`pragma`), schema migrations (`initSchema` with all 16 migrations embedded), and build metadata KV (`getBuildMeta`/`setBuildMeta`). Wired into the build pipeline: when native engine is available, `NativeDatabase` handles schema init and metadata reads/writes. Foundation for 6.14+ which migrates all query and write operations to rusqlite on the native path.
 
-**Plan:**
-- **Create `NativeDatabase` napi-rs class** in `crates/codegraph-core/src/native_db.rs` holding a `rusqlite::Connection`
-- **Expose lifecycle methods:** `openReadWrite(dbPath)`, `openReadonly(dbPath)`, `close()`, `exec(sql)`, `pragma(sql)`
-- **Implement `initSchema()`** — embed migration DDL strings in Rust, run via `rusqlite`
-- **Implement `getBuildMeta(key)` / `setBuildMeta(entries)`** — metadata KV operations
-- **Add `NativeDatabase` to `NativeAddon` interface** in `src/types.ts`
-- **Wire `src/db/connection.ts`** to return `NativeDatabase` when native engine is active, `better-sqlite3` otherwise
-
-**Affected files:** `crates/codegraph-core/src/native_db.rs` (new), `crates/codegraph-core/src/lib.rs`, `src/types.ts`, `src/db/connection.ts`, `src/db/migrations.ts`
+**Key PRs:** #666
 
 ### 6.14 -- Native Read Queries (Repository Migration) ✅
 
