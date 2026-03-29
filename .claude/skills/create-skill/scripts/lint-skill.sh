@@ -312,6 +312,8 @@ while IFS= read -r line; do
     '```'*) in_block=false; continue ;;
   esac
   if $in_block; then
+    # Skip comment lines — they document context and don't represent runtime paths
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
     # Strip shell comments (# preceded by whitespace) but not # inside strings
     stripped="${line%%[[:space:]]#*}"
     if [[ "$stripped" =~ (^|[^A-Za-z0-9_])/tmp/[a-zA-Z] ]]; then
