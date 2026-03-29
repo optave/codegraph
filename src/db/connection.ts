@@ -1,28 +1,15 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { debug, warn } from '../infrastructure/logger.js';
 import { getNative, isNativeAvailable } from '../infrastructure/native.js';
 import { DbError } from '../shared/errors.js';
 import type { BetterSqlite3Database, NativeDatabase } from '../types.js';
+import { getDatabase } from './better-sqlite3.js';
 import { Repository } from './repository/base.js';
 import { NativeRepository } from './repository/native-repository.js';
 import { SqliteRepository } from './repository/sqlite-repository.js';
-
-// Lazy-loaded better-sqlite3 constructor. Only accessed when the WASM engine
-// needs a JS-side DB handle (openDb / openReadonlyOrFail). The native engine
-// path uses NativeDatabase (rusqlite) via openRepo() → NativeRepository and
-// never touches this.
-const _require = createRequire(import.meta.url);
-let _Database: any;
-function getDatabase(): new (...args: any[]) => any {
-  if (!_Database) {
-    _Database = _require('better-sqlite3');
-  }
-  return _Database;
-}
 
 /** Lazy-loaded package version (read once from package.json). */
 let _packageVersion: string | undefined;

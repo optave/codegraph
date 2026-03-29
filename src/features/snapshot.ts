@@ -1,18 +1,9 @@
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
+import { getDatabase } from '../db/better-sqlite3.js';
 import { findDbPath } from '../db/index.js';
 import { debug } from '../infrastructure/logger.js';
 import { ConfigError, DbError } from '../shared/errors.js';
-
-const _require = createRequire(import.meta.url);
-let _Database: any;
-function getDatabase(): new (...args: any[]) => any {
-  if (!_Database) {
-    _Database = _require('better-sqlite3');
-  }
-  return _Database;
-}
 
 const NAME_RE = /^[a-zA-Z0-9_-]+$/;
 

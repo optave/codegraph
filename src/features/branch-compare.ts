@@ -1,21 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { getDatabase } from '../db/better-sqlite3.js';
 import { buildGraph } from '../domain/graph/builder.js';
 import { kindIcon } from '../domain/queries.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import type { EngineMode } from '../types.js';
-
-const _require = createRequire(import.meta.url);
-let _Database: any;
-function getDatabase(): new (...args: any[]) => any {
-  if (!_Database) {
-    _Database = _require('better-sqlite3');
-  }
-  return _Database;
-}
 
 // ─── Git Helpers ────────────────────────────────────────────────────────
 
