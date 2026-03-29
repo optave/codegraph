@@ -514,7 +514,7 @@ if [ "$LINT_RC" -ne 0 ] || [ "$SMOKE_RC" -ne 0 ]; then
 fi
 ```
 
-- **`lint-skill.sh`** checks for cross-fence variable bugs, bare `2>/dev/null`, hardcoded `npm test` / `npm run test` / `npm run lint` / `yarn test` / `yarn run test` / `yarn run lint` / `pnpm test` / `pnpm run test` / `pnpm run lint`, `git add .` / `git add -- .`, missing frontmatter, missing Phase 0 / Rules, missing exit conditions, GNU-only `find -quit`, hardcoded `/tmp/` paths, and `sed -i` portability issues.
+- **`lint-skill.sh`** checks for cross-fence variable bugs, bare `2>/dev/null`, hardcoded `npm test` / `npm run test` / `npm run lint` / `yarn test` / `yarn run test` / `yarn run lint` / `pnpm test` / `pnpm run test` / `pnpm run lint`, `git add .` / `git add -- .`, missing frontmatter (including `name` matching directory name), missing Phase 0 / Rules / Examples, missing exit conditions, GNU-only `find -quit`, hardcoded `/tmp/` paths, and `sed -i` portability issues.
 - **`smoke-test-skill.sh`** extracts every `bash` code block (skipping example regions inside quadruple backticks) and runs `bash -n` syntax checking on each.
 
 Fix all ERROR findings. Review WARN findings — fix or annotate with justification.
