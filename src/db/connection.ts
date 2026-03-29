@@ -4,9 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { debug, warn } from '../infrastructure/logger.js';
+import { getNative, isNativeAvailable } from '../infrastructure/native.js';
 import { DbError } from '../shared/errors.js';
-import type { BetterSqlite3Database } from '../types.js';
+import type { BetterSqlite3Database, NativeDatabase } from '../types.js';
 import { Repository } from './repository/base.js';
+import { NativeRepository } from './repository/native-repository.js';
 import { SqliteRepository } from './repository/sqlite-repository.js';
 
 /** Lazy-loaded package version (read once from package.json). */
@@ -208,6 +210,41 @@ export function closeDbDeferred(db: LockedDatabase): void {
   });
 }
 
+// ── Paired close helpers (Phase 6.16) ──────────────────────────────────
+// When both a NativeDatabase and better-sqlite3 handle are open on the same
+// DB file, these helpers ensure NativeDatabase is closed first (fast, ~1ms)
+// before the better-sqlite3 close (which forces a WAL checkpoint, ~250ms).
+
+/** A better-sqlite3 handle optionally paired with a NativeDatabase. */
+export interface LockedDatabasePair {
+  db: LockedDatabase;
+  nativeDb?: NativeDatabase;
+}
+
+/** Close both handles: NativeDatabase first (fast), then better-sqlite3 (releases lock). */
+export function closeDbPair(pair: LockedDatabasePair): void {
+  if (pair.nativeDb) {
+    try {
+      pair.nativeDb.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  closeDb(pair.db);
+}
+
+/** Close NativeDatabase immediately, defer better-sqlite3 WAL checkpoint. */
+export function closeDbPairDeferred(pair: LockedDatabasePair): void {
+  if (pair.nativeDb) {
+    try {
+      pair.nativeDb.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  closeDbDeferred(pair.db);
+}
+
 export function findDbPath(customPath?: string): string {
   if (customPath) return path.resolve(customPath);
   const rawCeiling = findRepoRoot();
@@ -286,7 +323,9 @@ export function openReadonlyOrFail(customPath?: string): BetterSqlite3Database {
  * Open a Repository from either an injected instance or a DB path.
  *
  * When `opts.repo` is a Repository instance, returns it directly (no DB opened).
- * Otherwise opens a readonly SQLite DB and wraps it in SqliteRepository.
+ * When the native engine is available, opens a NativeDatabase (rusqlite) and
+ * wraps it in NativeRepository. Otherwise falls back to better-sqlite3 via
+ * SqliteRepository.
  */
 export function openRepo(
   customDbPath?: string,
@@ -300,6 +339,56 @@ export function openRepo(
     }
     return { repo: opts.repo, close() {} };
   }
+
+  // Try native rusqlite path first (Phase 6.14)
+  if (isNativeAvailable()) {
+    try {
+      const dbPath = findDbPath(customDbPath);
+      if (!fs.existsSync(dbPath)) {
+        throw new DbError(
+          `No codegraph database found at ${dbPath}.\nRun "codegraph build" first to analyze your codebase.`,
+          { file: dbPath },
+        );
+      }
+      const native = getNative();
+      const ndb = native.NativeDatabase.openReadonly(dbPath);
+      try {
+        // Version check (same logic as openReadonlyOrFail)
+        if (!_versionWarned) {
+          try {
+            const buildVersion = ndb.getBuildMeta('codegraph_version');
+            const currentVersion = getPackageVersion();
+            if (buildVersion && currentVersion && buildVersion !== currentVersion) {
+              warn(
+                `DB was built with codegraph v${buildVersion}, running v${currentVersion}. Consider: codegraph build --no-incremental`,
+              );
+            }
+          } catch {
+            // build_meta table may not exist in older DBs
+          }
+          _versionWarned = true;
+        }
+
+        return {
+          repo: new NativeRepository(ndb),
+          close() {
+            ndb.close();
+          },
+        };
+      } catch (innerErr) {
+        ndb.close();
+        throw innerErr;
+      }
+    } catch (e) {
+      // Re-throw user-visible errors (e.g. DB not found) — only silently
+      // fall back for native-engine failures (e.g. incompatible native binary).
+      if (e instanceof DbError) throw e;
+      debug(
+        `openRepo: native path failed, falling back to better-sqlite3: ${(e as Error).message}`,
+      );
+    }
+  }
+
   const db = openReadonlyOrFail(customDbPath);
   return {
     repo: new SqliteRepository(db),

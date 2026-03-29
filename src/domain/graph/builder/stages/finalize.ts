@@ -6,7 +6,12 @@
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { closeDb, closeDbDeferred, getBuildMeta, setBuildMeta } from '../../../../db/index.js';
+import {
+  closeDbPair,
+  closeDbPairDeferred,
+  getBuildMeta,
+  setBuildMeta,
+} from '../../../../db/index.js';
 import { debug, info, warn } from '../../../../infrastructure/logger.js';
 import { CODEGRAPH_VERSION } from '../../../../shared/version.js';
 import { writeJournalHeader } from '../../journal.js';
@@ -43,8 +48,12 @@ export async function finalize(ctx: PipelineContext): Promise<void> {
   // Incremental drift detection — skip for small incremental changes where
   // count fluctuation is expected (reverse-dep edge churn).
   if (!isFullBuild && allSymbols.size > 3) {
-    const prevNodes = getBuildMeta(db, 'node_count');
-    const prevEdges = getBuildMeta(db, 'edge_count');
+    const prevNodes = ctx.nativeDb
+      ? ctx.nativeDb.getBuildMeta('node_count')
+      : getBuildMeta(db, 'node_count');
+    const prevEdges = ctx.nativeDb
+      ? ctx.nativeDb.getBuildMeta('edge_count')
+      : getBuildMeta(db, 'edge_count');
     if (prevNodes && prevEdges) {
       const prevN = Number(prevNodes);
       const prevE = Number(prevEdges);
@@ -71,15 +80,29 @@ export async function finalize(ctx: PipelineContext): Promise<void> {
   // counts stay fresh whenever drift detection reads them.
   if (isFullBuild || allSymbols.size > 3) {
     try {
-      setBuildMeta(db, {
-        engine: ctx.engineName,
-        engine_version: ctx.engineVersion || '',
-        codegraph_version: CODEGRAPH_VERSION,
-        schema_version: String(schemaVersion),
-        built_at: buildNow.toISOString(),
-        node_count: nodeCount,
-        edge_count: actualEdgeCount,
-      });
+      if (ctx.nativeDb) {
+        ctx.nativeDb.setBuildMeta(
+          Object.entries({
+            engine: ctx.engineName,
+            engine_version: ctx.engineVersion || '',
+            codegraph_version: CODEGRAPH_VERSION,
+            schema_version: String(schemaVersion),
+            built_at: buildNow.toISOString(),
+            node_count: String(nodeCount),
+            edge_count: String(actualEdgeCount),
+          }).map(([key, value]) => ({ key, value: String(value) })),
+        );
+      } else {
+        setBuildMeta(db, {
+          engine: ctx.engineName,
+          engine_version: ctx.engineVersion || '',
+          codegraph_version: CODEGRAPH_VERSION,
+          schema_version: String(schemaVersion),
+          built_at: buildNow.toISOString(),
+          node_count: nodeCount,
+          edge_count: actualEdgeCount,
+        });
+      }
     } catch (err) {
       warn(`Failed to write build metadata: ${(err as Error).message}`);
     }
@@ -165,15 +188,16 @@ export async function finalize(ctx: PipelineContext): Promise<void> {
   // separately via timing.closeDbMs when available.
   ctx.timing.finalizeMs = performance.now() - t0;
 
-  // For small incremental builds, defer db.close() to the next event loop tick.
-  // The WAL checkpoint in db.close() costs ~250ms on Windows NTFS due to fsync.
-  // Deferring lets buildGraph() return immediately; the checkpoint runs after.
-  // Skip for temp directories (tests) — they rmSync immediately after build.
+  // Close NativeDatabase (fast, ~1ms) then better-sqlite3 (WAL checkpoint).
+  // For small incremental builds, defer the expensive WAL checkpoint to the
+  // next event loop tick. Skip for temp directories (tests) — they rmSync
+  // immediately after build.
+  const pair = { db, nativeDb: ctx.nativeDb };
   const isTempDir = path.resolve(rootDir).startsWith(path.resolve(tmpdir()));
   if (!isFullBuild && allSymbols.size <= 5 && !isTempDir) {
-    closeDbDeferred(db);
+    closeDbPairDeferred(pair);
   } else {
-    closeDb(db);
+    closeDbPair(pair);
   }
 
   // Write journal header after successful build

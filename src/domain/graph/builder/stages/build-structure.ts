@@ -5,10 +5,10 @@
  */
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { debug } from '../../../../infrastructure/logger.js';
-import { loadNative } from '../../../../infrastructure/native.js';
-import { normalizePath } from '../../../../shared/constants.js';
-import type { ExtractorOutput } from '../../../../types.js';
+import { debug } from '#infrastructure/logger.js';
+import { loadNative } from '#infrastructure/native.js';
+import { normalizePath } from '#shared/constants.js';
+import type { ExtractorOutput } from '#types';
 import type { PipelineContext } from '../context.js';
 import { readFileSafe } from '../helpers.js';
 
@@ -41,7 +41,13 @@ export async function buildStructure(ctx: PipelineContext): Promise<void> {
   // Gate: ≤5 changed files AND significantly more existing files (>20) to
   // avoid triggering on small test fixtures where directory metrics matter.
   const existingFileCount = !isFullBuild
-    ? (db.prepare("SELECT COUNT(*) as c FROM nodes WHERE kind = 'file'").get() as { c: number }).c
+    ? (
+        (ctx.nativeDb
+          ? ctx.nativeDb.queryGet("SELECT COUNT(*) as c FROM nodes WHERE kind = 'file'", [])
+          : db.prepare("SELECT COUNT(*) as c FROM nodes WHERE kind = 'file'").get()) as {
+          c: number;
+        }
+      ).c
     : 0;
   const useSmallIncrementalFastPath =
     !isFullBuild &&
@@ -89,8 +95,28 @@ export async function buildStructure(ctx: PipelineContext): Promise<void> {
   try {
     let roleSummary: Record<string, number> | null = null;
 
-    // Try native rusqlite path first (eliminates JS<->SQLite round-trips)
-    if (ctx.engineName === 'native') {
+    // Try NativeDatabase persistent connection first (6.15), then standalone (6.12)
+    if (ctx.nativeDb?.classifyRolesFull) {
+      const nativeResult =
+        changedFileList && changedFileList.length > 0
+          ? ctx.nativeDb.classifyRolesIncremental(changedFileList)
+          : ctx.nativeDb.classifyRolesFull();
+      if (nativeResult) {
+        roleSummary = {
+          entry: nativeResult.entry,
+          core: nativeResult.core,
+          utility: nativeResult.utility,
+          adapter: nativeResult.adapter,
+          dead: nativeResult.dead,
+          'dead-leaf': nativeResult.deadLeaf,
+          'dead-entry': nativeResult.deadEntry,
+          'dead-ffi': nativeResult.deadFfi,
+          'dead-unresolved': nativeResult.deadUnresolved,
+          'test-only': nativeResult.testOnly,
+          leaf: nativeResult.leaf,
+        };
+      }
+    } else if (ctx.engineName === 'native') {
       const native = loadNative();
       if (native?.classifyRolesFull) {
         const dbPath = db.name;

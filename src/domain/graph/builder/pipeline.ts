@@ -6,9 +6,10 @@
  */
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { closeDb, getBuildMeta, initSchema, MIGRATIONS, openDb } from '../../../db/index.js';
+import { closeDbPair, getBuildMeta, initSchema, MIGRATIONS, openDb } from '../../../db/index.js';
 import { detectWorkspaces, loadConfig } from '../../../infrastructure/config.js';
 import { info, warn } from '../../../infrastructure/logger.js';
+import { loadNative } from '../../../infrastructure/native.js';
 import { CODEGRAPH_VERSION } from '../../../shared/version.js';
 import type { BuildGraphOpts, BuildResult } from '../../../types.js';
 import { getActiveEngine } from '../../parser.js';
@@ -33,6 +34,7 @@ function initializeEngine(ctx: PipelineContext): void {
     engine: ctx.opts.engine || 'auto',
     dataflow: ctx.opts.dataflow !== false,
     ast: ctx.opts.ast !== false,
+    nativeDb: ctx.nativeDb,
   };
   const { name: engineName, version: engineVersion } = getActiveEngine(ctx.engineOpts);
   ctx.engineName = engineName as 'native' | 'wasm';
@@ -46,19 +48,23 @@ function checkEngineSchemaMismatch(ctx: PipelineContext): void {
   ctx.forceFullRebuild = false;
   if (!ctx.incremental) return;
 
-  const prevEngine = getBuildMeta(ctx.db, 'engine');
+  // Route metadata reads through NativeDatabase when available (Phase 6.13)
+  const meta = (key: string): string | null =>
+    ctx.nativeDb ? ctx.nativeDb.getBuildMeta(key) : getBuildMeta(ctx.db, key);
+
+  const prevEngine = meta('engine');
   if (prevEngine && prevEngine !== ctx.engineName) {
     info(`Engine changed (${prevEngine} → ${ctx.engineName}), promoting to full rebuild.`);
     ctx.forceFullRebuild = true;
   }
-  const prevSchema = getBuildMeta(ctx.db, 'schema_version');
+  const prevSchema = meta('schema_version');
   if (prevSchema && Number(prevSchema) !== ctx.schemaVersion) {
     info(
       `Schema version changed (${prevSchema} → ${ctx.schemaVersion}), promoting to full rebuild.`,
     );
     ctx.forceFullRebuild = true;
   }
-  const prevVersion = getBuildMeta(ctx.db, 'codegraph_version');
+  const prevVersion = meta('codegraph_version');
   if (prevVersion && prevVersion !== CODEGRAPH_VERSION) {
     info(
       `Codegraph version changed (${prevVersion} → ${CODEGRAPH_VERSION}), promoting to full rebuild.`,
@@ -91,7 +97,23 @@ function setupPipeline(ctx: PipelineContext): void {
   ctx.rootDir = path.resolve(ctx.rootDir);
   ctx.dbPath = path.join(ctx.rootDir, '.codegraph', 'graph.db');
   ctx.db = openDb(ctx.dbPath);
-  initSchema(ctx.db);
+
+  // Use NativeDatabase for schema init when native engine is available (Phase 6.13).
+  // better-sqlite3 (ctx.db) is still always opened — needed for queries and stages
+  // that haven't been migrated to rusqlite yet.
+  const native = loadNative();
+  if (native?.NativeDatabase) {
+    try {
+      ctx.nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
+      ctx.nativeDb.initSchema();
+    } catch (err) {
+      warn(`NativeDatabase init failed, falling back to JS: ${(err as Error).message}`);
+      ctx.nativeDb = undefined;
+      initSchema(ctx.db);
+    }
+  } else {
+    initSchema(ctx.db);
+  }
 
   ctx.config = loadConfig(ctx.rootDir);
   ctx.incremental =
@@ -168,7 +190,9 @@ export async function buildGraph(
     setupPipeline(ctx);
     await runPipelineStages(ctx);
   } catch (err) {
-    if (!ctx.earlyExit && ctx.db) closeDb(ctx.db);
+    if (!ctx.earlyExit && ctx.db) {
+      closeDbPair({ db: ctx.db, nativeDb: ctx.nativeDb });
+    }
     throw err;
   }
 
