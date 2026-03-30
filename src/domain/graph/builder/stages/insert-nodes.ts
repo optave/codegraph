@@ -58,14 +58,14 @@ function tryNativeInsert(ctx: PipelineContext): boolean {
       name: string;
       kind: string;
       line: number;
-      endLine?: number | null;
-      visibility?: string | null;
+      endLine?: number;
+      visibility?: string;
       children: Array<{
         name: string;
         kind: string;
         line: number;
-        endLine?: number | null;
-        visibility?: string | null;
+        endLine?: number;
+        visibility?: string;
       }>;
     }>;
     exports: Array<{ name: string; kind: string; line: number }>;
