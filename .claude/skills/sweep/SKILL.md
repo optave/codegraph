@@ -81,8 +81,8 @@ If `CONFLICTING`:
    ```bash
    # Check nothing was lost from the base branch (main)
    git diff origin/<base-branch> -- <file>
-   # Check nothing was lost from the PR branch (pre-merge)
-   git diff <pre-merge-commit> -- <file>
+   # Check nothing was lost from the PR branch (ORIG_HEAD = pre-merge HEAD, set by git automatically)
+   git diff ORIG_HEAD -- <file>
    ```
    Review each diff to confirm that intentional changes from both sides survived the merge. If content was dropped, amend the resolution before pushing.
 5. Push the updated branch.
