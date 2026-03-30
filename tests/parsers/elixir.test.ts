@@ -29,7 +29,9 @@ end`);
     "Hello"
   end
 end`);
-    expect(symbols.definitions).toContainEqual(expect.objectContaining({ kind: 'function' }));
+    expect(symbols.definitions).toContainEqual(
+      expect.objectContaining({ name: 'Greeter.greet', kind: 'function' }),
+    );
   });
 
   it('extracts protocol definitions', () => {

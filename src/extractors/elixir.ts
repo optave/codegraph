@@ -32,13 +32,21 @@ function walkElixirNode(
   ctx: ExtractorOutput,
   currentModule: string | null,
 ): void {
+  let nextModule = currentModule;
+
   if (node.type === 'call') {
-    handleElixirCall(node, ctx, currentModule);
+    const target = node.childForFieldName('target');
+    if (target?.type === 'identifier' && target.text === 'defmodule') {
+      const args = findChild(node, 'arguments');
+      const aliasNode = args && findChild(args, 'alias');
+      if (aliasNode) nextModule = aliasNode.text;
+    }
+    handleElixirCall(node, ctx, nextModule);
   }
 
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    if (child) walkElixirNode(child, ctx, currentModule);
+    if (child) walkElixirNode(child, ctx, nextModule);
   }
 }
 
