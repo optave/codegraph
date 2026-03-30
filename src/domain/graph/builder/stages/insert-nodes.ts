@@ -340,11 +340,16 @@ export async function insertNodes(ctx: PipelineContext): Promise<void> {
   const t0 = performance.now();
 
   // Try native Rust path first — single transaction, no JS↔C overhead
-  if (ctx.engineName === 'native' && tryNativeInsert(ctx)) {
-    ctx.timing.insertMs = performance.now() - t0;
-
-    // Removed-file hash cleanup is handled inside the native call
-    return;
+  if (ctx.engineName === 'native') {
+    try {
+      if (tryNativeInsert(ctx)) {
+        ctx.timing.insertMs = performance.now() - t0;
+        // Removed-file hash cleanup is handled inside the native call
+        return;
+      }
+    } catch {
+      // Native insert failed — fall through to JS implementation
+    }
   }
 
   // JS fallback
