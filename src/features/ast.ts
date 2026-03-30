@@ -114,7 +114,7 @@ export async function buildAstNodes(
             kind: n.kind,
             name: n.name,
             text: n.text,
-            receiver: n.receiver,
+            receiver: n.receiver ?? '',
           })),
         });
       } else if (symbols.calls || symbols._tree) {
