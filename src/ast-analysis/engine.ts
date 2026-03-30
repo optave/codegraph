@@ -159,6 +159,80 @@ async function ensureWasmTreesIfNeeded(
 
 // ─── Per-file visitor setup ─────────────────────────────────────────────
 
+/** Check if a definition has a real function body (not a type signature). */
+function hasFuncBody(d: {
+  name: string;
+  kind: string;
+  line: number;
+  endLine?: number | null;
+}): boolean {
+  return (
+    (d.kind === 'function' || d.kind === 'method') &&
+    d.line > 0 &&
+    d.endLine != null &&
+    d.endLine > d.line &&
+    !d.name.includes('.')
+  );
+}
+
+/** Set up AST-store visitor if applicable. */
+function setupAstVisitor(
+  db: BetterSqlite3Database,
+  relPath: string,
+  symbols: ExtractorOutput,
+  langId: string,
+  ext: string,
+): Visitor | null {
+  const astTypeMap = AST_TYPE_MAPS.get(langId);
+  if (!astTypeMap || !WALK_EXTENSIONS.has(ext) || Array.isArray(symbols.astNodes)) return null;
+  const nodeIdMap = new Map<string, number>();
+  for (const row of bulkNodeIdsByFile(db, relPath)) {
+    nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
+  }
+  return createAstStoreVisitor(astTypeMap, symbols.definitions || [], relPath, nodeIdMap);
+}
+
+/** Set up complexity visitor if any definitions need WASM complexity analysis. */
+function setupComplexityVisitorForFile(
+  defs: Definition[],
+  langId: string,
+  walkerOpts: WalkOptions,
+): Visitor | null {
+  const cRules = COMPLEXITY_RULES.get(langId);
+  if (!cRules) return null;
+
+  const hRules = HALSTEAD_RULES.get(langId);
+  const needsWasmComplexity = defs.some((d) => hasFuncBody(d) && !d.complexity);
+  if (!needsWasmComplexity) return null;
+
+  const visitor = createComplexityVisitor(cRules, hRules, { fileLevelWalk: true, langId });
+
+  for (const t of cRules.nestingNodes) walkerOpts.nestingNodeTypes?.add(t);
+
+  const dfRules = DATAFLOW_RULES.get(langId);
+  walkerOpts.getFunctionName = (node: TreeSitterNode): string | null => {
+    const nameNode = node.childForFieldName('name');
+    if (nameNode) return nameNode.text;
+    if (dfRules) return getFuncName(node, dfRules as any);
+    return null;
+  };
+
+  return visitor;
+}
+
+/** Set up CFG visitor if any definitions need WASM CFG analysis. */
+function setupCfgVisitorForFile(defs: Definition[], langId: string, ext: string): Visitor | null {
+  const cfgRulesForLang = CFG_RULES.get(langId);
+  if (!cfgRulesForLang || !CFG_EXTENSIONS.has(ext)) return null;
+
+  const needsWasmCfg = defs.some(
+    (d) => hasFuncBody(d) && d.cfg !== null && !Array.isArray(d.cfg?.blocks),
+  );
+  if (!needsWasmCfg) return null;
+
+  return createCfgVisitor(cfgRulesForLang);
+}
+
 function setupVisitors(
   db: BetterSqlite3Database,
   relPath: string,
@@ -168,10 +242,6 @@ function setupVisitors(
 ): SetupResult {
   const ext = path.extname(relPath).toLowerCase();
   const defs = symbols.definitions || [];
-  const doAst = opts.ast !== false;
-  const doComplexity = opts.complexity !== false;
-  const doCfg = opts.cfg !== false;
-  const doDataflow = opts.dataflow !== false;
 
   const visitors: Visitor[] = [];
   const walkerOpts: WalkOptions = {
@@ -180,75 +250,19 @@ function setupVisitors(
     getFunctionName: (_node: TreeSitterNode) => null,
   };
 
-  // AST-store visitor
-  let astVisitor: Visitor | null = null;
-  const astTypeMap = AST_TYPE_MAPS.get(langId);
-  if (doAst && astTypeMap && WALK_EXTENSIONS.has(ext) && !Array.isArray(symbols.astNodes)) {
-    const nodeIdMap = new Map<string, number>();
-    for (const row of bulkNodeIdsByFile(db, relPath)) {
-      nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
-    }
-    astVisitor = createAstStoreVisitor(astTypeMap, defs, relPath, nodeIdMap);
-    visitors.push(astVisitor);
-  }
+  const astVisitor = opts.ast !== false ? setupAstVisitor(db, relPath, symbols, langId, ext) : null;
+  if (astVisitor) visitors.push(astVisitor);
 
-  // Complexity visitor (file-level mode)
-  let complexityVisitor: Visitor | null = null;
-  const cRules = COMPLEXITY_RULES.get(langId);
-  const hRules = HALSTEAD_RULES.get(langId);
-  if (doComplexity && cRules) {
-    // Only trigger WASM complexity for definitions with real function bodies.
-    // Interface/type property signatures (dotted names, single-line span)
-    // correctly lack native complexity data and should not trigger a fallback.
-    const needsWasmComplexity = defs.some(
-      (d) =>
-        (d.kind === 'function' || d.kind === 'method') &&
-        d.line > 0 &&
-        d.endLine != null &&
-        d.endLine > d.line &&
-        !d.name.includes('.') &&
-        !d.complexity,
-    );
-    if (needsWasmComplexity) {
-      complexityVisitor = createComplexityVisitor(cRules, hRules, { fileLevelWalk: true, langId });
-      visitors.push(complexityVisitor);
+  const complexityVisitor =
+    opts.complexity !== false ? setupComplexityVisitorForFile(defs, langId, walkerOpts) : null;
+  if (complexityVisitor) visitors.push(complexityVisitor);
 
-      for (const t of cRules.nestingNodes) walkerOpts.nestingNodeTypes?.add(t);
+  const cfgVisitor = opts.cfg !== false ? setupCfgVisitorForFile(defs, langId, ext) : null;
+  if (cfgVisitor) visitors.push(cfgVisitor);
 
-      const dfRules = DATAFLOW_RULES.get(langId);
-      walkerOpts.getFunctionName = (node: TreeSitterNode): string | null => {
-        const nameNode = node.childForFieldName('name');
-        if (nameNode) return nameNode.text;
-        if (dfRules) return getFuncName(node, dfRules as any);
-        return null;
-      };
-    }
-  }
-
-  // CFG visitor
-  let cfgVisitor: Visitor | null = null;
-  const cfgRulesForLang = CFG_RULES.get(langId);
-  if (doCfg && cfgRulesForLang && CFG_EXTENSIONS.has(ext)) {
-    const needsWasmCfg = defs.some(
-      (d) =>
-        (d.kind === 'function' || d.kind === 'method') &&
-        d.line > 0 &&
-        d.endLine != null &&
-        d.endLine > d.line &&
-        !d.name.includes('.') &&
-        d.cfg !== null &&
-        !Array.isArray(d.cfg?.blocks),
-    );
-    if (needsWasmCfg) {
-      cfgVisitor = createCfgVisitor(cfgRulesForLang);
-      visitors.push(cfgVisitor);
-    }
-  }
-
-  // Dataflow visitor
   let dataflowVisitor: Visitor | null = null;
   const dfRules = DATAFLOW_RULES.get(langId);
-  if (doDataflow && dfRules && DATAFLOW_EXTENSIONS.has(ext) && !symbols.dataflow) {
+  if (opts.dataflow !== false && dfRules && DATAFLOW_EXTENSIONS.has(ext) && !symbols.dataflow) {
     dataflowVisitor = createDataflowVisitor(dfRules);
     visitors.push(dataflowVisitor);
   }
