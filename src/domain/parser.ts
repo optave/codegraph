@@ -17,9 +17,9 @@ import type {
 // Re-export all extractors for backward compatibility
 export {
   extractBashSymbols,
-  extractCSymbols,
   extractCppSymbols,
   extractCSharpSymbols,
+  extractCSymbols,
   extractGoSymbols,
   extractHCLSymbols,
   extractJavaSymbols,
@@ -35,9 +35,9 @@ export {
 
 import {
   extractBashSymbols,
-  extractCSymbols,
   extractCppSymbols,
   extractCSharpSymbols,
+  extractCSymbols,
   extractGoSymbols,
   extractHCLSymbols,
   extractJavaSymbols,

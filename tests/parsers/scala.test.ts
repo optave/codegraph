@@ -65,9 +65,7 @@ describe('Scala parser', () => {
   it('extracts imports', () => {
     const symbols = parseScala(`import scala.collection.mutable.Map
 class Foo { }`);
-    expect(symbols.imports).toContainEqual(
-      expect.objectContaining({ scalaImport: true }),
-    );
+    expect(symbols.imports).toContainEqual(expect.objectContaining({ scalaImport: true }));
   });
 
   it('extracts function calls', () => {

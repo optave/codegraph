@@ -77,9 +77,7 @@ describe('Swift parser', () => {
 
   it('extracts imports', () => {
     const symbols = parseSwift(`import Foundation`);
-    expect(symbols.imports).toContainEqual(
-      expect.objectContaining({ swiftImport: true }),
-    );
+    expect(symbols.imports).toContainEqual(expect.objectContaining({ swiftImport: true }));
   });
 
   it('extracts function calls', () => {

@@ -1,9 +1,4 @@
-import type {
-  Call,
-  ExtractorOutput,
-  TreeSitterNode,
-  TreeSitterTree,
-} from '../types.js';
+import type { Call, ExtractorOutput, TreeSitterNode, TreeSitterTree } from '../types.js';
 import { nodeEndLine } from './helpers.js';
 
 /**

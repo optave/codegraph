@@ -37,15 +37,11 @@ describe('Bash parser', () => {
 
   it('extracts source imports', () => {
     const symbols = parseBash(`source ./utils.sh`);
-    expect(symbols.imports).toContainEqual(
-      expect.objectContaining({ bashSource: true }),
-    );
+    expect(symbols.imports).toContainEqual(expect.objectContaining({ bashSource: true }));
   });
 
   it('extracts dot source imports', () => {
     const symbols = parseBash(`. ./config.sh`);
-    expect(symbols.imports).toContainEqual(
-      expect.objectContaining({ bashSource: true }),
-    );
+    expect(symbols.imports).toContainEqual(expect.objectContaining({ bashSource: true }));
   });
 });
