@@ -272,88 +272,80 @@ function setupVisitors(
 
 // ─── Result storage helpers ─────────────────────────────────────────────
 
-function storeComplexityResults(results: WalkResults, defs: Definition[], langId: string): void {
-  const complexityResults = (results.complexity || []) as ComplexityFuncResult[];
-  const resultByLine = new Map<number, ComplexityFuncResult[]>();
-  for (const r of complexityResults) {
-    if (r.funcNode) {
-      const line = r.funcNode.startPosition.row + 1;
-      if (!resultByLine.has(line)) resultByLine.set(line, []);
-      resultByLine.get(line)?.push(r);
-    }
+/** Index per-function results by start line for O(1) lookup. */
+function indexByLine<T extends { funcNode: TreeSitterNode }>(results: T[]): Map<number, T[]> {
+  const byLine = new Map<number, T[]>();
+  for (const r of results) {
+    if (!r.funcNode) continue;
+    const line = r.funcNode.startPosition.row + 1;
+    if (!byLine.has(line)) byLine.set(line, []);
+    byLine.get(line)?.push(r);
   }
+  return byLine;
+}
+
+/** Find the best matching result for a definition by line + name. */
+function matchResultToDef<T extends { funcNode: TreeSitterNode }>(
+  candidates: T[] | undefined,
+  defName: string,
+): T | undefined {
+  if (!candidates) return undefined;
+  if (candidates.length === 1) return candidates[0];
+  return (
+    candidates.find((r) => {
+      const n = r.funcNode.childForFieldName('name');
+      return n && n.text === defName;
+    }) ?? candidates[0]
+  );
+}
+
+function storeComplexityResults(results: WalkResults, defs: Definition[], langId: string): void {
+  const byLine = indexByLine((results.complexity || []) as ComplexityFuncResult[]);
   for (const def of defs) {
     if ((def.kind === 'function' || def.kind === 'method') && def.line && !def.complexity) {
-      const candidates = resultByLine.get(def.line);
-      const funcResult = !candidates
-        ? undefined
-        : candidates.length === 1
-          ? candidates[0]
-          : (candidates.find((r) => {
-              const n = r.funcNode.childForFieldName('name');
-              return n && n.text === def.name;
-            }) ?? candidates[0]);
-      if (funcResult) {
-        const { metrics } = funcResult;
-        const loc = computeLOCMetrics(funcResult.funcNode, langId);
-        const volume = metrics.halstead ? metrics.halstead.volume : 0;
-        const commentRatio = loc.loc > 0 ? loc.commentLines / loc.loc : 0;
-        const mi = computeMaintainabilityIndex(volume, metrics.cyclomatic, loc.sloc, commentRatio);
-
-        def.complexity = {
-          cognitive: metrics.cognitive,
-          cyclomatic: metrics.cyclomatic,
-          maxNesting: metrics.maxNesting,
-          halstead: metrics.halstead,
-          loc,
-          maintainabilityIndex: mi,
-        };
-      }
+      const funcResult = matchResultToDef(byLine.get(def.line), def.name);
+      if (!funcResult) continue;
+      const { metrics } = funcResult;
+      const loc = computeLOCMetrics(funcResult.funcNode, langId);
+      const volume = metrics.halstead ? metrics.halstead.volume : 0;
+      const commentRatio = loc.loc > 0 ? loc.commentLines / loc.loc : 0;
+      const mi = computeMaintainabilityIndex(volume, metrics.cyclomatic, loc.sloc, commentRatio);
+      def.complexity = {
+        cognitive: metrics.cognitive,
+        cyclomatic: metrics.cyclomatic,
+        maxNesting: metrics.maxNesting,
+        halstead: metrics.halstead,
+        loc,
+        maintainabilityIndex: mi,
+      };
     }
   }
 }
 
 function storeCfgResults(results: WalkResults, defs: Definition[]): void {
-  const cfgResults = (results.cfg || []) as CfgFuncResult[];
-  const cfgByLine = new Map<number, CfgFuncResult[]>();
-  for (const r of cfgResults) {
-    if (r.funcNode) {
-      const line = r.funcNode.startPosition.row + 1;
-      if (!cfgByLine.has(line)) cfgByLine.set(line, []);
-      cfgByLine.get(line)?.push(r);
-    }
-  }
+  const byLine = indexByLine((results.cfg || []) as CfgFuncResult[]);
   for (const def of defs) {
     if (
       (def.kind === 'function' || def.kind === 'method') &&
       def.line &&
       !def.cfg?.blocks?.length
     ) {
-      const candidates = cfgByLine.get(def.line);
-      const cfgResult = !candidates
-        ? undefined
-        : candidates.length === 1
-          ? candidates[0]
-          : (candidates.find((r) => {
-              const n = r.funcNode.childForFieldName('name');
-              return n && n.text === def.name;
-            }) ?? candidates[0]);
-      if (cfgResult) {
-        def.cfg = { blocks: cfgResult.blocks, edges: cfgResult.edges };
+      const cfgResult = matchResultToDef(byLine.get(def.line), def.name);
+      if (!cfgResult) continue;
+      def.cfg = { blocks: cfgResult.blocks, edges: cfgResult.edges };
 
-        // Override complexity's cyclomatic with CFG-derived value (single source of truth)
-        if (def.complexity && cfgResult.cyclomatic != null) {
-          def.complexity.cyclomatic = cfgResult.cyclomatic;
-          const { loc, halstead } = def.complexity;
-          const volume = halstead ? halstead.volume : 0;
-          const commentRatio = loc && loc.loc > 0 ? loc.commentLines / loc.loc : 0;
-          def.complexity.maintainabilityIndex = computeMaintainabilityIndex(
-            volume,
-            cfgResult.cyclomatic,
-            loc?.sloc ?? 0,
-            commentRatio,
-          );
-        }
+      // Override complexity's cyclomatic with CFG-derived value (single source of truth)
+      if (def.complexity && cfgResult.cyclomatic != null) {
+        def.complexity.cyclomatic = cfgResult.cyclomatic;
+        const { loc, halstead } = def.complexity;
+        const volume = halstead ? halstead.volume : 0;
+        const commentRatio = loc && loc.loc > 0 ? loc.commentLines / loc.loc : 0;
+        def.complexity.maintainabilityIndex = computeMaintainabilityIndex(
+          volume,
+          cfgResult.cyclomatic,
+          loc?.sloc ?? 0,
+          commentRatio,
+        );
       }
     }
   }
