@@ -862,7 +862,7 @@ impl NativeDatabase {
                 let mut block_db_ids: std::collections::HashMap<u32, i64> =
                     std::collections::HashMap::new();
                 for block in &entry.blocks {
-                    if let Ok(()) = block_stmt.execute(params![
+                    if let Ok(_) = block_stmt.execute(params![
                         entry.node_id,
                         block.index,
                         &block.block_type,
