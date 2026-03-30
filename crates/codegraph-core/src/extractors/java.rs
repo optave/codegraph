@@ -90,219 +90,14 @@ fn walk_node_depth(node: &Node, source: &[u8], symbols: &mut FileSymbols, depth:
         return;
     }
     match node.kind() {
-        "class_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let class_name = node_text(&name_node, source).to_string();
-                let children = extract_java_class_fields(node, source);
-                symbols.definitions.push(Definition {
-                    name: class_name.clone(),
-                    kind: "class".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: None,
-                    cfg: None,
-                    children: opt_children(children),
-                });
-
-                // Superclass
-                if let Some(superclass) = node.child_by_field_name("superclass") {
-                    for i in 0..superclass.child_count() {
-                        if let Some(child) = superclass.child(i) {
-                            match child.kind() {
-                                "type_identifier" | "identifier" => {
-                                    symbols.classes.push(ClassRelation {
-                                        name: class_name.clone(),
-                                        extends: Some(node_text(&child, source).to_string()),
-                                        implements: None,
-                                        line: start_line(node),
-                                    });
-                                    break;
-                                }
-                                "generic_type" => {
-                                    if let Some(first) = child.child(0) {
-                                        symbols.classes.push(ClassRelation {
-                                            name: class_name.clone(),
-                                            extends: Some(
-                                                node_text(&first, source).to_string(),
-                                            ),
-                                            implements: None,
-                                            line: start_line(node),
-                                        });
-                                    }
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-
-                // Interfaces
-                if let Some(interfaces) = node.child_by_field_name("interfaces") {
-                    extract_java_interfaces(&interfaces, &class_name, source, symbols);
-                }
-            }
-        }
-
-        "interface_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let iface_name = node_text(&name_node, source).to_string();
-                symbols.definitions.push(Definition {
-                    name: iface_name.clone(),
-                    kind: "interface".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: None,
-                    cfg: None,
-                    children: None,
-                });
-                if let Some(body) = node.child_by_field_name("body") {
-                    for i in 0..body.child_count() {
-                        if let Some(child) = body.child(i) {
-                            if child.kind() == "method_declaration" {
-                                if let Some(meth_name) = child.child_by_field_name("name") {
-                                    symbols.definitions.push(Definition {
-                                        name: format!(
-                                            "{}.{}",
-                                            iface_name,
-                                            node_text(&meth_name, source)
-                                        ),
-                                        kind: "method".to_string(),
-                                        line: start_line(&child),
-                                        end_line: Some(end_line(&child)),
-                                        decorators: None,
-                                        complexity: compute_all_metrics(&child, source, "java"),
-                                        cfg: build_function_cfg(&child, "java", source),
-                                        children: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        "enum_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let enum_name = node_text(&name_node, source).to_string();
-                let children = extract_java_enum_constants(node, source);
-                symbols.definitions.push(Definition {
-                    name: enum_name,
-                    kind: "enum".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: None,
-                    cfg: None,
-                    children: opt_children(children),
-                });
-            }
-        }
-
-        "method_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let parent_class = find_java_parent_class(node, source);
-                let name = node_text(&name_node, source);
-                let full_name = match &parent_class {
-                    Some(cls) => format!("{}.{}", cls, name),
-                    None => name.to_string(),
-                };
-                let children = extract_java_parameters(node, source);
-                symbols.definitions.push(Definition {
-                    name: full_name,
-                    kind: "method".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: compute_all_metrics(node, source, "java"),
-                    cfg: build_function_cfg(node, "java", source),
-                    children: opt_children(children),
-                });
-            }
-        }
-
-        "constructor_declaration" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let parent_class = find_java_parent_class(node, source);
-                let name = node_text(&name_node, source);
-                let full_name = match &parent_class {
-                    Some(cls) => format!("{}.{}", cls, name),
-                    None => name.to_string(),
-                };
-                let children = extract_java_parameters(node, source);
-                symbols.definitions.push(Definition {
-                    name: full_name,
-                    kind: "method".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: compute_all_metrics(node, source, "java"),
-                    cfg: build_function_cfg(node, "java", source),
-                    children: opt_children(children),
-                });
-            }
-        }
-
-        "import_declaration" => {
-            let mut import_path = String::new();
-            let mut has_asterisk = false;
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "scoped_identifier" || child.kind() == "identifier" {
-                        import_path = node_text(&child, source).to_string();
-                    }
-                    if child.kind() == "asterisk" {
-                        has_asterisk = true;
-                    }
-                }
-            }
-            if !import_path.is_empty() {
-                let names = if has_asterisk {
-                    vec!["*".to_string()]
-                } else {
-                    let last = import_path.split('.').last().unwrap_or("").to_string();
-                    vec![last]
-                };
-                let mut imp = Import::new(import_path, names, start_line(node));
-                imp.java_import = Some(true);
-                symbols.imports.push(imp);
-            }
-        }
-
-        "method_invocation" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let receiver = node.child_by_field_name("object")
-                    .map(|obj| node_text(&obj, source).to_string());
-                symbols.calls.push(Call {
-                    name: node_text(&name_node, source).to_string(),
-                    line: start_line(node),
-                    dynamic: None,
-                    receiver,
-                });
-            }
-        }
-
-        "object_creation_expression" => {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let type_name = if type_node.kind() == "generic_type" {
-                    type_node.child(0).map(|n| node_text(&n, source).to_string())
-                } else {
-                    Some(node_text(&type_node, source).to_string())
-                };
-                if let Some(name) = type_name {
-                    symbols.calls.push(Call {
-                        name,
-                        line: start_line(node),
-                        dynamic: None,
-                        receiver: None,
-                    });
-                }
-            }
-        }
-
+        "class_declaration" => handle_class_decl(node, source, symbols),
+        "interface_declaration" => handle_interface_decl(node, source, symbols),
+        "enum_declaration" => handle_enum_decl(node, source, symbols),
+        "method_declaration" => handle_method_decl(node, source, symbols),
+        "constructor_declaration" => handle_constructor_decl(node, source, symbols),
+        "import_declaration" => handle_import_decl(node, source, symbols),
+        "method_invocation" => handle_method_invocation(node, source, symbols),
+        "object_creation_expression" => handle_object_creation(node, source, symbols),
         _ => {}
     }
 
@@ -310,6 +105,213 @@ fn walk_node_depth(node: &Node, source: &[u8], symbols: &mut FileSymbols, depth:
         if let Some(child) = node.child(i) {
             walk_node_depth(&child, source, symbols, depth + 1);
         }
+    }
+}
+
+// ── Per-node-kind handlers for walk_node_depth ───────────────────────────────
+
+fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let class_name = node_text(&name_node, source).to_string();
+    let children = extract_java_class_fields(node, source);
+    symbols.definitions.push(Definition {
+        name: class_name.clone(),
+        kind: "class".to_string(),
+        line: start_line(node),
+        end_line: Some(end_line(node)),
+        decorators: None,
+        complexity: None,
+        cfg: None,
+        children: opt_children(children),
+    });
+
+    // Superclass
+    if let Some(superclass) = node.child_by_field_name("superclass") {
+        extract_java_superclass(&superclass, &class_name, node, source, symbols);
+    }
+
+    // Interfaces
+    if let Some(interfaces) = node.child_by_field_name("interfaces") {
+        extract_java_interfaces(&interfaces, &class_name, source, symbols);
+    }
+}
+
+fn extract_java_superclass(superclass: &Node, class_name: &str, node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    for i in 0..superclass.child_count() {
+        let Some(child) = superclass.child(i) else { continue };
+        match child.kind() {
+            "type_identifier" | "identifier" => {
+                symbols.classes.push(ClassRelation {
+                    name: class_name.to_string(),
+                    extends: Some(node_text(&child, source).to_string()),
+                    implements: None,
+                    line: start_line(node),
+                });
+                break;
+            }
+            "generic_type" => {
+                if let Some(first) = child.child(0) {
+                    symbols.classes.push(ClassRelation {
+                        name: class_name.to_string(),
+                        extends: Some(node_text(&first, source).to_string()),
+                        implements: None,
+                        line: start_line(node),
+                    });
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let iface_name = node_text(&name_node, source).to_string();
+    symbols.definitions.push(Definition {
+        name: iface_name.clone(),
+        kind: "interface".to_string(),
+        line: start_line(node),
+        end_line: Some(end_line(node)),
+        decorators: None,
+        complexity: None,
+        cfg: None,
+        children: None,
+    });
+    if let Some(body) = node.child_by_field_name("body") {
+        for i in 0..body.child_count() {
+            let Some(child) = body.child(i) else { continue };
+            if child.kind() != "method_declaration" { continue; }
+            if let Some(meth_name) = child.child_by_field_name("name") {
+                symbols.definitions.push(Definition {
+                    name: format!("{}.{}", iface_name, node_text(&meth_name, source)),
+                    kind: "method".to_string(),
+                    line: start_line(&child),
+                    end_line: Some(end_line(&child)),
+                    decorators: None,
+                    complexity: compute_all_metrics(&child, source, "java"),
+                    cfg: build_function_cfg(&child, "java", source),
+                    children: None,
+                });
+            }
+        }
+    }
+}
+
+fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let enum_name = node_text(&name_node, source).to_string();
+        let children = extract_java_enum_constants(node, source);
+        symbols.definitions.push(Definition {
+            name: enum_name,
+            kind: "enum".to_string(),
+            line: start_line(node),
+            end_line: Some(end_line(node)),
+            decorators: None,
+            complexity: None,
+            cfg: None,
+            children: opt_children(children),
+        });
+    }
+}
+
+fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let parent_class = find_java_parent_class(node, source);
+        let name = node_text(&name_node, source);
+        let full_name = match &parent_class {
+            Some(cls) => format!("{}.{}", cls, name),
+            None => name.to_string(),
+        };
+        let children = extract_java_parameters(node, source);
+        symbols.definitions.push(Definition {
+            name: full_name,
+            kind: "method".to_string(),
+            line: start_line(node),
+            end_line: Some(end_line(node)),
+            decorators: None,
+            complexity: compute_all_metrics(node, source, "java"),
+            cfg: build_function_cfg(node, "java", source),
+            children: opt_children(children),
+        });
+    }
+}
+
+fn handle_constructor_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let parent_class = find_java_parent_class(node, source);
+        let name = node_text(&name_node, source);
+        let full_name = match &parent_class {
+            Some(cls) => format!("{}.{}", cls, name),
+            None => name.to_string(),
+        };
+        let children = extract_java_parameters(node, source);
+        symbols.definitions.push(Definition {
+            name: full_name,
+            kind: "method".to_string(),
+            line: start_line(node),
+            end_line: Some(end_line(node)),
+            decorators: None,
+            complexity: compute_all_metrics(node, source, "java"),
+            cfg: build_function_cfg(node, "java", source),
+            children: opt_children(children),
+        });
+    }
+}
+
+fn handle_import_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let mut import_path = String::new();
+    let mut has_asterisk = false;
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "scoped_identifier" || child.kind() == "identifier" {
+                import_path = node_text(&child, source).to_string();
+            }
+            if child.kind() == "asterisk" {
+                has_asterisk = true;
+            }
+        }
+    }
+    if !import_path.is_empty() {
+        let names = if has_asterisk {
+            vec!["*".to_string()]
+        } else {
+            let last = import_path.split('.').last().unwrap_or("").to_string();
+            vec![last]
+        };
+        let mut imp = Import::new(import_path, names, start_line(node));
+        imp.java_import = Some(true);
+        symbols.imports.push(imp);
+    }
+}
+
+fn handle_method_invocation(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let receiver = node.child_by_field_name("object")
+            .map(|obj| node_text(&obj, source).to_string());
+        symbols.calls.push(Call {
+            name: node_text(&name_node, source).to_string(),
+            line: start_line(node),
+            dynamic: None,
+            receiver,
+        });
+    }
+}
+
+fn handle_object_creation(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(type_node) = node.child_by_field_name("type") else { return };
+    let type_name = if type_node.kind() == "generic_type" {
+        type_node.child(0).map(|n| node_text(&n, source).to_string())
+    } else {
+        Some(node_text(&type_node, source).to_string())
+    };
+    if let Some(name) = type_name {
+        symbols.calls.push(Call {
+            name,
+            line: start_line(node),
+            dynamic: None,
+            receiver: None,
+        });
     }
 }
 
