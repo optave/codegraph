@@ -104,7 +104,7 @@ No config files, no Docker, no JVM, no API keys, no accounts. Point your agent a
 | **🔬** | **Function-level, not just files** | Traces `handleAuth()` → `validateToken()` → `decryptJWT()` and shows 14 callers across 9 files break if `decryptJWT` changes |
 | **⚡** | **Always-fresh graph** | Three-tier change detection: journal (O(changed)) → mtime+size (O(n) stats) → hash (O(changed) reads). Sub-second rebuilds — agents work with current data |
 | **💥** | **Git diff impact** | `codegraph diff-impact` shows changed functions, their callers, and full blast radius — enriched with historically coupled files from git co-change analysis. Ships with a GitHub Actions workflow |
-| **🌐** | **Multi-language, one graph** | JS/TS + Python + Go + Rust + Java + C# + PHP + Ruby + HCL in a single graph — agents don't need per-language tools |
+| **🌐** | **Multi-language, one graph** | JS/TS + Python + Go + Rust + Java + C# + PHP + Ruby + C + C++ + Kotlin + Swift + Scala + Bash + HCL in a single graph — agents don't need per-language tools |
 | **🧠** | **Hybrid search** | BM25 keyword + semantic embeddings fused via RRF — `hybrid` (default), `semantic`, or `keyword` mode; multi-query via `"auth; token; JWT"` |
 | **🔬** | **Dataflow + CFG** | Track how data flows through functions (`flows_to`, `returns`, `mutates`) and visualize intraprocedural control flow graphs for all 17 languages |
 | **🔓** | **Fully local, zero cost** | No API keys, no accounts, no network calls. Optionally bring your own LLM provider — your code only goes where you choose |
