@@ -772,8 +772,8 @@ See **[ROADMAP.md](docs/roadmap/ROADMAP.md)** for the full development roadmap a
 5. ~~**Architectural Refactoring**~~ — **Complete** (v3.1.5) — unified AST analysis, composable MCP, domain errors, builder pipeline, graph model, qualified names, presentation layer, CLI composability
 6. ~~**Resolution Accuracy**~~ — **Complete** (v3.3.1) — type inference, receiver type tracking, dead role sub-categories, resolution benchmarks, `package.json` exports, monorepo workspace resolution
 7. ~~**TypeScript Migration**~~ — **Complete** (v3.4.0) — all 271 source files migrated from JS to TS, zero `.js` remaining
-8. **Native Analysis Acceleration** — **In Progress** (7 of 8 complete) — JS-only build phases moved to Rust, sub-100ms 1-file rebuilds remaining
-9. **Expanded Language Support** — 8 new languages (11 → 19)
+8. ~~**Native Analysis Acceleration**~~ — **Complete** (v3.5.0) — all build phases in Rust/rusqlite, sub-100ms incremental rebuilds, better-sqlite3 lazy-loaded as fallback only
+9. **Expanded Language Support** — 23 new languages in 4 batches (11 → 34)
 10. **Runtime & Extensibility** — event-driven pipeline, plugin system, query caching, pagination
 11. **Quality, Security & Technical Debt** — supply-chain security (SBOM, SLSA), CI coverage gates, timer cleanup, tech debt kill list
 12. **Intelligent Embeddings** — LLM-generated descriptions, enhanced embeddings, module summaries

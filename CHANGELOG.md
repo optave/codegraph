@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [3.5.0](https://github.com/optave/codegraph/compare/v3.4.1...v3.5.0) (2026-03-29)
+
+**Full rusqlite database migration and sub-100ms incremental rebuilds.** This release completes the migration of all SQLite operations from better-sqlite3 to native Rust/rusqlite via napi-rs, delivering major performance gains across the entire build pipeline. Incremental rebuilds drop from 466ms to 67–80ms, and bulk inserts for nodes, edges, roles, AST nodes, CFG, and dataflow all run through the native engine. better-sqlite3 is now lazy-loaded only as a fallback. Path aliases are restored with TS 6.x-compatible subpath imports, and several WASM/native parity bugs are fixed.
+
+### Features
+
+* **config:** restore path aliases with TS 6.x-compatible subpath imports ([#672](https://github.com/optave/codegraph/pull/672))
+
+### Bug Fixes
+
+* **db:** fold reverse-dep edge deletion into NativeDatabase.purgeFilesData ([#670](https://github.com/optave/codegraph/pull/670), [#679](https://github.com/optave/codegraph/pull/679))
+* **wasm:** extract call-site AST nodes in ast-store-visitor ([#678](https://github.com/optave/codegraph/pull/678))
+* **parser:** close WASM–native engine parity gap ([#649](https://github.com/optave/codegraph/pull/649), [#657](https://github.com/optave/codegraph/pull/657))
+* **test:** remove constant-kind exclusion from parity test ([#676](https://github.com/optave/codegraph/pull/676), [#680](https://github.com/optave/codegraph/pull/680))
+
+### Performance
+
+* **db:** NativeDatabase napi-rs class for rusqlite connection lifecycle (6.13) ([#666](https://github.com/optave/codegraph/pull/666))
+* **db:** migrate Repository read queries to NativeDatabase rusqlite (6.14) ([#671](https://github.com/optave/codegraph/pull/671))
+* **db:** migrate build pipeline writes to NativeDatabase (6.15) ([#669](https://github.com/optave/codegraph/pull/669))
+* **db:** generic query execution on NativeDatabase (6.16) ([#677](https://github.com/optave/codegraph/pull/677))
+* **db:** bulk CFG and dataflow DB writes via rusqlite ([#653](https://github.com/optave/codegraph/pull/653))
+* **build:** native Rust/rusqlite for roles & edge insertion (6.12) ([#658](https://github.com/optave/codegraph/pull/658))
+* **insert-nodes:** native Rust/rusqlite pipeline for node insertion ([#654](https://github.com/optave/codegraph/pull/654))
+* **ast:** bulk-insert AST nodes via native Rust/rusqlite ([#651](https://github.com/optave/codegraph/pull/651))
+* sub-100ms incremental rebuilds (466ms → 67–80ms) ([#644](https://github.com/optave/codegraph/pull/644))
+* **hooks:** narrow Bash hook matchers to git commands only ([#655](https://github.com/optave/codegraph/pull/655))
+
+### Refactors
+
+* **db:** lazy-load better-sqlite3 and remove standalone napi functions (6.17) ([#673](https://github.com/optave/codegraph/pull/673))
+
+### Chores
+
+* **deps:** upgrade TypeScript from 5.9 to 6.0 ([#667](https://github.com/optave/codegraph/pull/667))
+* **deps:** bump @modelcontextprotocol/sdk from 1.27.1 to 1.28.0 ([#664](https://github.com/optave/codegraph/pull/664))
+* **deps-dev:** bump @vitest/coverage-v8 from 4.1.1 to 4.1.2 ([#662](https://github.com/optave/codegraph/pull/662))
+* **deps-dev:** bump @biomejs/biome from 2.4.8 to 2.4.9 ([#661](https://github.com/optave/codegraph/pull/661))
+
 ## [3.4.1](https://github.com/optave/codegraph/compare/v3.4.0...v3.4.1) (2026-03-26)
 
 **Post-migration stabilization and native engine accuracy.** This release fixes a Rust `findCaller` bug that misattributed 68 call edges, adds compound database indexes to restore query performance after the TypeScript migration, and delivers a 96% speedup to incremental role classification (255ms → 9ms). WASM builds are more resilient, incremental rebuilds handle JSONC and version changes correctly, and error handling is safer across the board.
