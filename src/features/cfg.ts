@@ -395,8 +395,13 @@ export async function buildCFGData(
         const nodeId = getFunctionNodeId(db, def.name, relPath, def.line);
         if (!nodeId) continue;
 
-        deleteCfgForNode(db, nodeId);
-        if (!def.cfg?.blocks?.length) continue;
+        // Deletion is handled inside nativeDb.bulkInsertCfg to avoid
+        // dual-connection WAL conflicts between JS and native connections.
+        if (!def.cfg?.blocks?.length) {
+          // Still send an entry so the native side deletes stale CFG data.
+          entries.push({ nodeId, blocks: [], edges: [] });
+          continue;
+        }
 
         const cfg = def.cfg as unknown as { blocks: CfgBuildBlock[]; edges: CfgBuildEdge[] };
         entries.push({
