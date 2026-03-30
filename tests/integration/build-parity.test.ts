@@ -36,14 +36,8 @@ function copyDirSync(src, dest) {
 
 function readGraph(dbPath) {
   const db = new Database(dbPath, { readonly: true });
-  // PARITY BUG (#676): Native engine extracts local `const` variables inside
-  // functions as top-level constants; WASM correctly limits to program-level.
-  // Fix: crates/codegraph-core/src/extractors/javascript.rs (find_parent_of_types guard)
-  // Remove this exclusion once #676 is resolved.
   const nodes = db
-    .prepare(
-      "SELECT name, kind, file, line FROM nodes WHERE kind != 'constant' ORDER BY name, kind, file, line",
-    )
+    .prepare('SELECT name, kind, file, line FROM nodes ORDER BY name, kind, file, line')
     .all();
   const edges = db
     .prepare(`
@@ -51,14 +45,11 @@ function readGraph(dbPath) {
     FROM edges e
     JOIN nodes n1 ON e.source_id = n1.id
     JOIN nodes n2 ON e.target_id = n2.id
-    WHERE n1.kind != 'constant' AND n2.kind != 'constant'
     ORDER BY n1.name, n2.name, e.kind
   `)
     .all();
   const roles = db
-    .prepare(
-      "SELECT name, role FROM nodes WHERE role IS NOT NULL AND kind != 'constant' ORDER BY name, role",
-    )
+    .prepare('SELECT name, role FROM nodes WHERE role IS NOT NULL ORDER BY name, role')
     .all();
 
   // ast_nodes may not exist on older schemas — read if available
