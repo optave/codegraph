@@ -15,14 +15,15 @@ The Titan pipeline audited 122 files across 13 domains, identifying 55 fail-leve
 
 ## Pipeline Timeline
 
-| Phase | Started | Completed | Duration |
-|-------|---------|-----------|----------|
-| RECON | 2026-03-29T00:00:00Z | 2026-03-29T00:00:00Z | < 1 min |
-| GAUNTLET | 2026-03-29T00:10:00Z | 2026-03-30T06:10:14Z | ~30 hrs |
-| SYNC | 2026-03-29T18:00:00Z | 2026-03-29T18:00:00Z | < 1 min |
-| FORGE (5 sub-phases) | 2026-03-29T19:00:00Z | 2026-03-30T09:12:00Z | ~14 hrs |
-| GATE (22 runs) | 2026-03-29T01:10:00Z | 2026-03-30T09:10:00Z | across forge |
-| CLOSE | 2026-03-30T03:04:00Z | 2026-03-30T03:04:00Z | < 5 min |
+| Phase | Duration | Notes |
+|-------|----------|-------|
+| RECON | ~15 min | Completed before crash (prior session) |
+| GAUNTLET | ~55 min | 37/122 done pre-crash; resumed, 2 iterations finished remaining 85 targets |
+| SYNC | ~5 min | Single sub-agent pass |
+| FORGE (5 sub-phases) | ~2.5 hrs | 31 commits, first at 00:26 CDT, last at 02:51 CDT (2026-03-30) |
+| GATE (22 runs) | across forge | Inline with each forge commit |
+| CLOSE | ~8 min | Report + PR creation |
+| **Total** | **~3.5 hrs** | Excludes pre-crash RECON + partial GAUNTLET |
 
 ---
 
