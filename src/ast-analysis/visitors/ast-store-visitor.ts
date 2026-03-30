@@ -82,7 +82,6 @@ export function createAstStoreVisitor(
   nodeIdMap: Map<string, number>,
 ): Visitor {
   const rows: AstStoreRow[] = [];
-  const matched = new Set<number>();
 
   function findParentDef(line: number): Definition | null {
     let best: Definition | null = null;
@@ -106,8 +105,6 @@ export function createAstStoreVisitor(
     name: 'ast-store',
 
     enterNode(node: TreeSitterNode, _context: VisitorContext): EnterNodeResult | undefined {
-      if (matched.has(node.id)) return;
-
       const kind = astTypeMap[node.type];
       if (!kind) return;
 
@@ -143,8 +140,6 @@ export function createAstStoreVisitor(
         receiver: null,
         parentNodeId: resolveParentNodeId(line),
       });
-
-      matched.add(node.id);
 
       if (kind !== 'string' && kind !== 'regex') {
         return { skipChildren: true };
