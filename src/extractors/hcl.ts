@@ -6,7 +6,7 @@ import type {
   TreeSitterNode,
   TreeSitterTree,
 } from '../types.js';
-import { nodeEndLine, stripQuotes } from './helpers.js';
+import { nodeEndLine } from './helpers.js';
 
 /**
  * Extract symbols from HCL (Terraform) files.
@@ -80,18 +80,18 @@ function resolveHclBlockName(blockType: string, strings: TreeSitterNode[]): stri
   const s0 = strings[0];
   const s1 = strings[1];
   if (blockType === 'resource' && s0 && s1) {
-    return `${stripQuotes(s0.text)}.${stripQuotes(s1.text)}`;
+    return `${s0.text.replace(/"/g, '')}.${s1.text.replace(/"/g, '')}`;
   }
   if (blockType === 'data' && s0 && s1) {
-    return `data.${stripQuotes(s0.text)}.${stripQuotes(s1.text)}`;
+    return `data.${s0.text.replace(/"/g, '')}.${s1.text.replace(/"/g, '')}`;
   }
   if ((blockType === 'variable' || blockType === 'output' || blockType === 'module') && s0) {
-    return `${blockType}.${stripQuotes(s0.text)}`;
+    return `${blockType}.${s0.text.replace(/"/g, '')}`;
   }
   if (blockType === 'locals') return 'locals';
   if (blockType === 'terraform' || blockType === 'provider') {
     let name = blockType;
-    if (s0) name += `.${stripQuotes(s0.text)}`;
+    if (s0) name += `.${s0.text.replace(/"/g, '')}`;
     return name;
   }
   return '';
@@ -126,7 +126,7 @@ function extractHclModuleSource(
       const key = attr.childForFieldName('key') || attr.child(0);
       const val = attr.childForFieldName('val') || attr.child(2);
       if (key && key.text === 'source' && val) {
-        const src = stripQuotes(val.text);
+        const src = val.text.replace(/"/g, '');
         if (src.startsWith('./') || src.startsWith('../')) {
           ctx.imports.push({ source: src, names: [], line: attr.startPosition.row + 1 });
         }

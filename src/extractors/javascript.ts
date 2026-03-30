@@ -12,7 +12,7 @@ import type {
   TreeSitterTree,
   TypeMapEntry,
 } from '../types.js';
-import { findChild, findParentNode, MAX_WALK_DEPTH, nodeEndLine } from './helpers.js';
+import { findChild, MAX_WALK_DEPTH, nodeEndLine } from './helpers.js';
 
 /** Built-in globals that start with uppercase but are not user-defined types. */
 const BUILTIN_GLOBALS: Set<string> = new Set([
@@ -1191,9 +1191,17 @@ function extractSuperclass(heritage: TreeSitterNode): string | null {
   return null;
 }
 
-const JS_CLASS_TYPES = ['class_declaration', 'class'] as const;
 function findParentClass(node: TreeSitterNode): string | null {
-  return findParentNode(node, JS_CLASS_TYPES);
+  let current = node.parent;
+  while (current) {
+    const t = current.type;
+    if (t === 'class_declaration' || t === 'class') {
+      const nameNode = current.childForFieldName('name');
+      return nameNode ? nameNode.text : null;
+    }
+    current = current.parent;
+  }
+  return null;
 }
 
 function extractImportNames(node: TreeSitterNode): string[] {

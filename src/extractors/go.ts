@@ -6,14 +6,7 @@ import type {
   TreeSitterTree,
   TypeMapEntry,
 } from '../types.js';
-import {
-  findChild,
-  goVisibility,
-  lastPathSegment,
-  MAX_WALK_DEPTH,
-  nodeEndLine,
-  stripQuotes,
-} from './helpers.js';
+import { findChild, goVisibility, MAX_WALK_DEPTH, nodeEndLine } from './helpers.js';
 
 /**
  * Extract symbols from Go files.
@@ -177,9 +170,9 @@ function handleGoImportDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
 function extractGoImportSpec(spec: TreeSitterNode, ctx: ExtractorOutput): void {
   const pathNode = spec.childForFieldName('path');
   if (pathNode) {
-    const importPath = stripQuotes(pathNode.text);
+    const importPath = pathNode.text.replace(/"/g, '');
     const nameNode = spec.childForFieldName('name');
-    const alias = nameNode ? nameNode.text : lastPathSegment(importPath);
+    const alias = nameNode ? nameNode.text : (importPath.split('/').pop() ?? importPath);
     ctx.imports.push({
       source: importPath,
       names: [alias],
