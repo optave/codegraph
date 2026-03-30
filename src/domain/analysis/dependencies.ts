@@ -475,6 +475,62 @@ export function pathData(
 
 // ── File-level shortest path ────────────────────────────────────────────
 
+/** BFS over file adjacency graph to find shortest path. */
+function bfsFilePath(
+  neighborStmt: ReturnType<BetterSqlite3Database['prepare']>,
+  sourceFile: string,
+  targetFile: string,
+  edgeKinds: string[],
+  maxDepth: number,
+  noTests: boolean,
+): { found: boolean; path: string[]; alternateCount: number } {
+  const visited = new Set([sourceFile]);
+  const parentMap = new Map<string, string>();
+  let queue = [sourceFile];
+  let found = false;
+  let alternateCount = 0;
+
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    const nextQueue: string[] = [];
+    for (const currentFile of queue) {
+      const neighbors = neighborStmt.all(currentFile, ...edgeKinds) as Array<{
+        neighbor_file: string;
+      }>;
+      for (const n of neighbors) {
+        if (noTests && isTestFile(n.neighbor_file)) continue;
+        if (n.neighbor_file === targetFile) {
+          if (!found) {
+            found = true;
+            parentMap.set(n.neighbor_file, currentFile);
+          }
+          alternateCount++;
+          continue;
+        }
+        if (!visited.has(n.neighbor_file)) {
+          visited.add(n.neighbor_file);
+          parentMap.set(n.neighbor_file, currentFile);
+          nextQueue.push(n.neighbor_file);
+        }
+      }
+    }
+    if (found) break;
+    queue = nextQueue;
+    if (queue.length === 0) break;
+  }
+
+  if (!found) return { found: false, path: [], alternateCount: 0 };
+
+  // Reconstruct path
+  const filePath: string[] = [targetFile];
+  let cur = targetFile;
+  while (cur !== sourceFile) {
+    cur = parentMap.get(cur)!;
+    filePath.push(cur);
+  }
+  filePath.reverse();
+  return { found: true, path: filePath, alternateCount: Math.max(0, alternateCount - 1) };
+}
+
 /**
  * BFS at the file level: find shortest import/edge path between two files.
  * Adjacency: file A → file B if any symbol in A has an edge to any symbol in B.
@@ -559,42 +615,17 @@ export function filePathData(
          WHERE n_src.file = ? AND e.kind IN (${kindPlaceholders}) AND n_tgt.file != n_src.file`;
     const neighborStmt = db.prepare(neighborQuery);
 
-    // BFS
-    const visited = new Set([sourceFile]);
-    const parentMap = new Map<string, string>();
-    let queue = [sourceFile];
-    let found = false;
-    let alternateCount = 0;
+    // BFS to find shortest file path
+    const bfsResult = bfsFilePath(
+      neighborStmt,
+      sourceFile,
+      targetFile,
+      edgeKinds,
+      maxDepth,
+      noTests,
+    );
 
-    for (let depth = 1; depth <= maxDepth; depth++) {
-      const nextQueue: string[] = [];
-      for (const currentFile of queue) {
-        const neighbors = neighborStmt.all(currentFile, ...edgeKinds) as Array<{
-          neighbor_file: string;
-        }>;
-        for (const n of neighbors) {
-          if (noTests && isTestFile(n.neighbor_file)) continue;
-          if (n.neighbor_file === targetFile) {
-            if (!found) {
-              found = true;
-              parentMap.set(n.neighbor_file, currentFile);
-            }
-            alternateCount++;
-            continue;
-          }
-          if (!visited.has(n.neighbor_file)) {
-            visited.add(n.neighbor_file);
-            parentMap.set(n.neighbor_file, currentFile);
-            nextQueue.push(n.neighbor_file);
-          }
-        }
-      }
-      if (found) break;
-      queue = nextQueue;
-      if (queue.length === 0) break;
-    }
-
-    if (!found) {
+    if (!bfsResult.found) {
       return {
         from,
         to,
@@ -610,24 +641,15 @@ export function filePathData(
       };
     }
 
-    // Reconstruct path
-    const filePath: string[] = [targetFile];
-    let cur = targetFile;
-    while (cur !== sourceFile) {
-      cur = parentMap.get(cur)!;
-      filePath.push(cur);
-    }
-    filePath.reverse();
-
     return {
       from,
       to,
       fromCandidates,
       toCandidates,
       found: true,
-      hops: filePath.length - 1,
-      path: filePath,
-      alternateCount: Math.max(0, alternateCount - 1),
+      hops: bfsResult.path.length - 1,
+      path: bfsResult.path,
+      alternateCount: bfsResult.alternateCount,
       edgeKinds,
       reverse,
       maxDepth,

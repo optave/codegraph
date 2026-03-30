@@ -35,6 +35,62 @@ function hasImplementsEdges(db: BetterSqlite3Database): boolean {
  * during traversal), its concrete implementors are also added to the frontier
  * so that changes to an interface signature propagate to all implementors.
  */
+type BfsLevel = Array<{
+  name: string;
+  kind: string;
+  file: string;
+  line: number;
+  viaImplements?: boolean;
+}>;
+type BfsLevels = Record<number, BfsLevel>;
+type BfsOnVisit = (
+  caller: RelatedNodeRow & { viaImplements?: boolean },
+  parentId: number,
+  depth: number,
+) => void;
+
+/** Record an implementor node at the given depth, adding to frontier and levels. */
+function recordImplementor(
+  impl: RelatedNodeRow,
+  parentId: number,
+  depth: number,
+  visited: Set<number>,
+  frontier: number[],
+  levels: BfsLevels,
+  noTests: boolean,
+  onVisit?: BfsOnVisit,
+): void {
+  if (visited.has(impl.id) || (noTests && isTestFile(impl.file))) return;
+  visited.add(impl.id);
+  frontier.push(impl.id);
+  if (!levels[depth]) levels[depth] = [];
+  levels[depth].push({
+    name: impl.name,
+    kind: impl.kind,
+    file: impl.file,
+    line: impl.line,
+    viaImplements: true,
+  });
+  if (onVisit) onVisit({ ...impl, viaImplements: true }, parentId, depth);
+}
+
+/** Expand implementors for an interface/trait node into the BFS frontier. */
+function expandImplementors(
+  db: BetterSqlite3Database,
+  nodeId: number,
+  depth: number,
+  visited: Set<number>,
+  frontier: number[],
+  levels: BfsLevels,
+  noTests: boolean,
+  onVisit?: BfsOnVisit,
+): void {
+  const impls = findImplementors(db, nodeId) as RelatedNodeRow[];
+  for (const impl of impls) {
+    recordImplementor(impl, nodeId, depth, visited, frontier, levels, noTests, onVisit);
+  }
+}
+
 export function bfsTransitiveCallers(
   db: BetterSqlite3Database,
   startId: number,
@@ -47,50 +103,24 @@ export function bfsTransitiveCallers(
     noTests?: boolean;
     maxDepth?: number;
     includeImplementors?: boolean;
-    onVisit?: (
-      caller: RelatedNodeRow & { viaImplements?: boolean },
-      parentId: number,
-      depth: number,
-    ) => void;
+    onVisit?: BfsOnVisit;
   } = {},
 ) {
-  // Skip all implementor lookups when the graph has no implements edges
   const resolveImplementors = includeImplementors && hasImplementsEdges(db);
-
   const visited = new Set([startId]);
-  const levels: Record<
-    number,
-    Array<{ name: string; kind: string; file: string; line: number; viaImplements?: boolean }>
-  > = {};
+  const levels: BfsLevels = {};
   let frontier = [startId];
 
-  // Seed: if start node is an interface/trait, include its implementors at depth 1.
-  // Implementors go into a separate list so their callers appear at depth 2, not depth 1.
+  // Seed: if start node is an interface/trait, include its implementors at depth 1
   const implNextFrontier: number[] = [];
   if (resolveImplementors) {
     const startNode = findNodeById(db, startId) as NodeRow | undefined;
     if (startNode && INTERFACE_LIKE_KINDS.has(startNode.kind)) {
-      const impls = findImplementors(db, startId) as RelatedNodeRow[];
-      for (const impl of impls) {
-        if (!visited.has(impl.id) && (!noTests || !isTestFile(impl.file))) {
-          visited.add(impl.id);
-          implNextFrontier.push(impl.id);
-          if (!levels[1]) levels[1] = [];
-          levels[1].push({
-            name: impl.name,
-            kind: impl.kind,
-            file: impl.file,
-            line: impl.line,
-            viaImplements: true,
-          });
-          if (onVisit) onVisit({ ...impl, viaImplements: true }, startId, 1);
-        }
-      }
+      expandImplementors(db, startId, 1, visited, implNextFrontier, levels, noTests, onVisit);
     }
   }
 
   for (let d = 1; d <= maxDepth; d++) {
-    // On the first wave, merge seeded implementors so their callers appear at d=2
     if (d === 1 && implNextFrontier.length > 0) {
       frontier = [...frontier, ...implNextFrontier];
     }
@@ -105,27 +135,8 @@ export function bfsTransitiveCallers(
           levels[d]!.push({ name: c.name, kind: c.kind, file: c.file, line: c.line });
           if (onVisit) onVisit(c, fid, d);
         }
-
-        // If a caller is an interface/trait, also pull in its implementors
-        // Implementors are one extra hop away, so record at d+1
         if (resolveImplementors && INTERFACE_LIKE_KINDS.has(c.kind)) {
-          const impls = findImplementors(db, c.id) as RelatedNodeRow[];
-          for (const impl of impls) {
-            if (!visited.has(impl.id) && (!noTests || !isTestFile(impl.file))) {
-              visited.add(impl.id);
-              nextFrontier.push(impl.id);
-              const implDepth = d + 1;
-              if (!levels[implDepth]) levels[implDepth] = [];
-              levels[implDepth].push({
-                name: impl.name,
-                kind: impl.kind,
-                file: impl.file,
-                line: impl.line,
-                viaImplements: true,
-              });
-              if (onVisit) onVisit({ ...impl, viaImplements: true }, c.id, implDepth);
-            }
-          }
+          expandImplementors(db, c.id, d + 1, visited, nextFrontier, levels, noTests, onVisit);
         }
       }
     }
