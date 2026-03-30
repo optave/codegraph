@@ -163,7 +163,6 @@ export async function buildAstNodes(
     // Call AST nodes were removed — 'call' kind entries in ast_nodes are dead
     // (never queried by any feature or command). symbols.calls are still used
     // for call *edges* but no longer written to ast_nodes.
-    const nativeProvidedAstNodes = Array.isArray(symbols.astNodes);
 
     if (Array.isArray(symbols.astNodes)) {
       // Native engine provided AST nodes (may be empty for files with no AST content).
