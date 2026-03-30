@@ -30,25 +30,67 @@ import { runAnalyses } from './stages/run-analyses.js';
 // ── Dual-connection WAL guard ───────────────────────────────────────────
 
 /**
- * Temporarily close the JS (better-sqlite3) connection so a native (rusqlite)
- * write can proceed without dual-connection WAL corruption (#696).
+ * Ensure exclusive native access for a write operation (#696).
  *
  * Two different SQLite library compilations (better-sqlite3 and rusqlite)
- * cannot safely share a WAL-mode database file. Closing the JS connection
- * triggers a WAL checkpoint and releases all locks so rusqlite has exclusive
- * access. The JS connection is reopened after the native write completes.
+ * cannot safely share a WAL-mode database file. To prevent corruption we
+ * ensure only ONE connection is open at a time:
  *
- * IMPORTANT: After this function returns, `ctx.db` is a NEW connection object.
- * Any local variables captured via destructuring (`const { db } = ctx`) before
- * this call will be stale. Always access `ctx.db` for operations after a
- * native write.
+ * 1. Close the persistent NativeDatabase (releases rusqlite WAL reader)
+ * 2. Close the JS connection (clean WAL checkpoint — no other readers)
+ * 3. Open a temporary NativeDatabase for the write (sole connection)
+ * 4. Execute the write callback
+ * 5. Close the temporary NativeDatabase (flushes WAL)
+ * 6. Reopen JS connection (sees all data cleanly)
+ * 7. Reopen persistent NativeDatabase for subsequent reads
+ *
+ * IMPORTANT: After this function returns, both `ctx.db` and `ctx.nativeDb`
+ * are NEW objects. Code must access `ctx.db`/`ctx.nativeDb` dynamically
+ * for post-write operations (not stale destructured locals).
  */
 export function withExclusiveNativeWrite<T>(ctx: PipelineContext, fn: () => T): T {
+  const native = loadNative();
+  const hadNativeDb = !!ctx.nativeDb;
+
+  // 1. Close persistent native connection (releases WAL reader lock)
+  if (ctx.nativeDb) {
+    try {
+      ctx.nativeDb.close();
+    } catch {
+      /* ignore */
+    }
+    ctx.nativeDb = undefined;
+  }
+  // 2. Close JS connection (WAL checkpoint succeeds — sole connection gone)
   ctx.db.close();
+
+  // 3. Open a temporary native connection as the sole DB accessor
+  if (hadNativeDb && native?.NativeDatabase) {
+    ctx.nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
+  }
   try {
+    // 4. Execute the write
     return fn();
   } finally {
+    // 5. Close the temporary native connection (WAL flushed)
+    if (ctx.nativeDb) {
+      try {
+        ctx.nativeDb.close();
+      } catch {
+        /* ignore */
+      }
+      ctx.nativeDb = undefined;
+    }
+    // 6. Reopen JS connection (clean — sees all committed data)
     ctx.db = openDb(ctx.dbPath);
+    // 7. Reopen persistent native connection for reads
+    if (hadNativeDb && native?.NativeDatabase) {
+      try {
+        ctx.nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
+      } catch {
+        ctx.nativeDb = undefined;
+      }
+    }
   }
 }
 
