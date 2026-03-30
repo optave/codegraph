@@ -2083,7 +2083,6 @@ export interface NativeDatabase {
   getGraphStats?(noTests: boolean): {
     totalNodes: number;
     totalEdges: number;
-    totalFiles: number;
     nodesByKind: Array<{ kind: string; count: number }>;
     edgesByKind: Array<{ kind: string; count: number }>;
     roleCounts: Array<{ role: string; count: number }>;

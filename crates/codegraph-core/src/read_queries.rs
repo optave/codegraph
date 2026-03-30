@@ -1228,8 +1228,12 @@ impl NativeDatabase {
             })
     }
 
-    // ── Batched query methods ──────────────────────────────────────────
+}
 
+// ── Batched query methods ──────────────────────────────────────────────
+
+#[napi]
+impl NativeDatabase {
     /// Get all graph statistics in a single napi call.
     /// Replaces ~11 separate queries in module-map.ts `statsData()`.
     #[napi]
@@ -1291,18 +1295,6 @@ impl NativeDatabase {
                 .map_err(|e| napi::Error::from_reason(format!("get_graph_stats edges_by_kind collect: {e}")))?
         };
         let total_edges: i32 = edges_by_kind.iter().map(|k| k.count).sum();
-
-        // ── File count ─────────────────────────────────────────────
-        let total_files: i32 = {
-            let sql = format!(
-                "SELECT COUNT(*) FROM nodes WHERE kind = 'file' {}",
-                tf
-            );
-            conn.prepare_cached(&sql)
-                .map_err(|e| napi::Error::from_reason(format!("get_graph_stats total_files: {e}")))?
-                .query_row([], |row| row.get(0))
-                .map_err(|e| napi::Error::from_reason(format!("get_graph_stats total_files query: {e}")))?
-        };
 
         // ── Role counts ────────────────────────────────────────────
         let role_counts = {
@@ -1466,7 +1458,6 @@ impl NativeDatabase {
         Ok(GraphStats {
             total_nodes,
             total_edges,
-            total_files,
             nodes_by_kind,
             edges_by_kind,
             role_counts,
@@ -1504,15 +1495,12 @@ impl NativeDatabase {
             node_id: i32,
             kind: &str,
         ) -> napi::Result<Vec<DataflowQueryEdge>> {
-            let sql = format!(
-                "SELECT n.name, n.kind, n.file, d.line, d.param_index, d.expression, d.confidence \
+            let sql = "SELECT n.name, n.kind, n.file, d.line, d.param_index, d.expression, d.confidence \
                  FROM dataflow d JOIN nodes n ON d.target_id = n.id \
-                 WHERE d.source_id = ?1 AND d.kind = '{}'",
-                kind
-            );
-            let mut stmt = conn.prepare_cached(&sql)
+                 WHERE d.source_id = ?1 AND d.kind = ?2";
+            let mut stmt = conn.prepare_cached(sql)
                 .map_err(|e| napi::Error::from_reason(format!("get_dataflow_edges out {kind}: {e}")))?;
-            let rows = stmt.query_map(params![node_id], |row| {
+            let rows = stmt.query_map(params![node_id, kind], |row| {
                 Ok(DataflowQueryEdge {
                     name: row.get(0)?,
                     kind: row.get(1)?,
@@ -1532,15 +1520,12 @@ impl NativeDatabase {
             node_id: i32,
             kind: &str,
         ) -> napi::Result<Vec<DataflowQueryEdge>> {
-            let sql = format!(
-                "SELECT n.name, n.kind, n.file, d.line, d.param_index, d.expression, d.confidence \
+            let sql = "SELECT n.name, n.kind, n.file, d.line, d.param_index, d.expression, d.confidence \
                  FROM dataflow d JOIN nodes n ON d.source_id = n.id \
-                 WHERE d.target_id = ?1 AND d.kind = '{}'",
-                kind
-            );
-            let mut stmt = conn.prepare_cached(&sql)
+                 WHERE d.target_id = ?1 AND d.kind = ?2";
+            let mut stmt = conn.prepare_cached(sql)
                 .map_err(|e| napi::Error::from_reason(format!("get_dataflow_edges in {kind}: {e}")))?;
-            let rows = stmt.query_map(params![node_id], |row| {
+            let rows = stmt.query_map(params![node_id, kind], |row| {
                 Ok(DataflowQueryEdge {
                     name: row.get(0)?,
                     kind: row.get(1)?,
@@ -1639,10 +1624,10 @@ impl NativeDatabase {
         for &nid in &node_ids {
             let fan_in: i32 = fan_in_stmt
                 .query_row(params![nid], |row| row.get(0))
-                .unwrap_or(0);
+                .map_err(|e| napi::Error::from_reason(format!("batch_fan_metrics fan_in query nid={nid}: {e}")))?;
             let fan_out: i32 = fan_out_stmt
                 .query_row(params![nid], |row| row.get(0))
-                .unwrap_or(0);
+                .map_err(|e| napi::Error::from_reason(format!("batch_fan_metrics fan_out query nid={nid}: {e}")))?;
             results.push(FanMetric {
                 node_id: nid,
                 fan_in,

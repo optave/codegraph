@@ -242,7 +242,6 @@ pub struct QualityMetrics {
 pub struct GraphStats {
     pub total_nodes: i32,
     pub total_edges: i32,
-    pub total_files: i32,
     pub nodes_by_kind: Vec<KindCount>,
     pub edges_by_kind: Vec<KindCount>,
     pub role_counts: Vec<RoleCount>,
