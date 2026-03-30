@@ -368,12 +368,8 @@ async function delegateToBuildFunctions(
     const t0 = performance.now();
     try {
       const { buildAstNodes } = await import('../features/ast.js');
-      console.error(
-        `[parity-diag:delegate] calling buildAstNodes, files=${fileSymbols.size}, nativeDb=${!!engineOpts?.nativeDb}`,
-      );
       await buildAstNodes(db, fileSymbols as Map<string, any>, rootDir, engineOpts);
     } catch (err: unknown) {
-      console.error(`[parity-diag:delegate] buildAstNodes THREW: ${(err as Error).message}`);
       debug(`buildAstNodes failed: ${(err as Error).message}`);
     }
     timing.astMs = performance.now() - t0;
@@ -440,24 +436,14 @@ export async function runAnalyses(
   const t0walk = performance.now();
 
   for (const [relPath, symbols] of fileSymbols) {
-    if (!symbols._tree) {
-      console.error(`[parity-diag:walker] ${relPath}: no _tree, skipping`);
-      continue;
-    }
+    if (!symbols._tree) continue;
 
     const ext = path.extname(relPath).toLowerCase();
     const langId = symbols._langId || extToLang.get(ext);
-    if (!langId) {
-      console.error(`[parity-diag:walker] ${relPath}: no langId (ext=${ext}), skipping`);
-      continue;
-    }
+    if (!langId) continue;
 
     const { visitors, walkerOpts, astVisitor, complexityVisitor, cfgVisitor, dataflowVisitor } =
       setupVisitors(db, relPath, symbols, langId, opts);
-
-    console.error(
-      `[parity-diag:walker] ${relPath}: langId=${langId}, visitors=${visitors.map((v) => v.name).join(',')}, astVisitor=${!!astVisitor}, astNodes=${Array.isArray(symbols.astNodes) ? symbols.astNodes.length : 'undefined'}`,
-    );
 
     if (visitors.length === 0) continue;
 
@@ -466,7 +452,6 @@ export async function runAnalyses(
 
     if (astVisitor) {
       const astRows = (results['ast-store'] || []) as ASTNodeRow[];
-      console.error(`[parity-diag:walker] ${relPath}: astRows=${astRows.length}`);
       if (astRows.length > 0) symbols.astNodes = astRows;
     }
 
