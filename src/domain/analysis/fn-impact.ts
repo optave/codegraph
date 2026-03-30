@@ -4,13 +4,12 @@ import {
   findImplementors,
   findImportDependents,
   findNodeById,
-  openReadonlyOrFail,
 } from '../../db/index.js';
-import { loadConfig } from '../../infrastructure/config.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { normalizeSymbol } from '../../shared/normalize.js';
 import { paginateResult } from '../../shared/paginate.js';
 import type { BetterSqlite3Database, NodeRow, RelatedNodeRow } from '../../types.js';
+import { resolveAnalysisOpts, withReadonlyDb } from './query-helpers.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
 // --- Shared BFS: transitive callers ---
@@ -142,8 +141,7 @@ export function impactAnalysisData(
   customDbPath: string,
   opts: { noTests?: boolean } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
+  return withReadonlyDb(customDbPath, (db) => {
     const noTests = opts.noTests || false;
     const fileNodes = findFileNodes(db, `%${file}%`) as NodeRow[];
     if (fileNodes.length === 0) {
@@ -187,9 +185,7 @@ export function impactAnalysisData(
       levels: byLevel,
       totalDependents: visited.size - fileNodes.length,
     };
-  } finally {
-    db.close();
-  }
+  });
 }
 
 export function fnImpactData(
@@ -206,11 +202,9 @@ export function fnImpactData(
     config?: any;
   } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
-    const config = opts.config || loadConfig();
+  return withReadonlyDb(customDbPath, (db) => {
+    const { noTests, config } = resolveAnalysisOpts(opts);
     const maxDepth = opts.depth || config.analysis?.fnImpactDepth || 5;
-    const noTests = opts.noTests || false;
     const hc = new Map();
 
     const nodes = findMatchingNodes(db, name, { noTests, file: opts.file, kind: opts.kind });
@@ -235,7 +229,5 @@ export function fnImpactData(
 
     const base = { name, results };
     return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
-  } finally {
-    db.close();
-  }
+  });
 }

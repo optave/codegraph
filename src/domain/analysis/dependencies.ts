@@ -5,7 +5,6 @@ import {
   findImportSources,
   findImportTargets,
   findNodesByFile,
-  openReadonlyOrFail,
 } from '../../db/index.js';
 import { cachedStmt } from '../../db/repository/cached-stmt.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
@@ -19,6 +18,7 @@ import type {
   RelatedNodeRow,
   StmtCache,
 } from '../../types.js';
+import { withReadonlyDb } from './query-helpers.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
 type UpstreamRow = { id: number; name: string; kind: string; file: string; line: number };
@@ -32,8 +32,7 @@ export function fileDepsData(
   customDbPath: string,
   opts: { noTests?: boolean; limit?: number; offset?: number } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
+  return withReadonlyDb(customDbPath, (db) => {
     const noTests = opts.noTests || false;
     const fileNodes = findFileNodes(db, `%${file}%`) as NodeRow[];
     if (fileNodes.length === 0) {
@@ -59,9 +58,7 @@ export function fileDepsData(
 
     const base = { file, results };
     return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /**
@@ -140,8 +137,7 @@ export function fnDepsData(
     offset?: number;
   } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
+  return withReadonlyDb(customDbPath, (db) => {
     const depth = opts.depth || 3;
     const noTests = opts.noTests || false;
     const hc = new Map();
@@ -194,9 +190,7 @@ export function fnDepsData(
 
     const base = { name, results };
     return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /**
@@ -384,8 +378,7 @@ export function pathData(
     kind?: string;
   } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
+  return withReadonlyDb(customDbPath, (db) => {
     const noTests = opts.noTests || false;
     const maxDepth = opts.maxDepth || 10;
     const edgeKinds = opts.edgeKinds || ['calls'];
@@ -477,9 +470,7 @@ export function pathData(
       reverse,
       maxDepth,
     };
-  } finally {
-    db.close();
-  }
+  });
 }
 
 // ── File-level shortest path ────────────────────────────────────────────
@@ -499,8 +490,7 @@ export function filePathData(
     reverse?: boolean;
   } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
+  return withReadonlyDb(customDbPath, (db) => {
     const noTests = opts.noTests || false;
     const maxDepth = opts.maxDepth || 10;
     const edgeKinds = opts.edgeKinds || ['imports', 'imports-type'];
@@ -642,7 +632,5 @@ export function filePathData(
       reverse,
       maxDepth,
     };
-  } finally {
-    db.close();
-  }
+  });
 }

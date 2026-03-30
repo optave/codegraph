@@ -15,10 +15,8 @@ import {
   getComplexityForNode,
   getLineCountForNode,
   getMaxEndLineForFile,
-  openReadonlyOrFail,
 } from '../../db/index.js';
 import { cachedStmt } from '../../db/repository/cached-stmt.js';
-import { loadConfig } from '../../infrastructure/config.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import {
@@ -40,6 +38,7 @@ import type {
   RelatedNodeRow,
   StmtCache,
 } from '../../types.js';
+import { resolveAnalysisOpts, withReadonlyDb } from './query-helpers.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
 interface DisplayOpts {
@@ -433,15 +432,12 @@ export function contextData(
     config?: any;
   } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
+  return withReadonlyDb(customDbPath, (db) => {
     const depth = opts.depth || 0;
     const noSource = opts.noSource || false;
-    const noTests = opts.noTests || false;
     const includeTests = opts.includeTests || false;
 
-    const config = opts.config || loadConfig();
-    const displayOpts: DisplayOpts = config.display || {};
+    const { noTests, displayOpts } = resolveAnalysisOpts(opts);
 
     const dbPath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbPath), '..');
@@ -494,9 +490,7 @@ export function contextData(
 
     const base = { name, results };
     return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
-  } finally {
-    db.close();
-  }
+  });
 }
 
 export function explainData(
@@ -510,14 +504,11 @@ export function explainData(
     config?: any;
   } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
-    const noTests = opts.noTests || false;
+  return withReadonlyDb(customDbPath, (db) => {
     const depth = opts.depth || 0;
     const kind = isFileLikeTarget(target) ? 'file' : 'function';
 
-    const config = opts.config || loadConfig();
-    const displayOpts: DisplayOpts = config.display || {};
+    const { noTests, displayOpts } = resolveAnalysisOpts(opts);
 
     const dbPath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbPath), '..');
@@ -536,7 +527,5 @@ export function explainData(
 
     const base = { target, kind, results };
     return paginateResult(base, 'results', { limit: opts.limit, offset: opts.offset });
-  } finally {
-    db.close();
-  }
+  });
 }

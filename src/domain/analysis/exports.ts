@@ -4,10 +4,8 @@ import {
   findDbPath,
   findFileNodes,
   findNodesByFile,
-  openReadonlyOrFail,
 } from '../../db/index.js';
 import { cachedStmt } from '../../db/repository/cached-stmt.js';
-import { loadConfig } from '../../infrastructure/config.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import {
@@ -17,6 +15,7 @@ import {
 } from '../../shared/file-utils.js';
 import { paginateResult } from '../../shared/paginate.js';
 import type { BetterSqlite3Database, NodeRow, StmtCache } from '../../types.js';
+import { resolveAnalysisOpts, withReadonlyDb } from './query-helpers.js';
 
 /** Cache the schema probe for the `exported` column per db handle. */
 const _hasExportedColCache: WeakMap<BetterSqlite3Database, boolean> = new WeakMap();
@@ -37,12 +36,8 @@ export function exportsData(
     config?: any;
   } = {},
 ) {
-  const db = openReadonlyOrFail(customDbPath);
-  try {
-    const noTests = opts.noTests || false;
-
-    const config = opts.config || loadConfig();
-    const displayOpts = config.display || {};
+  return withReadonlyDb(customDbPath, (db) => {
+    const { noTests, displayOpts } = resolveAnalysisOpts(opts);
 
     const dbFilePath = findDbPath(customDbPath);
     const repoRoot = path.resolve(path.dirname(dbFilePath), '..');
@@ -101,9 +96,7 @@ export function exportsData(
       }
     }
     return paginated;
-  } finally {
-    db.close();
-  }
+  });
 }
 
 function exportsFileImpl(

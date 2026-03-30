@@ -10,6 +10,7 @@ import type {
   TreeSitterNode,
   TreeSitterQuery,
   TreeSitterTree,
+  TypeMapEntry,
 } from '../types.js';
 import { findChild, MAX_WALK_DEPTH, nodeEndLine, setTypeMapEntry } from './helpers.js';
 
