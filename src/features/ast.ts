@@ -158,6 +158,10 @@ export async function buildAstNodes(
       nodeIdMap.set(`${row.name}|${row.kind}|${row.line}`, row.id);
     }
 
+    console.error(
+      `[parity-diag:buildAst] ${relPath}: astNodes=${Array.isArray(symbols.astNodes) ? symbols.astNodes.length : 'undefined'}, _tree=${!!symbols._tree}`,
+    );
+
     if (Array.isArray(symbols.astNodes)) {
       // Native engine provided AST nodes (may be empty for files with no AST content)
       for (const n of symbols.astNodes) {
