@@ -369,7 +369,7 @@ export async function buildCFGData(
   db: BetterSqlite3Database,
   fileSymbols: Map<string, FileSymbols>,
   rootDir: string,
-  engineOpts?: {
+  _engineOpts?: {
     nativeDb?: { bulkInsertCfg?(entries: Array<Record<string, unknown>>): number };
     suspendJsDb?: () => void;
     resumeJsDb?: () => void;
