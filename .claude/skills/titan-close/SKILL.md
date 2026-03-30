@@ -232,6 +232,12 @@ Group issues by category and severity. Summarize:
 
 ### 5b. Open GitHub issues
 
+**Pre-check:** Verify `gh` is available and authenticated before attempting issue creation:
+```bash
+gh auth status 2>&1 || echo "GH_UNAVAILABLE"
+```
+If `GH_UNAVAILABLE`, skip issue creation entirely and note in the report: "GitHub issues were not created — `gh` CLI is not available or not authenticated. Create them manually from the Issues section below."
+
 For each issue with severity `bug` or `limitation`, create a GitHub issue using `gh`:
 
 ```bash

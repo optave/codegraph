@@ -52,6 +52,12 @@ You are the **orchestrator** for the full Titan Paradigm pipeline. Your job is t
 
    Replace `<PHASE>` with `recon`, `gauntlet`, `sync`, `forge`, or `close`. **Run the start command immediately before dispatching each phase's first sub-agent, and the completion command immediately after post-phase validation passes.** If resuming a phase (e.g., gauntlet loop iteration 2+), do NOT overwrite `startedAt` — only set it if it doesn't already exist.
 
+   **Timestamp validation:** After recording `completedAt` for any phase, verify `startedAt < completedAt`:
+   ```bash
+   node -e "const s=JSON.parse(require('fs').readFileSync('.codegraph/titan/titan-state.json','utf8'));const p=s.phaseTimestamps?.['<PHASE>'];if(p?.startedAt&&p?.completedAt){const start=new Date(p.startedAt),end=new Date(p.completedAt);if(end<=start){console.log('WARNING: <PHASE> completedAt ('+p.completedAt+') is not after startedAt ('+p.startedAt+')');process.exit(1);}console.log('<PHASE> duration: '+((end-start)/60000).toFixed(1)+' min');}else{console.log('WARNING: <PHASE> missing startedAt or completedAt');}"
+   ```
+   If the check fails, log a warning but do not stop the pipeline — clock skew or immediate completion of short phases can cause this.
+
 4. **Sync with main** (once, before any sub-agent runs):
    ```bash
    git fetch origin main && git merge origin/main --no-edit
