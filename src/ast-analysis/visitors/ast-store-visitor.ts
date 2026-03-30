@@ -211,7 +211,10 @@ export function createAstStoreVisitor(
     name: 'ast-store',
 
     enterNode(node: TreeSitterNode, _context: VisitorContext): EnterNodeResult | undefined {
-      if (matched.has(node.id)) return { skipChildren: true };
+      // Guard: skip re-collection but do NOT skipChildren — node.id (memory address)
+      // can be reused by tree-sitter, so a collision would incorrectly suppress an
+      // unrelated subtree. The parent call's skipChildren handles the intended case.
+      if (matched.has(node.id)) return;
 
       const kind = astTypeMap[node.type];
       if (!kind) return;
