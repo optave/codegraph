@@ -1,14 +1,6 @@
 use std::path::Path;
 use tree_sitter::Language;
 
-// tree-sitter-kotlin 0.3.x uses the old tree-sitter 0.20 API (language() -> Language)
-// instead of the new 0.24 API (LANGUAGE: LanguageFn). Both Language types are
-// repr-transparent wrappers around *const TSLanguage, so transmute is safe.
-fn kotlin_language() -> Language {
-    let old_lang = tree_sitter_kotlin::language();
-    unsafe { std::mem::transmute(old_lang) }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LanguageKind {
     JavaScript,
@@ -104,7 +96,7 @@ impl LanguageKind {
             Self::Hcl => tree_sitter_hcl::LANGUAGE.into(),
             Self::C => tree_sitter_c::LANGUAGE.into(),
             Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-            Self::Kotlin => kotlin_language(),
+            Self::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
             Self::Swift => tree_sitter_swift::LANGUAGE.into(),
             Self::Scala => tree_sitter_scala::LANGUAGE.into(),
             Self::Bash => tree_sitter_bash::LANGUAGE.into(),
