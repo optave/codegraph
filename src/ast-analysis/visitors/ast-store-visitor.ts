@@ -211,7 +211,7 @@ export function createAstStoreVisitor(
     name: 'ast-store',
 
     enterNode(node: TreeSitterNode, _context: VisitorContext): EnterNodeResult | undefined {
-      if (matched.has(node.id)) return;
+      if (matched.has(node.id)) return { skipChildren: true };
 
       const kind = astTypeMap[node.type];
       if (!kind) return;
