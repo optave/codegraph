@@ -181,6 +181,18 @@ function setupVisitors(
   };
 
   // AST-store visitor
+  // Strip dead 'call' kind from native astNodes — call AST nodes are no longer
+  // extracted by WASM. If only calls remain, clear the array so the WASM visitor
+  // runs and extracts the non-call kinds (new, throw, await, string, regex).
+  if (Array.isArray(symbols.astNodes)) {
+    const filtered = symbols.astNodes.filter((n) => n.kind !== 'call');
+    if (filtered.length === 0) {
+      symbols.astNodes = undefined;
+    } else {
+      symbols.astNodes = filtered;
+    }
+  }
+
   let astVisitor: Visitor | null = null;
   const astTypeMap = AST_TYPE_MAPS.get(langId);
   if (doAst && astTypeMap && WALK_EXTENSIONS.has(ext) && !Array.isArray(symbols.astNodes)) {
