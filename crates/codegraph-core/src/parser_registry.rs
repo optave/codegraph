@@ -1,5 +1,17 @@
 use std::path::Path;
 use tree_sitter::Language;
+use tree_sitter_language::LanguageFn;
+
+// tree-sitter-kotlin 0.3.x uses the old tree-sitter 0.20 API (language() -> Language)
+// instead of the new 0.24 API (LANGUAGE: LanguageFn). We declare the extern C function
+// directly and wrap it with LanguageFn to bridge the version gap.
+extern "C" {
+    fn tree_sitter_kotlin() -> *const ();
+}
+fn kotlin_language() -> Language {
+    let lang_fn = unsafe { LanguageFn::from_raw(tree_sitter_kotlin) };
+    lang_fn.into()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LanguageKind {
@@ -96,7 +108,7 @@ impl LanguageKind {
             Self::Hcl => tree_sitter_hcl::LANGUAGE.into(),
             Self::C => tree_sitter_c::LANGUAGE.into(),
             Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-            Self::Kotlin => tree_sitter_kotlin::language().into(),
+            Self::Kotlin => kotlin_language(),
             Self::Swift => tree_sitter_swift::LANGUAGE.into(),
             Self::Scala => tree_sitter_scala::LANGUAGE.into(),
             Self::Bash => tree_sitter_bash::LANGUAGE.into(),
