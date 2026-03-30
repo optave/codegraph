@@ -6,7 +6,16 @@ import type {
   TreeSitterNode,
   TreeSitterTree,
 } from '../types.js';
-import { extractModifierVisibility, findChild, MAX_WALK_DEPTH, nodeEndLine } from './helpers.js';
+import {
+  extractBodyMembers,
+  extractModifierVisibility,
+  findChild,
+  findParentNode,
+  lastPathSegment,
+  MAX_WALK_DEPTH,
+  nodeEndLine,
+  setTypeMapEntry,
+} from './helpers.js';
 
 /**
  * Extract symbols from C# files.
@@ -208,7 +217,7 @@ function handleCsUsingDirective(node: TreeSitterNode, ctx: ExtractorOutput): voi
     findChild(node, 'identifier');
   if (!nameNode) return;
   const fullPath = nameNode.text;
-  const lastName = fullPath.split('.').pop() ?? fullPath;
+  const lastName = lastPathSegment(fullPath, '.');
   ctx.imports.push({
     source: fullPath,
     names: [lastName],
@@ -246,22 +255,15 @@ function handleCsObjectCreation(node: TreeSitterNode, ctx: ExtractorOutput): voi
   if (typeName) ctx.calls.push({ name: typeName, line: node.startPosition.row + 1 });
 }
 
+const CS_PARENT_TYPES = [
+  'class_declaration',
+  'struct_declaration',
+  'interface_declaration',
+  'enum_declaration',
+  'record_declaration',
+] as const;
 function findCSharpParentType(node: TreeSitterNode): string | null {
-  let current = node.parent;
-  while (current) {
-    if (
-      current.type === 'class_declaration' ||
-      current.type === 'struct_declaration' ||
-      current.type === 'interface_declaration' ||
-      current.type === 'enum_declaration' ||
-      current.type === 'record_declaration'
-    ) {
-      const nameNode = current.childForFieldName('name');
-      return nameNode ? nameNode.text : null;
-    }
-    current = current.parent;
-  }
-  return null;
+  return findParentNode(node, CS_PARENT_TYPES);
 }
 
 // ── Child extraction helpers ────────────────────────────────────────────────
@@ -307,25 +309,43 @@ function extractCSharpClassFields(classNode: TreeSitterNode): SubDeclaration[] {
 }
 
 function extractCSharpEnumMembers(enumNode: TreeSitterNode): SubDeclaration[] {
-  const constants: SubDeclaration[] = [];
-  const body =
-    enumNode.childForFieldName('body') || findChild(enumNode, 'enum_member_declaration_list');
-  if (!body) return constants;
-  for (let i = 0; i < body.childCount; i++) {
-    const member = body.child(i);
-    if (!member || member.type !== 'enum_member_declaration') continue;
-    const nameNode = member.childForFieldName('name');
-    if (nameNode) {
-      constants.push({ name: nameNode.text, kind: 'constant', line: member.startPosition.row + 1 });
-    }
-  }
-  return constants;
+  return extractBodyMembers(
+    enumNode,
+    ['body', 'enum_member_declaration_list'],
+    'enum_member_declaration',
+    'constant',
+  );
 }
 
 // ── Type map extraction ──────────────────────────────────────────────────────
 
 function extractCSharpTypeMap(node: TreeSitterNode, ctx: ExtractorOutput): void {
   extractCSharpTypeMapDepth(node, ctx, 0);
+}
+
+/** Extract type info from a variable_declaration node (local vars with explicit types). */
+function handleCSharpVarDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
+  const typeNode = node.childForFieldName('type') || node.child(0);
+  if (!typeNode || typeNode.type === 'var_keyword') return;
+  const typeName = extractCSharpTypeName(typeNode);
+  if (!typeName) return;
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (!child || child.type !== 'variable_declarator') continue;
+    const nameNode = child.childForFieldName('name') || child.child(0);
+    if (nameNode && nameNode.type === 'identifier' && ctx.typeMap) {
+      setTypeMapEntry(ctx.typeMap, nameNode.text, typeName, 0.9);
+    }
+  }
+}
+
+/** Extract type info from a parameter node. */
+function handleCSharpParam(node: TreeSitterNode, ctx: ExtractorOutput): void {
+  const typeNode = node.childForFieldName('type');
+  const nameNode = node.childForFieldName('name');
+  if (!typeNode || !nameNode) return;
+  const typeName = extractCSharpTypeName(typeNode);
+  if (typeName && ctx.typeMap) setTypeMapEntry(ctx.typeMap, nameNode.text, typeName, 0.9);
 }
 
 function extractCSharpTypeMapDepth(
@@ -335,33 +355,10 @@ function extractCSharpTypeMapDepth(
 ): void {
   if (depth >= MAX_WALK_DEPTH) return;
 
-  // local_declaration_statement → variable_declaration → type + variable_declarator(s)
   if (node.type === 'variable_declaration') {
-    const typeNode = node.childForFieldName('type') || node.child(0);
-    if (typeNode && typeNode.type !== 'var_keyword') {
-      const typeName = extractCSharpTypeName(typeNode);
-      if (typeName) {
-        for (let i = 0; i < node.childCount; i++) {
-          const child = node.child(i);
-          if (child && child.type === 'variable_declarator') {
-            const nameNode = child.childForFieldName('name') || child.child(0);
-            if (nameNode && nameNode.type === 'identifier') {
-              ctx.typeMap?.set(nameNode.text, { type: typeName, confidence: 0.9 });
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Method/constructor parameter: parameter node has type + name fields
-  if (node.type === 'parameter') {
-    const typeNode = node.childForFieldName('type');
-    const nameNode = node.childForFieldName('name');
-    if (typeNode && nameNode) {
-      const typeName = extractCSharpTypeName(typeNode);
-      if (typeName) ctx.typeMap?.set(nameNode.text, { type: typeName, confidence: 0.9 });
-    }
+    handleCSharpVarDecl(node, ctx);
+  } else if (node.type === 'parameter') {
+    handleCSharpParam(node, ctx);
   }
 
   for (let i = 0; i < node.childCount; i++) {

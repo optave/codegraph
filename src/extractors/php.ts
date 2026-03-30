@@ -5,7 +5,14 @@ import type {
   TreeSitterNode,
   TreeSitterTree,
 } from '../types.js';
-import { extractModifierVisibility, findChild, MAX_WALK_DEPTH, nodeEndLine } from './helpers.js';
+import {
+  extractBodyMembers,
+  extractModifierVisibility,
+  findChild,
+  lastPathSegment,
+  MAX_WALK_DEPTH,
+  nodeEndLine,
+} from './helpers.js';
 
 function extractPhpParameters(fnNode: TreeSitterNode): SubDeclaration[] {
   const params: SubDeclaration[] = [];
@@ -25,6 +32,39 @@ function extractPhpParameters(fnNode: TreeSitterNode): SubDeclaration[] {
   return params;
 }
 
+/** Extract property declarations from a PHP class member. */
+function extractPhpProperties(member: TreeSitterNode, children: SubDeclaration[]): void {
+  for (let j = 0; j < member.childCount; j++) {
+    const el = member.child(j);
+    if (!el || el.type !== 'property_element') continue;
+    const varNode = findChild(el, 'variable_name');
+    if (varNode) {
+      children.push({
+        name: varNode.text,
+        kind: 'property',
+        line: member.startPosition.row + 1,
+        visibility: extractModifierVisibility(member),
+      });
+    }
+  }
+}
+
+/** Extract constant declarations from a PHP class member. */
+function extractPhpConstants(member: TreeSitterNode, children: SubDeclaration[]): void {
+  for (let j = 0; j < member.childCount; j++) {
+    const el = member.child(j);
+    if (!el || el.type !== 'const_element') continue;
+    const nameNode = el.childForFieldName('name') || findChild(el, 'name');
+    if (nameNode) {
+      children.push({
+        name: nameNode.text,
+        kind: 'constant',
+        line: member.startPosition.row + 1,
+      });
+    }
+  }
+}
+
 function extractPhpClassChildren(classNode: TreeSitterNode): SubDeclaration[] {
   const children: SubDeclaration[] = [];
   const body = classNode.childForFieldName('body') || findChild(classNode, 'declaration_list');
@@ -33,50 +73,16 @@ function extractPhpClassChildren(classNode: TreeSitterNode): SubDeclaration[] {
     const member = body.child(i);
     if (!member) continue;
     if (member.type === 'property_declaration') {
-      for (let j = 0; j < member.childCount; j++) {
-        const el = member.child(j);
-        if (!el || el.type !== 'property_element') continue;
-        const varNode = findChild(el, 'variable_name');
-        if (varNode) {
-          children.push({
-            name: varNode.text,
-            kind: 'property',
-            line: member.startPosition.row + 1,
-            visibility: extractModifierVisibility(member),
-          });
-        }
-      }
+      extractPhpProperties(member, children);
     } else if (member.type === 'const_declaration') {
-      for (let j = 0; j < member.childCount; j++) {
-        const el = member.child(j);
-        if (!el || el.type !== 'const_element') continue;
-        const nameNode = el.childForFieldName('name') || findChild(el, 'name');
-        if (nameNode) {
-          children.push({
-            name: nameNode.text,
-            kind: 'constant',
-            line: member.startPosition.row + 1,
-          });
-        }
-      }
+      extractPhpConstants(member, children);
     }
   }
   return children;
 }
 
 function extractPhpEnumCases(enumNode: TreeSitterNode): SubDeclaration[] {
-  const children: SubDeclaration[] = [];
-  const body = enumNode.childForFieldName('body') || findChild(enumNode, 'enum_declaration_list');
-  if (!body) return children;
-  for (let i = 0; i < body.childCount; i++) {
-    const member = body.child(i);
-    if (!member || member.type !== 'enum_case') continue;
-    const nameNode = member.childForFieldName('name');
-    if (nameNode) {
-      children.push({ name: nameNode.text, kind: 'constant', line: member.startPosition.row + 1 });
-    }
-  }
-  return children;
+  return extractBodyMembers(enumNode, ['body', 'enum_declaration_list'], 'enum_case', 'constant');
 }
 
 /**
@@ -272,7 +278,7 @@ function handlePhpNamespaceUse(node: TreeSitterNode, ctx: ExtractorOutput): void
       const nameNode = findChild(child, 'qualified_name') || findChild(child, 'name');
       if (nameNode) {
         const fullPath = nameNode.text;
-        const lastName = fullPath.split('\\').pop() ?? fullPath;
+        const lastName = lastPathSegment(fullPath, '\\');
         const alias = child.childForFieldName('alias');
         ctx.imports.push({
           source: fullPath,
@@ -284,7 +290,7 @@ function handlePhpNamespaceUse(node: TreeSitterNode, ctx: ExtractorOutput): void
     }
     if (child && (child.type === 'qualified_name' || child.type === 'name')) {
       const fullPath = child.text;
-      const lastName = fullPath.split('\\').pop() ?? fullPath;
+      const lastName = lastPathSegment(fullPath, '\\');
       ctx.imports.push({
         source: fullPath,
         names: [lastName],

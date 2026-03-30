@@ -5,7 +5,14 @@ import type {
   TreeSitterNode,
   TreeSitterTree,
 } from '../types.js';
-import { findChild, MAX_WALK_DEPTH, nodeEndLine, rustVisibility } from './helpers.js';
+import {
+  extractBodyMembers,
+  findParentNode,
+  MAX_WALK_DEPTH,
+  nodeEndLine,
+  rustVisibility,
+  setTypeMapEntry,
+} from './helpers.js';
 
 /**
  * Extract symbols from Rust files.
@@ -206,16 +213,9 @@ function handleRustMacroInvocation(node: TreeSitterNode, ctx: ExtractorOutput): 
   }
 }
 
+const RUST_IMPL_TYPES = ['impl_item'] as const;
 function findCurrentImpl(node: TreeSitterNode): string | null {
-  let current = node.parent;
-  while (current) {
-    if (current.type === 'impl_item') {
-      const typeNode = current.childForFieldName('type');
-      return typeNode ? typeNode.text : null;
-    }
-    current = current.parent;
-  }
-  return null;
+  return findParentNode(node, RUST_IMPL_TYPES, 'type');
 }
 
 // ── Child extraction helpers ────────────────────────────────────────────────
@@ -227,8 +227,7 @@ function extractRustParameters(paramListNode: TreeSitterNode | null): SubDeclara
     const param = paramListNode.child(i);
     if (!param) continue;
     if (param.type === 'self_parameter') {
-      // Skip self parameters — matches native engine behaviour
-      continue;
+      // Skip self — matches native engine behaviour
     } else if (param.type === 'parameter') {
       const pattern = param.childForFieldName('pattern');
       if (pattern) {
@@ -240,34 +239,16 @@ function extractRustParameters(paramListNode: TreeSitterNode | null): SubDeclara
 }
 
 function extractStructFields(structNode: TreeSitterNode): SubDeclaration[] {
-  const fields: SubDeclaration[] = [];
-  const fieldList =
-    structNode.childForFieldName('body') || findChild(structNode, 'field_declaration_list');
-  if (!fieldList) return fields;
-  for (let i = 0; i < fieldList.childCount; i++) {
-    const field = fieldList.child(i);
-    if (!field || field.type !== 'field_declaration') continue;
-    const nameNode = field.childForFieldName('name');
-    if (nameNode) {
-      fields.push({ name: nameNode.text, kind: 'property', line: field.startPosition.row + 1 });
-    }
-  }
-  return fields;
+  return extractBodyMembers(
+    structNode,
+    ['body', 'field_declaration_list'],
+    'field_declaration',
+    'property',
+  );
 }
 
 function extractEnumVariants(enumNode: TreeSitterNode): SubDeclaration[] {
-  const variants: SubDeclaration[] = [];
-  const body = enumNode.childForFieldName('body') || findChild(enumNode, 'enum_variant_list');
-  if (!body) return variants;
-  for (let i = 0; i < body.childCount; i++) {
-    const variant = body.child(i);
-    if (!variant || variant.type !== 'enum_variant') continue;
-    const nameNode = variant.childForFieldName('name');
-    if (nameNode) {
-      variants.push({ name: nameNode.text, kind: 'constant', line: variant.startPosition.row + 1 });
-    }
-  }
-  return variants;
+  return extractBodyMembers(enumNode, ['body', 'enum_variant_list'], 'enum_variant', 'constant');
 }
 
 function extractRustTypeMap(node: TreeSitterNode, ctx: ExtractorOutput): void {
@@ -283,7 +264,7 @@ function extractRustTypeMapDepth(node: TreeSitterNode, ctx: ExtractorOutput, dep
     const typeNode = node.childForFieldName('type');
     if (pattern && pattern.type === 'identifier' && typeNode) {
       const typeName = extractRustTypeName(typeNode);
-      if (typeName) ctx.typeMap?.set(pattern.text, { type: typeName, confidence: 0.9 });
+      if (typeName && ctx.typeMap) setTypeMapEntry(ctx.typeMap, pattern.text, typeName, 0.9);
     }
   }
 
@@ -295,7 +276,7 @@ function extractRustTypeMapDepth(node: TreeSitterNode, ctx: ExtractorOutput, dep
       const name = pattern.type === 'identifier' ? pattern.text : null;
       if (name && name !== 'self' && name !== '&self' && name !== '&mut self') {
         const typeName = extractRustTypeName(typeNode);
-        if (typeName) ctx.typeMap?.set(name, { type: typeName, confidence: 0.9 });
+        if (typeName && ctx.typeMap) setTypeMapEntry(ctx.typeMap, name, typeName, 0.9);
       }
     }
   }
@@ -328,56 +309,55 @@ function extractRustTypeName(typeNode: TreeSitterNode): string | null {
   return null;
 }
 
+/** Collect names from a scoped_use_list's list node. */
+function collectScopedNames(listNode: TreeSitterNode): string[] {
+  const names: string[] = [];
+  for (let i = 0; i < listNode.childCount; i++) {
+    const child = listNode.child(i);
+    if (!child) continue;
+    if (child.type === 'identifier' || child.type === 'self') {
+      names.push(child.text);
+    } else if (child.type === 'use_as_clause') {
+      const name = (child.childForFieldName('alias') || child.childForFieldName('name'))?.text;
+      if (name) names.push(name);
+    }
+  }
+  return names;
+}
+
 function extractRustUsePath(node: TreeSitterNode | null): { source: string; names: string[] }[] {
   if (!node) return [];
 
-  if (node.type === 'use_list') {
-    const results: { source: string; names: string[] }[] = [];
-    for (let i = 0; i < node.childCount; i++) {
-      results.push(...extractRustUsePath(node.child(i)));
-    }
-    return results;
-  }
-
-  if (node.type === 'scoped_use_list') {
-    const pathNode = node.childForFieldName('path');
-    const listNode = node.childForFieldName('list');
-    const prefix = pathNode ? pathNode.text : '';
-    if (listNode) {
-      const names: string[] = [];
-      for (let i = 0; i < listNode.childCount; i++) {
-        const child = listNode.child(i);
-        if (
-          child &&
-          (child.type === 'identifier' || child.type === 'use_as_clause' || child.type === 'self')
-        ) {
-          const name =
-            child.type === 'use_as_clause'
-              ? (child.childForFieldName('alias') || child.childForFieldName('name'))?.text
-              : child.text;
-          if (name) names.push(name);
-        }
+  switch (node.type) {
+    case 'use_list': {
+      const results: { source: string; names: string[] }[] = [];
+      for (let i = 0; i < node.childCount; i++) {
+        results.push(...extractRustUsePath(node.child(i)));
       }
-      return [{ source: prefix, names }];
+      return results;
     }
-    return [{ source: prefix, names: [] }];
+    case 'scoped_use_list': {
+      const pathNode = node.childForFieldName('path');
+      const listNode = node.childForFieldName('list');
+      const prefix = pathNode ? pathNode.text : '';
+      if (!listNode) return [{ source: prefix, names: [] }];
+      return [{ source: prefix, names: collectScopedNames(listNode) }];
+    }
+    case 'use_as_clause': {
+      const name = node.childForFieldName('alias') || node.childForFieldName('name');
+      return [{ source: node.text, names: name ? [name.text] : [] }];
+    }
+    case 'use_wildcard': {
+      const pathNode = node.childForFieldName('path');
+      return [{ source: pathNode ? pathNode.text : '*', names: ['*'] }];
+    }
+    case 'scoped_identifier':
+    case 'identifier': {
+      const text = node.text;
+      const lastName = text.split('::').pop() ?? text;
+      return [{ source: text, names: [lastName] }];
+    }
+    default:
+      return [];
   }
-
-  if (node.type === 'use_as_clause') {
-    const name = node.childForFieldName('alias') || node.childForFieldName('name');
-    return [{ source: node.text, names: name ? [name.text] : [] }];
-  }
-
-  if (node.type === 'use_wildcard') {
-    const pathNode = node.childForFieldName('path');
-    return [{ source: pathNode ? pathNode.text : '*', names: ['*'] }];
-  }
-
-  if (node.type === 'scoped_identifier' || node.type === 'identifier') {
-    const text = node.text;
-    const lastName = text.split('::').pop() ?? text;
-    return [{ source: text, names: [lastName] }];
-  }
-
-  return [];
 }
