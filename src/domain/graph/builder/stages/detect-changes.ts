@@ -15,7 +15,6 @@ import { parseFilesAuto } from '../../../parser.js';
 import { readJournal, writeJournalHeader } from '../../journal.js';
 import type { PipelineContext } from '../context.js';
 import { fileHash, fileStat, purgeFilesFromGraph, readFileSafe } from '../helpers.js';
-import { withExclusiveNativeWrite } from '../pipeline.js';
 
 // ── Local types ────────────────────────────────────────────────────────
 
@@ -340,13 +339,7 @@ function purgeAndAddReverseDeps(
     const filesToPurge = hasPurge ? [...ctx.removed, ...changePaths] : [];
     // Prefer NativeDatabase: purge + reverse-dep edge deletion in one transaction (#670)
     if (ctx.engineName === 'native' && ctx.nativeDb?.purgeFilesData) {
-      withExclusiveNativeWrite(ctx, () =>
-        ctx.nativeDb!.purgeFilesData(
-          filesToPurge,
-          false,
-          hasReverseDeps ? reverseDepList : undefined,
-        ),
-      );
+      ctx.nativeDb.purgeFilesData(filesToPurge, false, hasReverseDeps ? reverseDepList : undefined);
     } else {
       if (hasPurge) {
         purgeFilesFromGraph(db, filesToPurge, { purgeHashes: false });

@@ -6,7 +6,14 @@ import type {
   TreeSitterTree,
   TypeMapEntry,
 } from '../types.js';
-import { extractModifierVisibility, findChild, nodeEndLine } from './helpers.js';
+import {
+  extractBodyMembers,
+  extractModifierVisibility,
+  findChild,
+  findParentNode,
+  lastPathSegment,
+  nodeEndLine,
+} from './helpers.js';
 
 /**
  * Extract symbols from Java files.
@@ -104,6 +111,25 @@ function handleJavaClassDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
   }
 }
 
+const JAVA_TYPE_NODE_TYPES = new Set(['type_identifier', 'identifier', 'generic_type']);
+
+/** Resolve interface name from a type node (handles generic_type unwrapping). */
+function resolveJavaIfaceName(node: TreeSitterNode): string | undefined {
+  return node.type === 'generic_type' ? node.child(0)?.text : node.text;
+}
+
+/** Push a single interface type node as an implements entry. */
+function pushJavaIface(
+  node: TreeSitterNode,
+  className: string,
+  line: number,
+  ctx: ExtractorOutput,
+): void {
+  if (!JAVA_TYPE_NODE_TYPES.has(node.type)) return;
+  const ifaceName = resolveJavaIfaceName(node);
+  if (ifaceName) ctx.classes.push({ name: className, implements: ifaceName, line });
+}
+
 function extractJavaInterfaces(
   interfaces: TreeSitterNode,
   className: string,
@@ -112,28 +138,15 @@ function extractJavaInterfaces(
 ): void {
   for (let i = 0; i < interfaces.childCount; i++) {
     const child = interfaces.child(i);
-    if (
-      child &&
-      (child.type === 'type_identifier' ||
-        child.type === 'identifier' ||
-        child.type === 'type_list' ||
-        child.type === 'generic_type')
-    ) {
-      if (child.type === 'type_list') {
-        for (let j = 0; j < child.childCount; j++) {
-          const t = child.child(j);
-          if (
-            t &&
-            (t.type === 'type_identifier' || t.type === 'identifier' || t.type === 'generic_type')
-          ) {
-            const ifaceName = t.type === 'generic_type' ? t.child(0)?.text : t.text;
-            if (ifaceName) ctx.classes.push({ name: className, implements: ifaceName, line });
-          }
-        }
-      } else {
-        const ifaceName = child.type === 'generic_type' ? child.child(0)?.text : child.text;
-        if (ifaceName) ctx.classes.push({ name: className, implements: ifaceName, line });
+    if (!child) continue;
+
+    if (child.type === 'type_list') {
+      for (let j = 0; j < child.childCount; j++) {
+        const t = child.child(j);
+        if (t) pushJavaIface(t, className, line, ctx);
       }
+    } else {
+      pushJavaIface(child, className, line, ctx);
     }
   }
 }
@@ -218,7 +231,7 @@ function handleJavaImportDecl(node: TreeSitterNode, ctx: ExtractorOutput): void 
     const child = node.child(i);
     if (child && (child.type === 'scoped_identifier' || child.type === 'identifier')) {
       const fullPath = child.text;
-      const lastName = fullPath.split('.').pop() ?? fullPath;
+      const lastName = lastPathSegment(fullPath, '.');
       ctx.imports.push({
         source: fullPath,
         names: [lastName],
@@ -263,20 +276,13 @@ function handleJavaObjectCreation(node: TreeSitterNode, ctx: ExtractorOutput): v
   if (typeName) ctx.calls.push({ name: typeName, line: node.startPosition.row + 1 });
 }
 
+const JAVA_PARENT_TYPES = [
+  'class_declaration',
+  'enum_declaration',
+  'interface_declaration',
+] as const;
 function findJavaParentClass(node: TreeSitterNode): string | null {
-  let current = node.parent;
-  while (current) {
-    if (
-      current.type === 'class_declaration' ||
-      current.type === 'enum_declaration' ||
-      current.type === 'interface_declaration'
-    ) {
-      const nameNode = current.childForFieldName('name');
-      return nameNode ? nameNode.text : null;
-    }
-    current = current.parent;
-  }
-  return null;
+  return findParentNode(node, JAVA_PARENT_TYPES);
 }
 
 // ── Child extraction helpers ────────────────────────────────────────────────
@@ -333,16 +339,5 @@ function extractClassFields(classNode: TreeSitterNode): SubDeclaration[] {
 }
 
 function extractEnumConstants(enumNode: TreeSitterNode): SubDeclaration[] {
-  const constants: SubDeclaration[] = [];
-  const body = enumNode.childForFieldName('body') || findChild(enumNode, 'enum_body');
-  if (!body) return constants;
-  for (let i = 0; i < body.childCount; i++) {
-    const member = body.child(i);
-    if (!member || member.type !== 'enum_constant') continue;
-    const nameNode = member.childForFieldName('name');
-    if (nameNode) {
-      constants.push({ name: nameNode.text, kind: 'constant', line: member.startPosition.row + 1 });
-    }
-  }
-  return constants;
+  return extractBodyMembers(enumNode, ['body', 'enum_body'], 'enum_constant', 'constant');
 }

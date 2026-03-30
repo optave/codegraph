@@ -1,18 +1,18 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::cfg::build_function_cfg;
 use crate::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct RustExtractor;
 
 impl SymbolExtractor for RustExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
-        walk_node(&tree.root_node(), source, &mut symbols);
+        walk_tree(&tree.root_node(), source, &mut symbols, match_rust_node);
         walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &RUST_AST_CONFIG);
-        extract_rust_type_map(&tree.root_node(), source, &mut symbols);
+        walk_tree(&tree.root_node(), source, &mut symbols, match_rust_type_map);
         symbols
     }
 }
@@ -30,214 +30,204 @@ fn find_current_impl<'a>(node: &Node<'a>, source: &[u8]) -> Option<String> {
     None
 }
 
-fn walk_node(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    walk_node_depth(node, source, symbols, 0);
-}
-
-fn walk_node_depth(node: &Node, source: &[u8], symbols: &mut FileSymbols, depth: usize) {
-    if depth >= MAX_WALK_DEPTH {
-        return;
-    }
+fn match_rust_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
     match node.kind() {
-        "function_item" => {
-            // Skip default-impl functions inside traits — already emitted by trait_item handler
-            if node.parent()
-                .and_then(|p| p.parent())
-                .map_or(false, |gp| gp.kind() == "trait_item")
-            {
-                // still recurse into children below
-            } else if let Some(name_node) = node.child_by_field_name("name") {
-                let name = node_text(&name_node, source);
-                let impl_type = find_current_impl(node, source);
-                let (full_name, kind) = match &impl_type {
-                    Some(t) => (format!("{}.{}", t, name), "method".to_string()),
-                    None => (name.to_string(), "function".to_string()),
-                };
-                let children = extract_rust_parameters(node, source);
-                symbols.definitions.push(Definition {
-                    name: full_name,
-                    kind,
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: compute_all_metrics(node, source, "rust"),
-                    cfg: build_function_cfg(node, "rust", source),
-                    children: opt_children(children),
-                });
-            }
-        }
-
-        "struct_item" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let children = extract_rust_struct_fields(node, source);
-                symbols.definitions.push(Definition {
-                    name: node_text(&name_node, source).to_string(),
-                    kind: "struct".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: None,
-                    cfg: None,
-                    children: opt_children(children),
-                });
-            }
-        }
-
-        "enum_item" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let children = extract_rust_enum_variants(node, source);
-                symbols.definitions.push(Definition {
-                    name: node_text(&name_node, source).to_string(),
-                    kind: "enum".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: None,
-                    cfg: None,
-                    children: opt_children(children),
-                });
-            }
-        }
-
-        "const_item" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                symbols.definitions.push(Definition {
-                    name: node_text(&name_node, source).to_string(),
-                    kind: "constant".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: None,
-                    cfg: None,
-                    children: None,
-                });
-            }
-        }
-
-        "trait_item" => {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let trait_name = node_text(&name_node, source).to_string();
-                symbols.definitions.push(Definition {
-                    name: trait_name.clone(),
-                    kind: "trait".to_string(),
-                    line: start_line(node),
-                    end_line: Some(end_line(node)),
-                    decorators: None,
-                    complexity: None,
-                    cfg: None,
-                    children: None,
-                });
-                if let Some(body) = node.child_by_field_name("body") {
-                    for i in 0..body.child_count() {
-                        if let Some(child) = body.child(i) {
-                            if child.kind() == "function_signature_item"
-                                || child.kind() == "function_item"
-                            {
-                                if let Some(meth_name) = child.child_by_field_name("name") {
-                                    symbols.definitions.push(Definition {
-                                        name: format!(
-                                            "{}.{}",
-                                            trait_name,
-                                            node_text(&meth_name, source)
-                                        ),
-                                        kind: "method".to_string(),
-                                        line: start_line(&child),
-                                        end_line: Some(end_line(&child)),
-                                        decorators: None,
-                                        complexity: compute_all_metrics(&child, source, "rust"),
-                                        cfg: build_function_cfg(&child, "rust", source),
-                                        children: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        "impl_item" => {
-            let type_node = node.child_by_field_name("type");
-            let trait_node = node.child_by_field_name("trait");
-            if let (Some(type_node), Some(trait_node)) = (type_node, trait_node) {
-                symbols.classes.push(ClassRelation {
-                    name: node_text(&type_node, source).to_string(),
-                    extends: None,
-                    implements: Some(node_text(&trait_node, source).to_string()),
-                    line: start_line(node),
-                });
-            }
-        }
-
-        "use_declaration" => {
-            if let Some(arg_node) = node.child(1) {
-                let use_paths = extract_rust_use_path(&arg_node, source);
-                for (src, names) in use_paths {
-                    let mut imp = Import::new(src, names, start_line(node));
-                    imp.rust_use = Some(true);
-                    symbols.imports.push(imp);
-                }
-            }
-        }
-
-        "call_expression" => {
-            if let Some(fn_node) = node.child_by_field_name("function") {
-                match fn_node.kind() {
-                    "identifier" => {
-                        symbols.calls.push(Call {
-                            name: node_text(&fn_node, source).to_string(),
-                            line: start_line(node),
-                            dynamic: None,
-                            receiver: None,
-                        });
-                    }
-                    "field_expression" => {
-                        if let Some(field) = fn_node.child_by_field_name("field") {
-                            let receiver = fn_node.child_by_field_name("value")
-                                .map(|v| node_text(&v, source).to_string());
-                            symbols.calls.push(Call {
-                                name: node_text(&field, source).to_string(),
-                                line: start_line(node),
-                                dynamic: None,
-                                receiver,
-                            });
-                        }
-                    }
-                    "scoped_identifier" => {
-                        if let Some(name) = fn_node.child_by_field_name("name") {
-                            let receiver = fn_node.child_by_field_name("path")
-                                .map(|p| node_text(&p, source).to_string());
-                            symbols.calls.push(Call {
-                                name: node_text(&name, source).to_string(),
-                                line: start_line(node),
-                                dynamic: None,
-                                receiver,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        "macro_invocation" => {
-            if let Some(macro_node) = node.child(0) {
-                symbols.calls.push(Call {
-                    name: format!("{}!", node_text(&macro_node, source)),
-                    line: start_line(node),
-                    dynamic: None,
-                    receiver: None,
-                });
-            }
-        }
-
+        "function_item" => handle_function_item(node, source, symbols),
+        "struct_item" => handle_struct_item(node, source, symbols),
+        "enum_item" => handle_enum_item(node, source, symbols),
+        "const_item" => handle_const_item(node, source, symbols),
+        "trait_item" => handle_trait_item(node, source, symbols),
+        "impl_item" => handle_impl_item(node, source, symbols),
+        "use_declaration" => handle_use_decl(node, source, symbols),
+        "call_expression" => handle_call_expr(node, source, symbols),
+        "macro_invocation" => handle_macro_invocation(node, source, symbols),
         _ => {}
     }
+}
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            walk_node_depth(&child, source, symbols, depth + 1);
+// ── Per-node-kind handlers for walk_node_depth ───────────────────────────────
+
+fn handle_function_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    // Skip default-impl functions inside traits — already emitted by trait_item handler
+    if node.parent()
+        .and_then(|p| p.parent())
+        .map_or(false, |gp| gp.kind() == "trait_item")
+    {
+        return;
+    }
+    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let name = node_text(&name_node, source);
+    let impl_type = find_current_impl(node, source);
+    let (full_name, kind) = match &impl_type {
+        Some(t) => (format!("{}.{}", t, name), "method".to_string()),
+        None => (name.to_string(), "function".to_string()),
+    };
+    let children = extract_rust_parameters(node, source);
+    symbols.definitions.push(Definition {
+        name: full_name,
+        kind,
+        line: start_line(node),
+        end_line: Some(end_line(node)),
+        decorators: None,
+        complexity: compute_all_metrics(node, source, "rust"),
+        cfg: build_function_cfg(node, "rust", source),
+        children: opt_children(children),
+    });
+}
+
+fn handle_struct_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let children = extract_rust_struct_fields(node, source);
+        symbols.definitions.push(Definition {
+            name: node_text(&name_node, source).to_string(),
+            kind: "struct".to_string(),
+            line: start_line(node),
+            end_line: Some(end_line(node)),
+            decorators: None,
+            complexity: None,
+            cfg: None,
+            children: opt_children(children),
+        });
+    }
+}
+
+fn handle_enum_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let children = extract_rust_enum_variants(node, source);
+        symbols.definitions.push(Definition {
+            name: node_text(&name_node, source).to_string(),
+            kind: "enum".to_string(),
+            line: start_line(node),
+            end_line: Some(end_line(node)),
+            decorators: None,
+            complexity: None,
+            cfg: None,
+            children: opt_children(children),
+        });
+    }
+}
+
+fn handle_const_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        symbols.definitions.push(Definition {
+            name: node_text(&name_node, source).to_string(),
+            kind: "constant".to_string(),
+            line: start_line(node),
+            end_line: Some(end_line(node)),
+            decorators: None,
+            complexity: None,
+            cfg: None,
+            children: None,
+        });
+    }
+}
+
+fn handle_trait_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let trait_name = node_text(&name_node, source).to_string();
+    symbols.definitions.push(Definition {
+        name: trait_name.clone(),
+        kind: "trait".to_string(),
+        line: start_line(node),
+        end_line: Some(end_line(node)),
+        decorators: None,
+        complexity: None,
+        cfg: None,
+        children: None,
+    });
+    if let Some(body) = node.child_by_field_name("body") {
+        for i in 0..body.child_count() {
+            let Some(child) = body.child(i) else { continue };
+            if child.kind() != "function_signature_item" && child.kind() != "function_item" {
+                continue;
+            }
+            if let Some(meth_name) = child.child_by_field_name("name") {
+                symbols.definitions.push(Definition {
+                    name: format!("{}.{}", trait_name, node_text(&meth_name, source)),
+                    kind: "method".to_string(),
+                    line: start_line(&child),
+                    end_line: Some(end_line(&child)),
+                    decorators: None,
+                    complexity: compute_all_metrics(&child, source, "rust"),
+                    cfg: build_function_cfg(&child, "rust", source),
+                    children: None,
+                });
+            }
         }
+    }
+}
+
+fn handle_impl_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let type_node = node.child_by_field_name("type");
+    let trait_node = node.child_by_field_name("trait");
+    if let (Some(type_node), Some(trait_node)) = (type_node, trait_node) {
+        symbols.classes.push(ClassRelation {
+            name: node_text(&type_node, source).to_string(),
+            extends: None,
+            implements: Some(node_text(&trait_node, source).to_string()),
+            line: start_line(node),
+        });
+    }
+}
+
+fn handle_use_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(arg_node) = node.child(1) {
+        let use_paths = extract_rust_use_path(&arg_node, source);
+        for (src, names) in use_paths {
+            let mut imp = Import::new(src, names, start_line(node));
+            imp.rust_use = Some(true);
+            symbols.imports.push(imp);
+        }
+    }
+}
+
+fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(fn_node) = node.child_by_field_name("function") else { return };
+    match fn_node.kind() {
+        "identifier" => {
+            symbols.calls.push(Call {
+                name: node_text(&fn_node, source).to_string(),
+                line: start_line(node),
+                dynamic: None,
+                receiver: None,
+            });
+        }
+        "field_expression" => {
+            if let Some(field) = fn_node.child_by_field_name("field") {
+                let receiver = fn_node.child_by_field_name("value")
+                    .map(|v| node_text(&v, source).to_string());
+                symbols.calls.push(Call {
+                    name: node_text(&field, source).to_string(),
+                    line: start_line(node),
+                    dynamic: None,
+                    receiver,
+                });
+            }
+        }
+        "scoped_identifier" => {
+            if let Some(name) = fn_node.child_by_field_name("name") {
+                let receiver = fn_node.child_by_field_name("path")
+                    .map(|p| node_text(&p, source).to_string());
+                symbols.calls.push(Call {
+                    name: node_text(&name, source).to_string(),
+                    line: start_line(node),
+                    dynamic: None,
+                    receiver,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_macro_invocation(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if let Some(macro_node) = node.child(0) {
+        symbols.calls.push(Call {
+            name: format!("{}!", node_text(&macro_node, source)),
+            line: start_line(node),
+            dynamic: None,
+            receiver: None,
+        });
     }
 }
 
@@ -406,14 +396,7 @@ fn extract_rust_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<
     }
 }
 
-fn extract_rust_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    extract_rust_type_map_depth(node, source, symbols, 0);
-}
-
-fn extract_rust_type_map_depth(node: &Node, source: &[u8], symbols: &mut FileSymbols, depth: usize) {
-    if depth >= MAX_WALK_DEPTH {
-        return;
-    }
+fn match_rust_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
     match node.kind() {
         "let_declaration" => {
             if let Some(pattern) = node.child_by_field_name("pattern") {
@@ -447,11 +430,6 @@ fn extract_rust_type_map_depth(node: &Node, source: &[u8], symbols: &mut FileSym
             }
         }
         _ => {}
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            extract_rust_type_map_depth(&child, source, symbols, depth + 1);
-        }
     }
 }
 

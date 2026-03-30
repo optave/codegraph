@@ -1,5 +1,5 @@
+use crate::types::{AstNode, Definition, FileSymbols};
 use tree_sitter::Node;
-use crate::types::{AstNode, Definition};
 
 // Re-export so extractors that `use super::helpers::*` still see it.
 pub use crate::constants::MAX_WALK_DEPTH;
@@ -64,6 +64,26 @@ pub fn find_parent_of_types<'a>(node: &Node<'a>, kinds: &[&str]) -> Option<Node<
     None
 }
 
+/// Walk up the tree to find an enclosing type declaration (class, struct, etc.)
+/// and return its name. `kinds` specifies which node types count as type declarations
+/// for the target language (e.g. `&["class_declaration", "class"]` for JS,
+/// `&["class_definition"]` for Python, etc.).
+///
+/// This replaces the duplicated `find_*_parent_class` helpers that existed in
+/// every language extractor with identical logic but different kind lists.
+pub fn find_enclosing_type_name(node: &Node, kinds: &[&str], source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if kinds.contains(&parent.kind()) {
+            return parent
+                .child_by_field_name("name")
+                .map(|n| node_text(&n, source).to_string());
+        }
+        current = parent.parent();
+    }
+    None
+}
+
 /// Get the name of a named field child, returning its text.
 pub fn named_child_text<'a>(node: &Node<'a>, field: &str, source: &'a [u8]) -> Option<&'a str> {
     node.child_by_field_name(field)
@@ -91,6 +111,38 @@ pub fn truncate(s: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}\u{2026}", &s[..end])
+}
+
+// ── Generic tree walker ─────────────────────────────────────────────────────
+
+/// Generic depth-limited tree walker. Calls `match_node` on each node,
+/// then recurses into children. Eliminates the walk_node/walk_node_depth
+/// boilerplate duplicated across all language extractors.
+pub fn walk_tree<F>(node: &Node, source: &[u8], symbols: &mut FileSymbols, match_node: F)
+where
+    F: Fn(&Node, &[u8], &mut FileSymbols, usize),
+{
+    walk_tree_depth(node, source, symbols, 0, &match_node);
+}
+
+fn walk_tree_depth<F>(
+    node: &Node,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+    depth: usize,
+    match_node: &F,
+) where
+    F: Fn(&Node, &[u8], &mut FileSymbols, usize),
+{
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
+    match_node(node, source, symbols, depth);
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            walk_tree_depth(&child, source, symbols, depth + 1, match_node);
+        }
+    }
 }
 
 // ── AST node extraction (shared across all languages) ────────────────────────
