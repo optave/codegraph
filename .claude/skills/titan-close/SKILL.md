@@ -285,6 +285,14 @@ Read `.codegraph/titan/gate-log.ndjson`. Summarize:
 
 ## Step 7 — Generate the report
 
+### Record CLOSE completion timestamp
+
+Before writing the report, record `phaseTimestamps.close.completedAt` so the Pipeline Timeline has accurate data for the CLOSE row. (titan-run also records this after titan-close returns as a safety backstop, but by then the report is already written.)
+
+```bash
+node -e "const fs=require('fs');const s=JSON.parse(fs.readFileSync('.codegraph/titan/titan-state.json','utf8'));s.phaseTimestamps=s.phaseTimestamps||{};s.phaseTimestamps['close']=s.phaseTimestamps['close']||{};s.phaseTimestamps['close'].completedAt=new Date().toISOString();fs.writeFileSync('.codegraph/titan/titan-state.json',JSON.stringify(s,null,2));"
+```
+
 ### Report path
 
 ```
