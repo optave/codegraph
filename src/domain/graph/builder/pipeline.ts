@@ -30,20 +30,19 @@ import { runAnalyses } from './stages/run-analyses.js';
 // ── Dual-connection WAL guard ───────────────────────────────────────────
 
 /**
- * Temporarily close the JS (better-sqlite3) connection so a native (rusqlite)
- * write can proceed without dual-connection WAL corruption (#696). Reopens
- * the JS connection after the callback returns.
+ * Flush the JS (better-sqlite3) WAL so a native (rusqlite) write can proceed
+ * without dual-connection WAL corruption (#696).
  *
- * Native reads are safe with both connections open (WAL allows concurrent
- * readers). Only writes require exclusive native access.
+ * Previous approach closed and reopened the JS connection, but that broke all
+ * code holding destructured `db` references (stale handle → "connection not
+ * open" errors). Instead we checkpoint the WAL to move pending data into the
+ * main DB file, leaving the JS connection valid and all existing references
+ * intact. TRUNCATE mode resets the WAL file so rusqlite starts with a clean
+ * slate.
  */
 export function withExclusiveNativeWrite<T>(ctx: PipelineContext, fn: () => T): T {
-  ctx.db.close();
-  try {
-    return fn();
-  } finally {
-    ctx.db = openDb(ctx.dbPath);
-  }
+  ctx.db.pragma('wal_checkpoint(TRUNCATE)');
+  return fn();
 }
 
 // ── Setup helpers ───────────────────────────────────────────────────────
@@ -54,18 +53,15 @@ function initializeEngine(ctx: PipelineContext): void {
     dataflow: ctx.opts.dataflow !== false,
     ast: ctx.opts.ast !== false,
     nativeDb: ctx.nativeDb,
-    // Suspend/resume callbacks for dual-connection WAL guard (#696).
-    // Features that do native writes call these around the write to avoid corruption.
+    // WAL checkpoint callback for dual-connection WAL guard (#696).
+    // Features that do native writes call suspendJsDb before the write to flush
+    // the WAL. resumeJsDb is a no-op since the connection stays open.
     suspendJsDb: ctx.nativeDb
       ? () => {
-          ctx.db.close();
+          ctx.db.pragma('wal_checkpoint(TRUNCATE)');
         }
       : undefined,
-    resumeJsDb: ctx.nativeDb
-      ? () => {
-          ctx.db = openDb(ctx.dbPath);
-        }
-      : undefined,
+    resumeJsDb: ctx.nativeDb ? () => {} : undefined,
   };
   const { name: engineName, version: engineVersion } = getActiveEngine(ctx.engineOpts);
   ctx.engineName = engineName as 'native' | 'wasm';

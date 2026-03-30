@@ -328,9 +328,9 @@ export async function buildCFGData(
     }
 
     if (entries.length > 0) {
-      engineOpts?.suspendJsDb?.();
       let inserted: number;
       try {
+        engineOpts?.suspendJsDb?.();
         inserted = nativeDb.bulkInsertCfg(entries);
       } finally {
         engineOpts?.resumeJsDb?.();

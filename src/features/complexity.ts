@@ -551,9 +551,9 @@ export async function buildComplexityMetrics(
     }
 
     if (!needsJsFallback && rows.length > 0) {
-      engineOpts?.suspendJsDb?.();
       let inserted: number;
       try {
+        engineOpts?.suspendJsDb?.();
         inserted = nativeDb.bulkInsertComplexity(rows);
       } finally {
         engineOpts?.resumeJsDb?.();

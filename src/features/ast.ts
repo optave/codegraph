@@ -123,9 +123,9 @@ export async function buildAstNodes(
 
     if (!needsJsFallback) {
       const expectedNodes = batches.reduce((s, b) => s + b.nodes.length, 0);
-      engineOpts?.suspendJsDb?.();
       let inserted: number;
       try {
+        engineOpts?.suspendJsDb?.();
         inserted = nativeDb.bulkInsertAstNodes(batches);
       } finally {
         engineOpts?.resumeJsDb?.();

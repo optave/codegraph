@@ -341,9 +341,9 @@ export async function buildDataflowEdges(
 
     if (!needsJsFallback) {
       if (nativeEdges.length > 0) {
-        engineOpts?.suspendJsDb?.();
         let inserted: number;
         try {
+          engineOpts?.suspendJsDb?.();
           inserted = nativeDb.bulkInsertDataflow(nativeEdges);
         } finally {
           engineOpts?.resumeJsDb?.();

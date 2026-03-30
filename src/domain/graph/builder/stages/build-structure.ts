@@ -98,6 +98,7 @@ export async function buildStructure(ctx: PipelineContext): Promise<void> {
 
     // Use NativeDatabase persistent connection (Phase 6.15+).
     // Standalone napi functions were removed in 6.17 — falls through to JS if nativeDb unavailable.
+    // Note: classifyRoles* both read (fan-in/fan-out) and write (UPDATE nodes SET role).
     if (useNativeReads && ctx.nativeDb?.classifyRolesFull) {
       const nativeResult = withExclusiveNativeWrite(ctx, () =>
         changedFileList && changedFileList.length > 0
