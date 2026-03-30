@@ -10,8 +10,8 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@optave/codegraph"><img src="https://img.shields.io/npm/v/@optave/codegraph?style=flat-square&logo=npm&logoColor=white&label=npm" alt="npm version" /></a>
-  <a href="https://github.com/optave/codegraph/blob/main/LICENSE"><img src="https://img.shields.io/github/license/optave/codegraph?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="Apache-2.0 License" /></a>
-  <a href="https://github.com/optave/codegraph/actions"><img src="https://img.shields.io/github/actions/workflow/status/optave/codegraph/codegraph-impact.yml?style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI" /></a>
+  <a href="https://github.com/optave/ops-codegraph-tool/blob/main/LICENSE"><img src="https://img.shields.io/github/license/optave/ops-codegraph-tool?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="Apache-2.0 License" /></a>
+  <a href="https://github.com/optave/ops-codegraph-tool/actions"><img src="https://img.shields.io/github/actions/workflow/status/optave/ops-codegraph-tool/codegraph-impact.yml?style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI" /></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22.6-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node >= 22.6" />
 </p>
 
@@ -156,11 +156,11 @@ codegraph deps src/index.ts  # file-level import/export map
 Or install from source:
 
 ```bash
-git clone https://github.com/optave/codegraph.git
+git clone https://github.com/optave/ops-codegraph-tool.git
 cd codegraph && npm install && npm link
 ```
 
-> **Dev builds:** Pre-release tarballs are attached to [GitHub Releases](https://github.com/optave/codegraph/releases). Install with `npm install -g <path-to-tarball>`. Note that `npm install -g <tarball-url>` does not work because npm cannot resolve optional platform-specific dependencies from a URL — download the `.tgz` first, then install from the local file.
+> **Dev builds:** Pre-release tarballs are attached to [GitHub Releases](https://github.com/optave/ops-codegraph-tool/releases). Install with `npm install -g <path-to-tarball>`. Note that `npm install -g <tarball-url>` does not work because npm cannot resolve optional platform-specific dependencies from a URL — download the `.tgz` first, then install from the local file.
 
 ---
 
@@ -531,6 +531,19 @@ Codegraph ships with two parsing engines:
 
 Both engines produce identical output. Use `--engine native|wasm|auto` to control selection (default: `auto`).
 
+On the native path, Rust handles the entire hot pipeline end-to-end:
+
+| Phase | What Rust does |
+|-------|---------------|
+| **Parse** | Parallel multi-file tree-sitter parsing via rayon (3.5× faster than WASM) |
+| **Extract** | Symbols, imports, calls, classes, type maps, AST nodes — all in one pass |
+| **Analyze** | Complexity (cognitive, cyclomatic, Halstead), CFG, and dataflow pre-computed per function during parse |
+| **Resolve** | Import resolution with 6-level priority system and confidence scoring |
+| **Edges** | Call, receiver, extends, and implements edge inference |
+| **DB writes** | All inserts (nodes, edges, AST nodes, complexity, CFG, dataflow) via rusqlite — `better-sqlite3` is lazy-loaded only for the WASM fallback path |
+
+The Rust crate (`crates/codegraph-core/`) exposes a `NativeDatabase` napi-rs class that holds a persistent `rusqlite::Connection` for the full build lifecycle, eliminating JS↔SQLite round-trips on every operation.
+
 ### Call Resolution
 
 Calls are resolved with **qualified resolution** — method calls (`obj.method()`) are distinguished from standalone function calls, and built-in receivers (`console`, `Math`, `JSON`, `Array`, `Promise`, etc.) are filtered out automatically. Import scope is respected: a call to `foo()` only resolves to functions that are actually imported or defined in the same file, eliminating false positives from name collisions.
@@ -786,7 +799,7 @@ See **[ROADMAP.md](docs/roadmap/ROADMAP.md)** for the full development roadmap a
 Contributions are welcome! See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full guide — setup, workflow, commit convention, testing, and architecture notes.
 
 ```bash
-git clone https://github.com/optave/codegraph.git
+git clone https://github.com/optave/ops-codegraph-tool.git
 cd codegraph
 npm install
 npm test

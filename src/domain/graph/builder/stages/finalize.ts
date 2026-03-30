@@ -43,13 +43,14 @@ function detectIncrementalDrift(
   actualEdgeCount: number,
 ): void {
   const { db, allSymbols, config } = ctx;
+  const useNativeDb = ctx.engineName === 'native' && !!ctx.nativeDb;
   if (ctx.isFullBuild || allSymbols.size <= 3) return;
 
-  const prevNodes = ctx.nativeDb
-    ? ctx.nativeDb.getBuildMeta('node_count')
+  const prevNodes = useNativeDb
+    ? ctx.nativeDb!.getBuildMeta('node_count')
     : getBuildMeta(db, 'node_count');
-  const prevEdges = ctx.nativeDb
-    ? ctx.nativeDb.getBuildMeta('edge_count')
+  const prevEdges = useNativeDb
+    ? ctx.nativeDb!.getBuildMeta('edge_count')
     : getBuildMeta(db, 'edge_count');
   if (!prevNodes || !prevEdges) return;
 
@@ -78,10 +79,11 @@ function persistBuildMetadata(
   actualEdgeCount: number,
   buildNow: Date,
 ): void {
+  const useNativeDb = ctx.engineName === 'native' && !!ctx.nativeDb;
   if (!ctx.isFullBuild && ctx.allSymbols.size <= 3) return;
   try {
-    if (ctx.nativeDb) {
-      ctx.nativeDb.setBuildMeta(
+    if (useNativeDb) {
+      ctx.nativeDb!.setBuildMeta(
         Object.entries({
           engine: ctx.engineName,
           engine_version: ctx.engineVersion || '',
@@ -203,6 +205,8 @@ export async function finalize(ctx: PipelineContext): Promise<void> {
   detectIncrementalDrift(ctx, nodeCount, actualEdgeCount);
   persistBuildMetadata(ctx, nodeCount, actualEdgeCount, buildNow);
 
+  // Skip expensive advisory queries for incremental builds — these are
+  // informational warnings that don't affect correctness and cost ~40-60ms.
   if (!isFullBuild) {
     debug(
       'Finalize: skipping advisory queries (orphaned/stale embeddings, unused exports) for incremental build',
