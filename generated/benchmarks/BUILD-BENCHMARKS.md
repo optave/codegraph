@@ -6,6 +6,7 @@ Metrics are normalized per file for cross-version comparability.
 | Version | Engine | Date | Files | Build (ms/file) | Query (ms) | Nodes/file | Edges/file | DB (bytes/file) |
 |---------|--------|------|------:|----------------:|-----------:|-----------:|-----------:|----------------:|
 | 3.6.0 | wasm | 2026-03-30 | 514 | 13.3 ↑12% | 12.3 ~ | 25.6 ↑10% | 49.5 ↑12% | 54013 ↑28% |
+| _3.5.x_ | — | — | — | _not benchmarked (patch-only releases)_ | | | | |
 | 3.4.1 | native | 2026-03-27 | 473 | 5.7 ↑8% | 11.7 ~ | 23.2 ~ | 44.1 ~ | 57725 ↑5% |
 | 3.4.1 | wasm | 2026-03-27 | 473 | 11.9 ↓2% | 12.2 ↑4% | 23.2 ~ | 44.1 ~ | 42276 ↑5% |
 | 3.4.0 | native | 2026-03-26 | 473 | 5.3 ↓13% | 11.6 ↑63% | 23.2 ↑32% | 44.2 ↑21% | 55041 ↑13% |
@@ -57,31 +58,31 @@ Metrics are normalized per file for cross-version comparability.
 | DB size | 26.5 MB |
 | Files | 514 |
 
-### Build Phase Breakdown (latest)
+### Build Phase Breakdown (latest — WASM)
 
-| Phase | Native (build) | WASM (build) | Native (1-file) | WASM (1-file) |
-|-------|---------------:|-------------:|----------------:|--------------:|
-| Parse | n/a | 2731.4 ms | n/a | 241.7 ms |
-| Insert nodes | n/a | 274 ms | n/a | 17.6 ms |
-| Resolve imports | n/a | 11 ms | n/a | 1.5 ms |
-| Build edges | n/a | 178.5 ms | n/a | 33.8 ms |
-| Structure | n/a | 40.2 ms | n/a | 25.4 ms |
-| Roles | n/a | 80.3 ms | n/a | 45.8 ms |
-| AST nodes | n/a | 391.3 ms | n/a | 9.1 ms |
-| Complexity | n/a | 402.2 ms | n/a | 0.7 ms |
-| CFG | n/a | 424.2 ms | n/a | 0.4 ms |
-| Dataflow | n/a | 209.5 ms | n/a | 0.4 ms |
+| Phase | Full build | 1-file rebuild |
+|-------|----------:|---------------:|
+| Parse | 2731.4 ms | 241.7 ms |
+| Insert nodes | 274 ms | 17.6 ms |
+| Resolve imports | 11 ms | 1.5 ms |
+| Build edges | 178.5 ms | 33.8 ms |
+| Structure | 40.2 ms | 25.4 ms |
+| Roles | 80.3 ms | 45.8 ms |
+| AST nodes | 391.3 ms | 9.1 ms |
+| Complexity | 402.2 ms | 0.7 ms |
+| CFG | 424.2 ms | 0.4 ms |
+| Dataflow | 209.5 ms | 0.4 ms |
 
-### Estimated performance at 50,000 files
+### Estimated performance at 50,000 files (WASM)
 
 Extrapolated linearly from per-file metrics above.
 
-| Metric | Native (Rust) | WASM |
-|--------|---:|---:|
-| Build time | n/a | 665.0s |
-| DB size | n/a | 2575.5 MB |
-| Nodes | n/a | 1,280,000 |
-| Edges | n/a | 2,475,000 |
+| Metric | WASM |
+|--------|---:|
+| Build time | 665.0s |
+| DB size | 2575.5 MB |
+| Nodes | 1,280,000 |
+| Edges | 2,475,000 |
 
 ### Incremental Rebuilds
 
