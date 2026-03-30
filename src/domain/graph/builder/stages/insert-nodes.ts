@@ -25,6 +25,7 @@ import {
   fileStat,
   readFileSafe,
 } from '../helpers.js';
+import { withExclusiveNativeWrite } from '../pipeline.js';
 
 /** Shape of precomputed file data gathered from filesToParse entries. */
 interface PrecomputedFileData {
@@ -39,12 +40,6 @@ interface PrecomputedFileData {
 // ── Native fast-path ─────────────────────────────────────────────────
 
 function tryNativeInsert(ctx: PipelineContext): boolean {
-  // Disabled: bulkInsertNodes corrupts the DB when both the JS (better-sqlite3)
-  // and Rust (rusqlite) connections are open to the same WAL-mode file.
-  // The native path was never operational before — it always crashed on null
-  // visibility serialisation. See #694 for the dual-connection fix.
-  if (ctx.db) return false;
-
   // Use NativeDatabase persistent connection (Phase 6.15+).
   // Standalone napi functions were removed in 6.17 — falls through to JS if nativeDb unavailable.
   if (!ctx.nativeDb?.bulkInsertNodes) return false;
@@ -144,7 +139,9 @@ function tryNativeInsert(ctx: PipelineContext): boolean {
     fileHashes.push({ file: item.relPath, hash: item.hash, mtime, size });
   }
 
-  return ctx.nativeDb.bulkInsertNodes(batches, fileHashes, removed);
+  return withExclusiveNativeWrite(ctx, () =>
+    ctx.nativeDb!.bulkInsertNodes(batches, fileHashes, removed),
+  );
 }
 
 // ── JS fallback: Phase 1 ────────────────────────────────────────────

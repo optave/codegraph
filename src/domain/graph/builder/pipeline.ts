@@ -27,6 +27,25 @@ import { parseFiles } from './stages/parse-files.js';
 import { resolveImports } from './stages/resolve-imports.js';
 import { runAnalyses } from './stages/run-analyses.js';
 
+// ── Dual-connection WAL guard ───────────────────────────────────────────
+
+/**
+ * Temporarily close the JS (better-sqlite3) connection so a native (rusqlite)
+ * write can proceed without dual-connection WAL corruption (#696). Reopens
+ * the JS connection after the callback returns.
+ *
+ * Native reads are safe with both connections open (WAL allows concurrent
+ * readers). Only writes require exclusive native access.
+ */
+export function withExclusiveNativeWrite<T>(ctx: PipelineContext, fn: () => T): T {
+  ctx.db.close();
+  try {
+    return fn();
+  } finally {
+    ctx.db = openDb(ctx.dbPath);
+  }
+}
+
 // ── Setup helpers ───────────────────────────────────────────────────────
 
 function initializeEngine(ctx: PipelineContext): void {
@@ -35,6 +54,18 @@ function initializeEngine(ctx: PipelineContext): void {
     dataflow: ctx.opts.dataflow !== false,
     ast: ctx.opts.ast !== false,
     nativeDb: ctx.nativeDb,
+    // Suspend/resume callbacks for dual-connection WAL guard (#696).
+    // Features that do native writes call these around the write to avoid corruption.
+    suspendJsDb: ctx.nativeDb
+      ? () => {
+          ctx.db.close();
+        }
+      : undefined,
+    resumeJsDb: ctx.nativeDb
+      ? () => {
+          ctx.db = openDb(ctx.dbPath);
+        }
+      : undefined,
   };
   const { name: engineName, version: engineVersion } = getActiveEngine(ctx.engineOpts);
   ctx.engineName = engineName as 'native' | 'wasm';
@@ -113,7 +144,8 @@ function setupPipeline(ctx: PipelineContext): void {
       ctx.nativeDb = undefined;
     }
     // Always run JS initSchema so better-sqlite3 sees the schema —
-    // nativeDb is closed before pipeline stages run (dual-connection guard).
+    // both connections coexist during the pipeline; native writes use
+    // withExclusiveNativeWrite() to temporarily close JS (#696).
     initSchema(ctx.db);
   } else {
     initSchema(ctx.db);
@@ -160,18 +192,6 @@ function formatTimingResult(ctx: PipelineContext): BuildResult {
 // ── Pipeline stages execution ───────────────────────────────────────────
 
 async function runPipelineStages(ctx: PipelineContext): Promise<void> {
-  // Prevent dual-connection WAL corruption: when both better-sqlite3 (ctx.db)
-  // and rusqlite (ctx.nativeDb) are open to the same file, Rust writes corrupt
-  // the DB. Clear nativeDb so all stages use JS fallback paths. See #694.
-  if (ctx.db && ctx.nativeDb) {
-    try {
-      (ctx.nativeDb as { close?: () => void }).close?.();
-    } catch {
-      /* ignore close errors */
-    }
-    ctx.nativeDb = undefined;
-  }
-
   await collectFiles(ctx);
   await detectChanges(ctx);
 

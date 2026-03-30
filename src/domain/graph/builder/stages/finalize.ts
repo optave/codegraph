@@ -16,6 +16,7 @@ import { debug, info, warn } from '../../../../infrastructure/logger.js';
 import { CODEGRAPH_VERSION } from '../../../../shared/version.js';
 import { writeJournalHeader } from '../../journal.js';
 import type { PipelineContext } from '../context.js';
+import { withExclusiveNativeWrite } from '../pipeline.js';
 
 export async function finalize(ctx: PipelineContext): Promise<void> {
   const { db, allSymbols, rootDir, isFullBuild, hasEmbeddings, config, opts, schemaVersion } = ctx;
@@ -82,16 +83,18 @@ export async function finalize(ctx: PipelineContext): Promise<void> {
   if (isFullBuild || allSymbols.size > 3) {
     try {
       if (useNativeDb) {
-        ctx.nativeDb!.setBuildMeta(
-          Object.entries({
-            engine: ctx.engineName,
-            engine_version: ctx.engineVersion || '',
-            codegraph_version: CODEGRAPH_VERSION,
-            schema_version: String(schemaVersion),
-            built_at: buildNow.toISOString(),
-            node_count: String(nodeCount),
-            edge_count: String(actualEdgeCount),
-          }).map(([key, value]) => ({ key, value: String(value) })),
+        withExclusiveNativeWrite(ctx, () =>
+          ctx.nativeDb!.setBuildMeta(
+            Object.entries({
+              engine: ctx.engineName,
+              engine_version: ctx.engineVersion || '',
+              codegraph_version: CODEGRAPH_VERSION,
+              schema_version: String(schemaVersion),
+              built_at: buildNow.toISOString(),
+              node_count: String(nodeCount),
+              edge_count: String(actualEdgeCount),
+            }).map(([key, value]) => ({ key, value: String(value) })),
+          ),
         );
       } else {
         setBuildMeta(db, {

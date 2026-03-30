@@ -10,6 +10,7 @@ import { normalizePath } from '#shared/constants.js';
 import type { ExtractorOutput } from '#types';
 import type { PipelineContext } from '../context.js';
 import { readFileSafe } from '../helpers.js';
+import { withExclusiveNativeWrite } from '../pipeline.js';
 
 export async function buildStructure(ctx: PipelineContext): Promise<void> {
   const { db, fileSymbols, rootDir, discoveredDirs, allSymbols, isFullBuild } = ctx;
@@ -98,10 +99,11 @@ export async function buildStructure(ctx: PipelineContext): Promise<void> {
     // Use NativeDatabase persistent connection (Phase 6.15+).
     // Standalone napi functions were removed in 6.17 — falls through to JS if nativeDb unavailable.
     if (useNativeReads && ctx.nativeDb?.classifyRolesFull) {
-      const nativeResult =
+      const nativeResult = withExclusiveNativeWrite(ctx, () =>
         changedFileList && changedFileList.length > 0
-          ? ctx.nativeDb.classifyRolesIncremental(changedFileList)
-          : ctx.nativeDb.classifyRolesFull();
+          ? ctx.nativeDb!.classifyRolesIncremental(changedFileList)
+          : ctx.nativeDb!.classifyRolesFull(),
+      );
       if (nativeResult) {
         roleSummary = {
           entry: nativeResult.entry,

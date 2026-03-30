@@ -80,6 +80,8 @@ export async function buildAstNodes(
         }>,
       ): number;
     };
+    suspendJsDb?: () => void;
+    resumeJsDb?: () => void;
   },
 ): Promise<void> {
   // ── Native bulk-insert fast path ──────────────────────────────────────
@@ -121,7 +123,13 @@ export async function buildAstNodes(
 
     if (!needsJsFallback) {
       const expectedNodes = batches.reduce((s, b) => s + b.nodes.length, 0);
-      const inserted = nativeDb.bulkInsertAstNodes(batches);
+      engineOpts?.suspendJsDb?.();
+      let inserted: number;
+      try {
+        inserted = nativeDb.bulkInsertAstNodes(batches);
+      } finally {
+        engineOpts?.resumeJsDb?.();
+      }
       if (inserted === expectedNodes) {
         debug(`AST extraction (native bulk): ${inserted} nodes stored`);
         return;

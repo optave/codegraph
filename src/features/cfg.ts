@@ -279,7 +279,11 @@ export async function buildCFGData(
   db: BetterSqlite3Database,
   fileSymbols: Map<string, FileSymbols>,
   rootDir: string,
-  engineOpts?: { nativeDb?: { bulkInsertCfg?(entries: Array<Record<string, unknown>>): number } },
+  engineOpts?: {
+    nativeDb?: { bulkInsertCfg?(entries: Array<Record<string, unknown>>): number };
+    suspendJsDb?: () => void;
+    resumeJsDb?: () => void;
+  },
 ): Promise<void> {
   // Fast path: when all function/method defs already have native CFG data,
   // skip WASM parser init, tree parsing, and JS visitor entirely — just persist.
@@ -324,7 +328,13 @@ export async function buildCFGData(
     }
 
     if (entries.length > 0) {
-      const inserted = nativeDb.bulkInsertCfg(entries);
+      engineOpts?.suspendJsDb?.();
+      let inserted: number;
+      try {
+        inserted = nativeDb.bulkInsertCfg(entries);
+      } finally {
+        engineOpts?.resumeJsDb?.();
+      }
       info(`CFG (native bulk): ${inserted} blocks across ${entries.length} functions`);
     }
     return;
