@@ -40,7 +40,7 @@ Phase 1 (Rust Core)
                               |-->  Phase 4 (Resolution Accuracy)
                                      |-->  Phase 5 (TypeScript Migration)
                                             |-->  Phase 6 (Native Analysis Acceleration)
-                                            |-->  Phase 7 (Analysis Depth)  -->  Phase 8 (Expanded Language Support)
+                                            |-->  Phase 7 (Expanded Language Support)  -->  Phase 8 (Analysis Depth)
                                             |-->  Phase 9 (Runtime & Extensibility)
                                             |-->  Phase 10 (Quality, Security & Technical Debt)
                                             |-->  Phase 11 (Intelligent Embeddings)  -->  Phase 12 (Natural Language Queries)
@@ -1292,15 +1292,91 @@ Structure building is unchanged — at 22ms it's already fast.
 
 ---
 
-## Phase 7 -- Analysis Depth
+## Phase 7 -- Expanded Language Support
+
+**Goal:** Support every major programming language that has a mature tree-sitter grammar available in both WASM (npm) and Rust (crates.io). This takes codegraph from 11 to 34 languages, covering every actively-used language where dependency and call-graph analysis is meaningful.
+
+**Why before Analysis Depth:** Language expansion is largely mechanical (one registry entry + extractor per language) and unblocks users on languages codegraph doesn't yet support. Analysis depth (Phase 8) is a deeper investment that benefits all languages — existing and newly added — once it lands. Shipping breadth first maximizes the user base that benefits from the subsequent depth work.
+
+### 7.1 -- Parser Abstraction Layer ✅
+
+Extract shared patterns from existing extractors into reusable helpers to reduce per-language boilerplate from ~200 lines to ~80 lines.
+
+| Helper | Purpose |
+|--------|---------|
+| ✅ `findParentNode(node, typeNames, nameField?)` | Walk parent chain to find enclosing class/struct |
+| ✅ `extractBodyMembers(node, bodyFields, memberType, kind, nameField?, visibility?)` | Extract child declarations from a body block |
+| ✅ `stripQuotes(text)` | Strip leading/trailing quotes from string literals |
+| ✅ `lastPathSegment(path, separator?)` | Extract last segment of a delimited import path |
+
+**File:** `src/extractors/helpers.ts` (extended existing helper module)
+
+- `findParentNode` replaces 6 per-language `findParent*` functions (JS, Python, Java, C#, Ruby, Rust)
+- `extractBodyMembers` replaces 5 body-iteration patterns (Rust struct/enum, Java enum, C# enum, PHP enum)
+- `stripQuotes` + `lastPathSegment` replace inline `.replace(/"/g, '')` and `.split('.').pop()` patterns across 7 extractors
+
+### 7.2 -- Batch 1: High Demand
+
+Major languages with official or widely-adopted tree-sitter grammars (millions of crate downloads).
+
+| Language | Extensions | Grammar | Org | Notes |
+|----------|-----------|---------|-----|-------|
+| C | `.c`, `.h` | `tree-sitter-c` | Official | 3.9M crate downloads |
+| C++ | `.cpp`, `.hpp`, `.cc`, `.cxx` | `tree-sitter-cpp` | Official | 4.1M crate downloads |
+| Kotlin | `.kt`, `.kts` | `tree-sitter-kotlin` | `fwcd/` | Major Android/multiplatform language |
+| Swift | `.swift` | `tree-sitter-swift` | `alex-pinkus/` | iOS/macOS ecosystem |
+| Scala | `.scala`, `.sc` | `tree-sitter-scala` | Official | JVM ecosystem, 1.5M crate downloads |
+| Bash | `.sh`, `.bash` | `tree-sitter-bash` | Official | 2.6M crate downloads |
+
+### 7.3 -- Batch 2: Growing Ecosystems
+
+Actively maintained grammars with both npm and Rust packages available.
+
+| Language | Extensions | Grammar | Org | Notes |
+|----------|-----------|---------|-----|-------|
+| Elixir | `.ex`, `.exs` | `tree-sitter-elixir` | `elixir-lang/` | Official Elixir org, 1.2M crate downloads |
+| Lua | `.lua` | `tree-sitter-lua` | `tree-sitter-grammars/` | Neovim ecosystem, 1.2M crate downloads |
+| Dart | `.dart` | `tree-sitter-dart` | Third-party | Flutter/mobile ecosystem |
+| Zig | `.zig` | `tree-sitter-zig` | `tree-sitter-grammars/` | Growing systems language |
+| Haskell | `.hs` | `tree-sitter-haskell` | Official | 1.0M crate downloads |
+| OCaml | `.ml`, `.mli` | `tree-sitter-ocaml` | Official | ML family, mature grammar |
+
+### 7.4 -- Batch 3: Functional & BEAM
+
+Languages with solid tree-sitter grammars and active communities.
+
+| Language | Extensions | Grammar | Org | Notes |
+|----------|-----------|---------|-----|-------|
+| F# | `.fs`, `.fsx`, `.fsi` | `tree-sitter-fsharp` | `ionide/` | .NET functional, Ionide community |
+| Gleam | `.gleam` | `tree-sitter-gleam` | `gleam-lang/` | Official Gleam org, fastest-growing BEAM language |
+| Clojure | `.clj`, `.cljs`, `.cljc` | `tree-sitter-clojure` | Third-party | JVM Lisp, active community |
+| Julia | `.jl` | `tree-sitter-julia` | Official | Scientific computing |
+| R | `.r`, `.R` | `tree-sitter-r` | `r-lib/` | Statistical computing, 135K crate downloads; WASM built from repo |
+| Erlang | `.erl`, `.hrl` | `tree-sitter-erlang` | `WhatsApp/` | BEAM VM; WASM built from repo |
+
+### 7.5 -- Batch 4: Specialized
+
+| Language | Extensions | Grammar | Org | Notes |
+|----------|-----------|---------|-----|-------|
+| Solidity | `.sol` | `tree-sitter-solidity` | Third-party | Smart contracts, 787K crate downloads |
+| Objective-C | `.m` | `tree-sitter-objc` | `tree-sitter-grammars/` | Apple legacy, 121K crate downloads |
+| CUDA | `.cu`, `.cuh` | `tree-sitter-cuda` | `tree-sitter-grammars/` | C++ superset for GPU/ML, both npm + crate |
+| Groovy | `.groovy`, `.gvy` | `tree-sitter-groovy` | Third-party | JVM, Gradle build scripts |
+| Verilog/SystemVerilog | `.v`, `.sv` | `tree-sitter-verilog` | Official | HDL, 33K crate downloads |
+
+> For languages where the npm package is name-squatted or missing (R, Erlang), WASM binaries can be built from the grammar repo via `tree-sitter build --wasm`.
+
+---
+
+## Phase 8 -- Analysis Depth
 
 **Goal:** Raise caller coverage from 29% to ≥70% for TypeScript/JavaScript projects by investing in analysis depth — type-aware resolution, inter-procedural type propagation, and field-based points-to analysis. The [architecture audit (v3.4.0)](https://github.com/optave/ops-codegraph-tool/blob/main/generated/architecture/ARCHITECTURE_AUDIT_v3.4.0_2026-03-26.md) identified this as the single highest-impact investment: "A code intelligence tool that can only resolve callers for 29% of functions is fundamentally limited in the value it can provide." Every downstream feature — diff-impact, blast radius, dead code detection, community analysis — degrades proportionally with low caller coverage. **Depth over breadth.**
 
-**Why before Expanded Language Support:** Adding more languages (11 → 34) has diminishing returns when existing languages achieve only 29% caller coverage. Fixing the resolution engine first means every language — existing and new — benefits from the improved pipeline. The architecture audit explicitly recommends: "achieve 70%+ coverage for existing languages before adding new ones."
+**Why after Expanded Language Support:** Language expansion (Phase 7) is largely mechanical and unblocks new users quickly. Once the language surface area is wide, the analysis depth work here benefits all 34 languages — not just the original 11. The architecture audit recommends investing in resolution accuracy as the single highest-impact improvement; sequencing it after breadth maximizes the number of languages that benefit from the improved pipeline.
 
 **Research context:** This phase draws on techniques from Joern's [Code Property Graph](https://cpg.joern.io/) (unified AST + CFG + PDG with type edges and dispatch classification), [Jelly](https://github.com/cs-au-dk/jelly) (field-based points-to analysis with approximate interpretation for JS/TS), [ACG](https://arxiv.org/abs/2405.07206) (field-based call graph construction achieving 99% precision / 91% recall on benchmarks), and the TypeScript compiler API (`ts.createProgram` + type checker). The [comparative study of static JS call graphs](https://arxiv.org/abs/2405.07206) found that combining field-based analysis (ACG) with type analysis (TAJS) covers 99% of true edges at 98% precision — the hybrid approach codegraph should adopt.
 
-### 7.1 -- TypeScript-Native Type Resolution
+### 8.1 -- TypeScript-Native Type Resolution
 
 The single highest-ROI improvement. Currently codegraph treats TypeScript as "JavaScript with types" — all type annotations are ignored during import resolution and call graph construction. Integrating the TypeScript compiler API provides type information for free.
 
@@ -1318,7 +1394,7 @@ The single highest-ROI improvement. Currently codegraph treats TypeScript as "Ja
 
 **Affected files:** new `src/domain/graph/resolver/ts-resolver.ts`, `src/domain/graph/builder/stages/build-edges.ts`, `src/infrastructure/config.ts`
 
-### 7.2 -- Inter-Procedural Type Propagation
+### 8.2 -- Inter-Procedural Type Propagation
 
 Extend type tracking beyond single-function scope. Currently, type information from Phase 4.2 (receiver type tracking) is purely intra-procedural — if `createUser()` returns a `User` object and the caller assigns it to a variable, the type is lost at the call boundary.
 
@@ -1333,7 +1409,7 @@ Extend type tracking beyond single-function scope. Currently, type information f
 
 **Affected files:** `src/extractors/*.ts` (return type extraction), `src/domain/graph/builder/stages/build-edges.ts` (propagation during edge construction)
 
-### 7.3 -- Field-Based Points-To Analysis
+### 8.3 -- Field-Based Points-To Analysis
 
 Implement a lightweight field-based points-to analysis inspired by [ACG](https://arxiv.org/abs/2405.07206) and [Jelly](https://github.com/cs-au-dk/jelly). This resolves higher-order function calls (callbacks, event handlers, strategy patterns) that syntactic analysis completely misses.
 
@@ -1344,13 +1420,13 @@ Implement a lightweight field-based points-to analysis inspired by [ACG](https:/
 - **Allocation-site abstraction:** each `new Foo()`, function literal, or arrow function creates an abstract object tagged with its source location
 - **Assignment propagation:** track flows through assignments (`x = y`), parameter passing (`f(callback)`), and returns (`return handler`)
 - **Constraint solver:** fixed-point iteration over the points-to constraints until no new flows are discovered. Bound iterations to prevent divergence on pathological cases (configurable, default: 50 iterations)
-- **Scope:** intra-module first (7.3a), cross-module via import edges second (7.3b)
+- **Scope:** intra-module first (8.3a), cross-module via import edges second (8.3b)
 
 **Expected impact:** +5–10 percentage points on caller coverage, primarily for callback-heavy code (Express/Koa middleware, React event handlers, Node.js EventEmitter patterns).
 
 **Affected files:** new `src/domain/graph/resolver/points-to.ts`, `src/domain/graph/builder/stages/build-edges.ts`
 
-### 7.4 -- Barrel File & Re-Export Chain Resolution
+### 8.4 -- Barrel File & Re-Export Chain Resolution
 
 Barrel files (`index.ts` that re-export from sub-modules) are the #1 source of resolution failures in real TypeScript projects. The current 6-level priority system doesn't trace re-export chains, causing symbols imported through barrels to resolve to the barrel file itself rather than the actual declaration.
 
@@ -1359,13 +1435,13 @@ Barrel files (`index.ts` that re-export from sub-modules) are the #1 source of r
 - When resolving an import that points to a barrel file, walk the re-export graph transitively to find the actual declaration file
 - Cache the resolved chains (most projects have <100 barrel files, so the re-export graph is small)
 - Handle circular re-exports with a visited set
-- Integrate with 7.1 (TS resolver already knows re-export chains; this sub-phase handles the WASM/JS fallback path)
+- Integrate with 8.1 (TS resolver already knows re-export chains; this sub-phase handles the WASM/JS fallback path)
 
 **Expected impact:** +5–10 percentage points on caller coverage. Barrel files are ubiquitous in TypeScript monorepos and component libraries.
 
 **Affected files:** `src/domain/graph/resolve.ts`, `src/domain/graph/builder/stages/build-edges.ts`
 
-### 7.5 -- Enhanced Dynamic Dispatch Resolution
+### 8.5 -- Enhanced Dynamic Dispatch Resolution
 
 Extend Phase 4.2's receiver type tracking with class hierarchy analysis (CHA) and rapid type analysis (RTA) for virtual/interface method dispatch.
 
@@ -1379,7 +1455,7 @@ Extend Phase 4.2's receiver type tracking with class hierarchy analysis (CHA) an
 
 **Affected files:** `src/domain/graph/builder/stages/build-edges.ts`, `src/extractors/*.ts` (instantiation tracking)
 
-### 7.6 -- Precision/Recall CI Gate Upgrade
+### 8.6 -- Precision/Recall CI Gate Upgrade
 
 Upgrade the Phase 4.4 benchmark suite to enforce regression gates on the new resolution techniques and track progress toward the 70% coverage target.
 
@@ -1392,7 +1468,7 @@ Upgrade the Phase 4.4 benchmark suite to enforce regression gates on the new res
 
 **Affected files:** `tests/benchmarks/resolution/`, `src/domain/analysis/symbol-lookup.ts`, `src/presentation/queries-cli/overview.ts`
 
-### 7.7 -- Reaching Definition Analysis (PDG Foundation)
+### 8.7 -- Reaching Definition Analysis (PDG Foundation)
 
 Build a reaching definitions pass that computes which assignments reach each use of a variable. This is the foundation for a Program Dependence Graph (PDG) — the same representation that powers Joern's data-flow queries.
 
@@ -1403,7 +1479,7 @@ Build a reaching definitions pass that computes which assignments reach each use
 - Store reaching-definition edges in the `edges` table with kind `reaching_def`
 - Use SSA-like variable renaming within basic blocks to disambiguate multiple assignments to the same variable
 
-**Why:** Reaching definitions are a prerequisite for precise data-flow tracking. Once available, queries like "which user input reaches this SQL query" or "does this return value depend on the config parameter" become possible. This also improves points-to analysis precision (7.3) by providing flow-sensitive variable tracking within functions.
+**Why:** Reaching definitions are a prerequisite for precise data-flow tracking. Once available, queries like "which user input reaches this SQL query" or "does this return value depend on the config parameter" become possible. This also improves points-to analysis precision (8.3) by providing flow-sensitive variable tracking within functions.
 
 **Expected impact:** Indirect — enables more precise points-to resolution and unlocks data-flow queries for future phases. Modest direct impact on caller coverage (~1–2 points from disambiguating variable assignments in the same scope).
 
@@ -1415,85 +1491,9 @@ The following dependencies are needed only for specific sub-phases and should be
 
 | Dependency | Sub-phase | Purpose | Size | Notes |
 |-----------|-----------|---------|------|-------|
-| `typescript` | 7.1 | `ts.createProgram` + type checker for TS-native resolution | ~40 MB | Already a devDependency; promote to optional runtime dep. Only loaded when analyzing `.ts`/`.tsx` projects. Users without it fall back to the existing heuristic resolver |
+| `typescript` | 8.1 | `ts.createProgram` + type checker for TS-native resolution | ~40 MB | Already a devDependency; promote to optional runtime dep. Only loaded when analyzing `.ts`/`.tsx` projects. Users without it fall back to the existing heuristic resolver |
 
-All other sub-phases (7.2–7.7) use only codegraph's existing tree-sitter infrastructure and require no new runtime dependencies.
-
----
-
-## Phase 8 -- Expanded Language Support
-
-**Goal:** Support every major programming language that has a mature tree-sitter grammar available in both WASM (npm) and Rust (crates.io). This takes codegraph from 11 to 34 languages, covering every actively-used language where dependency and call-graph analysis is meaningful.
-
-**Why after Phase 7:** The analysis depth work (Phase 7) establishes the type-aware resolution pipeline that new languages benefit from. Adding languages before the resolution engine is accurate would mean each new language ships with the same 29% caller coverage. With Phase 7 done, new languages plug into a resolution engine that already handles type propagation, points-to analysis, and dynamic dispatch.
-
-### 8.1 -- Parser Abstraction Layer ✅
-
-Extract shared patterns from existing extractors into reusable helpers to reduce per-language boilerplate from ~200 lines to ~80 lines.
-
-| Helper | Purpose |
-|--------|---------|
-| ✅ `findParentNode(node, typeNames, nameField?)` | Walk parent chain to find enclosing class/struct |
-| ✅ `extractBodyMembers(node, bodyFields, memberType, kind, nameField?, visibility?)` | Extract child declarations from a body block |
-| ✅ `stripQuotes(text)` | Strip leading/trailing quotes from string literals |
-| ✅ `lastPathSegment(path, separator?)` | Extract last segment of a delimited import path |
-
-**File:** `src/extractors/helpers.ts` (extended existing helper module)
-
-- `findParentNode` replaces 6 per-language `findParent*` functions (JS, Python, Java, C#, Ruby, Rust)
-- `extractBodyMembers` replaces 5 body-iteration patterns (Rust struct/enum, Java enum, C# enum, PHP enum)
-- `stripQuotes` + `lastPathSegment` replace inline `.replace(/"/g, '')` and `.split('.').pop()` patterns across 7 extractors
-
-### 8.2 -- Batch 1: High Demand
-
-Major languages with official or widely-adopted tree-sitter grammars (millions of crate downloads).
-
-| Language | Extensions | Grammar | Org | Notes |
-|----------|-----------|---------|-----|-------|
-| C | `.c`, `.h` | `tree-sitter-c` | Official | 3.9M crate downloads |
-| C++ | `.cpp`, `.hpp`, `.cc`, `.cxx` | `tree-sitter-cpp` | Official | 4.1M crate downloads |
-| Kotlin | `.kt`, `.kts` | `tree-sitter-kotlin` | `fwcd/` | Major Android/multiplatform language |
-| Swift | `.swift` | `tree-sitter-swift` | `alex-pinkus/` | iOS/macOS ecosystem |
-| Scala | `.scala`, `.sc` | `tree-sitter-scala` | Official | JVM ecosystem, 1.5M crate downloads |
-| Bash | `.sh`, `.bash` | `tree-sitter-bash` | Official | 2.6M crate downloads |
-
-### 8.3 -- Batch 2: Growing Ecosystems
-
-Actively maintained grammars with both npm and Rust packages available.
-
-| Language | Extensions | Grammar | Org | Notes |
-|----------|-----------|---------|-----|-------|
-| Elixir | `.ex`, `.exs` | `tree-sitter-elixir` | `elixir-lang/` | Official Elixir org, 1.2M crate downloads |
-| Lua | `.lua` | `tree-sitter-lua` | `tree-sitter-grammars/` | Neovim ecosystem, 1.2M crate downloads |
-| Dart | `.dart` | `tree-sitter-dart` | Third-party | Flutter/mobile ecosystem |
-| Zig | `.zig` | `tree-sitter-zig` | `tree-sitter-grammars/` | Growing systems language |
-| Haskell | `.hs` | `tree-sitter-haskell` | Official | 1.0M crate downloads |
-| OCaml | `.ml`, `.mli` | `tree-sitter-ocaml` | Official | ML family, mature grammar |
-
-### 8.4 -- Batch 3: Functional & BEAM
-
-Languages with solid tree-sitter grammars and active communities.
-
-| Language | Extensions | Grammar | Org | Notes |
-|----------|-----------|---------|-----|-------|
-| F# | `.fs`, `.fsx`, `.fsi` | `tree-sitter-fsharp` | `ionide/` | .NET functional, Ionide community |
-| Gleam | `.gleam` | `tree-sitter-gleam` | `gleam-lang/` | Official Gleam org, fastest-growing BEAM language |
-| Clojure | `.clj`, `.cljs`, `.cljc` | `tree-sitter-clojure` | Third-party | JVM Lisp, active community |
-| Julia | `.jl` | `tree-sitter-julia` | Official | Scientific computing |
-| R | `.r`, `.R` | `tree-sitter-r` | `r-lib/` | Statistical computing, 135K crate downloads; WASM built from repo |
-| Erlang | `.erl`, `.hrl` | `tree-sitter-erlang` | `WhatsApp/` | BEAM VM; WASM built from repo |
-
-### 8.5 -- Batch 4: Specialized
-
-| Language | Extensions | Grammar | Org | Notes |
-|----------|-----------|---------|-----|-------|
-| Solidity | `.sol` | `tree-sitter-solidity` | Third-party | Smart contracts, 787K crate downloads |
-| Objective-C | `.m` | `tree-sitter-objc` | `tree-sitter-grammars/` | Apple legacy, 121K crate downloads |
-| CUDA | `.cu`, `.cuh` | `tree-sitter-cuda` | `tree-sitter-grammars/` | C++ superset for GPU/ML, both npm + crate |
-| Groovy | `.groovy`, `.gvy` | `tree-sitter-groovy` | Third-party | JVM, Gradle build scripts |
-| Verilog/SystemVerilog | `.v`, `.sv` | `tree-sitter-verilog` | Official | HDL, 33K crate downloads |
-
-> For languages where the npm package is name-squatted or missing (R, Erlang), WASM binaries can be built from the grammar repo via `tree-sitter build --wasm`.
+All other sub-phases (8.2–8.7) use only codegraph's existing tree-sitter infrastructure and require no new runtime dependencies.
 
 ---
 
