@@ -100,9 +100,14 @@ function queryAllAstNodes() {
 // ─── Tests ────────────────────────────────────────────────────────────
 
 describe('buildAstNodes — JS extraction', () => {
-  test('call kind AST nodes are no longer stored (dead code removed)', () => {
+  test('captures call_expression as kind:call', () => {
     const calls = queryAstNodes('call');
-    expect(calls.length).toBe(0);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    const names = calls.map((n) => n.name);
+    // eval(input), fetch('/api/data'), result.set('data', data), console.log(result)
+    expect(
+      names.some((n) => n.includes('eval') || n.includes('fetch') || n.includes('console.log')),
+    ).toBe(true);
   });
 
   test('captures new_expression as kind:new', () => {
