@@ -125,7 +125,7 @@ function setupPipeline(ctx: PipelineContext): void {
       ctx.nativeDb = undefined;
     }
     // Always run JS initSchema so better-sqlite3 sees the schema —
-    // both connections coexist during the pipeline.
+    // nativeDb is closed during pipeline stages and reopened for analyses.
     initSchema(ctx.db);
   } else {
     initSchema(ctx.db);
@@ -172,6 +172,21 @@ function formatTimingResult(ctx: PipelineContext): BuildResult {
 // ── Pipeline stages execution ───────────────────────────────────────────
 
 async function runPipelineStages(ctx: PipelineContext): Promise<void> {
+  // Prevent dual-connection WAL corruption during pipeline stages: when both
+  // better-sqlite3 (ctx.db) and rusqlite (ctx.nativeDb) are open to the same
+  // WAL-mode file, native writes corrupt the DB. Close nativeDb so stages
+  // use JS fallback paths. Reopened before runAnalyses for feature modules
+  // that use suspendJsDb/resumeJsDb WAL checkpoint pattern (#696).
+  const hadNativeDb = !!ctx.nativeDb;
+  if (ctx.db && ctx.nativeDb) {
+    try {
+      ctx.nativeDb.close();
+    } catch {
+      /* ignore close errors */
+    }
+    ctx.nativeDb = undefined;
+  }
+
   await collectFiles(ctx);
   await detectChanges(ctx);
 
@@ -182,7 +197,39 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
   await resolveImports(ctx);
   await buildEdges(ctx);
   await buildStructure(ctx);
+
+  // Reopen nativeDb for feature modules (ast, cfg, complexity, dataflow)
+  // which use suspendJsDb/resumeJsDb WAL checkpoint before native writes.
+  if (hadNativeDb) {
+    const native = loadNative();
+    if (native?.NativeDatabase) {
+      try {
+        ctx.nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
+        if (ctx.engineOpts) {
+          ctx.engineOpts.nativeDb = ctx.nativeDb;
+        }
+      } catch {
+        ctx.nativeDb = undefined;
+        if (ctx.engineOpts) {
+          ctx.engineOpts.nativeDb = undefined;
+        }
+      }
+    }
+  }
+
   await runAnalyses(ctx);
+
+  // Close nativeDb after analyses — finalize uses JS paths for setBuildMeta
+  // and closeDbPair handles cleanup. Avoids dual-connection during finalize.
+  if (ctx.nativeDb) {
+    try {
+      ctx.nativeDb.close();
+    } catch {
+      /* ignore close errors */
+    }
+    ctx.nativeDb = undefined;
+  }
+
   await finalize(ctx);
 }
 
