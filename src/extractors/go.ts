@@ -111,43 +111,63 @@ function handleGoTypeDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
     if (!spec || spec.type !== 'type_spec') continue;
     const nameNode = spec.childForFieldName('name');
     const typeNode = spec.childForFieldName('type');
-    if (nameNode && typeNode) {
-      if (typeNode.type === 'struct_type') {
-        const fields = extractStructFields(typeNode);
+    if (!nameNode || !typeNode) continue;
+
+    if (typeNode.type === 'struct_type') {
+      handleGoStructType(node, nameNode, typeNode, ctx);
+    } else if (typeNode.type === 'interface_type') {
+      handleGoInterfaceType(node, nameNode, typeNode, ctx);
+    } else {
+      ctx.definitions.push({
+        name: nameNode.text,
+        kind: 'type',
+        line: node.startPosition.row + 1,
+        endLine: nodeEndLine(node),
+      });
+    }
+  }
+}
+
+/** Handle a struct type_spec: emit struct definition with field children. */
+function handleGoStructType(
+  declNode: TreeSitterNode,
+  nameNode: TreeSitterNode,
+  typeNode: TreeSitterNode,
+  ctx: ExtractorOutput,
+): void {
+  const fields = extractStructFields(typeNode);
+  ctx.definitions.push({
+    name: nameNode.text,
+    kind: 'struct',
+    line: declNode.startPosition.row + 1,
+    endLine: nodeEndLine(declNode),
+    children: fields.length > 0 ? fields : undefined,
+  });
+}
+
+/** Handle an interface type_spec: emit interface definition + method definitions. */
+function handleGoInterfaceType(
+  declNode: TreeSitterNode,
+  nameNode: TreeSitterNode,
+  typeNode: TreeSitterNode,
+  ctx: ExtractorOutput,
+): void {
+  ctx.definitions.push({
+    name: nameNode.text,
+    kind: 'interface',
+    line: declNode.startPosition.row + 1,
+    endLine: nodeEndLine(declNode),
+  });
+  for (let j = 0; j < typeNode.childCount; j++) {
+    const member = typeNode.child(j);
+    if (member && member.type === 'method_elem') {
+      const methName = member.childForFieldName('name');
+      if (methName) {
         ctx.definitions.push({
-          name: nameNode.text,
-          kind: 'struct',
-          line: node.startPosition.row + 1,
-          endLine: nodeEndLine(node),
-          children: fields.length > 0 ? fields : undefined,
-        });
-      } else if (typeNode.type === 'interface_type') {
-        ctx.definitions.push({
-          name: nameNode.text,
-          kind: 'interface',
-          line: node.startPosition.row + 1,
-          endLine: nodeEndLine(node),
-        });
-        for (let j = 0; j < typeNode.childCount; j++) {
-          const member = typeNode.child(j);
-          if (member && member.type === 'method_elem') {
-            const methName = member.childForFieldName('name');
-            if (methName) {
-              ctx.definitions.push({
-                name: `${nameNode.text}.${methName.text}`,
-                kind: 'method',
-                line: member.startPosition.row + 1,
-                endLine: member.endPosition.row + 1,
-              });
-            }
-          }
-        }
-      } else {
-        ctx.definitions.push({
-          name: nameNode.text,
-          kind: 'type',
-          line: node.startPosition.row + 1,
-          endLine: nodeEndLine(node),
+          name: `${nameNode.text}.${methName.text}`,
+          kind: 'method',
+          line: member.startPosition.row + 1,
+          endLine: member.endPosition.row + 1,
         });
       }
     }
