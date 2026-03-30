@@ -58,6 +58,8 @@ Latencies are median over 5 runs. Hub target = most-connected node.
 | diffImpact affected files | 0 |
 
 <!-- NOTES_START -->
+**Note (3.5.0):** This version has WASM-only data (`native: null`) because the native engine crashed during `insertNodes` in the graph build phase. The root cause is a napi-rs serialization bug: parameter and child nodes with undefined `visibility` fields marshal as `null` at the JS-Rust boundary, which fails conversion into the Rust `Option<String>` type in `InsertNodesDefinition.visibility`. Query latencies for 3.5.0 are therefore not directly comparable to prior versions that include both engine rows. This will be fixed in the next release.
+
 **Note (3.4.1):** The ↑45% diffImpact delta is inflated by 3.4.0 being an unusually low baseline (5.6ms/4.9ms). The new absolute values (8.1ms native, 7.1ms wasm) fall within the historical range (e.g. 3.1.3: 8.3ms, 3.3.0: 8.8ms). The mid-query target also changed from `rule` to `noTests`, which may affect diffImpact scope. No engine regression — fnDeps grew only 5-7% (consistent with codebase expansion) and fnImpact is flat-to-slightly-down.
 
 **Note (3.4.0):** The ↑136-143% fnDeps deltas for 3.4.0 vs 3.3.1 reflect codebase growth — `buildGraph` has significantly more edges in this release (new extractors, refactored domain/features layers). The mid-query target also changed from `db` to `rule`. There is no engine regression — native `diffImpact` improved 20% in the same release.
