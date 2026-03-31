@@ -871,8 +871,10 @@ impl NativeDatabase {
                 // Delete existing CFG data for this node so the caller doesn't
                 // need to perform deletes on a separate (JS) connection, which
                 // would cause a WAL conflict with the native connection.
-                let _ = del_edges.execute(params![entry.node_id]);
-                let _ = del_blocks.execute(params![entry.node_id]);
+                del_edges.execute(params![entry.node_id])
+                    .map_err(|e| napi::Error::from_reason(format!("cfg_edges delete failed: {e}")))?;
+                del_blocks.execute(params![entry.node_id])
+                    .map_err(|e| napi::Error::from_reason(format!("cfg_blocks delete failed: {e}")))?;
 
                 let mut block_db_ids: std::collections::HashMap<u32, i64> =
                     std::collections::HashMap::new();
