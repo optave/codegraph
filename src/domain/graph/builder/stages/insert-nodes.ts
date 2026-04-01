@@ -43,9 +43,9 @@ interface PrecomputedFileData {
 function tryNativeInsert(ctx: PipelineContext): boolean {
   // Open a temporary native connection for the insert.  The pipeline closes
   // ctx.nativeDb before pipeline stages to prevent dual-connection WAL
-  // corruption (#696).  We open our own connection and coordinate with
-  // suspendJsDb / resumeJsDb WAL checkpoints (#709, same pattern as the
-  // analysis stages in features/).
+  // corruption (#696).  We open our own connection and issue WAL checkpoints
+  // manually (flush JS WAL before open, flush native WAL before close) to
+  // coordinate safely (#709).
   const native = loadNative();
   if (!native?.NativeDatabase) return false;
 
@@ -160,21 +160,29 @@ function tryNativeInsert(ctx: PipelineContext): boolean {
   }
 
   // WAL checkpoint dance: flush JS WAL so the native connection starts clean,
-  // do the write, then flush the native WAL so better-sqlite3 sees the changes.
+  // do the write, close native, then checkpoint through ctx.db so
+  // better-sqlite3 sees all native-written WAL frames (#709).
   try {
-    ctx.db.pragma('wal_checkpoint(TRUNCATE)');
-    const ok = nativeDb!.bulkInsertNodes(batches, fileHashes, removed);
-    try {
-      nativeDb!.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    } catch {
-      /* ignore — checkpoint failure is non-fatal */
+    const cpResult = ctx.db.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[] | undefined;
+    if (cpResult?.[0]?.busy) {
+      // WAL not fully flushed — fall back to JS to avoid mixed-writer WAL state
+      return false;
     }
+    const ok = nativeDb!.bulkInsertNodes(batches, fileHashes, removed);
     return ok;
   } finally {
     try {
       nativeDb!.close();
     } catch {
       /* ignore close errors */
+    }
+    // Post-write checkpoint through ctx.db *after* nativeDb is closed, so
+    // rusqlite holds no locks and better-sqlite3 can acquire the exclusive
+    // WAL lock needed for TRUNCATE (#709).
+    try {
+      ctx.db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore — checkpoint failure is non-fatal */
     }
   }
 }
