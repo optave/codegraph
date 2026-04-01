@@ -41,7 +41,7 @@ pub fn read_journal(root_dir: &str) -> JournalResult {
         _ => return JournalResult::default(),
     };
 
-    let timestamp: f64 = match header[HEADER_PREFIX.len()..].trim().parse() {
+    let timestamp: f64 = match header[HEADER_PREFIX.len()..].trim().parse::<f64>() {
         Ok(t) if t > 0.0 && t.is_finite() => t,
         _ => return JournalResult::default(),
     };
