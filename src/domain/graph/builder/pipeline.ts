@@ -132,7 +132,12 @@ function setupPipeline(ctx: PipelineContext): void {
       // with no cross-library WAL frames (#715, #717).
       ctx.nativeDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch (err) {
-      warn(`NativeDatabase init failed, falling back to JS: ${(err as Error).message}`);
+      warn(`NativeDatabase setup failed, falling back to JS: ${(err as Error).message}`);
+      try {
+        ctx.nativeDb?.close();
+      } catch {
+        /* ignore close errors */
+      }
       ctx.nativeDb = undefined;
     }
     // Always run JS initSchema so better-sqlite3 sees the schema —
@@ -190,10 +195,16 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
   // that use suspendJsDb/resumeJsDb WAL checkpoint pattern (#696).
   const hadNativeDb = !!ctx.nativeDb;
   if (ctx.db && ctx.nativeDb) {
+    // Checkpoint WAL through rusqlite before closing so better-sqlite3 never
+    // needs to apply WAL frames written by a different SQLite library (#715, #717).
+    // Separate try/catch blocks ensure close() always runs even if checkpoint throws,
+    // preventing a live rusqlite connection from lingering until GC.
     try {
-      // Checkpoint WAL through rusqlite before closing so better-sqlite3 never
-      // needs to apply WAL frames written by a different SQLite library (#715, #717).
       ctx.nativeDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore checkpoint errors */
+    }
+    try {
       ctx.nativeDb.close();
     } catch {
       /* ignore close errors */
@@ -241,10 +252,15 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
   // Close nativeDb after analyses — finalize uses JS paths for setBuildMeta
   // and closeDbPair handles cleanup. Avoids dual-connection during finalize.
   if (ctx.nativeDb) {
+    // Checkpoint WAL through rusqlite before closing so better-sqlite3 never
+    // needs to apply WAL frames written by a different SQLite library (#715, #717).
+    // Separate try/catch blocks ensure close() always runs even if checkpoint throws.
     try {
-      // Checkpoint WAL through rusqlite before closing so better-sqlite3 never
-      // needs to apply WAL frames written by a different SQLite library (#715, #717).
       ctx.nativeDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore checkpoint errors */
+    }
+    try {
       ctx.nativeDb.close();
     } catch {
       /* ignore close errors */
