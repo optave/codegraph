@@ -52,7 +52,7 @@ Metrics are normalized per file for cross-version comparability.
 | Metric | Value |
 |--------|-------|
 | Build time | 7.5s |
-| Query time | 13ms |
+| Query time | 12ms |
 | Nodes | 13,702 |
 | Edges | 26,786 |
 | DB size | 27.3 MB |
