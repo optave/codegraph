@@ -50,7 +50,7 @@ function walkOCamlNode(node: TreeSitterNode, ctx: ExtractorOutput): void {
     case 'application_expression':
       handleOCamlApplication(node, ctx);
       break;
-    // Interface-specific (.mli) node types
+    // Shared node types present in both .ml and .mli files
     case 'value_specification':
       handleOCamlValueSpec(node, ctx);
       break;
@@ -295,9 +295,11 @@ function handleOCamlModuleTypeDef(node: TreeSitterNode, ctx: ExtractorOutput): v
 }
 
 function handleOCamlExceptionDef(node: TreeSitterNode, ctx: ExtractorOutput): void {
+  // Standard: `exception Foo of bar` — name is inside constructor_declaration
   const ctorDecl = findChild(node, 'constructor_declaration');
-  if (!ctorDecl) return;
-  const nameNode = findChild(ctorDecl, 'constructor_name');
+  const nameNode = ctorDecl
+    ? findChild(ctorDecl, 'constructor_name')
+    : findChild(node, 'constructor_name'); // fallback for `exception Foo = Bar` (alias)
   if (!nameNode) return;
 
   ctx.definitions.push({

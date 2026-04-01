@@ -52,6 +52,38 @@ end`);
     const symbols = parseOCaml(`let () = print_endline "Hello"`);
     expect(symbols.calls).toContainEqual(expect.objectContaining({ name: 'print_endline' }));
   });
+
+  it('extracts external declarations as functions', () => {
+    const symbols = parseOCaml(
+      `external unsafe_get : string -> int -> char = "%string_unsafe_get"`,
+    );
+    expect(symbols.definitions).toContainEqual(
+      expect.objectContaining({ name: 'unsafe_get', kind: 'function' }),
+    );
+  });
+
+  it('extracts exception definitions as types', () => {
+    const symbols = parseOCaml(`exception Not_found`);
+    expect(symbols.definitions).toContainEqual(
+      expect.objectContaining({ name: 'Not_found', kind: 'type' }),
+    );
+  });
+
+  it('extracts exception aliases as types', () => {
+    const symbols = parseOCaml(`exception Foo = Bar`);
+    expect(symbols.definitions).toContainEqual(
+      expect.objectContaining({ name: 'Foo', kind: 'type' }),
+    );
+  });
+
+  it('extracts module type definitions as interfaces', () => {
+    const symbols = parseOCaml(`module type S = sig
+  val x : int
+end`);
+    expect(symbols.definitions).toContainEqual(
+      expect.objectContaining({ name: 'S', kind: 'interface' }),
+    );
+  });
 });
 
 describe('OCaml interface parser (.mli)', () => {

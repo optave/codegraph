@@ -24,7 +24,7 @@ fn match_ocaml_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
         "class_definition" => handle_ocaml_class_def(node, source, symbols),
         "open_module" => handle_ocaml_open(node, source, symbols),
         "application_expression" => handle_ocaml_application(node, source, symbols),
-        // Interface-specific (.mli) node types
+        // Shared node types present in both .ml and .mli files
         "value_specification" => handle_ocaml_value_spec(node, source, symbols),
         "external" => handle_ocaml_external(node, source, symbols),
         "module_type_definition" => handle_ocaml_module_type_def(node, source, symbols),
@@ -274,23 +274,27 @@ fn handle_ocaml_module_type_def(node: &Node, source: &[u8], symbols: &mut FileSy
     }
 }
 
-/// Handle `exception Foo of bar` declarations in .mli files.
+/// Handle `exception Foo of bar` and `exception Foo = Bar` declarations.
 fn handle_ocaml_exception_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    // Standard: `exception Foo of bar` — name is inside constructor_declaration
     let constructor = find_child(node, "constructor_declaration");
-    if let Some(decl) = constructor {
-        let name_node = find_child(&decl, "constructor_name");
-        if let Some(name) = name_node {
-            symbols.definitions.push(Definition {
-                name: node_text(&name, source).to_string(),
-                kind: "type".to_string(),
-                line: start_line(node),
-                end_line: Some(end_line(node)),
-                decorators: None,
-                complexity: None,
-                cfg: None,
-                children: None,
-            });
-        }
+    let name_node = if let Some(ref decl) = constructor {
+        find_child(decl, "constructor_name")
+    } else {
+        // Fallback for `exception Foo = Bar` (alias) — name is directly on the node
+        find_child(node, "constructor_name")
+    };
+    if let Some(name) = name_node {
+        symbols.definitions.push(Definition {
+            name: node_text(&name, source).to_string(),
+            kind: "type".to_string(),
+            line: start_line(node),
+            end_line: Some(end_line(node)),
+            decorators: None,
+            complexity: None,
+            cfg: None,
+            children: None,
+        });
     }
 }
 
