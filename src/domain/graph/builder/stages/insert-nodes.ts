@@ -11,10 +11,12 @@
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { bulkNodeIdsByFile } from '../../../../db/index.js';
+import { loadNative } from '../../../../infrastructure/native.js';
 import type {
   BetterSqlite3Database,
   ExtractorOutput,
   MetadataUpdate,
+  NativeDatabase,
   SqliteStatement,
 } from '../../../../types.js';
 import type { PipelineContext } from '../context.js';
@@ -39,15 +41,28 @@ interface PrecomputedFileData {
 // ── Native fast-path ─────────────────────────────────────────────────
 
 function tryNativeInsert(ctx: PipelineContext): boolean {
-  // Disabled: bulkInsertNodes corrupts the DB when both the JS (better-sqlite3)
-  // and Rust (rusqlite) connections are open to the same WAL-mode file.
-  // The native path was never operational before — it always crashed on null
-  // visibility serialisation. See #696 for the dual-connection fix.
-  if (ctx.db) return false;
+  // Open a temporary native connection for the insert.  The pipeline closes
+  // ctx.nativeDb before pipeline stages to prevent dual-connection WAL
+  // corruption (#696).  We open our own connection and coordinate with
+  // suspendJsDb / resumeJsDb WAL checkpoints (#709, same pattern as the
+  // analysis stages in features/).
+  const native = loadNative();
+  if (!native?.NativeDatabase) return false;
 
-  // Use NativeDatabase persistent connection (Phase 6.15+).
-  // Standalone napi functions were removed in 6.17 — falls through to JS if nativeDb unavailable.
-  if (!ctx.nativeDb?.bulkInsertNodes) return false;
+  let nativeDb: NativeDatabase | undefined;
+  try {
+    nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
+  } catch {
+    return false;
+  }
+  if (!nativeDb?.bulkInsertNodes) {
+    try {
+      nativeDb?.close();
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
 
   const { allSymbols, filesToParse, metadataUpdates, rootDir, removed } = ctx;
 
@@ -144,7 +159,24 @@ function tryNativeInsert(ctx: PipelineContext): boolean {
     fileHashes.push({ file: item.relPath, hash: item.hash, mtime, size });
   }
 
-  return ctx.nativeDb!.bulkInsertNodes(batches, fileHashes, removed);
+  // WAL checkpoint dance: flush JS WAL so the native connection starts clean,
+  // do the write, then flush the native WAL so better-sqlite3 sees the changes.
+  try {
+    ctx.db.pragma('wal_checkpoint(TRUNCATE)');
+    const ok = nativeDb!.bulkInsertNodes(batches, fileHashes, removed);
+    try {
+      nativeDb!.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore — checkpoint failure is non-fatal */
+    }
+    return ok;
+  } finally {
+    try {
+      nativeDb!.close();
+    } catch {
+      /* ignore close errors */
+    }
+  }
 }
 
 // ── JS fallback: Phase 1 ────────────────────────────────────────────
