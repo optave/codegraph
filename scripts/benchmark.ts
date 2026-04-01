@@ -158,7 +158,7 @@ try {
 	}
 	noopRebuildMs = Math.round(median(noopTimings));
 } catch (err) {
-	console.error(`  [${engine}] No-op rebuild failed: ${err.message}`);
+	console.error(`  [${engine}] No-op rebuild failed: ${(err as Error).message}`);
 }
 
 console.error(`  [${engine}] Benchmarking 1-file rebuild...`);
@@ -178,7 +178,7 @@ try {
 	oneFileRebuildMs = Math.round(medianRun.ms);
 	oneFilePhases = medianRun.phases;
 } catch (err) {
-	console.error(`  [${engine}] 1-file rebuild failed: ${err.message}`);
+	console.error(`  [${engine}] 1-file rebuild failed: ${(err as Error).message}`);
 } finally {
 	fs.writeFileSync(PROBE_FILE, original);
 	try {
