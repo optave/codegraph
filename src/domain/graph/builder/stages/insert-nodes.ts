@@ -159,9 +159,12 @@ function tryNativeInsert(ctx: PipelineContext): boolean {
     fileHashes.push({ file: item.relPath, hash: item.hash, mtime, size });
   }
 
-  // WAL checkpoint dance: flush JS WAL so the native connection starts clean,
-  // do the write, close native, then checkpoint through ctx.db so
-  // better-sqlite3 sees all native-written WAL frames (#709).
+  // WAL checkpoint dance — same pattern as suspendJsDb/resumeJsDb in pipeline.ts:
+  //   1. Flush JS WAL (ctx.db) so the native connection starts with a clean DB
+  //   2. Native write
+  //   3. Flush native WAL (nativeDb) so better-sqlite3 never reads WAL frames
+  //      written by a different SQLite library (#715, #717)
+  //   4. Close nativeDb
   try {
     const cpResult = ctx.db.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[] | undefined;
     if (cpResult?.[0]?.busy) {
@@ -169,20 +172,20 @@ function tryNativeInsert(ctx: PipelineContext): boolean {
       return false;
     }
     const ok = nativeDb!.bulkInsertNodes(batches, fileHashes, removed);
+    // Post-write checkpoint through nativeDb (rusqlite) so it flushes its own
+    // WAL frames to the main DB file. This ensures ctx.db (better-sqlite3) never
+    // needs to apply WAL frames written by a different SQLite library.
+    try {
+      nativeDb!.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore — checkpoint failure is non-fatal */
+    }
     return ok;
   } finally {
     try {
       nativeDb!.close();
     } catch {
       /* ignore close errors */
-    }
-    // Post-write checkpoint through ctx.db *after* nativeDb is closed, so
-    // rusqlite holds no locks and better-sqlite3 can acquire the exclusive
-    // WAL lock needed for TRUNCATE (#709).
-    try {
-      ctx.db.pragma('wal_checkpoint(TRUNCATE)');
-    } catch {
-      /* ignore — checkpoint failure is non-fatal */
     }
   }
 }
