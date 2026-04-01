@@ -28,7 +28,7 @@ export function bfs(
     const nativeMaxDepth = maxDepth === Infinity ? null : maxDepth;
     // Undirected graphs deduplicate edges to one canonical direction in toEdgeArray(),
     // so the Rust side must traverse both directions to preserve symmetry.
-    const nativeDirection = !graph.directed && direction === 'forward' ? 'both' : direction;
+    const nativeDirection = !graph.directed ? 'both' : direction;
     const result = native.bfsTraversal(edges, starts, nativeMaxDepth, nativeDirection);
     const depths = new Map<string, number>();
     for (const entry of result) {

@@ -14,7 +14,12 @@ export interface FanInOut {
 export function fanInOut(graph: CodeGraph): Map<string, FanInOut> {
   const native = loadNative();
   if (native?.fanInOut) {
-    const edges = graph.toEdgeArray();
+    let edges = graph.toEdgeArray();
+    if (!graph.directed) {
+      // Undirected: toEdgeArray() deduplicates to one canonical direction;
+      // mirror each edge so the Rust side counts symmetric in/out degrees.
+      edges = [...edges, ...edges.map((e) => ({ source: e.target, target: e.source }))];
+    }
     const nativeResult = native.fanInOut(edges);
     const result = new Map<string, FanInOut>();
     for (const entry of nativeResult) {
