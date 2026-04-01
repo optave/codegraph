@@ -39,15 +39,16 @@ interface PrecomputedFileData {
 // ── Native fast-path ─────────────────────────────────────────────────
 
 function tryNativeInsert(ctx: PipelineContext): boolean {
-  // Disabled: bulkInsertNodes corrupts the DB when both the JS (better-sqlite3)
-  // and Rust (rusqlite) connections are open to the same WAL-mode file.
-  // The native path was never operational before — it always crashed on null
-  // visibility serialisation. See #696 for the dual-connection fix.
-  if (ctx.db) return false;
-
   // Use NativeDatabase persistent connection (Phase 6.15+).
   // Standalone napi functions were removed in 6.17 — falls through to JS if nativeDb unavailable.
   if (!ctx.nativeDb?.bulkInsertNodes) return false;
+
+  // WAL checkpoint: flush WAL to main DB file so the native (rusqlite) connection
+  // sees a clean slate. This is the same dual-connection guard used by feature
+  // modules (ast, cfg, complexity, dataflow). See #696, #709.
+  if (ctx.db) {
+    ctx.db.pragma('wal_checkpoint(TRUNCATE)');
+  }
 
   const { allSymbols, filesToParse, metadataUpdates, rootDir, removed } = ctx;
 

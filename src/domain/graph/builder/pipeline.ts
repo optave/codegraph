@@ -223,7 +223,33 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
   if (ctx.earlyExit) return;
 
   await parseFiles(ctx);
+
+  // Temporarily reopen nativeDb for insertNodes — it uses the WAL checkpoint
+  // guard internally (same pattern as feature modules). Closed again before
+  // resolveImports/buildEdges which don't yet have the guard (#709).
+  if (hadNativeDb && ctx.engineName === 'native') {
+    const native = loadNative();
+    if (native?.NativeDatabase) {
+      try {
+        ctx.nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
+      } catch {
+        ctx.nativeDb = undefined;
+      }
+    }
+  }
+
   await insertNodes(ctx);
+
+  // Close nativeDb after insertNodes — remaining pipeline stages use JS paths.
+  if (ctx.nativeDb && ctx.db) {
+    try {
+      ctx.nativeDb.close();
+    } catch {
+      /* ignore close errors */
+    }
+    ctx.nativeDb = undefined;
+  }
+
   await resolveImports(ctx);
   await buildEdges(ctx);
   await buildStructure(ctx);
