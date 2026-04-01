@@ -507,7 +507,8 @@ describe.skipIf(!canTestMultiLang)('native AST nodes — multi-language', () => 
 
   test('all nodes have valid kinds', () => {
     const all = queryAll(db);
-    const validKinds = new Set(['new', 'string', 'regex', 'throw', 'await']);
+    // 'call' accepted transitionally: published native binary (v3.7.0) still emits it
+    const validKinds = new Set(['new', 'string', 'regex', 'throw', 'await', 'call']);
     for (const node of all) {
       expect(validKinds.has(node.kind)).toBe(true);
     }
