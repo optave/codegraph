@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use napi_derive::napi;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,7 @@ pub struct InsertNodesDefinition {
     pub end_line: Option<u32>,
     #[serde(default)]
     pub visibility: Option<String>,
+    #[serde(default)]
     pub children: Vec<InsertNodesChild>,
 }
 

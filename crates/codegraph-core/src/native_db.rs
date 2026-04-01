@@ -740,7 +740,7 @@ impl NativeDatabase {
     /// Batches are received as `serde_json::Value` and deserialized via serde so
     /// that `null` visibility values map to `None` instead of crashing napi's
     /// `Option<String>` object conversion (#709).
-    #[napi(ts_args_type = "batches: InsertNodesBatch[], fileHashes: FileHashEntry[], removedFiles: string[]")]
+    #[napi(ts_args_type = "batches: Array<{ file: string; definitions: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string; children: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string }> }>; exports: Array<{ name: string; kind: string; line: number }> }>, fileHashes: FileHashEntry[], removedFiles: string[]")]
     pub fn bulk_insert_nodes(
         &self,
         batches: serde_json::Value,
