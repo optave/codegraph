@@ -147,7 +147,7 @@ describe('buildAstNodes — non-JS language astNodes', () => {
 
   test('all inserted nodes have valid kinds', async () => {
     const all = queryAll(db);
-    const validKinds = new Set(['call', 'new', 'string', 'regex', 'throw', 'await']);
+    const validKinds = new Set(['new', 'string', 'regex', 'throw', 'await']);
     for (const node of all) {
       expect(validKinds.has(node.kind)).toBe(true);
     }
@@ -507,7 +507,7 @@ describe.skipIf(!canTestMultiLang)('native AST nodes — multi-language', () => 
 
   test('all nodes have valid kinds', () => {
     const all = queryAll(db);
-    const validKinds = new Set(['call', 'new', 'string', 'regex', 'throw', 'await']);
+    const validKinds = new Set(['new', 'string', 'regex', 'throw', 'await']);
     for (const node of all) {
       expect(validKinds.has(node.kind)).toBe(true);
     }
