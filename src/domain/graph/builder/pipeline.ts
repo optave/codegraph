@@ -242,6 +242,13 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
 
   // Close nativeDb after insertNodes — remaining pipeline stages use JS paths.
   if (ctx.nativeDb && ctx.db) {
+    // Checkpoint WAL through rusqlite before closing so better-sqlite3 never
+    // needs to apply WAL frames written by a different SQLite library (#715, #717).
+    try {
+      ctx.nativeDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore checkpoint errors */
+    }
     try {
       ctx.nativeDb.close();
     } catch {
