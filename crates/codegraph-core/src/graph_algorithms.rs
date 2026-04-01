@@ -309,9 +309,13 @@ fn louvain_impl(
         rng_state
     };
 
+    // m2 = 2 × total edge weight of the ORIGINAL graph — a constant across all levels.
+    // Recalculating from cur_edges would undercount because coarsening strips intra-community
+    // edges, inflating the penalty term and causing under-merging at coarser levels.
+    let total_m2: f64 = 2.0 * total_weight;
+
     for _level in 0..50 {
-        let m2: f64 = 2.0 * cur_edges.values().sum::<f64>();
-        if m2 == 0.0 {
+        if cur_edges.is_empty() {
             break;
         }
 
@@ -346,7 +350,7 @@ fn louvain_impl(
 
                 let w_own = *comm_w.get(&node_comm).unwrap_or(&0.0);
                 let remove_cost =
-                    w_own - resolution * node_deg * (comm_total[node_comm] - node_deg) / m2;
+                    w_own - resolution * node_deg * (comm_total[node_comm] - node_deg) / total_m2;
 
                 let mut best_comm = node_comm;
                 let mut best_gain: f64 = 0.0;
@@ -356,7 +360,7 @@ fn louvain_impl(
                         continue;
                     }
                     let gain = w_target
-                        - resolution * node_deg * comm_total[target_comm] / m2
+                        - resolution * node_deg * comm_total[target_comm] / total_m2
                         - remove_cost;
                     if gain > best_gain {
                         best_gain = gain;
