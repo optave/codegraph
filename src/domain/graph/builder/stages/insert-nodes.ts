@@ -10,14 +10,11 @@
  */
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { getDatabase } from '../../../../db/better-sqlite3.js';
 import { bulkNodeIdsByFile } from '../../../../db/index.js';
-import { loadNative } from '../../../../infrastructure/native.js';
 import type {
   BetterSqlite3Database,
   ExtractorOutput,
   MetadataUpdate,
-  NativeDatabase,
   SqliteStatement,
 } from '../../../../types.js';
 import type { PipelineContext } from '../context.js';
@@ -42,16 +39,9 @@ interface PrecomputedFileData {
 // ── Native fast-path ─────────────────────────────────────────────────
 
 function tryNativeInsert(ctx: PipelineContext): boolean {
-  // Close-reopen pattern: two different SQLite libraries (better-sqlite3 and
-  // rusqlite) cannot safely share a WAL-mode database on Linux/macOS — even
-  // with checkpoint coordination, the SHM mappings diverge and cause
-  // SQLITE_CORRUPT (#696, #709, #737).
-  //
-  // Solution: close ctx.db before opening the native connection, then reopen
-  // ctx.db after the native write completes.  This guarantees only one SQLite
-  // library touches the database file at a time.
-  const native = loadNative();
-  if (!native?.NativeDatabase) return false;
+  // Use NativeDatabase persistent connection (Phase 6.15+).
+  // Standalone napi functions were removed in 6.17 — falls through to JS if nativeDb unavailable.
+  if (!ctx.nativeDb?.bulkInsertNodes) return false;
 
   const { allSymbols, filesToParse, metadataUpdates, rootDir, removed } = ctx;
 
@@ -148,48 +138,24 @@ function tryNativeInsert(ctx: PipelineContext): boolean {
     fileHashes.push({ file: item.relPath, hash: item.hash, mtime, size });
   }
 
-  // Step 1: Close ctx.db so only one SQLite library touches the DB at a time.
-  // Checkpoint first to flush any pending JS WAL frames to the main DB file.
+  // WAL guard: same suspendJsDb/resumeJsDb pattern used by feature modules
+  // (ast, cfg, complexity, dataflow). Checkpoint JS side before native write,
+  // then checkpoint native side after, so neither library reads WAL frames
+  // written by the other (#696, #709, #715, #717).
+  let result: boolean;
   try {
-    ctx.db.pragma('wal_checkpoint(TRUNCATE)');
-  } catch {
-    /* ignore */
-  }
-  ctx.db.close();
-
-  // Step 2: Open native connection and perform the bulk insert.
-  let nativeDb: NativeDatabase | undefined;
-  let ok = false;
-  try {
-    nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
-    if (!nativeDb?.bulkInsertNodes) {
-      return false;
+    if (ctx.db) {
+      ctx.db.pragma('wal_checkpoint(TRUNCATE)');
     }
-    ok = nativeDb.bulkInsertNodes(batches, fileHashes, removed);
-    // Checkpoint native WAL so all frames are in the main DB file before
-    // we hand the database back to better-sqlite3.
-    try {
-      nativeDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    } catch {
-      /* ignore — checkpoint failure is non-fatal */
-    }
-    return ok;
+    result = ctx.nativeDb!.bulkInsertNodes(batches, fileHashes, removed);
   } finally {
-    // Close native connection before reopening JS connection.
-    if (nativeDb) {
-      try {
-        nativeDb.close();
-      } catch {
-        /* ignore close errors */
-      }
+    try {
+      ctx.nativeDb?.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore — nativeDb may already be closed */
     }
-    // Step 3: Reopen ctx.db.  The advisory lock is already held by the
-    // pipeline, so we just need a fresh better-sqlite3 handle.
-    const Database = getDatabase();
-    ctx.db = new Database(ctx.dbPath) as unknown as BetterSqlite3Database;
-    ctx.db.pragma('journal_mode = WAL');
-    ctx.db.pragma('busy_timeout = 5000');
   }
+  return result;
 }
 
 // ── JS fallback: Phase 1 ────────────────────────────────────────────
