@@ -586,11 +586,9 @@ pub fn build_import_edges(
                 let mut resolved_sources: HashSet<&str> = HashSet::new();
                 for name in &imp.names {
                     let clean_name = if name.starts_with("* as ") || name.starts_with("*\tas ") {
-                        // Strip "* as " prefix — regex replacement in JS: /^\*\s+as\s+/
-                        match name.find(" as ") {
-                            Some(pos) => &name[pos + 4..],
-                            None => name.as_str(),
-                        }
+                        // Strip "* as " or "*\tas " prefix (both exactly 5 bytes)
+                        // JS equivalent: name.replace(/^\*\s+as\s+/, '')
+                        &name[5..]
                     } else {
                         name.as_str()
                     };
