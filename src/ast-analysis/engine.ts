@@ -234,6 +234,7 @@ function storeNativeCfgResults(results: NativeFunctionCfgResult[], defs: Definit
     if (
       (def.kind === 'function' || def.kind === 'method') &&
       def.line &&
+      def.cfg !== null &&
       !def.cfg?.blocks?.length
     ) {
       const candidates = byLine.get(def.line);
@@ -604,7 +605,7 @@ export async function runAnalyses(
   // This fills in complexity/CFG/dataflow for files that the native parse pipeline
   // missed, avoiding the need to parse with WASM + run JS visitors.
   const native = loadNative();
-  if (native?.analyzeComplexity) {
+  if (native?.analyzeComplexity ?? native?.buildCfgAnalysis ?? native?.extractDataflowAnalysis) {
     const t0native = performance.now();
     runNativeAnalysis(native, fileSymbols, rootDir, opts, extToLang);
     debug(`native standalone analysis: ${(performance.now() - t0native).toFixed(1)}ms`);
