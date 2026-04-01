@@ -35,12 +35,12 @@ describe('Erlang parser', () => {
 
   it('extracts import attributes', () => {
     const symbols = parseErlang(`-import(lists, [map/2, filter/2]).`);
-    expect(symbols.imports.length).toBeGreaterThanOrEqual(0);
+    expect(symbols.imports.length).toBeGreaterThanOrEqual(1);
   });
 
   it('extracts function calls', () => {
     const symbols = parseErlang(`start() ->
     io:format("Hello~n").`);
-    expect(symbols.calls.length).toBeGreaterThanOrEqual(0);
+    expect(symbols.calls.length).toBeGreaterThanOrEqual(1);
   });
 });

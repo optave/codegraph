@@ -43,6 +43,6 @@ import gleam/string`);
     const symbols = parseGleam(`pub fn main() {
   io.println("Hello")
 }`);
-    expect(symbols.calls.length).toBeGreaterThanOrEqual(0);
+    expect(symbols.calls.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -4,7 +4,7 @@ import { nodeEndLine } from './helpers.js';
 /**
  * Extract symbols from Clojure files.
  *
- * Clojure tree-sitter grammar (oakmac/tree-sitter-clojure) notes:
+ * Clojure tree-sitter grammar (sogaiu/tree-sitter-clojure) notes:
  * - The grammar is minimal: everything is a list/vector/map/symbol
  * - We detect definitions by the first symbol in a list: defn, def, defprotocol, etc.
  * - Namespace: (ns name ...)

@@ -50,7 +50,7 @@ function handleBinaryOp(node: TreeSitterNode, ctx: ExtractorOutput): void {
   const rhs = node.child(2);
 
   if (!lhs || !op || !rhs) return;
-  if (op.text !== '<-' && op.text !== '=' && op.text !== '<<-' && op.text !== '->') return;
+  if (op.text !== '<-' && op.text !== '=' && op.text !== '<<-') return;
   if (lhs.type !== 'identifier') return;
 
   if (rhs.type === 'function_definition') {

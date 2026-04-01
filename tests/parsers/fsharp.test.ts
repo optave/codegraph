@@ -47,6 +47,6 @@ open System.IO`);
 
   it('extracts function calls', () => {
     const symbols = parseFSharp(`let result = List.map (fun x -> x + 1) [1; 2; 3]`);
-    expect(symbols.calls.length).toBeGreaterThanOrEqual(0);
+    expect(symbols.calls.length).toBeGreaterThanOrEqual(1);
   });
 });
