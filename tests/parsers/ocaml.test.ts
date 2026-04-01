@@ -8,7 +8,7 @@ describe('OCaml parser', () => {
     parsers = await createParsers();
   });
 
-  function parseOCaml(code) {
+  function parseOCaml(code: string) {
     const parser = parsers.get('ocaml');
     if (!parser) throw new Error('OCaml parser not available');
     const tree = parser.parse(code);
