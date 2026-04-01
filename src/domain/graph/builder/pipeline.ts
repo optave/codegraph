@@ -255,6 +255,14 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
       /* ignore close errors */
     }
     ctx.nativeDb = undefined;
+    // Also checkpoint through better-sqlite3 so it refreshes its internal
+    // WAL state after rusqlite truncated the WAL file. Without this,
+    // better-sqlite3 may reference stale WAL pages → SQLITE_CORRUPT (#715).
+    try {
+      ctx.db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore checkpoint errors */
+    }
   }
 
   await resolveImports(ctx);
