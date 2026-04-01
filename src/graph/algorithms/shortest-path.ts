@@ -17,7 +17,12 @@ export function shortestPath(graph: CodeGraph, fromId: string, toId: string): st
 
   const native = loadNative();
   if (native?.shortestPath) {
-    const edges = graph.toEdgeArray();
+    let edges = graph.toEdgeArray();
+    if (!graph.directed) {
+      // Undirected: toEdgeArray() deduplicates to one canonical direction;
+      // mirror each edge so the Rust BFS can traverse in both directions.
+      edges = [...edges, ...edges.map((e) => ({ source: e.target, target: e.source }))];
+    }
     const result = native.shortestPath(edges, from, to);
     return result.length > 0 ? result : null;
   }
