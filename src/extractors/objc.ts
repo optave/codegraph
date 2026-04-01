@@ -84,7 +84,7 @@ function walkObjCNode(node: TreeSitterNode, ctx: ExtractorOutput): void {
 // ── ObjC class/protocol handlers ──────────────────────────────────────────
 
 function handleClassInterface(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const nameNode = node.childForFieldName('name');
+  const nameNode = node.childForFieldName('name') || findObjCDeclName(node);
   if (!nameNode) return;
   const name = nameNode.text;
 
@@ -116,7 +116,7 @@ function handleClassInterface(node: TreeSitterNode, ctx: ExtractorOutput): void 
 }
 
 function handleClassImplementation(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const nameNode = node.childForFieldName('name');
+  const nameNode = node.childForFieldName('name') || findObjCDeclName(node);
   if (!nameNode) return;
 
   ctx.definitions.push({
@@ -128,7 +128,7 @@ function handleClassImplementation(node: TreeSitterNode, ctx: ExtractorOutput): 
 }
 
 function handleProtocolDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const nameNode = node.childForFieldName('name');
+  const nameNode = node.childForFieldName('name') || findObjCDeclName(node);
   if (!nameNode) return;
 
   ctx.definitions.push({
@@ -140,7 +140,7 @@ function handleProtocolDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
 }
 
 function handleCategoryInterface(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const nameNode = node.childForFieldName('name');
+  const nameNode = node.childForFieldName('name') || findObjCDeclName(node);
   if (!nameNode) return;
   const category = node.childForFieldName('category');
   const catName = category ? `${nameNode.text}(${category.text})` : nameNode.text;
@@ -154,7 +154,7 @@ function handleCategoryInterface(node: TreeSitterNode, ctx: ExtractorOutput): vo
 }
 
 function handleCategoryImplementation(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const nameNode = node.childForFieldName('name');
+  const nameNode = node.childForFieldName('name') || findObjCDeclName(node);
   if (!nameNode) return;
   const category = node.childForFieldName('category');
   const catName = category ? `${nameNode.text}(${category.text})` : nameNode.text;
@@ -348,10 +348,23 @@ function findObjCParentClass(node: TreeSitterNode): string | null {
       current.type === 'category_interface' ||
       current.type === 'category_implementation'
     ) {
-      const nameNode = current.childForFieldName('name');
+      const nameNode = current.childForFieldName('name') || findObjCDeclName(current);
       return nameNode ? nameNode.text : null;
     }
     current = current.parent;
+  }
+  return null;
+}
+
+/**
+ * Find the declaration name for ObjC constructs where the grammar does not
+ * expose the class/protocol name as a named field.  The identifier appears
+ * right after the `@interface` / `@implementation` / `@protocol` keyword.
+ */
+function findObjCDeclName(node: TreeSitterNode): TreeSitterNode | null {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && child.type === 'identifier') return child;
   }
   return null;
 }
