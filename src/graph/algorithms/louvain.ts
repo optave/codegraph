@@ -5,6 +5,8 @@
  * Native path: classic Louvain (Rust, undirected modularity optimization).
  * JS fallback: Leiden algorithm via `detectClusters` (always undirected, `directed: false`).
  */
+
+import { warn } from '../../infrastructure/logger.js';
 import { loadNative } from '../../infrastructure/native.js';
 import type { CodeGraph } from '../model.js';
 import type { DetectClustersResult } from './leiden/index.js';
@@ -31,6 +33,13 @@ export function louvainCommunities(graph: CodeGraph, opts: LouvainOptions = {}):
 
   const native = loadNative();
   if (native?.louvainCommunities) {
+    // maxLevels, maxLocalPasses, and refinementTheta are Leiden-specific tuning knobs
+    // not supported by the Rust Louvain implementation. Warn callers who set them.
+    if (opts.maxLevels != null || opts.maxLocalPasses != null || opts.refinementTheta != null) {
+      warn(
+        'louvainCommunities: maxLevels/maxLocalPasses/refinementTheta are ignored by the native Rust path',
+      );
+    }
     const edges = graph.toEdgeArray();
     const nodeIds = graph.nodeIds();
     const result = native.louvainCommunities(edges, nodeIds, resolution, 42);
