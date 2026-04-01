@@ -50,13 +50,15 @@ endmodule`);
     const symbols = parseVerilog(`module top;
     counter u1(.clk(clk), .reset(reset));
 endmodule`);
-    expect(symbols.calls.length).toBeGreaterThanOrEqual(0);
+    expect(symbols.calls).toContainEqual(expect.objectContaining({ name: 'counter' }));
   });
 
   it('extracts package imports', () => {
     const symbols = parseVerilog(`module m;
     import pkg::item;
 endmodule`);
-    expect(symbols.imports.length).toBeGreaterThanOrEqual(0);
+    expect(symbols.imports).toContainEqual(
+      expect.objectContaining({ source: 'pkg', names: ['item'] }),
+    );
   });
 });

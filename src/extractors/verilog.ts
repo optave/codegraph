@@ -36,11 +36,9 @@ function walkVerilogNode(node: TreeSitterNode, ctx: ExtractorOutput): void {
       handleClassDecl(node, ctx);
       break;
     case 'function_declaration':
-    case 'function_body_declaration':
       handleFunctionDecl(node, ctx);
       break;
     case 'task_declaration':
-    case 'task_body_declaration':
       handleTaskDecl(node, ctx);
       break;
     case 'module_instantiation':
@@ -123,7 +121,7 @@ function handleClassDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
 }
 
 function handleFunctionDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const nameNode = findDeclName(node);
+  const nameNode = findFunctionOrTaskName(node, 'function_identifier');
   if (!nameNode) return;
 
   const parentModule = findVerilogParent(node);
@@ -138,7 +136,7 @@ function handleFunctionDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
 }
 
 function handleTaskDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const nameNode = findDeclName(node);
+  const nameNode = findFunctionOrTaskName(node, 'task_identifier');
   if (!nameNode) return;
 
   const parentModule = findVerilogParent(node);
@@ -227,6 +225,34 @@ function findDeclName(node: TreeSitterNode): TreeSitterNode | null {
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (child && (child.type === 'simple_identifier' || child.type === 'identifier')) return child;
+  }
+  return null;
+}
+
+/**
+ * Find a function or task name by searching for the dedicated identifier node
+ * type (e.g. `function_identifier`, `task_identifier`) recursively through
+ * body declarations.  Falls back to `findDeclName` for grammars that use
+ * plain identifiers.
+ */
+function findFunctionOrTaskName(
+  node: TreeSitterNode,
+  identifierType: string,
+): TreeSitterNode | null {
+  // Try the standard approach first
+  const simple = findDeclName(node);
+  if (simple) return simple;
+
+  // Search children (including body declarations) for the dedicated identifier node
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (!child) continue;
+    if (child.type === identifierType) return child;
+    // Look one level deeper into body declarations
+    for (let j = 0; j < child.childCount; j++) {
+      const grandchild = child.child(j);
+      if (grandchild && grandchild.type === identifierType) return grandchild;
+    }
   }
   return null;
 }
