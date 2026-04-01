@@ -185,22 +185,23 @@ function buildImportEdgesNative(
   const fileNodeIds: Array<{ file: string; nodeId: number }> = [];
   const seenNodeFiles = new Set<string>();
 
-  const addFileNodeId = (relPath: string) => {
-    if (seenNodeFiles.has(relPath)) return;
+  const addFileNodeId = (relPath: string): { id: number } | undefined => {
+    if (seenNodeFiles.has(relPath)) return fileNodeRowCache.get(relPath);
     const row = getNodeIdStmt.get(relPath, 'file', relPath, 0);
     if (row) {
       seenNodeFiles.add(relPath);
       fileNodeIds.push({ file: relPath, nodeId: row.id });
+      fileNodeRowCache.set(relPath, row);
     }
+    return row;
   };
+  const fileNodeRowCache = new Map<string, { id: number }>();
 
   // 2. Pre-resolve all imports and collect supplemental resolved entries
   const supplementalResolved: Array<{ key: string; resolvedPath: string }> = [];
 
   for (const [relPath, symbols] of fileSymbols) {
-    addFileNodeId(relPath);
-
-    const fileNodeRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
+    const fileNodeRow = addFileNodeId(relPath);
     if (!fileNodeRow) continue;
 
     const importInfos: Array<{
