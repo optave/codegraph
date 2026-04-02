@@ -61,6 +61,11 @@ Import resolution: native batch vs JS fallback throughput.
 | No-op rebuild | 8ms |
 | 1-file rebuild | 33ms |
 
+> **Note:** 3.8.0 phase timings (`parseMs`, `astMs`, `complexityMs`, `cfgMs`, `dataflowMs`) drop to
+> near-zero in 1-file rebuilds because the full Rust build orchestration pipeline (#695) now handles
+> parsing, AST analysis, and complexity/CFG/dataflow computation inside the native engine — these
+> phases no longer run separately during the JS-side incremental rebuild.
+
 #### Import Resolution
 
 | Metric | Value |
