@@ -195,6 +195,7 @@ pub fn run_pipeline(
             edge_count: 0,
             file_count: collect_result.files.len(),
             early_exit: true,
+            changed_files: Some(vec![]),
         });
     }
 
