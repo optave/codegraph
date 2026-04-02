@@ -6,12 +6,21 @@ import type { BetterSqlite3Database, NodeRow, RelatedNodeRow } from '../../types
 import { resolveAnalysisOpts, withRepo } from './query-helpers.js';
 import { findMatchingNodes } from './symbol-lookup.js';
 
+/** Cache so repeated raw-db calls reuse the same SqliteRepository (preserves per-instance memoization). */
+const repoCache = new WeakMap<BetterSqlite3Database, InstanceType<typeof SqliteRepository>>();
+
 /** Coerce a raw db handle or Repository into a Repository instance. */
 function toRepo(
   dbOrRepo: BetterSqlite3Database | InstanceType<typeof Repository>,
 ): InstanceType<typeof Repository> {
   if (dbOrRepo instanceof Repository) return dbOrRepo;
-  return new SqliteRepository(dbOrRepo as BetterSqlite3Database);
+  const db = dbOrRepo as BetterSqlite3Database;
+  let repo = repoCache.get(db);
+  if (!repo) {
+    repo = new SqliteRepository(db);
+    repoCache.set(db, repo);
+  }
+  return repo;
 }
 
 // --- Shared BFS: transitive callers ---
