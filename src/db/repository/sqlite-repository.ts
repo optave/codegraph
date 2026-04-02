@@ -255,8 +255,13 @@ export class SqliteRepository extends Repository {
     return row?.hash ?? null;
   }
 
+  #implementsEdgesCache?: boolean;
   hasImplementsEdges(): boolean {
-    return !!this.#db.prepare("SELECT 1 FROM edges WHERE kind = 'implements' LIMIT 1").get();
+    if (this.#implementsEdgesCache !== undefined) return this.#implementsEdgesCache;
+    this.#implementsEdgesCache = !!this.#db
+      .prepare("SELECT 1 FROM edges WHERE kind = 'implements' LIMIT 1")
+      .get();
+    return this.#implementsEdgesCache;
   }
 
   hasCoChangesTable(): boolean {
