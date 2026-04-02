@@ -11,7 +11,7 @@ import { detectWorkspaces, loadConfig } from '../../../infrastructure/config.js'
 import { info, warn } from '../../../infrastructure/logger.js';
 import { loadNative } from '../../../infrastructure/native.js';
 import { CODEGRAPH_VERSION } from '../../../shared/version.js';
-import type { BuildGraphOpts, BuildResult } from '../../../types.js';
+import type { BuildGraphOpts, BuildResult, Definition, ExtractorOutput } from '../../../types.js';
 import { getActiveEngine } from '../../parser.js';
 import { setWorkspaces } from '../resolve.js';
 import { PipelineContext } from './context.js';
@@ -362,12 +362,122 @@ export async function buildGraph(
 
         // Map Rust timing fields to the JS BuildResult format.
         // Rust handles collect+detect+parse+insert+resolve+edges+structure+roles.
-        // AST/complexity/CFG/dataflow analyses are not yet ported to Rust.
         const p = result.phases;
-        closeDbPair({ db: ctx.db, nativeDb: ctx.nativeDb });
         info(
           `Native build orchestrator completed: ${result.nodeCount ?? 0} nodes, ${result.edgeCount ?? 0} edges, ${result.fileCount ?? 0} files`,
         );
+
+        // ── Run analysis phases (AST, complexity, CFG, dataflow) ──────
+        // Not yet ported to Rust. After the native orchestrator finishes,
+        // reconstruct a minimal fileSymbols map from the DB and run analyses
+        // via the JS engine (native standalone functions + WASM fallback).
+        let analysisTiming = { astMs: 0, complexityMs: 0, cfgMs: 0, dataflowMs: 0 };
+        const needsAnalysis =
+          opts.ast !== false ||
+          opts.complexity !== false ||
+          opts.cfg !== false ||
+          opts.dataflow !== false;
+
+        if (needsAnalysis) {
+          // WAL handoff: checkpoint through rusqlite, close nativeDb,
+          // reopen better-sqlite3 with a fresh page cache (#715, #736).
+          try {
+            ctx.nativeDb!.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+          } catch {
+            /* ignore checkpoint errors */
+          }
+          try {
+            ctx.nativeDb!.close();
+          } catch {
+            /* ignore close errors */
+          }
+          ctx.nativeDb = undefined;
+          try {
+            ctx.db.close();
+          } catch {
+            /* ignore close errors */
+          }
+          ctx.db = openDb(ctx.dbPath);
+
+          // Reconstruct minimal fileSymbols from DB for analysis visitors.
+          // Each entry needs definitions with name/kind/line/endLine so the
+          // engine can match complexity/CFG results to the right functions.
+          const rows = ctx.db
+            .prepare(
+              'SELECT file, name, kind, line, end_line as endLine FROM nodes WHERE file IS NOT NULL ORDER BY file, line',
+            )
+            .all() as {
+            file: string;
+            name: string;
+            kind: string;
+            line: number;
+            endLine: number | null;
+          }[];
+
+          const fileSymbols = new Map<string, ExtractorOutput>();
+          for (const row of rows) {
+            let entry = fileSymbols.get(row.file);
+            if (!entry) {
+              entry = {
+                definitions: [],
+                calls: [],
+                imports: [],
+                classes: [],
+                exports: [],
+                typeMap: new Map(),
+              };
+              fileSymbols.set(row.file, entry);
+            }
+            entry.definitions.push({
+              name: row.name,
+              kind: row.kind as Definition['kind'],
+              line: row.line,
+              endLine: row.endLine ?? undefined,
+            });
+          }
+
+          // Reopen nativeDb for analysis features (suspend/resume WAL pattern).
+          const native = loadNative();
+          if (native?.NativeDatabase) {
+            try {
+              ctx.nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
+              if (ctx.engineOpts) ctx.engineOpts.nativeDb = ctx.nativeDb;
+            } catch {
+              ctx.nativeDb = undefined;
+              if (ctx.engineOpts) ctx.engineOpts.nativeDb = undefined;
+            }
+          }
+
+          try {
+            const { runAnalyses: runAnalysesFn } = await import('../../../ast-analysis/engine.js');
+            analysisTiming = await runAnalysesFn(
+              ctx.db,
+              fileSymbols,
+              ctx.rootDir,
+              opts,
+              ctx.engineOpts,
+            );
+          } catch (err) {
+            warn(`Analysis phases failed after native build: ${(err as Error).message}`);
+          }
+
+          // Close nativeDb after analyses
+          if (ctx.nativeDb) {
+            try {
+              ctx.nativeDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+            } catch {
+              /* ignore checkpoint errors */
+            }
+            try {
+              ctx.nativeDb.close();
+            } catch {
+              /* ignore close errors */
+            }
+            ctx.nativeDb = undefined;
+          }
+        }
+
+        closeDbPair({ db: ctx.db, nativeDb: ctx.nativeDb });
         return {
           phases: {
             setupMs: +((p.setupMs ?? 0) + (p.collectMs ?? 0) + (p.detectMs ?? 0)).toFixed(1),
@@ -377,10 +487,10 @@ export async function buildGraph(
             edgesMs: +(p.edgesMs ?? 0).toFixed(1),
             structureMs: +(p.structureMs ?? 0).toFixed(1),
             rolesMs: +(p.rolesMs ?? 0).toFixed(1),
-            astMs: 0,
-            complexityMs: 0,
-            cfgMs: 0,
-            dataflowMs: 0,
+            astMs: +(analysisTiming.astMs ?? 0).toFixed(1),
+            complexityMs: +(analysisTiming.complexityMs ?? 0).toFixed(1),
+            cfgMs: +(analysisTiming.cfgMs ?? 0).toFixed(1),
+            dataflowMs: +(analysisTiming.dataflowMs ?? 0).toFixed(1),
             finalizeMs: +(p.finalizeMs ?? 0).toFixed(1),
           },
         };
