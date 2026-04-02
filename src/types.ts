@@ -328,6 +328,11 @@ export interface Repository {
   hasEmbeddings(): boolean;
   hasDataflowTable(): boolean;
   getComplexityForNode(nodeId: number): ComplexityMetrics | undefined;
+
+  // ── Convenience queries ──────────────────────────────────────────
+  getFileHash(file: string): string | null;
+  hasImplementsEdges(): boolean;
+  hasCoChangesTable(): boolean;
 }
 
 /**

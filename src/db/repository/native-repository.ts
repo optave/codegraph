@@ -358,4 +358,21 @@ export class NativeRepository extends Repository {
     const r = this.#ndb.getComplexityForNode(nodeId);
     return r ? toComplexityMetrics(r) : undefined;
   }
+
+  // ── Convenience queries ────────────────────────────────────────────
+
+  // TODO: add Rust #[napi] getFileHash method for full parity
+  getFileHash(_file: string): string | null {
+    return null;
+  }
+
+  /** Conservatively return true — the cost of an extra findImplementors call is negligible. */
+  hasImplementsEdges(): boolean {
+    return true;
+  }
+
+  /** Conservatively return false — co_changes is optional and rarely present. */
+  hasCoChangesTable(): boolean {
+    return false;
+  }
 }
