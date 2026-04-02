@@ -433,7 +433,7 @@ export async function buildGraph(
           let query =
             'SELECT file, name, kind, line, end_line as endLine FROM nodes WHERE file IS NOT NULL';
           const params: string[] = [];
-          if (changedFiles) {
+          if (changedFiles && changedFiles.length > 0) {
             const placeholders = changedFiles.map(() => '?').join(',');
             query += ` AND file IN (${placeholders})`;
             params.push(...changedFiles);
