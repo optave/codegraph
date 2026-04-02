@@ -17,6 +17,7 @@ import {
 import { detectWorkspaces, loadConfig } from '../../../infrastructure/config.js';
 import { info, warn } from '../../../infrastructure/logger.js';
 import { loadNative } from '../../../infrastructure/native.js';
+import { semverCompare } from '../../../infrastructure/update-check.js';
 import { CODEGRAPH_VERSION } from '../../../shared/version.js';
 import type { BuildGraphOpts, BuildResult } from '../../../types.js';
 import { getActiveEngine } from '../../parser.js';
@@ -348,9 +349,9 @@ export async function buildGraph(
     //
     // Native addon ≤3.8.0 has a path bug: file_symbols keys are absolute
     // paths but known_files are relative, causing zero import/call edges.
-    // Skip the orchestrator for affected versions (fixed in source, will
-    // take effect in the next native addon release).
-    const orchestratorBuggy = ctx.engineVersion === '3.8.0';
+    // Skip the orchestrator for affected versions (fixed in 3.9.0+).
+    const orchestratorBuggy =
+      !!ctx.engineVersion && semverCompare(ctx.engineVersion, '3.8.0') <= 0;
     const forceJs =
       process.env.CODEGRAPH_FORCE_JS_PIPELINE === '1' ||
       ctx.forceFullRebuild ||
