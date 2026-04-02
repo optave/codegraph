@@ -417,16 +417,22 @@ export class NativeRepository extends Repository {
     return true; // conservative: assume yes when no fallback available
   }
 
+  #coChangesTableCache?: boolean;
   hasCoChangesTable(): boolean {
-    if (typeof this.#ndb.hasCoChangesTable === 'function') return this.#ndb.hasCoChangesTable();
+    if (this.#coChangesTableCache !== undefined) return this.#coChangesTableCache;
+    if (typeof this.#ndb.hasCoChangesTable === 'function') {
+      this.#coChangesTableCache = this.#ndb.hasCoChangesTable();
+      return this.#coChangesTableCache;
+    }
     // Fallback to better-sqlite3
     const db = this.#getFallbackDb();
     if (db) {
       try {
-        return !!db.prepare('SELECT 1 FROM co_changes LIMIT 1').get();
+        this.#coChangesTableCache = !!db.prepare('SELECT 1 FROM co_changes LIMIT 1').get();
       } catch {
-        return false;
+        this.#coChangesTableCache = false;
       }
+      return this.#coChangesTableCache;
     }
     return false;
   }

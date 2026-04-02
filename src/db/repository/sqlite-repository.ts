@@ -264,11 +264,14 @@ export class SqliteRepository extends Repository {
     return this.#implementsEdgesCache;
   }
 
+  #coChangesTableCache?: boolean;
   hasCoChangesTable(): boolean {
+    if (this.#coChangesTableCache !== undefined) return this.#coChangesTableCache;
     try {
-      return !!this.#db.prepare('SELECT 1 FROM co_changes LIMIT 1').get();
+      this.#coChangesTableCache = !!this.#db.prepare('SELECT 1 FROM co_changes LIMIT 1').get();
     } catch {
-      return false;
+      this.#coChangesTableCache = false;
     }
+    return this.#coChangesTableCache;
   }
 }
