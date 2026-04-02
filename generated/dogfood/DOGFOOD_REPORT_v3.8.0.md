@@ -185,7 +185,7 @@ All 39 commands tested without a graph. Every command that requires a graph fail
 | Metric | Native | WASM | Delta | Parity? |
 |--------|-------:|-----:|------:|---------|
 | **Nodes** | 13,633 | 13,702 | -69 (-0.5%) | FAIL — WASM has 69 extra `directory` nodes |
-| **Edges** | 23,386 | 26,779 | -3,393 (-12.7%) | **FAIL — critical gap** |
+| **Edges** | 23,386 | 26,779 | -3,393 (-12.7% of WASM) | **FAIL — critical gap** |
 | **Files** | 532 | 532 | 0 | OK |
 | **File cycles** | 0 | 1 | -1 | FAIL |
 | **Function cycles** | 5 | 5 | 0 | OK |
@@ -299,6 +299,8 @@ Two simultaneous builds both completed with exit code 0. Race condition detected
 
 ### Build Benchmark
 
+> **Note:** These are formal 5-run averages. Section 2 reports single-run approximate times (~1.7s native, ~5.7s WASM, 3.4x speedup) from the initial build during the command sweep, which ran fewer analysis passes. The formal benchmark includes all phases (AST, complexity, CFG, dataflow), explaining the higher absolute times and lower speedup ratio (2.9x vs 3.4x).
+
 | Metric | Native | WASM | Native Speedup |
 |--------|-------:|-----:|---------------:|
 | Full build | 2,536ms | 7,337ms | **2.9x** |
@@ -353,7 +355,7 @@ Two simultaneous builds both completed with exit code 0. Race condition detected
 
 | Metric | v3.6.0 | v3.8.0 | Change |
 |--------|-------:|-------:|-------:|
-| No-op rebuild | 13ms | 51ms | **+292%** |
+| No-op rebuild | 13ms | 51ms | **+292%** ¹ |
 | 1-file rebuild | 545ms | 1,491ms | **+174%** |
 | fnDeps d1 (native) | 9.4ms | 13.9ms | +48% |
 | fnDeps d3 (native) | 9.6ms | 16.1ms | +68% |
@@ -361,6 +363,8 @@ Two simultaneous builds both completed with exit code 0. Race condition detected
 | diffImpact (native) | 8.3ms | 17.9ms | **+116%** |
 | Import resolution (native) | 3.9ms | 8.1ms | +108% |
 | Import resolution (JS) | 11.7ms | 30.7ms | +163% |
+
+¹ No-op and 1-file rebuild regressions were measured under `CODEGRAPH_FORCE_JS_PIPELINE=1` (WASM engine). Due to BUG 2 (build_meta version mismatch), native no-op always falls through to a full rebuild (~3,787ms), making native no-op regression effectively **+29,000%** rather than +292%. The 51ms figure reflects WASM-only no-op performance.
 
 **Significant regressions in incremental rebuild and query latency.** The 1-file rebuild regression is driven by new `ast` and `edges` phase overhead. Query latencies have roughly doubled across the board.
 
