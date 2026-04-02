@@ -156,6 +156,7 @@ jobs:
 
   embedding-benchmark:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -240,6 +241,7 @@ jobs:
 
       - name: Run embedding benchmark
         if: steps.existing.outputs.skip != 'true'
+        timeout-minutes: 160
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
