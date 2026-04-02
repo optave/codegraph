@@ -69,7 +69,7 @@ function findPrevRelease(hist, fromIdx) {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 function trend(current, previous, lowerIsBetter = true) {
-	if (previous == null) return '';
+	if (current == null || previous == null) return '';
 	const pct = ((current - previous) / previous) * 100;
 	if (Math.abs(pct) < 2) return ' ~';
 	if (lowerIsBetter) {
@@ -207,7 +207,13 @@ md += `| Nodes | ${estNative ? Math.round(estNative.nodes * ESTIMATE_FILES).toLo
 md += `| Edges | ${estNative ? Math.round(estNative.edges * ESTIMATE_FILES).toLocaleString() : 'n/a'} | ${Math.round(estWasm.edges * ESTIMATE_FILES).toLocaleString()} |\n\n`;
 
 // ── Incremental Rebuilds section ──────────────────────────────────────────
-const hasIncremental = history.some((h) => h.wasm?.noopRebuildMs != null || h.native?.noopRebuildMs != null);
+const hasIncremental = history.some(
+	(h) =>
+		h.wasm?.noopRebuildMs != null ||
+		h.native?.noopRebuildMs != null ||
+		h.wasm?.oneFileRebuildMs != null ||
+		h.native?.oneFileRebuildMs != null,
+);
 if (hasIncremental) {
 	md += '### Incremental Rebuilds\n\n';
 	md += '| Version | Engine | No-op (ms) | 1-file (ms) |\n';
@@ -219,13 +225,15 @@ if (hasIncremental) {
 
 		for (const engineKey of ['native', 'wasm']) {
 			const e = h[engineKey];
-			if (!e || e.noopRebuildMs == null) continue;
+			if (!e || (e.noopRebuildMs == null && e.oneFileRebuildMs == null)) continue;
 			const p = prev?.[engineKey] || null;
 
 			const noopTrend = trend(e.noopRebuildMs, p?.noopRebuildMs);
+			const noopCell = e.noopRebuildMs != null ? `${e.noopRebuildMs}${noopTrend}` : 'n/a';
 			const oneFileTrend = trend(e.oneFileRebuildMs, p?.oneFileRebuildMs);
+			const oneFileCell = e.oneFileRebuildMs != null ? `${e.oneFileRebuildMs}${oneFileTrend}` : 'n/a';
 
-			md += `| ${h.version} | ${engineKey} | ${e.noopRebuildMs}${noopTrend} | ${e.oneFileRebuildMs}${oneFileTrend} |\n`;
+			md += `| ${h.version} | ${engineKey} | ${noopCell} | ${oneFileCell} |\n`;
 		}
 	}
 	md += '\n';
@@ -334,6 +342,8 @@ if (fs.existsSync(readmePath)) {
 	// Incremental rebuild rows (prefer native, fallback to WASM)
 	if (pref.noopRebuildMs != null) {
 		rows += `| No-op rebuild${prefLabel} | **${formatMs(pref.noopRebuildMs)}** |\n`;
+	}
+	if (pref.oneFileRebuildMs != null) {
 		rows += `| 1-file rebuild${prefLabel} | **${formatMs(pref.oneFileRebuildMs)}** |\n`;
 	}
 
