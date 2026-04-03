@@ -296,15 +296,16 @@ describe('absolute file paths in DB (#752)', () => {
     absDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-abspath-test-'));
     fs.writeFileSync(path.join(absDir, 'math.js'), 'export function add(a, b) { return a + b; }\n');
 
-    const dbDir = path.join(absDir, '.codegraph');
-    fs.mkdirSync(dbDir, { recursive: true });
-    absDbPath = path.join(dbDir, 'graph.db');
+    const absDbDir = path.join(absDir, '.codegraph');
+    fs.mkdirSync(absDbDir, { recursive: true });
+    absDbPath = path.join(absDbDir, 'graph.db');
 
     const db = new Database(absDbPath);
     db.pragma('journal_mode = WAL');
     initSchema(db);
-    // Insert node with ABSOLUTE file path (simulates native engine behavior)
-    const absFile = path.join(absDir, 'math.js').split(path.sep).join('/');
+
+    // Insert node with an absolute file path (as the native engine does)
+    const absFile = path.join(absDir, 'math.js');
     insertNode(db, 'add', 'function', absFile, 1, 1);
     db.close();
   });
@@ -313,12 +314,16 @@ describe('absolute file paths in DB (#752)', () => {
     if (absDir) fs.rmSync(absDir, { recursive: true, force: true });
   });
 
-  test('embeds symbols even when DB stores absolute file paths', async () => {
+  test('produces embeddings when DB stores absolute paths', async () => {
     EMBEDDED_TEXTS.length = 0;
-    await buildEmbeddings(absDir, 'minilm', absDbPath, { strategy: 'source' });
+    await buildEmbeddings(absDir, 'minilm', absDbPath);
 
     expect(EMBEDDED_TEXTS.length).toBe(1);
-    expect(EMBEDDED_TEXTS[0]).toContain('add');
+
+    const db = new Database(absDbPath, { readonly: true });
+    const count = db.prepare('SELECT COUNT(*) as c FROM embeddings').get().c;
+    db.close();
+    expect(count).toBe(1);
   });
 });
 
