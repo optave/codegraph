@@ -110,7 +110,7 @@ comments** (55%) addressable without an LLM.
 
 ---
 
-### Stale / Outdated References (52 comments) — 45% feasible
+### Stale / Outdated References (52 comments) — 52% feasible
 
 | Feasibility | Count | Approach |
 |-------------|------:|----------|
