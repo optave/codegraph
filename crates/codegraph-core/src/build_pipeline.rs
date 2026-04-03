@@ -57,8 +57,10 @@ pub struct BuildPipelineResult {
     pub edge_count: i64,
     pub file_count: usize,
     pub early_exit: bool,
-    /// Files that were parsed/changed in this build cycle.
-    /// `None` for full builds (all files), `Some` for incremental builds.
+    /// Analysis scope: files whose content genuinely changed (reverse-dep-only
+    /// files excluded). `None` for full builds (all files), `Some` for
+    /// incremental builds. Consumers (e.g. the JS analysis phase) use this to
+    /// scope expensive AST/complexity/CFG/dataflow work.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_files: Option<Vec<String>>,
     pub changed_count: usize,
@@ -399,6 +401,11 @@ pub fn run_pipeline(
     timing.structure_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let t0 = Instant::now();
+    // Role classification intentionally uses the full `changed_files` list
+    // (including reverse-dep files), not `analysis_scope`. Reverse-dep files
+    // had their edges rebuilt, which can change fan-in/fan-out and therefore
+    // role assignments — so they must be re-classified even though their
+    // content didn't change and they are excluded from AST analysis.
     let changed_file_list: Option<Vec<String>> = if change_result.is_full_build {
         None
     } else {
