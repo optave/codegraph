@@ -80,6 +80,8 @@ Latencies are median over 5 runs. Hub target = most-connected node.
 | diffImpact affected files | 0 |
 
 <!-- NOTES_START -->
+**Note (3.8.1):** The ↑161–180% fnDeps jump reflects significant codebase growth between 3.7.0 and 3.8.1 — the Titan v3.8.0 refactor (#775) decomposed multiple god-functions, and several PRs extracted class handlers (#769), visitor frameworks (#771), and search internals (#768), all adding new symbols and edges to `buildGraph`'s dependency subgraph. Both engines moved in lockstep (25.3ms native, 27.2ms WASM), confirming this is graph-size growth rather than an engine regression. fnImpact and diffImpact remained stable, consistent with the growth being in fan-out (more callees) rather than fan-in.
+
 **Note (3.6.0):** Native deltas are relative to 3.4.1 (the last version with native data; 3.5.0 was wasm-only). The mid-query target changed from `db` (3.5.0) to `node`, which affects diffImpact scope and explains the ↑41% WASM diffImpact jump (6.4ms → 9ms). fnDeps/fnImpact growth of 6-10% is consistent with codebase expansion across two releases.
 
 **Note (3.5.0):** This version has WASM-only data (`native: null`) because the native engine crashed during `insertNodes` in the graph build phase. The root cause is a napi-rs serialization bug: parameter and child nodes with undefined `visibility` fields marshal as `null` at the JS-Rust boundary, which fails conversion into the Rust `Option<String>` type in `InsertNodesDefinition.visibility`. The mid-query target also changed from `noTests` to `db`, which may affect diffImpact scope. Query latencies for 3.5.0 are therefore not directly comparable to prior versions that include both engine rows. This will be fixed in the next release.
