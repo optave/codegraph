@@ -66,7 +66,7 @@ interface RawSymbolRow {
 
 /**
  * Resolve a file hash, using the cache when available.
- * Supports both raw DB handles and HashSource instances.
+ * Accepts a raw DB handle (with .prepare) or a Repository (with .getFileHash).
  */
 function resolveFileHash(
   db: DbHandle | HashSource,

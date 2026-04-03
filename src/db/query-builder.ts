@@ -33,7 +33,12 @@ function validateOrderBy(clause: string): void {
   }
 }
 
-/** Track parenthesis depth change for a character. */
+/**
+ * Track parenthesis depth change for a character.
+ * Returns non-zero only for '(' / ')'; a character that is '(' or ')'
+ * can never simultaneously be ',' so the comma check in the caller
+ * remains mutually exclusive with the depth update.
+ */
 function parenDepthDelta(ch: string): number {
   if (ch === '(') return 1;
   if (ch === ')') return -1;
