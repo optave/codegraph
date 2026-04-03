@@ -45,8 +45,9 @@ function splitTopLevelCommas(str: string): string[] {
   let depth = 0;
   let start = 0;
   for (let i = 0; i < str.length; i++) {
-    depth += parenDepthDelta(str[i]);
-    if (str[i] === ',' && depth === 0) {
+    const ch = str[i]!;
+    depth += parenDepthDelta(ch);
+    if (ch === ',' && depth === 0) {
       parts.push(str.slice(start, i).trim());
       start = i + 1;
     }
