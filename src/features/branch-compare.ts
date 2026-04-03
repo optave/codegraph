@@ -365,7 +365,6 @@ interface BranchCompareResult {
 function attachImpactToSymbols(
   symbols: SymbolInfo[],
   dbPath: string,
-  _baseSymbols: Map<string, SymbolInfo>,
   maxDepth: number,
   noTests: boolean,
 ): void {
@@ -475,7 +474,7 @@ export async function branchCompareData(
     const removedImpact = loadCallersFromDb(baseDbPath, removedIds, maxDepth, noTests);
     const changedImpact = loadCallersFromDb(baseDbPath, changedIds, maxDepth, noTests);
 
-    attachImpactToSymbols(removed, baseDbPath, baseSymbols, maxDepth, noTests);
+    attachImpactToSymbols(removed, baseDbPath, maxDepth, noTests);
     attachImpactToChanged(changed, baseDbPath, baseSymbols, maxDepth, noTests);
 
     const allImpacted = new Set<string>();
