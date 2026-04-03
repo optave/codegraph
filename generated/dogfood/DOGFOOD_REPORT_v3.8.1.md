@@ -175,7 +175,7 @@ When running from the source repo (v3.6.0 code, JS pipeline with native parsing)
 | maxCyclomatic | 60 | 43 | **+17** |
 | minMI | 13.4 | 21.2 | **-7.8** |
 
-Edge parity is near-perfect (2-edge gap, 0.007%). Complexity metrics diverge more significantly.
+Both the 2-edge gap and the complexity divergence are bugs in the less-accurate engine -- issues #802 and #803 are open to track them. Complexity metrics diverge significantly: `maxCyclomatic` differs by 40% (60 vs 43) and `minMI` by 37% (13.4 vs 21.2), which materially affects `triage`, `complexity`, and manifesto-gate outputs.
 
 ### Build Results (Published v3.8.1 Package, Native Orchestrator)
 
@@ -223,7 +223,7 @@ Queries tested with both engines (source repo JS pipeline, near-identical graphs
 | **v3.8.1: Native build_meta preserved** | `info` shows correct build metadata | PASS |
 | **v3.8.1: dataflow null paramIndex fix (PR #788)** | Published package: no error. Source repo: error (expected, v3.6.0 code) | PASS |
 | **v3.8.1: Import-edge skip scoped to Windows (PR #777)** | Import edges present in WASM build | PASS |
-| **v3.8.1: Auto-install @huggingface/transformers** | Non-TTY auto-install attempted | PASS (ENOENT on Windows — expected, `npm` not in PATH for `spawnSync`) |
+| **v3.8.1: Auto-install @huggingface/transformers** | Non-TTY auto-install attempted | **FAIL** — `spawnSync npm ENOENT` on Windows (`npm` not in PATH without shell). Users get no embeddings capability without manual install. See suggestion 10.2 |
 | **v3.8.1: Cycle/stats optimization** | `cycles` and `stats` return quickly | PASS |
 | **v3.8.1: Query analysis through native engine** | `fn-impact --json` returns results | PASS |
 | **v3.8.1: Duplicate function defs in Leiden (PR #786)** | `communities` returns without errors | PASS |
@@ -293,14 +293,16 @@ Note: Tool count is 34/35, higher than the 32/33 documented in SKILL.md. New too
 | Parse | 577.4ms | 30.8ms |
 | Insert | 374.3ms | 13.2ms |
 | Resolve | 13.4ms | 1.4ms |
-| Edges | 122.0ms | 160.3ms |
-| Structure | 26.4ms | 42.9ms |
+| Edges | 122.0ms | **160.3ms** (+31%) |
+| Structure | 26.4ms | **42.9ms** (+63%) |
 | Roles | 279.8ms | 30.7ms |
 | AST | 328.3ms | 156.2ms |
 | Complexity | 56.3ms | 1.0ms |
 | CFG | 130.9ms | 0.3ms |
 | Dataflow | 294.7ms | 0.3ms |
 | Finalize | 34.2ms | 0.7ms |
+
+**Anomaly:** The Edges (+31%) and Structure (+63%) phases are both slower in a 1-file rebuild than in a full build, while every other phase scales down correctly. This suggests the incremental path for edge resolution and structure analysis may be re-processing the entire graph rather than only the changed subgraph. This is separate from the orchestrator edge-drop issue (#804) and should be investigated.
 
 ### Query Benchmark
 
@@ -351,7 +353,7 @@ Note: Tool count is 34/35, higher than the 32/33 documented in SKILL.md. New too
 - **Symptoms:** When using JS pipeline with native parsing (avoiding the orchestrator), native produces 2 fewer call edges, 1 fewer dynamic-import, 1 more receiver edge.
 - **Root cause:** Minor edge attribution differences in native parser.
 
-### BUG 3: Native vs WASM complexity metric divergence (Low)
+### BUG 3: Native vs WASM complexity metric divergence (Medium)
 
 - **Issue:** [#803](https://github.com/optave/ops-codegraph-tool/issues/803)
 - **Symptoms:** Native: maxCyclomatic=60, minMI=13.4. WASM: maxCyclomatic=43, minMI=21.2. Native analyzes 2 more functions.
@@ -371,7 +373,14 @@ The orchestrator drops 12.6% of edges. Until fixed, consider defaulting `--engin
 
 ### 10.2 Auto-install fallback on Windows
 
-The `@huggingface/transformers` auto-install fails on Windows with `spawnSync npm ENOENT` because `npm` isn't resolved in the PATH when using `spawnSync` without shell. Consider using `execSync` with shell: true, or provide a clearer error message suggesting manual install.
+The `@huggingface/transformers` auto-install fails on Windows with `spawnSync npm ENOENT` because `npm` isn't resolved in the PATH when using `spawnSync` without shell. The safe fix is to resolve the Windows-specific npm wrapper (`npm.cmd`) explicitly rather than enabling `shell: true` (which introduces command-injection risk):
+
+```js
+const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+spawnSync(npmBin, ['install', '--save', packageName], { stdio: 'inherit' });
+```
+
+If the auto-install still fails, provide a clearer error message suggesting manual install.
 
 ### 10.3 Update SKILL.md MCP tool counts
 
