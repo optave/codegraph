@@ -24,7 +24,7 @@ import { ALL_SYMBOL_KINDS, normalizeSymbol } from '../domain/queries.js';
 import { debug, info } from '../infrastructure/logger.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import { paginateResult } from '../shared/paginate.js';
-import type { BetterSqlite3Database, NodeRow, TreeSitterNode } from '../types.js';
+import type { BetterSqlite3Database, NativeDatabase, NodeRow, TreeSitterNode } from '../types.js';
 import { findNodes } from './shared/find-nodes.js';
 
 // Re-export for backward compatibility
@@ -521,13 +521,14 @@ function buildNodeDataflowResult(
 
 function buildNativeDataflowResult(
   node: NodeRow,
-  nativeDb: { getDataflowEdges: (id: number) => any },
+  nativeDb: NativeDatabase,
   db: BetterSqlite3Database,
   hc: Map<string, string | null>,
   noTests: boolean,
 ): Record<string, unknown> {
   const sym = normalizeSymbol(node, db, hc);
-  const d = nativeDb.getDataflowEdges(node.id);
+  // Caller guards with `if (nativeDb?.getDataflowEdges)` before invoking
+  const d = nativeDb.getDataflowEdges!(node.id);
 
   const flowsTo = d.flowsToOut.map((r: any) => ({
     target: r.name,
