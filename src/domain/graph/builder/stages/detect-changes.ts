@@ -349,7 +349,7 @@ function findReverseDependencies(
     const changedArray = [...changedRelPaths];
     const nativeResults = nativeDb.findReverseDependencies(changedArray);
     for (const dep of nativeResults) {
-      const absPath = path.join(rootDir, dep);
+      const absPath = path.isAbsolute(dep) ? dep : path.join(rootDir, dep);
       if (fs.existsSync(absPath)) {
         reverseDeps.add(dep);
       }

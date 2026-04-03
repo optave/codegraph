@@ -314,7 +314,7 @@ describe('absolute file paths in DB (#752)', () => {
     if (absDir) fs.rmSync(absDir, { recursive: true, force: true });
   });
 
-  test('produces embeddings when DB stores absolute paths', async () => {
+  test('produces embeddings when DB stores absolute paths (structured)', async () => {
     EMBEDDED_TEXTS.length = 0;
     await buildEmbeddings(absDir, 'minilm', absDbPath);
 
@@ -324,6 +324,14 @@ describe('absolute file paths in DB (#752)', () => {
     const count = db.prepare('SELECT COUNT(*) as c FROM embeddings').get().c;
     db.close();
     expect(count).toBe(1);
+  });
+
+  test('produces embeddings when DB stores absolute paths (source)', async () => {
+    EMBEDDED_TEXTS.length = 0;
+    await buildEmbeddings(absDir, 'minilm', absDbPath, { strategy: 'source' });
+
+    expect(EMBEDDED_TEXTS.length).toBe(1);
+    expect(EMBEDDED_TEXTS[0]).toContain('add');
   });
 });
 
