@@ -127,7 +127,7 @@ function collectCallersWithHierarchy(
 function buildNodeDepsResult(
   repo: InstanceType<typeof Repository>,
   node: NodeRow,
-  hc: Map<unknown, unknown>,
+  hc: Map<string, string | null>,
   depth: number,
   noTests: boolean,
 ) {
