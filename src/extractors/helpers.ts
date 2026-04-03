@@ -132,20 +132,6 @@ function resolveBodyNode(
  * Replaces per-language extractStructFields / extractEnumVariants / extractEnumConstants helpers
  * for the common case where each member has a direct name field.
  */
-/**
- * Resolve a container's body node by trying each field name in order.
- */
-function resolveBodyNode(
-  containerNode: TreeSitterNode,
-  bodyFields: readonly string[],
-): TreeSitterNode | null {
-  for (const field of bodyFields) {
-    const body = containerNode.childForFieldName(field) || findChild(containerNode, field);
-    if (body) return body;
-  }
-  return null;
-}
-
 export function extractBodyMembers(
   containerNode: TreeSitterNode,
   bodyFields: readonly string[],
