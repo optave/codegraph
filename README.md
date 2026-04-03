@@ -588,16 +588,21 @@ Codegraph also extracts symbols from common callback patterns: Commander `.comma
 
 Self-measured on every release via CI ([build benchmarks](generated/benchmarks/BUILD-BENCHMARKS.md) | [embedding benchmarks](generated/benchmarks/EMBEDDING-BENCHMARKS.md) | [query benchmarks](generated/benchmarks/QUERY-BENCHMARKS.md) | [incremental benchmarks](generated/benchmarks/INCREMENTAL-BENCHMARKS.md) | [resolution precision/recall](tests/benchmarks/resolution/)):
 
+*Last updated: v3.8.0 (2026-04-02)*
+
 | Metric | Latest |
 |---|---|
 | Build speed (native) | **2.1 ms/file** |
 | Build speed (WASM) | **2.2 ms/file** |
-| Query time | **14ms** |
+| Query time (native) | **14ms** |
+| Query time (WASM) | **15ms** |
 | No-op rebuild (native) | **8ms** |
 | 1-file rebuild (native) | **33ms** |
 | Query: fn-deps | **2.5ms** |
 | Query: path | **2.1ms** |
 | ~50,000 files (est.) | **~105.0s build** |
+| Resolution precision | **100.0%** |
+| Resolution recall | **64.5%** |
 
 Metrics are normalized per file for cross-version comparability. Times above are for a full initial build — incremental rebuilds only re-parse changed files.
 
