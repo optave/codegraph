@@ -744,6 +744,10 @@ export async function buildEdges(ctx: PipelineContext): Promise<void> {
       // Fallback: if native produced 0 import edges but there are imports to
       // process, the native binary may have a key-format mismatch (e.g. Windows
       // path separators — #750).  Retry with the JS implementation.
+      // NOTE: This also fires for codebases where every import targets an
+      // external package (npm deps) that the resolver intentionally skips.
+      // In that case the JS path resolves zero edges too, so the only cost
+      // is the redundant JS traversal — no correctness impact.
       const hasImports = [...ctx.fileSymbols.values()].some((s) => s.imports.length > 0);
       if (allEdgeRows.length === beforeLen && hasImports) {
         debug('Native buildImportEdges produced 0 edges — falling back to JS');

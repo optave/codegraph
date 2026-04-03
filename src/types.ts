@@ -2220,7 +2220,7 @@ export interface NativeDatabase {
       sourceId: number;
       targetId: number;
       kind: string;
-      paramIndex?: number | null;
+      paramIndex?: number;
       expression?: string | null;
       line?: number | null;
       confidence: number;
