@@ -63,6 +63,8 @@ Import resolution: native batch vs JS fallback throughput.
 | No-op rebuild | 15ms |
 | 1-file rebuild | 603ms |
 
+> **Note:** 3.8.0 showed anomalously fast WASM timings (1-file rebuild 33ms, phase times near-zero) because the native Rust build orchestration pipeline handled parsing/AST/complexity internally. In 3.8.1, the WASM path no longer delegates these phases to the native engine, reverting toward pre-3.8.0 baselines (`parseMs` 0.3ms → 272.3ms). The native engine's incremental path remains fast (1-file 41ms, `parseMs` 0.3ms). The full-build regression (~5.5-5.9x vs 3.8.0) affects both engines and is tracked separately.
+
 #### Import Resolution
 
 | Metric | Value |
