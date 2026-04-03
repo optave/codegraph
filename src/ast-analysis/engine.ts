@@ -108,12 +108,6 @@ interface NativeAnalysisNeeds {
   dataflow: boolean;
 }
 
-/**
- * Try native Rust analysis for files missing complexity/CFG/dataflow data.
- * Reads source from disk, calls the native standalone functions, and stores
- * results directly on definitions/symbols.
- */
-
 /** Determine which native analyses a file still needs. */
 function detectNativeNeeds(
   symbols: ExtractorOutput,
@@ -179,6 +173,11 @@ function runNativeFileAnalysis(
   }
 }
 
+/**
+ * Try native Rust analysis for files missing complexity/CFG/dataflow data.
+ * Reads source from disk, calls the native standalone functions, and stores
+ * results directly on definitions/symbols.
+ */
 function runNativeAnalysis(
   native: NativeAddon,
   fileSymbols: Map<string, ExtractorOutput>,
