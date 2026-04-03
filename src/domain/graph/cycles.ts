@@ -17,6 +17,7 @@ export function findCycles(
   const noTests = opts.noTests || false;
 
   const edges: Array<{ source: string; target: string }> = [];
+  const seen = new Set<string>();
 
   if (fileLevel) {
     let nodes = getFileNodesAll(db);
@@ -32,6 +33,9 @@ export function findCycles(
       if (e.source_id === e.target_id) continue;
       const src = idToFile.get(e.source_id)!;
       const tgt = idToFile.get(e.target_id)!;
+      const key = `${src}\0${tgt}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       edges.push({ source: src, target: tgt });
     }
   } else {
@@ -48,6 +52,9 @@ export function findCycles(
       if (e.source_id === e.target_id) continue;
       const src = idToLabel.get(e.source_id)!;
       const tgt = idToLabel.get(e.target_id)!;
+      const key = `${src}\0${tgt}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       edges.push({ source: src, target: tgt });
     }
   }

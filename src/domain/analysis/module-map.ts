@@ -117,10 +117,14 @@ function findHotspots(db: BetterSqlite3Database, noTests: boolean, limit: number
         COALESCE(fo.cnt, 0) as fan_out
       FROM nodes n
       LEFT JOIN (
-        SELECT target_id, COUNT(*) AS cnt FROM edges GROUP BY target_id
+        SELECT target_id, COUNT(*) AS cnt FROM edges
+        WHERE kind NOT IN ('contains', 'parameter_of', 'receiver')
+        GROUP BY target_id
       ) fi ON fi.target_id = n.id
       LEFT JOIN (
-        SELECT source_id, COUNT(*) AS cnt FROM edges GROUP BY source_id
+        SELECT source_id, COUNT(*) AS cnt FROM edges
+        WHERE kind NOT IN ('contains', 'parameter_of', 'receiver')
+        GROUP BY source_id
       ) fo ON fo.source_id = n.id
       WHERE n.kind = 'file' ${testFilter}
       ORDER BY COALESCE(fi.cnt, 0) + COALESCE(fo.cnt, 0) DESC
