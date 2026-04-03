@@ -103,17 +103,17 @@ async function getParserModule(): Promise<typeof import('../domain/parser.js')> 
 
 // ─── Native standalone analysis ─────────────────────────────────────────
 
-/**
- * Try native Rust analysis for files missing complexity/CFG/dataflow data.
- * Reads source from disk, calls the native standalone functions, and stores
- * results directly on definitions/symbols. Returns the set of files that
- * were fully handled (no remaining gaps except possibly AST store).
- */
 interface NativeAnalysisNeeds {
   complexity: boolean;
   cfg: boolean;
   dataflow: boolean;
 }
+
+/**
+ * Try native Rust analysis for files missing complexity/CFG/dataflow data.
+ * Reads source from disk, calls the native standalone functions, and stores
+ * results directly on definitions/symbols.
+ */
 
 /** Determine which native analyses a file still needs. */
 function detectNativeNeeds(
@@ -259,7 +259,11 @@ function storeNativeComplexityResults(
 
 /** Override a definition's cyclomatic complexity with a CFG-derived value and recompute MI. */
 function overrideCyclomaticFromCfg(def: Definition, cfgCyclomatic: number): void {
-  if (!def.complexity || cfgCyclomatic <= 0) return;
+  if (!def.complexity) return;
+  if (cfgCyclomatic <= 0) {
+    debug(`overrideCyclomaticFromCfg: skipping ${def.name} — cfgCyclomatic=${cfgCyclomatic}`);
+    return;
+  }
   def.complexity.cyclomatic = cfgCyclomatic;
   const { loc, halstead } = def.complexity;
   const volume = halstead ? halstead.volume : 0;
@@ -324,23 +328,6 @@ async function ensureWasmTreesIfNeeded(
     if (symbols._tree) continue;
     const ext = path.extname(relPath).toLowerCase();
     const defs = symbols.definitions || [];
-
-    // Only consider definitions with a real function body.
-    // Interface/type property signatures are extracted as methods but correctly
-    // lack complexity/CFG data from the native engine. Exclude them by:
-    // 1. Single-line span (endLine === line) — type property on one line
-    // 2. Dotted names (e.g. "Interface.prop") — child definitions of types
-    const hasFuncBody = (d: {
-      name: string;
-      kind: string;
-      line: number;
-      endLine?: number | null;
-    }) =>
-      (d.kind === 'function' || d.kind === 'method') &&
-      d.line > 0 &&
-      d.endLine != null &&
-      d.endLine > d.line &&
-      !d.name.includes('.');
 
     // AST: need tree when native didn't provide non-call astNodes
     const lid = symbols._langId || '';
