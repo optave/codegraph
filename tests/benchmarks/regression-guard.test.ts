@@ -51,7 +51,11 @@ function extractJsonData<T>(filePath: string, marker: string): T[] {
   if (!match) return [];
   try {
     return JSON.parse(match[1]);
-  } catch {
+  } catch (err) {
+    console.error(
+      `[regression-guard] Failed to parse JSON from ${filePath} (marker: ${marker}):`,
+      err,
+    );
     return [];
   }
 }
@@ -80,6 +84,23 @@ function findLatestPair<T extends { version: string }>(
     }
   }
   return null; // No previous release to compare against
+}
+
+/**
+ * Assert that a history array is sorted newest-first (index 0 = most recent).
+ * The comparison logic depends on this ordering — if violated, the guard would
+ * silently compare wrong pairs and miss real regressions.
+ */
+function assertNewestFirst<T extends { date?: string }>(history: T[], label: string): void {
+  const dated = history.filter(
+    (e): e is T & { date: string } => typeof e.date === 'string' && e.date.length > 0,
+  );
+  if (dated.length >= 2) {
+    expect(
+      new Date(dated[0].date) >= new Date(dated[1].date),
+      `${label} history must be sorted newest-first (index 0 = latest)`,
+    ).toBe(true);
+  }
 }
 
 /**
@@ -188,6 +209,17 @@ describe('Benchmark regression guard', () => {
     'INCREMENTAL_BENCHMARK_DATA',
   );
 
+  // Validate newest-first ordering assumption for all history arrays
+  test('build history is sorted newest-first', () => {
+    assertNewestFirst(buildHistory, 'Build benchmark');
+  });
+  test('query history is sorted newest-first', () => {
+    assertNewestFirst(queryHistory, 'Query benchmark');
+  });
+  test('incremental history is sorted newest-first', () => {
+    assertNewestFirst(incrementalHistory, 'Incremental benchmark');
+  });
+
   describe('build benchmarks', () => {
     for (const engineKey of ['native', 'wasm'] as const) {
       const pair = findLatestPair(buildHistory, (e) => e[engineKey] != null);
@@ -269,7 +301,9 @@ describe('Benchmark regression guard', () => {
     }
 
     // Resolve benchmarks (not engine-specific)
-    const resolveEntries = incrementalHistory.filter((e) => e.resolve != null);
+    const resolveEntries = incrementalHistory.filter(
+      (e) => e.resolve != null && e.version !== 'dev',
+    );
     if (resolveEntries.length >= 2) {
       test(`import resolution — ${resolveEntries[0].version} vs ${resolveEntries[1].version}`, () => {
         const cur = resolveEntries[0].resolve!;
