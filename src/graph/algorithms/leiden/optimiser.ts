@@ -343,28 +343,6 @@ function buildCoarseGraph(g: GraphAdapter, p: Partition): CodeGraph {
 }
 
 /**
- * True Leiden refinement phase (Algorithm 3, Traag et al. 2019).
- *
- * Key properties that distinguish this from Louvain-style refinement:
- *
- * 1. Singleton start — each node begins in its own community.
- * 2. Singleton guard — only nodes still in singleton communities are
- *    considered for merging. Once a node joins a non-singleton community
- *    it is locked for the remainder of the pass. This prevents oscillation
- *    and is essential for the gamma-connectedness guarantee.
- * 3. Single pass — one randomized sweep through all nodes, not an
- *    iterative loop until convergence (that would be Louvain behavior).
- * 4. Probabilistic selection — candidate communities are sampled from
- *    a Boltzmann distribution p(v, C) proportional to exp(deltaH / theta),
- *    with the "stay as singleton" option (deltaH = 0) included in the
- *    distribution. This means a node may probabilistically choose to remain
- *    alone even when positive-gain merges exist.
- *
- * theta (refinementTheta) controls temperature: lower = more deterministic
- * (approaches greedy), higher = more exploratory. Determinism is preserved
- * via the seeded PRNG — same seed produces the same assignments.
- */
-/**
  * Collect eligible candidate communities for node `v` during refinement.
  * A candidate must: (a) be in the same macro-community, (b) respect the size
  * limit, and (c) produce a positive quality gain above GAIN_EPSILON.
@@ -437,6 +415,28 @@ function boltzmannSelectCandidate(
   return scratch.candC[candLen - 1]!; // fallback
 }
 
+/**
+ * True Leiden refinement phase (Algorithm 3, Traag et al. 2019).
+ *
+ * Key properties that distinguish this from Louvain-style refinement:
+ *
+ * 1. Singleton start — each node begins in its own community.
+ * 2. Singleton guard — only nodes still in singleton communities are
+ *    considered for merging. Once a node joins a non-singleton community
+ *    it is locked for the remainder of the pass. This prevents oscillation
+ *    and is essential for the gamma-connectedness guarantee.
+ * 3. Single pass — one randomized sweep through all nodes, not an
+ *    iterative loop until convergence (that would be Louvain behavior).
+ * 4. Probabilistic selection — candidate communities are sampled from
+ *    a Boltzmann distribution p(v, C) proportional to exp(deltaH / theta),
+ *    with the "stay as singleton" option (deltaH = 0) included in the
+ *    distribution. This means a node may probabilistically choose to remain
+ *    alone even when positive-gain merges exist.
+ *
+ * theta (refinementTheta) controls temperature: lower = more deterministic
+ * (approaches greedy), higher = more exploratory. Determinism is preserved
+ * via the seeded PRNG — same seed produces the same assignments.
+ */
 function refineWithinCoarseCommunities(
   g: GraphAdapter,
   basePart: Partition,
