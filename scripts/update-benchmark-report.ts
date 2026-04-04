@@ -324,21 +324,17 @@ if (prev) {
 if (fs.existsSync(readmePath)) {
 	let readme = fs.readFileSync(readmePath, 'utf8');
 
-	// Build the table rows — show both engines when native is available
-	// Pick the preferred engine: native when available, WASM as fallback
+	// Pick the preferred engine: native when available, WASM as fallback.
+	// Show only one engine — total build time includes many engine-independent
+	// JS stages (insert, resolve, structure, roles) that dilute the native
+	// parsing advantage, making side-by-side numbers misleadingly similar.
+	// Detailed per-engine breakdown lives in BUILD-BENCHMARKS.md.
 	const pref = latest.native || latest.wasm;
 	const prefLabel = latest.native ? ' (native)' : '';
 
 	let rows = '';
-	if (latest.native) {
-		rows += `| Build speed (native) | **${latest.native.perFile.buildTimeMs} ms/file** |\n`;
-		rows += `| Build speed (WASM) | **${latest.wasm.perFile.buildTimeMs} ms/file** |\n`;
-		rows += `| Query time (native) | **${formatMs(latest.native.queryTimeMs)}** |\n`;
-		rows += `| Query time (WASM) | **${formatMs(latest.wasm.queryTimeMs)}** |\n`;
-	} else {
-		rows += `| Build speed | **${latest.wasm.perFile.buildTimeMs} ms/file** |\n`;
-		rows += `| Query time | **${formatMs(latest.wasm.queryTimeMs)}** |\n`;
-	}
+	rows += `| Build speed${prefLabel} | **${pref.perFile.buildTimeMs} ms/file** |\n`;
+	rows += `| Query time${prefLabel} | **${formatMs(pref.queryTimeMs)}** |\n`;
 
 	// Incremental rebuild rows (prefer native, fallback to WASM)
 	if (pref.noopRebuildMs != null) {
@@ -354,10 +350,8 @@ if (fs.existsSync(readmePath)) {
 		if (pref.queries.pathMs != null) rows += `| Query: path | **${pref.queries.pathMs}ms** |\n`;
 	}
 
-	// 50k-file estimate
-	const estBuild = latest.native
-		? formatMs(latest.native.perFile.buildTimeMs * ESTIMATE_FILES)
-		: formatMs(latest.wasm.perFile.buildTimeMs * ESTIMATE_FILES);
+	// 50k-file estimate (uses preferred engine)
+	const estBuild = formatMs(pref.perFile.buildTimeMs * ESTIMATE_FILES);
 	rows += `| ~${(ESTIMATE_FILES).toLocaleString()} files (est.) | **~${estBuild} build** |\n`;
 
 	// Preserve existing benchmark link line from README rather than hardcoding.
