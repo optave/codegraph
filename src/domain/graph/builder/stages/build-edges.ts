@@ -358,7 +358,7 @@ function buildImportedNamesForNative(
 
   // Two-pass approach: process static imports first, then dynamic fill-ins.
   // This ensures static bindings always win regardless of source ordering,
-  // matching buildImportedNamesMap's Map-based last-write semantics.
+  // matching buildImportedNamesMap's static-before-dynamic precedence.
   for (const isDynamicPass of [false, true]) {
     for (const imp of symbols.imports) {
       if (!!imp.dynamicImport !== isDynamicPass) continue;
