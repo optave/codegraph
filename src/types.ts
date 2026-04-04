@@ -302,6 +302,7 @@ export interface Repository {
   // ── Edge queries ──────────────────────────────────────────────────
   findCallees(nodeId: number): RelatedNodeRow[];
   findCallers(nodeId: number): RelatedNodeRow[];
+  findCallersBatch(nodeIds: number[]): Map<number, RelatedNodeRow[]>;
   findDistinctCallers(nodeId: number): RelatedNodeRow[];
   findAllOutgoingEdges(nodeId: number): AdjacentEdgeRow[];
   findAllIncomingEdges(nodeId: number): AdjacentEdgeRow[];
@@ -408,7 +409,7 @@ export interface DefinitionComplexity {
   cognitive: number;
   cyclomatic: number;
   maxNesting: number;
-  halstead?: HalsteadMetrics;
+  halstead?: HalsteadDerivedMetrics | HalsteadMetrics;
   loc?: LOCMetrics;
   maintainabilityIndex?: number;
 }

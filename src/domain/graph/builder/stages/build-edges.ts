@@ -354,9 +354,9 @@ function buildImportedNamesForNative(
   rootDir: string,
 ): Array<{ name: string; file: string }> {
   const importedNames: Array<{ name: string; file: string }> = [];
-  // Dynamic imports first (lower priority), static imports last (higher
-  // priority). Rust HashMap::collect keeps the last entry per key, so static
-  // imports win when both contribute the same name.
+  // Process dynamic imports first (lower priority), then static imports
+  // (higher priority). Rust HashMap::collect keeps the last entry per key,
+  // so static imports win when both contribute the same name.
   const addImports = (imp: (typeof symbols.imports)[number]) => {
     const resolvedPath = getResolved(ctx, path.join(rootDir, relPath), imp.source);
     for (const name of imp.names) {
