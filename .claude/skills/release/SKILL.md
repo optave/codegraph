@@ -178,13 +178,21 @@ Verify that all script references in release-related config files point to files
 Check these files for script paths:
 
 ```bash
-# .versionrc.json — check any "scripts" entries
+# .versionrc.json — check any "scripts" entries (runner and forwarded args)
 grep -oP 'node \K[^ "]+' .versionrc.json 2>/dev/null | while read script; do
+  [ ! -f "$script" ] && echo "ERROR: .versionrc.json references '$script' but it does not exist"
+done
+grep -oP 'node [^ "]+ \K[^ "]+' .versionrc.json 2>/dev/null | while read script; do
   [ ! -f "$script" ] && echo "ERROR: .versionrc.json references '$script' but it does not exist"
 done
 
 # package.json — check version/preversion/postversion lifecycle hooks
 grep -E '"(pre)?version"|"postversion"' package.json | grep -oP 'node \K[^ "&]+' | while read script; do
+  [ ! -f "$script" ] && echo "ERROR: package.json lifecycle references '$script' but it does not exist"
+done
+
+# Also check forwarded script arguments (e.g. "node scripts/node-ts.js scripts/foo.ts")
+grep -E '"(pre)?version"|"postversion"' package.json | grep -oP 'node [^ "&]+ \K[^ "&]+' | while read script; do
   [ ! -f "$script" ] && echo "ERROR: package.json lifecycle references '$script' but it does not exist"
 done
 ```
