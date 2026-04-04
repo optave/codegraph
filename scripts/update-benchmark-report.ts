@@ -200,11 +200,11 @@ md += '| Metric | Native (Rust) | WASM |\n';
 md += '|--------|---:|---:|\n';
 
 const estNative = latest.native?.perFile;
-const estWasm = latest.wasm.perFile;
-md += `| Build time | ${estNative ? formatMs(estNative.buildTimeMs * ESTIMATE_FILES) : 'n/a'} | ${formatMs(estWasm.buildTimeMs * ESTIMATE_FILES)} |\n`;
-md += `| DB size | ${estNative ? formatBytes(estNative.dbSizeBytes * ESTIMATE_FILES) : 'n/a'} | ${formatBytes(estWasm.dbSizeBytes * ESTIMATE_FILES)} |\n`;
-md += `| Nodes | ${estNative ? Math.round(estNative.nodes * ESTIMATE_FILES).toLocaleString() : 'n/a'} | ${Math.round(estWasm.nodes * ESTIMATE_FILES).toLocaleString()} |\n`;
-md += `| Edges | ${estNative ? Math.round(estNative.edges * ESTIMATE_FILES).toLocaleString() : 'n/a'} | ${Math.round(estWasm.edges * ESTIMATE_FILES).toLocaleString()} |\n\n`;
+const estWasm = latest.wasm?.perFile;
+md += `| Build time | ${estNative ? formatMs(estNative.buildTimeMs * ESTIMATE_FILES) : 'n/a'} | ${estWasm ? formatMs(estWasm.buildTimeMs * ESTIMATE_FILES) : 'n/a'} |\n`;
+md += `| DB size | ${estNative ? formatBytes(estNative.dbSizeBytes * ESTIMATE_FILES) : 'n/a'} | ${estWasm ? formatBytes(estWasm.dbSizeBytes * ESTIMATE_FILES) : 'n/a'} |\n`;
+md += `| Nodes | ${estNative ? Math.round(estNative.nodes * ESTIMATE_FILES).toLocaleString() : 'n/a'} | ${estWasm ? Math.round(estWasm.nodes * ESTIMATE_FILES).toLocaleString() : 'n/a'} |\n`;
+md += `| Edges | ${estNative ? Math.round(estNative.edges * ESTIMATE_FILES).toLocaleString() : 'n/a'} | ${estWasm ? Math.round(estWasm.edges * ESTIMATE_FILES).toLocaleString() : 'n/a'} |\n\n`;
 
 // ── Incremental Rebuilds section ──────────────────────────────────────────
 const hasIncremental = history.some(
@@ -346,8 +346,8 @@ if (fs.existsSync(readmePath)) {
 
 	// Query latency rows (pick two representative queries, skip if null)
 	if (pref.queries) {
-		if (pref.queries.fnDepsMs != null) rows += `| Query: fn-deps | **${pref.queries.fnDepsMs}ms** |\n`;
-		if (pref.queries.pathMs != null) rows += `| Query: path | **${pref.queries.pathMs}ms** |\n`;
+		if (pref.queries.fnDepsMs != null) rows += `| Query: fn-deps${prefLabel} | **${pref.queries.fnDepsMs}ms** |\n`;
+		if (pref.queries.pathMs != null) rows += `| Query: path${prefLabel} | **${pref.queries.pathMs}ms** |\n`;
 	}
 
 	// 50k-file estimate (uses preferred engine)
