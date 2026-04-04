@@ -436,7 +436,10 @@ export async function buildGraph(
         // builds: !isFullBuild && changedCount <= 5 && existingFileCount > 20.
         // For all other cases (full builds, large incrementals), we must
         // run JS buildStructure() to create directory nodes + contains edges (#804).
-        const nativeHandledStructure = !result.isFullBuild && (result.changedCount ?? 0) <= 5;
+        // Always run JS structure — the native fast-path has an additional
+        // existingFileCount > 20 guard that isn't reflected in the result JSON,
+        // so we can't reliably detect whether native actually ran structure.
+        const nativeHandledStructure = false;
         const needsStructure = !nativeHandledStructure;
 
         if (needsAnalysis || needsStructure) {
@@ -519,6 +522,41 @@ export async function buildGraph(
             });
           }
 
+          // Populate import/export counts from DB edges so buildStructure
+          // computes correct import_count/export_count in node_metrics.
+          // The extractor arrays aren't persisted to the DB, so we derive
+          // counts from edge data instead (#804).
+          const importCountRows = ctx.db
+            .prepare(
+              `SELECT n.file, COUNT(*) AS cnt
+               FROM edges e JOIN nodes n ON e.source_id = n.id
+               WHERE e.kind IN ('imports', 'imports-type', 'dynamic-imports')
+                 AND n.file IS NOT NULL
+               GROUP BY n.file`,
+            )
+            .all() as { file: string; cnt: number }[];
+          for (const row of importCountRows) {
+            const entry = allFileSymbols.get(row.file);
+            if (entry) entry.imports = new Array(row.cnt) as ExtractorOutput['imports'];
+          }
+          // Export count: definitions in this file that are imported by other files
+          const exportCountRows = ctx.db
+            .prepare(
+              `SELECT n_tgt.file, COUNT(DISTINCT n_tgt.id) AS cnt
+               FROM edges e
+               JOIN nodes n_tgt ON e.target_id = n_tgt.id
+               JOIN nodes n_src ON e.source_id = n_src.id
+               WHERE e.kind IN ('imports', 'imports-type', 'reexports')
+                 AND n_tgt.file IS NOT NULL
+                 AND n_src.file != n_tgt.file
+               GROUP BY n_tgt.file`,
+            )
+            .all() as { file: string; cnt: number }[];
+          for (const row of exportCountRows) {
+            const entry = allFileSymbols.get(row.file);
+            if (entry) entry.exports = new Array(row.cnt) as ExtractorOutput['exports'];
+          }
+
           // ── Structure phase: directory nodes + contains edges (#804) ──
           if (needsStructure) {
             const structureStart = performance.now();
@@ -545,7 +583,9 @@ export async function buildGraph(
                 lineCountMap.set(row.file, row.line_count);
               }
 
-              const changedFilePaths = result.isFullBuild ? null : (result.changedFiles ?? null);
+              // Native ran no structure at all — always do a full rebuild so
+              // every directory gets nodes + contains edges (#804).
+              const changedFilePaths = null;
 
               const { buildStructure: buildStructureFn } = (await import(
                 '../../../features/structure.js'
