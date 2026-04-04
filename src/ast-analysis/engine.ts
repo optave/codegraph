@@ -242,6 +242,12 @@ function storeNativeComplexityResults(
         maxNesting: c.maxNesting,
         halstead: c.halstead
           ? {
+              n1: c.halstead.n1,
+              n2: c.halstead.n2,
+              bigN1: c.halstead.bigN1,
+              bigN2: c.halstead.bigN2,
+              vocabulary: c.halstead.vocabulary,
+              length: c.halstead.length,
               volume: c.halstead.volume,
               difficulty: c.halstead.difficulty,
               effort: c.halstead.effort,
@@ -304,6 +310,35 @@ function storeNativeCfgResults(results: NativeFunctionCfgResult[], defs: Definit
       const { edges, blocks } = match.cfg;
       if (edges && blocks) {
         overrideCyclomaticFromCfg(def, edges.length - blocks.length + 2);
+      }
+    }
+  }
+}
+
+// ─── CFG cyclomatic reconciliation ──────────────────────────────────────
+
+/**
+ * Apply CFG-derived cyclomatic override for definitions that already have both
+ * `complexity` and `cfg` with blocks/edges but whose cyclomatic was never
+ * overridden (e.g., native extractors provide both fields inline, so the
+ * normal override path in storeNativeCfgResults / storeCfgResults is skipped).
+ */
+function reconcileCfgCyclomatic(fileSymbols: Map<string, ExtractorOutput>): void {
+  for (const [, symbols] of fileSymbols) {
+    const defs = symbols.definitions || [];
+    for (const def of defs) {
+      if (
+        (def.kind === 'function' || def.kind === 'method') &&
+        def.complexity &&
+        def.cfg &&
+        Array.isArray((def.cfg as any).blocks) &&
+        Array.isArray((def.cfg as any).edges)
+      ) {
+        const { edges, blocks } = def.cfg as { edges: unknown[]; blocks: unknown[] };
+        const cfgCyclomatic = edges.length - blocks.length + 2;
+        if (cfgCyclomatic > 0 && cfgCyclomatic !== def.complexity.cyclomatic) {
+          overrideCyclomaticFromCfg(def, cfgCyclomatic);
+        }
       }
     }
   }
@@ -664,6 +699,15 @@ export async function runAnalyses(
   }
 
   timing._unifiedWalkMs = performance.now() - t0walk;
+
+  // Reconcile: apply CFG-derived cyclomatic override for any definitions that have
+  // both precomputed complexity and CFG data but whose cyclomatic was never overridden.
+  // This closes a parity gap where native extractors provide both fields inline but
+  // the override step (storeNativeCfgResults / storeCfgResults) is skipped because
+  // detectNativeNeeds sees both as already present.
+  if (doComplexity && doCfg) {
+    reconcileCfgCyclomatic(fileSymbols);
+  }
 
   // Delegate to buildXxx functions for DB writes + native fallback
   await delegateToBuildFunctions(db, fileSymbols, rootDir, opts, engineOpts, timing);

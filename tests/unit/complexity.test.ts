@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createParsers } from '../../src/domain/parser.js';
 import {
   COMPLEXITY_RULES,
+  computeAllMetrics,
   computeFunctionComplexity,
   computeHalsteadMetrics,
   computeLOCMetrics,
@@ -945,5 +946,103 @@ describe('PHP complexity', () => {
       '<?php\nfunction f() {\n    # hash comment\n    // slash comment\n    return 1;\n}\n',
     );
     expect(l.commentLines).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ─── Parity: standalone DFS vs visitor-based computeAllMetrics ──────────
+
+describe('DFS vs visitor parity', () => {
+  // Compares computeFunctionComplexity (standalone DFS, mirrors Rust walk)
+  // with computeAllMetrics (visitor-based, used by WASM builds).
+  // Both must produce identical cognitive, cyclomatic, and maxNesting values.
+
+  function analyzeViaBoth(code: string) {
+    const root = parse(code);
+    const funcNode = getFunctionBody(root);
+    if (!funcNode) throw new Error('No function found in code snippet');
+    const dfs = computeFunctionComplexity(funcNode, 'javascript');
+    const visitor = computeAllMetrics(funcNode, 'javascript');
+    return { dfs, visitor };
+  }
+
+  it('simple function — identical', () => {
+    const { dfs, visitor } = analyzeViaBoth(`
+      function simple(a, b) { return a + b; }
+    `);
+    expect(visitor.cognitive).toBe(dfs.cognitive);
+    expect(visitor.cyclomatic).toBe(dfs.cyclomatic);
+    expect(visitor.maxNesting).toBe(dfs.maxNesting);
+  });
+
+  it('branches and nesting — identical', () => {
+    const { dfs, visitor } = analyzeViaBoth(`
+      function complex(x, y) {
+        if (x > 0) {
+          for (let i = 0; i < y; i++) {
+            if (i % 2 === 0) {
+              console.log(i);
+            }
+          }
+        } else if (x < 0) {
+          while (y > 0) { y--; }
+        } else {
+          return 0;
+        }
+        return x;
+      }
+    `);
+    expect(visitor.cognitive).toBe(dfs.cognitive);
+    expect(visitor.cyclomatic).toBe(dfs.cyclomatic);
+    expect(visitor.maxNesting).toBe(dfs.maxNesting);
+  });
+
+  it('nested function — identical nesting', () => {
+    const { dfs, visitor } = analyzeViaBoth(`
+      function outer(x) {
+        const inner = (y) => {
+          if (y > 0) return y;
+          return 0;
+        };
+        if (x > 0) return inner(x);
+        return -1;
+      }
+    `);
+    expect(visitor.cognitive).toBe(dfs.cognitive);
+    expect(visitor.cyclomatic).toBe(dfs.cyclomatic);
+    expect(visitor.maxNesting).toBe(dfs.maxNesting);
+  });
+
+  it('double-nested function — identical nesting', () => {
+    const { dfs, visitor } = analyzeViaBoth(`
+      function top() {
+        function mid() {
+          function deep() {
+            if (true) return 1;
+            return 0;
+          }
+          if (true) return deep();
+          return 0;
+        }
+        return mid();
+      }
+    `);
+    expect(visitor.cognitive).toBe(dfs.cognitive);
+    expect(visitor.cyclomatic).toBe(dfs.cyclomatic);
+    expect(visitor.maxNesting).toBe(dfs.maxNesting);
+  });
+
+  it('switch + ternary + logical — identical', () => {
+    const { dfs, visitor } = analyzeViaBoth(`
+      function mixed(x, a, b) {
+        switch (x) {
+          case 1: return a && b ? 'yes' : 'no';
+          case 2: return a || b;
+          default: return null;
+        }
+      }
+    `);
+    expect(visitor.cognitive).toBe(dfs.cognitive);
+    expect(visitor.cyclomatic).toBe(dfs.cyclomatic);
+    expect(visitor.maxNesting).toBe(dfs.maxNesting);
   });
 });
