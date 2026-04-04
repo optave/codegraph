@@ -82,11 +82,13 @@ function buildTransitiveCallers(
 
     const batchCallers = repo.findCallersBatch(unvisited.map((f) => f.id));
     const nextFrontier: typeof frontier = [];
+    const nextFrontierIds = new Set<number>();
     for (const f of unvisited) {
       const upstream = batchCallers.get(f.id) || [];
       for (const u of upstream) {
         if (noTests && isTestFile(u.file)) continue;
-        if (!visited.has(u.id)) {
+        if (!visited.has(u.id) && !nextFrontierIds.has(u.id)) {
+          nextFrontierIds.add(u.id);
           nextFrontier.push(u);
         }
       }
