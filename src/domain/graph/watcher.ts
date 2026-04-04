@@ -280,7 +280,7 @@ function startNativeWatcher(ctx: WatcherContext): () => void {
 
 /** Register SIGINT handler to flush journal and clean up. */
 function setupShutdownHandler(ctx: WatcherContext, cleanup: () => void): void {
-  process.on('SIGINT', () => {
+  process.once('SIGINT', () => {
     info('Stopping watcher...');
     cleanup();
     if (ctx.pending.size > 0) {

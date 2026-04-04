@@ -690,7 +690,7 @@ export async function runAnalyses(
   // This fills in complexity/CFG/dataflow for files that the native parse pipeline
   // missed, avoiding the need to parse with WASM + run JS visitors.
   const native = loadNative();
-  if (native?.analyzeComplexity ?? native?.buildCfgAnalysis ?? native?.extractDataflowAnalysis) {
+  if (native?.analyzeComplexity || native?.buildCfgAnalysis || native?.extractDataflowAnalysis) {
     const t0native = performance.now();
     runNativeAnalysis(native, fileSymbols, rootDir, opts, extToLang);
     debug(`native standalone analysis: ${(performance.now() - t0native).toFixed(1)}ms`);
