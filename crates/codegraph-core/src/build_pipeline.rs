@@ -67,6 +67,11 @@ pub struct BuildPipelineResult {
     pub changed_count: usize,
     pub removed_count: usize,
     pub is_full_build: bool,
+    /// Whether the Rust pipeline handled the structure phase (directory nodes,
+    /// contains edges, file metrics). True when the small-incremental fast path
+    /// ran (≤5 changed files, >20 existing files). When false, the JS caller
+    /// must run its own structure phase as a post-processing step.
+    pub structure_handled: bool,
 }
 
 /// Normalize path to forward slashes.
@@ -205,6 +210,7 @@ pub fn run_pipeline(
             changed_count: 0,
             removed_count: 0,
             is_full_build: false,
+            structure_handled: true,
         });
     }
 
@@ -587,6 +593,7 @@ pub fn run_pipeline(
         changed_count: parse_changes.len(),
         removed_count: change_result.removed.len(),
         is_full_build: change_result.is_full_build,
+        structure_handled: use_fast_path,
     })
 }
 
