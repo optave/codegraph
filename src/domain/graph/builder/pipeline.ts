@@ -280,23 +280,12 @@ function shouldSkipNativeOrchestrator(ctx: PipelineContext): string | null {
 /** Checkpoint WAL through rusqlite, close nativeDb, and reopen better-sqlite3.
  *  Returns false if the DB reopen fails (caller should return partial result). */
 function handoffWalAfterNativeBuild(ctx: PipelineContext): boolean {
-  try {
-    ctx.nativeDb!.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  } catch {
-    /* ignore checkpoint errors */
-  }
-  try {
-    ctx.nativeDb!.close();
-  } catch {
-    /* ignore close errors */
-  }
-  ctx.nativeDb = undefined;
+  closeNativeDb(ctx, 'post-native-build');
   try {
     ctx.db.close();
-  } catch {
-    /* ignore close errors */
+  } catch (e) {
+    debug(`handoffWal JS db close failed: ${toErrorMessage(e)}`);
   }
-  ctx.db = null!; // avoid closeDbPair operating on a stale handle
   try {
     ctx.db = openDb(ctx.dbPath);
     return true;
