@@ -112,13 +112,13 @@ describe('JavaScript parser', () => {
     it('extracts typeMap from generic types', () => {
       const symbols = parseTS(`const m: Map<string, number> = new Map();`);
       expect(symbols.typeMap.get('m')).toEqual(
-        expect.objectContaining({ type: 'Map', confidence: 0.9 }),
+        expect.objectContaining({ type: 'Map', confidence: 1.0 }),
       );
     });
 
-    it('infers type from new expressions with confidence 0.9', () => {
+    it('infers type from new expressions with confidence 1.0', () => {
       const symbols = parseTS(`const r = new Router();`);
-      expect(symbols.typeMap.get('r')).toEqual({ type: 'Router', confidence: 0.9 });
+      expect(symbols.typeMap.get('r')).toEqual({ type: 'Router', confidence: 1.0 });
     });
 
     it('extracts parameter types into typeMap with confidence 0.9', () => {
@@ -143,13 +143,12 @@ describe('JavaScript parser', () => {
       expect(symbols.typeMap.get('app')).toEqual({ type: 'Express', confidence: 0.9 });
     });
 
-    it('prefers type annotation over constructor for engine parity', () => {
+    it('prefers constructor over annotation on the same declaration', () => {
       const symbols = parseTS(`const x: Base = new Derived();`);
-      // Annotation-first: when a type annotation is present, it takes priority and
-      // the constructor is not checked.  This matches the native Rust extractor and
-      // prevents cross-scope pollution where `new Map()` in a different function
-      // overwrites a precise type alias like `BatchResolvedMap` from an earlier scope.
-      expect(symbols.typeMap.get('x')).toEqual({ type: 'Base', confidence: 0.9 });
+      // Constructor on same declaration wins (confidence 1.0) because the runtime type
+      // is what matters for call resolution: x.render() → Derived.render, not Base.render.
+      // Cross-scope pollution is prevented by setTypeMapEntry's higher-confidence gate.
+      expect(symbols.typeMap.get('x')).toEqual({ type: 'Derived', confidence: 1.0 });
     });
 
     it('extracts factory method patterns with confidence 0.7', () => {

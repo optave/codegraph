@@ -997,10 +997,22 @@ function handleVarDeclaratorTypeMap(
   const nameN = node.childForFieldName('name');
   if (!nameN || nameN.type !== 'identifier') return;
 
-  // Type annotation: const x: Foo = …
-  // When present, the explicit annotation wins — skip constructor/factory inference.
-  // Matches native (Rust) extractor behaviour.
   const typeAnno = findChild(node, 'type_annotation');
+  const valueN = node.childForFieldName('value');
+
+  // Constructor on the same declaration wins over annotation: the runtime type is
+  // what matters for call resolution (e.g. `const x: Base = new Derived()` should
+  // resolve `x.render()` to `Derived.render`, not `Base.render`).
+  // When no constructor is present, annotation still takes precedence over factory.
+  if (valueN?.type === 'new_expression') {
+    const ctorType = extractNewExprTypeName(valueN);
+    if (ctorType) {
+      setTypeMapEntry(typeMap, nameN.text, ctorType, 1.0);
+      return;
+    }
+  }
+
+  // Type annotation: const x: Foo = … → confidence 0.9
   if (typeAnno) {
     const typeName = extractSimpleTypeName(typeAnno);
     if (typeName) {
@@ -1009,16 +1021,10 @@ function handleVarDeclaratorTypeMap(
     }
   }
 
-  const valueN = node.childForFieldName('value');
   if (!valueN) return;
 
-  // Constructor: const x = new Foo() → confidence 0.9 (same as annotation so
-  // first-wins semantics apply when the same variable name appears in multiple scopes,
-  // matching the native Rust extractor behaviour)
-  if (valueN.type === 'new_expression') {
-    const ctorType = extractNewExprTypeName(valueN);
-    if (ctorType) setTypeMapEntry(typeMap, nameN.text, ctorType, 0.9);
-  }
+  // Constructor already handled above — only factory path remains.
+  if (valueN.type === 'new_expression') return;
   // Factory method: const x = Foo.create() → confidence 0.7
   else if (valueN.type === 'call_expression') {
     const fn = valueN.childForFieldName('function');
