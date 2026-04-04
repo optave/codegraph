@@ -159,7 +159,7 @@ export class SqliteRepository extends Repository {
     const placeholders = nodeIds.map(() => '?').join(',');
     const rows = this.#db
       .prepare(
-        `SELECT e.target_id AS queried_id, n.id, n.name, n.kind, n.file, n.line
+        `SELECT e.target_id AS queried_id, n.id, n.name, n.kind, n.file, n.line, n.end_line
          FROM edges e JOIN nodes n ON e.source_id = n.id
          WHERE e.target_id IN (${placeholders}) AND e.kind = 'calls'`,
       )
@@ -168,9 +168,14 @@ export class SqliteRepository extends Repository {
     for (const row of rows) {
       const qid = row.queried_id;
       if (!result.has(qid)) result.set(qid, []);
-      result
-        .get(qid)!
-        .push({ id: row.id, name: row.name, kind: row.kind, file: row.file, line: row.line });
+      result.get(qid)!.push({
+        id: row.id,
+        name: row.name,
+        kind: row.kind,
+        file: row.file,
+        line: row.line,
+        end_line: row.end_line,
+      });
     }
     return result;
   }

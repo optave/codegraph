@@ -295,7 +295,7 @@ export class NativeRepository extends Repository {
     if (nodeIds.length === 0) return new Map();
     const placeholders = nodeIds.map(() => '?').join(',');
     const rows = this.#ndb.queryAll(
-      `SELECT e.target_id AS queried_id, n.id, n.name, n.kind, n.file, n.line
+      `SELECT e.target_id AS queried_id, n.id, n.name, n.kind, n.file, n.line, n.end_line
        FROM edges e JOIN nodes n ON e.source_id = n.id
        WHERE e.target_id IN (${placeholders}) AND e.kind = 'calls'`,
       nodeIds,
@@ -310,6 +310,7 @@ export class NativeRepository extends Repository {
         kind: row.kind as string,
         file: row.file as string,
         line: row.line as number,
+        end_line: (row.end_line as number | null) ?? null,
       });
     }
     return result;
