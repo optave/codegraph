@@ -121,7 +121,7 @@ export function classifyRoles(
           : classifyDeadSubRole(node);
     } else if (node.fanIn === 0 && node.isExported) {
       role = 'entry';
-    } else if (hasProdFanIn && node.fanIn > 0 && node.productionFanIn === 0) {
+    } else if (hasProdFanIn && node.fanIn > 0 && node.productionFanIn === 0 && !node.isExported) {
       role = 'test-only';
     } else if (highIn && !highOut) {
       role = 'core';
