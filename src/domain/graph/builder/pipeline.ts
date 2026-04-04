@@ -134,7 +134,7 @@ function setupPipeline(ctx: PipelineContext): void {
   // Use NativeDatabase for schema init when native engine is available (Phase 6.13).
   // better-sqlite3 (ctx.db) is still always opened — needed for queries and stages
   // that haven't been migrated to rusqlite yet.
-  // Skip native DB entirely when user explicitly requested --engine wasm (#BUG-5).
+  // Skip native DB entirely when user explicitly requested --engine wasm.
   const enginePref = ctx.opts.engine || 'auto';
   const native = enginePref !== 'wasm' ? loadNative() : null;
   if (native?.NativeDatabase) {
@@ -218,6 +218,7 @@ function closeNativeDb(ctx: PipelineContext, label: string): void {
 
 /** Try to reopen the native connection for a given pipeline phase. */
 function reopenNativeDb(ctx: PipelineContext, label: string): void {
+  if ((ctx.opts.engine ?? 'auto') === 'wasm') return;
   const native = loadNative();
   if (!native?.NativeDatabase) return;
   try {
