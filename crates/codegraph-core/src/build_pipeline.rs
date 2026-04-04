@@ -11,10 +11,10 @@
 //! 4. Parse files in parallel (existing `parallel::parse_files_parallel`)
 //! 5. Insert nodes (existing `insert_nodes::do_insert_nodes`)
 //! 6. Resolve imports (existing `import_resolution::resolve_imports_batch`)
-//! 7. Build import edges + barrel resolution
-//! 8. Build call edges (existing `edge_builder::build_call_edges`)
-//! 9. Structure metrics + role classification
-//! 10. Finalize (metadata, journal)
+//! 6b. Re-parse barrel candidates (incremental only)
+//! 7. Build import edges + call edges + barrel resolution
+//! 8. Structure metrics + role classification
+//! 9. Finalize (metadata, journal)
 
 use crate::change_detection;
 use crate::config::{BuildConfig, BuildOpts, BuildPathAliases};
@@ -225,7 +225,7 @@ pub fn run_pipeline(
     // ── Stage 5: Insert nodes ──────────────────────────────────────────
     let t0 = Instant::now();
     let insert_batches = build_insert_batches(&file_symbols);
-    let file_hashes = build_file_hash_entries(&parse_changes, root_dir);
+    let file_hashes = build_file_hash_entries(&parse_changes);
     let _ = crate::insert_nodes::do_insert_nodes(
         conn,
         &insert_batches,
@@ -701,7 +701,6 @@ fn build_insert_batches(
 /// that `file_hashes` is populated for subsequent incremental builds.
 fn build_file_hash_entries(
     changed: &[&change_detection::ChangedFile],
-    _root_dir: &str,
 ) -> Vec<crate::insert_nodes::FileHashEntry> {
     changed
         .iter()
