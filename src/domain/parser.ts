@@ -105,6 +105,9 @@ const _queryCache: Map<string, Query> = new Map();
 // Tracks whether ALL grammars have been loaded (vs. a lazy subset)
 let _allParsersLoaded: boolean = false;
 
+// In-flight grammar loads keyed by language id — prevents concurrent duplicate loads
+const _loadingPromises: Map<string, Promise<void>> = new Map();
+
 // Extensions that need typeMap backfill (type annotations only exist in TS/TSX)
 const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
 
@@ -155,9 +158,20 @@ const TS_EXTRA_PATTERNS: string[] = [
 
 /**
  * Load a single language grammar and cache the parser + language + query.
+ * Uses in-flight deduplication so concurrent callers awaiting the same grammar
+ * share a single load rather than producing orphaned WASM instances.
  * Assumes Parser.init() has already been called and _cachedParsers/_cachedLanguages exist.
  */
 async function loadLanguage(entry: LanguageRegistryEntry): Promise<void> {
+  if (_cachedParsers!.has(entry.id)) return;
+  const inflight = _loadingPromises.get(entry.id);
+  if (inflight) return inflight;
+  const p = doLoadLanguage(entry).finally(() => _loadingPromises.delete(entry.id));
+  _loadingPromises.set(entry.id, p);
+  return p;
+}
+
+async function doLoadLanguage(entry: LanguageRegistryEntry): Promise<void> {
   try {
     const lang = await Language.load(grammarPath(entry.grammarFile));
     const parser = new Parser();
@@ -255,6 +269,7 @@ export function disposeParsers(): void {
   }
   _initialized = false;
   _allParsersLoaded = false;
+  _loadingPromises.clear();
 }
 
 export function getParser(parsers: Map<string, Parser | null>, filePath: string): Parser | null {
@@ -273,22 +288,14 @@ export async function ensureWasmTrees(
   fileSymbols: Map<string, any>,
   rootDir: string,
 ): Promise<void> {
-  // Check if any file needs a tree
-  let needsParse = false;
+  // Single pass: collect absolute paths for files that need parsing
+  const filePaths: string[] = [];
   for (const [relPath, symbols] of fileSymbols) {
-    if (!symbols._tree) {
-      const ext = path.extname(relPath).toLowerCase();
-      if (_extToLang.has(ext)) {
-        needsParse = true;
-        break;
-      }
+    if (!symbols._tree && _extToLang.has(path.extname(relPath).toLowerCase())) {
+      filePaths.push(path.join(rootDir, relPath));
     }
   }
-  if (!needsParse) return;
-
-  const filePaths = [...fileSymbols.keys()]
-    .filter((rp) => !fileSymbols.get(rp)._tree && _extToLang.has(path.extname(rp).toLowerCase()))
-    .map((rp) => path.join(rootDir, rp));
+  if (filePaths.length === 0) return;
   const parsers = await ensureParsersForFiles(filePaths);
 
   for (const [relPath, symbols] of fileSymbols) {
