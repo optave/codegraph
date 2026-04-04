@@ -500,42 +500,31 @@ fn walk_ast_nodes_with_config_depth(
     }
 
     if let Some(ast_kind) = classify_ast_node(node.kind(), config) {
-        let skip_children_on_short_string;
         match ast_kind {
             "new" => {
                 ast_nodes.push(build_new_node(node, source));
-                skip_children_on_short_string = false;
             }
             "throw" => {
                 ast_nodes.push(build_throw_node(node, source, config));
-                skip_children_on_short_string = false;
             }
             "await" => {
                 ast_nodes.push(build_await_node(node, source));
-                skip_children_on_short_string = false;
             }
             "string" => {
-                if let Some(ast_node) = build_string_node(node, source, config) {
-                    ast_nodes.push(ast_node);
-                    skip_children_on_short_string = false;
-                } else {
-                    // Short string: recurse children then return early
-                    skip_children_on_short_string = true;
+                if build_string_node(node, source, config).map(|n| ast_nodes.push(n)).is_none() {
+                    // Short string: recurse children then skip outer loop
+                    for i in 0..node.child_count() {
+                        if let Some(child) = node.child(i) {
+                            walk_ast_nodes_with_config_depth(&child, source, ast_nodes, config, depth + 1);
+                        }
+                    }
+                    return;
                 }
             }
             "regex" => {
                 ast_nodes.push(build_regex_node(node, source));
-                skip_children_on_short_string = false;
             }
-            _ => { skip_children_on_short_string = false; }
-        }
-        if skip_children_on_short_string {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    walk_ast_nodes_with_config_depth(&child, source, ast_nodes, config, depth + 1);
-                }
-            }
-            return;
+            _ => {}
         }
     }
 
