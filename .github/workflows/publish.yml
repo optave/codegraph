@@ -390,10 +390,11 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Node 24 required: ships with npm v11 which supports OIDC trusted publishing.
+      # Node 22 ships with npm v10 which lacks the OIDC handshake protocol needed by the npm registry.
       - uses: actions/setup-node@v6
         with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+          node-version: "24"
 
       - run: npm install
 
@@ -450,28 +451,7 @@ jobs:
           NPM_TAG: ${{ needs.compute-version.outputs.npm_tag }}
         shell: bash
         run: |
-          set +eo pipefail  # Disable errexit and pipefail so retry logic works
-
-          npm_publish_retry() {
-            local max_attempts=3
-            local delay=15
-            for attempt in $(seq 1 $max_attempts); do
-              echo "::group::Publish attempt $attempt/$max_attempts"
-              "$@"
-              local rc=$?
-              echo "::endgroup::"
-              if [ "$rc" -eq 0 ]; then
-                return 0
-              fi
-              if [ "$attempt" -lt "$max_attempts" ]; then
-                echo "::warning::npm publish attempt $attempt/$max_attempts failed (exit $rc) — retrying in ${delay}s..."
-                sleep "$delay"
-                delay=$((delay * 2))
-              fi
-            done
-            echo "::error::npm publish failed after $max_attempts attempts"
-            return 1
-          }
+          source scripts/npm-publish-retry.sh
 
           # Format: pkg_name|os|cpu|libc (libc empty for non-linux)
           declare -A PACKAGES=(
@@ -485,7 +465,6 @@ jobs:
 
           ARTIFACTS="${RUNNER_TEMP}/artifacts"
           PKG_DIR="${RUNNER_TEMP}/pkg"
-          FAILED=0
 
           for artifact_dir in "${ARTIFACTS}"/native-*/; do
             platform=$(basename "$artifact_dir" | sed 's/^native-//')
@@ -499,11 +478,6 @@ jobs:
 
             mkdir -p "${PKG_DIR}/$platform"
             cp "$artifact_dir"/*.node "${PKG_DIR}/$platform/codegraph-core.node"
-            if [ ! -f "${PKG_DIR}/$platform/codegraph-core.node" ]; then
-              echo "::error::Failed to copy .node artifact for $platform"
-              FAILED=1
-              continue
-            fi
 
             # Build libc field for Linux packages
             libc_field=""
@@ -536,10 +510,8 @@ jobs:
             fi
 
             echo "Publishing ${pkg_name}@${VERSION} with --tag ${NPM_TAG}"
-            npm_publish_retry npm publish "${PKG_DIR}/$platform" --access public --provenance --tag "$NPM_TAG" || FAILED=1
+            npm_publish_retry "${pkg_name}@${VERSION}" npm publish "${PKG_DIR}/$platform" --access public --provenance --tag "$NPM_TAG"
           done
-
-          exit $FAILED
 
       - name: Publish main package
         if: steps.check-main.outputs.already_published == 'false'
@@ -547,28 +519,10 @@ jobs:
           NPM_TAG: ${{ needs.compute-version.outputs.npm_tag }}
         shell: bash
         run: |
-          set +eo pipefail  # Disable errexit and pipefail so retry logic works
-          npm_publish_retry() {
-            local max_attempts=3
-            local delay=15
-            for attempt in $(seq 1 $max_attempts); do
-              echo "::group::Publish attempt $attempt/$max_attempts"
-              "$@"
-              local rc=$?
-              echo "::endgroup::"
-              if [ "$rc" -eq 0 ]; then
-                return 0
-              fi
-              if [ "$attempt" -lt "$max_attempts" ]; then
-                echo "::warning::npm publish attempt $attempt/$max_attempts failed (exit $rc) — retrying in ${delay}s..."
-                sleep "$delay"
-                delay=$((delay * 2))
-              fi
-            done
-            echo "::error::npm publish failed after $max_attempts attempts"
-            return 1
-          }
-          npm_publish_retry npm publish --access public --provenance --tag "$NPM_TAG" || exit 1
+          source scripts/npm-publish-retry.sh
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          npm_publish_retry "${PKG_NAME}@${PKG_VERSION}" npm publish --access public --provenance --tag "$NPM_TAG"
 
       - name: Configure git
         run: |
