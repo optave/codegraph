@@ -2,6 +2,7 @@ name: Codegraph Impact Analysis
 on: [pull_request]
 
 permissions:
+  contents: read
   pull-requests: write
 
 concurrency:
@@ -59,7 +60,7 @@ jobs:
                 `- \`${f.name}\` in \`${f.file}:${f.line}\` (${f.transitiveCallers} transitive callers)`
               ).join('\n');
             // Update existing comment or create new one
-            const { data: comments } = await github.rest.issues.listComments({
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
