@@ -346,7 +346,7 @@ function patchTypeMap(r: any): void {
     const map = new Map<string, TypeMapEntry>();
     for (const e of r.typeMap as Array<{ name: string; typeName: string }>) {
       if (!map.has(e.name)) {
-        map.set(e.name, { type: e.typeName, confidence: 0.9 });
+        map.set(e.name, { type: e.typeName, confidence: (e as any).confidence ?? 0.9 });
       }
     }
     r.typeMap = map;
