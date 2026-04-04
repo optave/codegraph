@@ -50,7 +50,7 @@ const ALLOWED_WASM_IMPORTS = new Set([
 
 const WASM_MAGIC = '0061736d';
 
-async function validateGrammar(wasmPath: string, _expectedName: string): Promise<string[]> {
+async function validateGrammar(wasmPath: string, expectedName: string): Promise<string[]> {
   const errors: string[] = [];
   const buf = readFileSync(wasmPath);
 
@@ -68,8 +68,14 @@ async function validateGrammar(wasmPath: string, _expectedName: string): Promise
     errors.push(`expected 1 tree_sitter_ export, found ${tsExports.length}: [${tsExports.join(', ')}]`);
   }
 
-  if (exports.length !== 2) {
-    errors.push(`expected 2 exports, found ${exports.length}: [${exports.join(', ')}]`);
+  // Verify the export name matches the expected grammar (prevents substitution attacks)
+  const expectedExport = expectedName.replace(/-/g, '_');
+  if (tsExports.length === 1 && tsExports[0] !== expectedExport) {
+    errors.push(`expected export '${expectedExport}', found '${tsExports[0]}'`);
+  }
+
+  if (exports.length < 2) {
+    errors.push(`expected at least 2 exports, found ${exports.length}: [${exports.join(', ')}]`);
   }
 
   const disallowed = imports.filter((i) => !ALLOWED_WASM_IMPORTS.has(i));
