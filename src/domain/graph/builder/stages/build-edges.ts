@@ -434,10 +434,6 @@ function buildImportedNamesMap(
     const resolvedPath = getResolved(ctx, path.join(rootDir, relPath), imp.source);
     for (const name of imp.names) {
       const cleanName = name.replace(/^\*\s+as\s+/, '');
-      // Don't let dynamic import names shadow static import bindings.
-      // Dynamic imports with destructuring use original export names which can
-      // collide with static imports of the same symbol from a different module.
-      if (imp.dynamicImport && importedNames.has(cleanName)) continue;
       importedNames.set(cleanName, resolvedPath);
     }
   }
