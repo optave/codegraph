@@ -102,6 +102,9 @@ let _cachedLanguages: Map<string, Language> | null = null;
 // Query cache for JS/TS/TSX extractors (populated during createParsers)
 const _queryCache: Map<string, Query> = new Map();
 
+// Tracks whether ALL grammars have been loaded (vs. a lazy subset)
+let _allParsersLoaded: boolean = false;
+
 // Extensions that need typeMap backfill (type annotations only exist in TS/TSX)
 const TS_BACKFILL_EXTS = new Set(['.ts', '.tsx']);
 
@@ -150,42 +153,76 @@ const TS_EXTRA_PATTERNS: string[] = [
   '(type_alias_declaration name: (type_identifier) @type_name) @type_node',
 ];
 
-export async function createParsers(): Promise<Map<string, Parser | null>> {
-  if (_cachedParsers) return _cachedParsers;
+/**
+ * Load a single language grammar and cache the parser + language + query.
+ * Assumes Parser.init() has already been called and _cachedParsers/_cachedLanguages exist.
+ */
+async function loadLanguage(entry: LanguageRegistryEntry): Promise<void> {
+  try {
+    const lang = await Language.load(grammarPath(entry.grammarFile));
+    const parser = new Parser();
+    parser.setLanguage(lang);
+    _cachedParsers!.set(entry.id, parser);
+    _cachedLanguages!.set(entry.id, lang);
+    if (entry.extractor === extractSymbols && !_queryCache.has(entry.id)) {
+      const isTS = entry.id === 'typescript' || entry.id === 'tsx';
+      const patterns = isTS
+        ? [...COMMON_QUERY_PATTERNS, ...TS_EXTRA_PATTERNS]
+        : [...COMMON_QUERY_PATTERNS, JS_CLASS_PATTERN];
+      _queryCache.set(entry.id, new Query(lang, patterns.join('\n')));
+    }
+  } catch (e: unknown) {
+    if (entry.required) throw e;
+    warn(
+      `${entry.id} parser failed to initialize: ${(e as Error).message}. ${entry.id} files will be skipped.`,
+    );
+    _cachedParsers!.set(entry.id, null);
+  }
+}
 
+async function initParserRuntime(): Promise<void> {
   if (!_initialized) {
     await Parser.init();
     _initialized = true;
   }
+  if (!_cachedParsers) _cachedParsers = new Map();
+  if (!_cachedLanguages) _cachedLanguages = new Map();
+}
 
-  const parsers = new Map<string, Parser | null>();
-  const languages = new Map<string, Language>();
+/**
+ * Load only the WASM grammars needed for the given file paths.
+ * Grammars already in cache are reused. This avoids the ~500ms cold-start
+ * penalty of loading all 23+ grammars when only 1-2 are needed (e.g. incremental rebuilds).
+ */
+async function ensureParsersForFiles(filePaths: string[]): Promise<Map<string, Parser | null>> {
+  await initParserRuntime();
+  const needed = new Set<LanguageRegistryEntry>();
+  for (const fp of filePaths) {
+    const ext = path.extname(fp).toLowerCase();
+    const entry = _extToLang.get(ext);
+    if (entry && !_cachedParsers!.has(entry.id)) needed.add(entry);
+  }
+  for (const entry of needed) {
+    await loadLanguage(entry);
+  }
+  return _cachedParsers!;
+}
+
+/**
+ * Load ALL WASM grammars. Used by full builds and feature modules (CFG, dataflow, complexity)
+ * that may process files of any language.
+ */
+export async function createParsers(): Promise<Map<string, Parser | null>> {
+  if (_cachedParsers && _allParsersLoaded) return _cachedParsers;
+
+  await initParserRuntime();
   for (const entry of LANGUAGE_REGISTRY) {
-    try {
-      const lang = await Language.load(grammarPath(entry.grammarFile));
-      const parser = new Parser();
-      parser.setLanguage(lang);
-      parsers.set(entry.id, parser);
-      languages.set(entry.id, lang);
-      // Compile and cache tree-sitter Query for JS/TS/TSX extractors
-      if (entry.extractor === extractSymbols && !_queryCache.has(entry.id)) {
-        const isTS = entry.id === 'typescript' || entry.id === 'tsx';
-        const patterns = isTS
-          ? [...COMMON_QUERY_PATTERNS, ...TS_EXTRA_PATTERNS]
-          : [...COMMON_QUERY_PATTERNS, JS_CLASS_PATTERN];
-        _queryCache.set(entry.id, new Query(lang, patterns.join('\n')));
-      }
-    } catch (e: unknown) {
-      if (entry.required) throw e;
-      warn(
-        `${entry.id} parser failed to initialize: ${(e as Error).message}. ${entry.id} files will be skipped.`,
-      );
-      parsers.set(entry.id, null);
+    if (!_cachedParsers!.has(entry.id)) {
+      await loadLanguage(entry);
     }
   }
-  _cachedParsers = parsers;
-  _cachedLanguages = languages;
-  return parsers;
+  _allParsersLoaded = true;
+  return _cachedParsers!;
 }
 
 /**
@@ -217,6 +254,7 @@ export function disposeParsers(): void {
     _cachedLanguages = null;
   }
   _initialized = false;
+  _allParsersLoaded = false;
 }
 
 export function getParser(parsers: Map<string, Parser | null>, filePath: string): Parser | null {
@@ -248,7 +286,10 @@ export async function ensureWasmTrees(
   }
   if (!needsParse) return;
 
-  const parsers = await createParsers();
+  const filePaths = [...fileSymbols.keys()]
+    .filter((rp) => !fileSymbols.get(rp)._tree && _extToLang.has(path.extname(rp).toLowerCase()))
+    .map((rp) => path.join(rootDir, rp));
+  const parsers = await ensureParsersForFiles(filePaths);
 
   for (const [relPath, symbols] of fileSymbols) {
     if (symbols._tree) continue;
@@ -658,7 +699,7 @@ async function backfillTypeMap(
       return { typeMap: new Map(), backfilled: false };
     }
   }
-  const parsers = await createParsers();
+  const parsers = await ensureParsersForFiles([filePath]);
   const extracted = wasmExtractSymbols(parsers, filePath, code);
   try {
     if (!extracted || extracted.symbols.typeMap.size === 0) {
@@ -731,7 +772,7 @@ export async function parseFileAuto(
   }
 
   // WASM path
-  const parsers = await createParsers();
+  const parsers = await ensureParsersForFiles([filePath]);
   const extracted = wasmExtractSymbols(parsers, filePath, source);
   return extracted ? extracted.symbols : null;
 }
@@ -746,7 +787,7 @@ async function backfillTypeMapBatch(
   );
   if (tsFiles.length === 0) return;
 
-  const parsers = await createParsers();
+  const parsers = await ensureParsersForFiles(tsFiles.map((f) => f.filePath));
   for (const { filePath, relPath } of tsFiles) {
     let extracted: WasmExtractResult | null | undefined;
     try {
@@ -778,7 +819,7 @@ async function parseFilesWasm(
   rootDir: string,
 ): Promise<Map<string, ExtractorOutput>> {
   const result = new Map<string, ExtractorOutput>();
-  const parsers = await createParsers();
+  const parsers = await ensureParsersForFiles(filePaths);
   for (const filePath of filePaths) {
     let code: string;
     try {
