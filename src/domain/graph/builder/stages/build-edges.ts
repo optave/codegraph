@@ -293,7 +293,6 @@ function buildImportEdgesNative(
   for (const e of nativeEdges) {
     allEdgeRows.push([e.sourceId, e.targetId, e.kind, e.confidence, e.dynamic]);
   }
-
 }
 
 // ── Call edges (native engine) ──────────────────────────────────────────
