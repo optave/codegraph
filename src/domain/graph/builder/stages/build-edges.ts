@@ -355,19 +355,25 @@ function buildImportedNamesForNative(
 ): Array<{ name: string; file: string }> {
   const importedNames: Array<{ name: string; file: string }> = [];
   const seenNames = new Set<string>();
-  for (const imp of symbols.imports) {
-    const resolvedPath = getResolved(ctx, path.join(rootDir, relPath), imp.source);
-    for (const name of imp.names) {
-      const cleanName = name.replace(/^\*\s+as\s+/, '');
-      // Don't let dynamic import names shadow static import bindings (see buildImportedNamesMap).
-      if (imp.dynamicImport && seenNames.has(cleanName)) continue;
-      seenNames.add(cleanName);
-      let targetFile = resolvedPath;
-      if (isBarrelFile(ctx, resolvedPath)) {
-        const actual = resolveBarrelExport(ctx, resolvedPath, cleanName);
-        if (actual) targetFile = actual;
+
+  // Two-pass approach: process static imports first, then dynamic fill-ins.
+  // This ensures static bindings always win regardless of source ordering,
+  // matching buildImportedNamesMap's Map-based last-write semantics.
+  for (const isDynamicPass of [false, true]) {
+    for (const imp of symbols.imports) {
+      if (!!imp.dynamicImport !== isDynamicPass) continue;
+      const resolvedPath = getResolved(ctx, path.join(rootDir, relPath), imp.source);
+      for (const name of imp.names) {
+        const cleanName = name.replace(/^\*\s+as\s+/, '');
+        if (seenNames.has(cleanName)) continue;
+        seenNames.add(cleanName);
+        let targetFile = resolvedPath;
+        if (isBarrelFile(ctx, resolvedPath)) {
+          const actual = resolveBarrelExport(ctx, resolvedPath, cleanName);
+          if (actual) targetFile = actual;
+        }
+        importedNames.push({ name: cleanName, file: targetFile });
       }
-      importedNames.push({ name: cleanName, file: targetFile });
     }
   }
   return importedNames;
