@@ -142,13 +142,13 @@ describe('barrel re-export role classification', () => {
     const queryNameResult = data.symbols.find((s) => s.name === 'queryName');
     expect(queryNameResult).toBeDefined();
     // queryName is in a file re-exported by a barrel with production importers
-    // → should be classified as entry (fanIn > 0 from test, isExported = true)
-    // NOT test-only or dead
+    // → isExported = true, fanIn > 0 from test → falls through to median-based
+    //   classification (core/utility/leaf), NOT test-only or dead
     expect(queryNameResult!.role).not.toMatch(/^dead/);
     expect(queryNameResult!.role).not.toBe('test-only');
   });
 
-  test('truly unused symbol in re-exported file is still dead', () => {
+  test('symbol in re-exported file with no callers is classified as entry (part of exported API)', () => {
     const data = rolesData(barrelDbPath);
     const helperResult = data.symbols.find((s) => s.name === 'helperFn');
     expect(helperResult).toBeDefined();

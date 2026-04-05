@@ -574,7 +574,7 @@ function classifyNodeRolesFull(db: BetterSqlite3Database, emptySummary: RoleSumm
         SELECT DISTINCT e.target_id
         FROM edges e
         JOIN nodes src ON e.source_id = src.id
-        WHERE e.kind IN ('imports', 'dynamic-imports')
+        WHERE e.kind IN ('imports', 'dynamic-imports', 'imports-type')
           AND src.kind = 'file'
           ${testFilterSQL('src.file')}
         UNION
@@ -739,7 +739,7 @@ function classifyNodeRolesIncremental(
         SELECT DISTINCT e.target_id
         FROM edges e
         JOIN nodes src ON e.source_id = src.id
-        WHERE e.kind IN ('imports', 'dynamic-imports')
+        WHERE e.kind IN ('imports', 'dynamic-imports', 'imports-type')
           AND src.kind = 'file'
           ${testFilterSQL('src.file')}
         UNION
