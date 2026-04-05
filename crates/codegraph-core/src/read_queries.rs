@@ -1839,15 +1839,17 @@ impl NativeDatabase {
                 v
             };
 
-            // Callers (direct)
-            let mut callers: Vec<FnDepsCallerNode> = {
+            // Callers (direct) — query includes `id` for BFS reuse
+            struct CallerWithId { id: i32, name: String, kind: String, file: String, line: Option<i32>, via_hierarchy: Option<String> }
+            let mut callers_with_id: Vec<CallerWithId> = {
                 let mut stmt = conn.prepare_cached(
                     "SELECT n.id, n.name, n.kind, n.file, n.line \
                      FROM edges e JOIN nodes n ON e.source_id = n.id \
                      WHERE e.target_id = ?1 AND e.kind = 'calls'"
                 ).map_err(|e| napi::Error::from_reason(format!("fn_deps callers prepare: {e}")))?;
                 let rows = stmt.query_map(params![node.id], |row| {
-                    Ok(FnDepsCallerNode {
+                    Ok(CallerWithId {
+                        id: row.get("id")?,
                         name: row.get("name")?,
                         kind: row.get("kind")?,
                         file: row.get("file")?,
@@ -1884,7 +1886,8 @@ impl NativeDatabase {
                              WHERE e.target_id = ?1 AND e.kind = 'calls'"
                         ).map_err(|e| napi::Error::from_reason(format!("fn_deps hierarchy callers prepare: {e}")))?;
                         let rows = stmt.query_map(params![rm_id], |row| {
-                            Ok(FnDepsCallerNode {
+                            Ok(CallerWithId {
+                                id: row.get("id")?,
                                 name: row.get("name")?,
                                 kind: row.get("kind")?,
                                 file: row.get("file")?,
@@ -1892,43 +1895,33 @@ impl NativeDatabase {
                                 via_hierarchy: Some(rm_name.clone()),
                             })
                         }).map_err(|e| napi::Error::from_reason(format!("fn_deps hierarchy callers: {e}")))?;
-                        let extra: Vec<FnDepsCallerNode> = rows.collect::<Result<Vec<_>, _>>()
+                        let extra: Vec<CallerWithId> = rows.collect::<Result<Vec<_>, _>>()
                             .map_err(|e| napi::Error::from_reason(format!("fn_deps hierarchy callers collect: {e}")))?;
-                        callers.extend(extra);
+                        callers_with_id.extend(extra);
                     }
                 }
             }
             if no_tests {
-                callers.retain(|c| !is_test_file(&c.file));
+                callers_with_id.retain(|c| !is_test_file(&c.file));
             }
 
-            // BFS transitive callers
-            let transitive_callers = if depth > 1 {
-                // Collect initial frontier IDs from direct callers
-                struct CallerWithId { id: i32, name: String, kind: String, file: String, line: Option<i32> }
-                // Re-query callers with IDs for BFS frontier
-                let initial_callers: Vec<CallerWithId> = {
-                    let mut stmt = conn.prepare_cached(
-                        "SELECT n.id, n.name, n.kind, n.file, n.line \
-                         FROM edges e JOIN nodes n ON e.source_id = n.id \
-                         WHERE e.target_id = ?1 AND e.kind = 'calls'"
-                    ).map_err(|e| napi::Error::from_reason(format!("fn_deps bfs init prepare: {e}")))?;
-                    let rows = stmt.query_map(params![node.id], |row| {
-                        Ok(CallerWithId {
-                            id: row.get("id")?,
-                            name: row.get("name")?,
-                            kind: row.get("kind")?,
-                            file: row.get("file")?,
-                            line: row.get("line")?,
-                        })
-                    }).map_err(|e| napi::Error::from_reason(format!("fn_deps bfs init: {e}")))?;
-                    rows.collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| napi::Error::from_reason(format!("fn_deps bfs init collect: {e}")))?
-                };
+            // Convert to FnDepsCallerNode for output (strip id)
+            let callers: Vec<FnDepsCallerNode> = callers_with_id.iter().map(|c| FnDepsCallerNode {
+                name: c.name.clone(),
+                kind: c.kind.clone(),
+                file: c.file.clone(),
+                line: c.line,
+                via_hierarchy: c.via_hierarchy.clone(),
+            }).collect();
 
+            // BFS transitive callers — reuse callers_with_id as initial frontier
+            let transitive_callers = if depth > 1 {
                 let mut visited = HashSet::new();
                 visited.insert(node.id);
-                let mut frontier: Vec<CallerWithId> = initial_callers;
+                let initial_frontier: Vec<CallerWithId> = callers_with_id.iter().map(|c| CallerWithId {
+                    id: c.id, name: c.name.clone(), kind: c.kind.clone(), file: c.file.clone(), line: c.line, via_hierarchy: c.via_hierarchy.clone(),
+                }).collect();
+                let mut frontier: Vec<CallerWithId> = initial_frontier;
                 let mut groups: Vec<FnDepsTransitiveGroup> = Vec::new();
 
                 for d in 2..=depth {
@@ -1956,6 +1949,7 @@ impl NativeDatabase {
                                 kind: row.get("kind")?,
                                 file: row.get("file")?,
                                 line: row.get("line")?,
+                                via_hierarchy: None,
                             })
                         }).map_err(|e| napi::Error::from_reason(format!("fn_deps bfs: {e}")))?;
                         let upstream: Vec<CallerWithId> = rows.collect::<Result<Vec<_>, _>>()
@@ -1990,7 +1984,7 @@ impl NativeDatabase {
             // File hash (cached)
             let file_hash = if !file_hash_cache.contains_key(&node.file) {
                 let hash: Option<String> = conn.prepare_cached(
-                    "SELECT hash FROM metadata WHERE file = ?1"
+                    "SELECT hash FROM file_hashes WHERE file = ?1"
                 ).ok().and_then(|mut stmt| {
                     stmt.query_row(params![node.file], |row| row.get(0)).ok()
                 });
