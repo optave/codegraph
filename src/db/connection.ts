@@ -416,8 +416,11 @@ export function openReadonlyWithNative(customPath?: string): {
 } {
   const db = openReadonlyOrFail(customPath);
 
+  // Respect explicit engine selection, consistent with openRepo().
+  const engine = process.env.CODEGRAPH_ENGINE || 'auto';
+
   let nativeDb: NativeDatabase | undefined;
-  if (isNativeAvailable()) {
+  if (engine !== 'wasm' && isNativeAvailable()) {
     try {
       const dbPath = findDbPath(customPath);
       const native = getNative();
