@@ -65,8 +65,19 @@ const SKIP_VERSIONS = new Set(['3.8.0']);
  * - 3.9.0:1-file rebuild — native incremental path re-runs graph-wide phases
  *   (structureMs, AST, CFG, dataflow) on single-file rebuilds. Documented in
  *   BUILD-BENCHMARKS.md Notes section with phase-level breakdown.
+ *
+ * - 3.9.0:fnDeps depth {1,3,5} — openRepo() always routed queries through the
+ *   native NAPI path regardless of engine selection, so both "wasm" and "native"
+ *   benchmark workers measured native rusqlite open/close overhead (~27ms vs
+ *   ~10ms with direct better-sqlite3). Fixed by wiring CODEGRAPH_ENGINE through
+ *   openRepo(); v3.10.0 benchmarks will reflect the corrected measurements.
  */
-const KNOWN_REGRESSIONS = new Set(['3.9.0:1-file rebuild']);
+const KNOWN_REGRESSIONS = new Set([
+  '3.9.0:1-file rebuild',
+  '3.9.0:fnDeps depth 1',
+  '3.9.0:fnDeps depth 3',
+  '3.9.0:fnDeps depth 5',
+]);
 
 /**
  * Maximum minor-version gap allowed for comparison. When the nearest
