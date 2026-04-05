@@ -145,6 +145,7 @@ function computeImportEdgeMaps(db: BetterSqlite3Database): {
       JOIN nodes n2 ON e.target_id = n2.id
       WHERE e.kind IN ('imports', 'imports-type')
         AND n1.file != n2.file
+        AND n2.kind = 'file'
     `)
     .all() as ImportEdge[];
 
