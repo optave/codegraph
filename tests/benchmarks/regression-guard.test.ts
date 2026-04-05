@@ -65,8 +65,16 @@ const SKIP_VERSIONS = new Set(['3.8.0']);
  * - 3.9.0:1-file rebuild — native incremental path re-runs graph-wide phases
  *   (structureMs, AST, CFG, dataflow) on single-file rebuilds. Documented in
  *   BUILD-BENCHMARKS.md Notes section with phase-level breakdown.
+ * - 3.9.0:fnDeps depth {1,3,5} — 177-184% jump reflects codebase growth
+ *   (23 new language extractors in 3.8.x) and the comparison gap from 3.7.0
+ *   (3.8.x query data was removed). Documented in QUERY-BENCHMARKS.md Notes.
  */
-const KNOWN_REGRESSIONS = new Set(['3.9.0:1-file rebuild']);
+const KNOWN_REGRESSIONS = new Set([
+  '3.9.0:1-file rebuild',
+  '3.9.0:fnDeps depth 1',
+  '3.9.0:fnDeps depth 3',
+  '3.9.0:fnDeps depth 5',
+]);
 
 /**
  * Maximum minor-version gap allowed for comparison. When the nearest
