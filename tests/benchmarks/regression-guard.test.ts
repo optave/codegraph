@@ -116,13 +116,13 @@ function minorGap(a: string, b: string): number {
 /**
  * Count the effective version gap between two versions, including
  * skipped versions between them.  When multiple intermediate versions
- * are skipped (e.g. 3.8.0 and 3.8.1 both in SKIP_VERSIONS), the
- * comparison spans a larger real gap than the raw minor-version
- * distance suggests.  Adding skipped-version count to the minor gap
- * prevents comparing across feature-expansion boundaries where
- * intermediate baselines were invalidated.
+ * are in SKIP_VERSIONS (e.g. 3.8.0 and 3.8.1), the comparison spans
+ * a larger real gap than the raw minor-version distance suggests.
+ * Adding skipped-version count to the minor gap prevents comparing
+ * across feature-expansion boundaries where intermediate baselines
+ * were invalidated.
  */
-function effectiveGap(a: string, b: string, history: { version: string }[]): number {
+function effectiveGap(a: string, b: string): number {
   const raw = minorGap(a, b);
   if (raw === Infinity) return Infinity;
   const sa = parseSemver(a);
@@ -179,7 +179,7 @@ function findLatestPair<T extends { version: string }>(
       if (entry.version === 'dev') continue;
       if (SKIP_VERSIONS.has(entry.version)) continue;
       if (!hasEngine(entry)) continue;
-      if (effectiveGap(latestVersion, entry.version, history) > MAX_VERSION_GAP) continue;
+      if (effectiveGap(latestVersion, entry.version) > MAX_VERSION_GAP) continue;
       return { latest: history[latestIdx], previous: entry };
     }
     // No valid baseline for this latest — try the next candidate
