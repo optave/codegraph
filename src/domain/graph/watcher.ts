@@ -142,11 +142,11 @@ function collectTrackedFiles(dir: string, result: string[]): void {
     return;
   }
   for (const entry of entries) {
-    if (IGNORE_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+    if (shouldIgnore(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       collectTrackedFiles(full, result);
-    } else if (EXTENSIONS.has(path.extname(entry.name))) {
+    } else if (isSupportedFile(entry.name)) {
       result.push(full);
     }
   }
