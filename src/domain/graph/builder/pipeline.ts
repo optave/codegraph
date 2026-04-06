@@ -661,9 +661,23 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
     reopenNativeDb(ctx, 'analyses');
     if (ctx.nativeDb && ctx.engineOpts) {
       ctx.engineOpts.nativeDb = ctx.nativeDb;
+      ctx.engineOpts.suspendJsDb = () => {
+        ctx.db.pragma('wal_checkpoint(TRUNCATE)');
+      };
+      ctx.engineOpts.resumeJsDb = () => {
+        try {
+          ctx.nativeDb?.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        } catch (e) {
+          debug(
+            `resumeJsDb: WAL checkpoint failed (nativeDb may already be closed): ${toErrorMessage(e)}`,
+          );
+        }
+      };
     }
     if (!ctx.nativeDb && ctx.engineOpts) {
       ctx.engineOpts.nativeDb = undefined;
+      ctx.engineOpts.suspendJsDb = undefined;
+      ctx.engineOpts.resumeJsDb = undefined;
     }
   }
 
