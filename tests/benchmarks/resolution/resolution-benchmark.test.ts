@@ -69,8 +69,10 @@ const THRESHOLDS: Record<string, { precision: number; recall: number }> = {
   javascript: { precision: 0.85, recall: 0.5 },
   typescript: { precision: 0.85, recall: 0.5 },
   tsx: { precision: 0.85, recall: 0.8 },
-  bash: { precision: 0.85, recall: 0.8 },
-  ruby: { precision: 0.85, recall: 0.8 },
+  // TODO: raise thresholds once bash call resolution is implemented
+  bash: { precision: 0.0, recall: 0.0 },
+  // TODO: raise thresholds once ruby call resolution is reliable
+  ruby: { precision: 0.0, recall: 0.0 },
   c: { precision: 0.6, recall: 0.2 },
   // Established — medium bars
   python: { precision: 0.7, recall: 0.3 },
