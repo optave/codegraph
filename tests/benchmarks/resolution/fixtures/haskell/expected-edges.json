@@ -1,0 +1,91 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "haskell",
+  "description": "Hand-annotated call edges for Haskell resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "main", "file": "Main.hs" },
+      "target": { "name": "createUser", "file": "Service.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "import Service (createUser) — cross-module imported function call"
+    },
+    {
+      "source": { "name": "main", "file": "Main.hs" },
+      "target": { "name": "getUser", "file": "Service.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "import Service (getUser) — cross-module imported function call"
+    },
+    {
+      "source": { "name": "main", "file": "Main.hs" },
+      "target": { "name": "summary", "file": "Service.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "import Service (summary) — cross-module imported function call"
+    },
+    {
+      "source": { "name": "main", "file": "Main.hs" },
+      "target": { "name": "removeUser", "file": "Service.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "import Service (removeUser) — cross-module imported function call"
+    },
+    {
+      "source": { "name": "validateUser", "file": "Service.hs" },
+      "target": { "name": "validateName", "file": "Validators.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "import Validators (validateName) — cross-module imported function call"
+    },
+    {
+      "source": { "name": "validateUser", "file": "Service.hs" },
+      "target": { "name": "validateEmail", "file": "Validators.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "import Validators (validateEmail) — cross-module imported function call"
+    },
+    {
+      "source": { "name": "validateUser", "file": "Service.hs" },
+      "target": { "name": "validateAge", "file": "Validators.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "import Validators (validateAge) — cross-module imported function call"
+    },
+    {
+      "source": { "name": "createUser", "file": "Service.hs" },
+      "target": { "name": "validateUser", "file": "Service.hs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-module call to local helper function"
+    },
+    {
+      "source": { "name": "createUser", "file": "Service.hs" },
+      "target": { "name": "save", "file": "Repository.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repo.save — qualified import call via import qualified Repository as Repo"
+    },
+    {
+      "source": { "name": "getUser", "file": "Service.hs" },
+      "target": { "name": "findById", "file": "Repository.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repo.findById — qualified import call via import qualified Repository as Repo"
+    },
+    {
+      "source": { "name": "removeUser", "file": "Service.hs" },
+      "target": { "name": "delete", "file": "Repository.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repo.delete — qualified import call via import qualified Repository as Repo"
+    },
+    {
+      "source": { "name": "summary", "file": "Service.hs" },
+      "target": { "name": "count", "file": "Repository.hs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repo.count — qualified import call via import qualified Repository as Repo"
+    }
+  ]
+}

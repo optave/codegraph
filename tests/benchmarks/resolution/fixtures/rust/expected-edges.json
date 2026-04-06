@@ -1,0 +1,105 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "rust",
+  "description": "Hand-annotated call edges for Rust resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "create_user", "file": "models.rs" },
+      "target": { "name": "sanitize_email", "file": "models.rs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file private function call"
+    },
+    {
+      "source": { "name": "create_user", "file": "models.rs" },
+      "target": { "name": "User.new", "file": "models.rs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file associated function call (User::new)"
+    },
+    {
+      "source": { "name": "EmailValidator.validate", "file": "validator.rs" },
+      "target": { "name": "is_valid_email", "file": "validator.rs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file private function call from trait impl method"
+    },
+    {
+      "source": { "name": "validate_all", "file": "validator.rs" },
+      "target": { "name": "EmailValidator.new", "file": "validator.rs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file associated function call (EmailValidator::new)"
+    },
+    {
+      "source": { "name": "validate_all", "file": "validator.rs" },
+      "target": { "name": "EmailValidator.validate", "file": "validator.rs" },
+      "kind": "calls",
+      "mode": "trait-dispatch",
+      "notes": "email_v.validate() — calling Validator trait method on EmailValidator instance"
+    },
+    {
+      "source": { "name": "validate_all", "file": "validator.rs" },
+      "target": { "name": "NameValidator.validate", "file": "validator.rs" },
+      "kind": "calls",
+      "mode": "trait-dispatch",
+      "notes": "name_v.validate() — calling Validator trait method on NameValidator instance"
+    },
+    {
+      "source": { "name": "create_repository", "file": "repository.rs" },
+      "target": { "name": "UserRepository.new", "file": "repository.rs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file associated function call (UserRepository::new)"
+    },
+    {
+      "source": { "name": "UserService.get_user", "file": "service.rs" },
+      "target": { "name": "UserRepository.find_by_id", "file": "repository.rs" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.find_by_id() — repo is typed as UserRepository"
+    },
+    {
+      "source": { "name": "UserService.add_user", "file": "service.rs" },
+      "target": { "name": "create_user", "file": "models.rs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module function call via use crate::models::create_user"
+    },
+    {
+      "source": { "name": "UserService.add_user", "file": "service.rs" },
+      "target": { "name": "validate_all", "file": "validator.rs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module function call via use crate::validator::validate_all"
+    },
+    {
+      "source": { "name": "UserService.add_user", "file": "service.rs" },
+      "target": { "name": "UserRepository.save", "file": "repository.rs" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.save() — repo is typed as UserRepository"
+    },
+    {
+      "source": { "name": "UserService.remove_user", "file": "service.rs" },
+      "target": { "name": "UserRepository.delete", "file": "repository.rs" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.delete() — repo is typed as UserRepository"
+    },
+    {
+      "source": { "name": "build_service", "file": "service.rs" },
+      "target": { "name": "create_repository", "file": "repository.rs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module function call via use crate::repository::create_repository"
+    },
+    {
+      "source": { "name": "build_service", "file": "service.rs" },
+      "target": { "name": "UserService.new", "file": "service.rs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file associated function call (UserService::new)"
+    }
+  ]
+}

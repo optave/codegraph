@@ -1,0 +1,112 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "gleam",
+  "description": "Hand-annotated call edges for Gleam resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "main", "file": "main.gleam" },
+      "target": { "name": "new_repo", "file": "repository.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.new_repo() — qualified call to repository module"
+    },
+    {
+      "source": { "name": "main", "file": "main.gleam" },
+      "target": { "name": "create_user", "file": "service.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service.create_user() — qualified call to service module"
+    },
+    {
+      "source": { "name": "main", "file": "main.gleam" },
+      "target": { "name": "get_user", "file": "service.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service.get_user() — qualified call to service module"
+    },
+    {
+      "source": { "name": "main", "file": "main.gleam" },
+      "target": { "name": "remove_user", "file": "service.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service.remove_user() — qualified call to service module"
+    },
+    {
+      "source": { "name": "main", "file": "main.gleam" },
+      "target": { "name": "summary", "file": "service.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service.summary() — qualified call to service module"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.gleam" },
+      "target": { "name": "validate_name", "file": "validators.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators.validate_name() — qualified call to validators module"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.gleam" },
+      "target": { "name": "validate_email", "file": "validators.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators.validate_email() — qualified call to validators module"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.gleam" },
+      "target": { "name": "save", "file": "repository.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.save() — qualified call to repository module"
+    },
+    {
+      "source": { "name": "get_user", "file": "service.gleam" },
+      "target": { "name": "find_by_id", "file": "repository.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.find_by_id() — qualified call to repository module"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.gleam" },
+      "target": { "name": "delete", "file": "repository.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.delete() — qualified call to repository module"
+    },
+    {
+      "source": { "name": "summary", "file": "service.gleam" },
+      "target": { "name": "count", "file": "repository.gleam" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.count() — qualified call to repository module"
+    },
+    {
+      "source": { "name": "summary", "file": "service.gleam" },
+      "target": { "name": "format_summary", "file": "service.gleam" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    },
+    {
+      "source": { "name": "validate_name", "file": "validators.gleam" },
+      "target": { "name": "check_length", "file": "validators.gleam" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    },
+    {
+      "source": { "name": "validate_email", "file": "validators.gleam" },
+      "target": { "name": "contains_at", "file": "validators.gleam" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    },
+    {
+      "source": { "name": "count", "file": "repository.gleam" },
+      "target": { "name": "count_helper", "file": "repository.gleam" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private recursive helper"
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "go",
+  "description": "Hand-annotated call edges for Go resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "main", "file": "main.go" },
+      "target": { "name": "NewUserRepository", "file": "repository.go" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "NewXxx() factory pattern — creates *UserRepository"
+    },
+    {
+      "source": { "name": "main", "file": "main.go" },
+      "target": { "name": "NewUserService", "file": "service.go" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "NewXxx() factory pattern — creates *UserService"
+    },
+    {
+      "source": { "name": "main", "file": "main.go" },
+      "target": { "name": "UserService.CreateUser", "file": "service.go" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.CreateUser() — method call on *UserService receiver"
+    },
+    {
+      "source": { "name": "main", "file": "main.go" },
+      "target": { "name": "UserService.GetUser", "file": "service.go" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.GetUser() — method call on *UserService receiver"
+    },
+    {
+      "source": { "name": "main", "file": "main.go" },
+      "target": { "name": "UserService.RemoveUser", "file": "service.go" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.RemoveUser() — method call on *UserService receiver"
+    },
+    {
+      "source": { "name": "main", "file": "main.go" },
+      "target": { "name": "UserService.Summary", "file": "service.go" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.Summary() — method call on *UserService receiver"
+    },
+    {
+      "source": { "name": "UserService.CreateUser", "file": "service.go" },
+      "target": { "name": "ValidateUser", "file": "validator.go" },
+      "kind": "calls",
+      "mode": "package-function",
+      "notes": "Direct call to package-level function in another file"
+    },
+    {
+      "source": { "name": "UserService.CreateUser", "file": "service.go" },
+      "target": { "name": "UserRepository.Save", "file": "repository.go" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "s.repo.Save() — method call on *UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.GetUser", "file": "service.go" },
+      "target": { "name": "UserRepository.FindByID", "file": "repository.go" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "s.repo.FindByID() — method call on *UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.RemoveUser", "file": "service.go" },
+      "target": { "name": "UserRepository.Delete", "file": "repository.go" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "s.repo.Delete() — method call on *UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.Summary", "file": "service.go" },
+      "target": { "name": "UserRepository.Count", "file": "repository.go" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "s.repo.Count() — method call on *UserRepository field"
+    },
+    {
+      "source": { "name": "ValidateUser", "file": "validator.go" },
+      "target": { "name": "validateName", "file": "validator.go" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to unexported helper function"
+    },
+    {
+      "source": { "name": "ValidateUser", "file": "validator.go" },
+      "target": { "name": "validateEmail", "file": "validator.go" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to unexported helper function"
+    }
+  ]
+}

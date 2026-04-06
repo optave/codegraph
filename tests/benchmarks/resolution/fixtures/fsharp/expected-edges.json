@@ -1,0 +1,91 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "fsharp",
+  "description": "Hand-annotated call edges for F# resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "main", "file": "Main.fs" },
+      "target": { "name": "createUser", "file": "Service.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.createUser — qualified cross-module call"
+    },
+    {
+      "source": { "name": "main", "file": "Main.fs" },
+      "target": { "name": "getUser", "file": "Service.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.getUser — qualified cross-module call"
+    },
+    {
+      "source": { "name": "main", "file": "Main.fs" },
+      "target": { "name": "removeUser", "file": "Service.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.removeUser — qualified cross-module call"
+    },
+    {
+      "source": { "name": "main", "file": "Main.fs" },
+      "target": { "name": "summary", "file": "Service.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.summary — qualified cross-module call (called twice)"
+    },
+    {
+      "source": { "name": "validateUser", "file": "Service.fs" },
+      "target": { "name": "validateName", "file": "Validators.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validateName — qualified cross-module call"
+    },
+    {
+      "source": { "name": "validateUser", "file": "Service.fs" },
+      "target": { "name": "validateEmail", "file": "Validators.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validateEmail — qualified cross-module call"
+    },
+    {
+      "source": { "name": "validateUser", "file": "Service.fs" },
+      "target": { "name": "validateAge", "file": "Validators.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validateAge — qualified cross-module call"
+    },
+    {
+      "source": { "name": "createUser", "file": "Service.fs" },
+      "target": { "name": "validateUser", "file": "Service.fs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-module call to local helper function"
+    },
+    {
+      "source": { "name": "createUser", "file": "Service.fs" },
+      "target": { "name": "save", "file": "Repository.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.save — qualified cross-module call"
+    },
+    {
+      "source": { "name": "getUser", "file": "Service.fs" },
+      "target": { "name": "findById", "file": "Repository.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.findById — qualified cross-module call"
+    },
+    {
+      "source": { "name": "removeUser", "file": "Service.fs" },
+      "target": { "name": "delete", "file": "Repository.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.delete — qualified cross-module call"
+    },
+    {
+      "source": { "name": "summary", "file": "Service.fs" },
+      "target": { "name": "count", "file": "Repository.fs" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.count — qualified cross-module call"
+    }
+  ]
+}

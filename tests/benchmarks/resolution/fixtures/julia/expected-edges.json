@@ -1,0 +1,112 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "julia",
+  "description": "Hand-annotated call edges for Julia resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "main", "file": "main.jl" },
+      "target": { "name": "new_repo", "file": "repository.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.new_repo() — qualified call to Repository module"
+    },
+    {
+      "source": { "name": "main", "file": "main.jl" },
+      "target": { "name": "create_user", "file": "service.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.create_user() — qualified call to Service module"
+    },
+    {
+      "source": { "name": "main", "file": "main.jl" },
+      "target": { "name": "get_user", "file": "service.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.get_user() — qualified call to Service module"
+    },
+    {
+      "source": { "name": "main", "file": "main.jl" },
+      "target": { "name": "remove_user", "file": "service.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.remove_user() — qualified call to Service module"
+    },
+    {
+      "source": { "name": "main", "file": "main.jl" },
+      "target": { "name": "summary", "file": "service.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.summary() — qualified call to Service module"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.jl" },
+      "target": { "name": "validate_name", "file": "validators.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validate_name() — qualified call to Validators module"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.jl" },
+      "target": { "name": "validate_email", "file": "validators.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validate_email() — qualified call to Validators module"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.jl" },
+      "target": { "name": "save", "file": "repository.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.save() — qualified call to Repository module"
+    },
+    {
+      "source": { "name": "get_user", "file": "service.jl" },
+      "target": { "name": "find_by_id", "file": "repository.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.find_by_id() — qualified call to Repository module"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.jl" },
+      "target": { "name": "delete", "file": "repository.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.delete() — qualified call to Repository module"
+    },
+    {
+      "source": { "name": "summary", "file": "service.jl" },
+      "target": { "name": "count", "file": "repository.jl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.count() — qualified call to Repository module"
+    },
+    {
+      "source": { "name": "summary", "file": "service.jl" },
+      "target": { "name": "format_summary", "file": "service.jl" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    },
+    {
+      "source": { "name": "validate_name", "file": "validators.jl" },
+      "target": { "name": "check_length", "file": "validators.jl" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    },
+    {
+      "source": { "name": "validate_email", "file": "validators.jl" },
+      "target": { "name": "contains_at", "file": "validators.jl" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    },
+    {
+      "source": { "name": "count", "file": "repository.jl" },
+      "target": { "name": "count_entries", "file": "repository.jl" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    }
+  ]
+}

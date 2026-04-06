@@ -1,0 +1,112 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "elixir",
+  "description": "Hand-annotated call edges for Elixir resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "validate_user", "file": "validators.ex" },
+      "target": { "name": "valid_name?", "file": "validators.ex" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-module helper call within Validators"
+    },
+    {
+      "source": { "name": "validate_user", "file": "validators.ex" },
+      "target": { "name": "valid_email?", "file": "validators.ex" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-module helper call within Validators"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.ex" },
+      "target": { "name": "validate_user", "file": "validators.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validate_user() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.ex" },
+      "target": { "name": "save", "file": "repository.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserRepository.save() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "get_user", "file": "service.ex" },
+      "target": { "name": "find_by_id", "file": "repository.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserRepository.find_by_id() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.ex" },
+      "target": { "name": "delete", "file": "repository.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserRepository.delete() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "list_users", "file": "service.ex" },
+      "target": { "name": "list_all", "file": "repository.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserRepository.list_all() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "display_user", "file": "service.ex" },
+      "target": { "name": "get_user", "file": "service.ex" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-module call to get_user within UserService"
+    },
+    {
+      "source": { "name": "display_user", "file": "service.ex" },
+      "target": { "name": "format_user", "file": "service.ex" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-module call to private helper format_user"
+    },
+    {
+      "source": { "name": "run", "file": "main.ex" },
+      "target": { "name": "new_store", "file": "repository.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserRepository.new_store() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "run", "file": "main.ex" },
+      "target": { "name": "create_user", "file": "service.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserService.create_user() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "run", "file": "main.ex" },
+      "target": { "name": "get_user", "file": "service.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserService.get_user() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "run", "file": "main.ex" },
+      "target": { "name": "list_users", "file": "service.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserService.list_users() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "run", "file": "main.ex" },
+      "target": { "name": "display_user", "file": "service.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserService.display_user() — cross-module qualified call"
+    },
+    {
+      "source": { "name": "run", "file": "main.ex" },
+      "target": { "name": "remove_user", "file": "service.ex" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserService.remove_user() — cross-module qualified call"
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "r",
+  "description": "Hand-annotated call edges for R resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "run", "file": "main.R" },
+      "target": { "name": "create_user", "file": "service.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via source(); create_user is in global scope from service.R"
+    },
+    {
+      "source": { "name": "run", "file": "main.R" },
+      "target": { "name": "get_user", "file": "service.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via source(); get_user is in global scope from service.R"
+    },
+    {
+      "source": { "name": "run", "file": "main.R" },
+      "target": { "name": "remove_user", "file": "service.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via source(); remove_user is in global scope from service.R"
+    },
+    {
+      "source": { "name": "run", "file": "main.R" },
+      "target": { "name": "list_all_users", "file": "repository.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call; list_all_users is in global scope transitively via service.R sourcing repository.R"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.R" },
+      "target": { "name": "validate_user_input", "file": "validators.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via source('validators.R'); validate_user_input in global scope"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.R" },
+      "target": { "name": "save_user", "file": "repository.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via source('repository.R'); save_user in global scope"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.R" },
+      "target": { "name": "find_user_by_id", "file": "repository.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via source('repository.R'); find_user_by_id in global scope"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.R" },
+      "target": { "name": "delete_user", "file": "repository.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via source('repository.R'); delete_user in global scope"
+    },
+    {
+      "source": { "name": "get_user", "file": "service.R" },
+      "target": { "name": "find_user_by_id", "file": "repository.R" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via source('repository.R'); find_user_by_id in global scope"
+    },
+    {
+      "source": { "name": "validate_user_input", "file": "validators.R" },
+      "target": { "name": "validate_name", "file": "validators.R" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call within validators.R"
+    },
+    {
+      "source": { "name": "validate_user_input", "file": "validators.R" },
+      "target": { "name": "validate_email", "file": "validators.R" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call within validators.R"
+    }
+  ]
+}

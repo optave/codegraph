@@ -1,0 +1,105 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "swift",
+  "description": "Hand-annotated call edges for Swift resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "validateUser", "file": "Validators.swift" },
+      "target": { "name": "validateEmail", "file": "Validators.swift" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "validateUser calls validateEmail in same file"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "Service.swift" },
+      "target": { "name": "validateUser", "file": "Validators.swift" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Free function call resolved across files"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "Service.swift" },
+      "target": { "name": "UserRepository.save", "file": "Repository.swift" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.save(user) — repo typed as UserRepository"
+    },
+    {
+      "source": { "name": "UserService.getUser", "file": "Service.swift" },
+      "target": { "name": "UserRepository.findById", "file": "Repository.swift" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.findById(id) — repo typed as UserRepository"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "Service.swift" },
+      "target": { "name": "UserRepository.delete", "file": "Repository.swift" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.delete(id) — repo typed as UserRepository"
+    },
+    {
+      "source": { "name": "createService", "file": "Service.swift" },
+      "target": { "name": "UserRepository", "file": "Repository.swift" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "createService", "file": "Service.swift" },
+      "target": { "name": "UserService", "file": "Service.swift" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserService(repo:) — class instantiation via init"
+    },
+    {
+      "source": { "name": "run", "file": "main.swift" },
+      "target": { "name": "createService", "file": "Service.swift" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Free function call resolved across files"
+    },
+    {
+      "source": { "name": "run", "file": "main.swift" },
+      "target": { "name": "UserService.createUser", "file": "Service.swift" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.createUser() — service typed as UserService"
+    },
+    {
+      "source": { "name": "run", "file": "main.swift" },
+      "target": { "name": "UserService.getUser", "file": "Service.swift" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.getUser() — service typed as UserService"
+    },
+    {
+      "source": { "name": "run", "file": "main.swift" },
+      "target": { "name": "UserService.removeUser", "file": "Service.swift" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.removeUser() — service typed as UserService"
+    },
+    {
+      "source": { "name": "directRepoAccess", "file": "main.swift" },
+      "target": { "name": "UserRepository", "file": "Repository.swift" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserRepository() — direct class instantiation"
+    },
+    {
+      "source": { "name": "directRepoAccess", "file": "main.swift" },
+      "target": { "name": "validateUser", "file": "Validators.swift" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Free function call resolved across files"
+    },
+    {
+      "source": { "name": "directRepoAccess", "file": "main.swift" },
+      "target": { "name": "UserRepository.save", "file": "Repository.swift" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.save(user) — repo typed as UserRepository"
+    }
+  ]
+}

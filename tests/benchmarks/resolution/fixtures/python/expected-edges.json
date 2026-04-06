@@ -1,0 +1,112 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "python",
+  "description": "Hand-annotated call edges for Python resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "run", "file": "main.py" },
+      "target": { "name": "build_service", "file": "service.py" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call: from service import build_service"
+    },
+    {
+      "source": { "name": "run", "file": "main.py" },
+      "target": { "name": "UserService.create_user", "file": "service.py" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.create_user() — svc is return value of build_service()"
+    },
+    {
+      "source": { "name": "run", "file": "main.py" },
+      "target": { "name": "UserService.get_user", "file": "service.py" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.get_user() — svc is return value of build_service()"
+    },
+    {
+      "source": { "name": "run", "file": "main.py" },
+      "target": { "name": "UserService.remove_user", "file": "service.py" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.remove_user() — svc is return value of build_service()"
+    },
+    {
+      "source": { "name": "run", "file": "main.py" },
+      "target": { "name": "Order", "file": "models.py" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "Order('o1', ...) — class instantiation"
+    },
+    {
+      "source": { "name": "run", "file": "main.py" },
+      "target": { "name": "Order.validate", "file": "models.py" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "order.validate() — order is an Order instance"
+    },
+    {
+      "source": { "name": "UserService.create_user", "file": "service.py" },
+      "target": { "name": "validate_email", "file": "service.py" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file function call from method"
+    },
+    {
+      "source": { "name": "UserService.create_user", "file": "service.py" },
+      "target": { "name": "User", "file": "models.py" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "User(user_id, name, email) — class instantiation via import"
+    },
+    {
+      "source": { "name": "UserService.create_user", "file": "service.py" },
+      "target": { "name": "User.validate", "file": "models.py" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "user.validate() — user is a User instance; validate overrides Entity.validate"
+    },
+    {
+      "source": { "name": "UserService.create_user", "file": "service.py" },
+      "target": { "name": "UserRepository.save", "file": "repository.py" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.save() — repo is a UserRepository from create_repository()"
+    },
+    {
+      "source": { "name": "UserService.get_user", "file": "service.py" },
+      "target": { "name": "UserRepository.find_by_id", "file": "repository.py" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.find_by_id() — repo is a UserRepository"
+    },
+    {
+      "source": { "name": "UserService.remove_user", "file": "service.py" },
+      "target": { "name": "UserRepository.delete", "file": "repository.py" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.delete() — repo is a UserRepository"
+    },
+    {
+      "source": { "name": "build_service", "file": "service.py" },
+      "target": { "name": "create_repository", "file": "repository.py" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call: from repository import create_repository"
+    },
+    {
+      "source": { "name": "build_service", "file": "service.py" },
+      "target": { "name": "UserService", "file": "service.py" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserService(repo) — same-file class instantiation"
+    },
+    {
+      "source": { "name": "create_repository", "file": "repository.py" },
+      "target": { "name": "UserRepository", "file": "repository.py" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserRepository() — same-file class instantiation"
+    }
+  ]
+}

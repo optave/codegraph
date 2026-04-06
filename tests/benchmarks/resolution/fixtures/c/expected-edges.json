@@ -1,0 +1,70 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "c",
+  "description": "Hand-annotated call edges for C resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "validate_user", "file": "validators.c" },
+      "target": { "name": "valid_name", "file": "validators.c" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file function call within validators"
+    },
+    {
+      "source": { "name": "validate_user", "file": "validators.c" },
+      "target": { "name": "valid_email", "file": "validators.c" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file function call within validators"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.c" },
+      "target": { "name": "validate_user", "file": "validators.c" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via #include \"validators.h\""
+    },
+    {
+      "source": { "name": "main", "file": "main.c" },
+      "target": { "name": "init_store", "file": "service.c" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via #include \"service.h\""
+    },
+    {
+      "source": { "name": "main", "file": "main.c" },
+      "target": { "name": "valid_email", "file": "validators.c" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via #include \"validators.h\""
+    },
+    {
+      "source": { "name": "main", "file": "main.c" },
+      "target": { "name": "create_user", "file": "service.c" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via #include \"service.h\""
+    },
+    {
+      "source": { "name": "main", "file": "main.c" },
+      "target": { "name": "print_user", "file": "main.c" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to static helper function (called twice)"
+    },
+    {
+      "source": { "name": "main", "file": "main.c" },
+      "target": { "name": "find_user", "file": "service.c" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via #include \"service.h\""
+    },
+    {
+      "source": { "name": "main", "file": "main.c" },
+      "target": { "name": "remove_user", "file": "service.c" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call via #include \"service.h\""
+    }
+  ]
+}

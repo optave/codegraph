@@ -128,7 +128,14 @@ let failed = 0;
 let rejected = 0;
 
 for (const g of grammars) {
-  const pkgDir = dirname(require.resolve(`${g.pkg}/package.json`));
+  let pkgDir: string;
+  try {
+    pkgDir = dirname(require.resolve(`${g.pkg}/package.json`));
+  } catch {
+    failed++;
+    console.warn(`  WARN: Skipping ${g.name}.wasm — package '${g.pkg}' not installed`);
+    continue;
+  }
   const grammarDir = g.sub ? resolve(pkgDir, g.sub) : pkgDir;
 
   console.log(`Building ${g.name}.wasm from ${grammarDir}...`);

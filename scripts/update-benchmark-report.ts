@@ -398,14 +398,14 @@ if (fs.existsSync(readmePath)) {
 		benchmarkLinks = linksMatch[1];
 	}
 
-	// Resolution precision/recall — from resolution-benchmark.ts JSON merged into entry
-	// Resolution is engine-independent, so show single value (span both columns when needed)
+	// Resolution precision/recall — aggregate row in the main table
+	let resolutionTable = '';
 	if (latest.resolution) {
-		const langs = Object.values(latest.resolution);
-		if (langs.length > 0) {
-			const totalResolved = langs.reduce((s, l) => s + l.totalResolved, 0);
-			const totalExpected = langs.reduce((s, l) => s + l.totalExpected, 0);
-			const totalTP = langs.reduce((s, l) => s + l.truePositives, 0);
+		const langEntries = Object.entries(latest.resolution);
+		if (langEntries.length > 0) {
+			const totalResolved = langEntries.reduce((s, [, l]) => s + l.totalResolved, 0);
+			const totalExpected = langEntries.reduce((s, [, l]) => s + l.totalExpected, 0);
+			const totalTP = langEntries.reduce((s, [, l]) => s + l.truePositives, 0);
 			const aggPrecision = totalResolved > 0 ? `${((totalTP / totalResolved) * 100).toFixed(1)}%` : 'n/a';
 			const aggRecall = totalExpected > 0 ? `${((totalTP / totalExpected) * 100).toFixed(1)}%` : 'n/a';
 			if (hasBoth) {
@@ -415,6 +415,49 @@ if (fs.existsSync(readmePath)) {
 				rows += `| Resolution precision | **${aggPrecision}** |\n`;
 				rows += `| Resolution recall | **${aggRecall}** |\n`;
 			}
+
+			// Per-language resolution breakdown table
+			// Sort: JS/TS first, then alphabetical
+			const sortOrder = ['javascript', 'typescript'];
+			const sorted = langEntries.sort(([a], [b]) => {
+				const ai = sortOrder.indexOf(a);
+				const bi = sortOrder.indexOf(b);
+				if (ai !== -1 && bi !== -1) return ai - bi;
+				if (ai !== -1) return -1;
+				if (bi !== -1) return 1;
+				return a.localeCompare(b);
+			});
+
+			resolutionTable += '\n<details><summary>Per-language resolution precision/recall</summary>\n\n';
+			resolutionTable += '| Language | Precision | Recall | TP | FP | FN | Edges |\n';
+			resolutionTable += '|----------|----------:|-------:|---:|---:|---:|------:|\n';
+			for (const [lang, m] of sorted) {
+				const p = (m.precision * 100).toFixed(1);
+				const r = (m.recall * 100).toFixed(1);
+				resolutionTable += `| ${lang} | ${p}% | ${r}% | ${m.truePositives} | ${m.falsePositives} | ${m.falseNegatives} | ${m.totalExpected} |\n`;
+			}
+
+			// Per-mode breakdown across all languages
+			const allModes: Record<string, { expected: number; resolved: number }> = {};
+			for (const [, m] of langEntries) {
+				if (!m.byMode) continue;
+				for (const [mode, data] of Object.entries(m.byMode)) {
+					if (!allModes[mode]) allModes[mode] = { expected: 0, resolved: 0 };
+					allModes[mode].expected += data.expected;
+					allModes[mode].resolved += data.resolved;
+				}
+			}
+			if (Object.keys(allModes).length > 0) {
+				resolutionTable += '\n**By resolution mode (all languages):**\n\n';
+				resolutionTable += '| Mode | Resolved | Expected | Recall |\n';
+				resolutionTable += '|------|--------:|---------:|-------:|\n';
+				for (const [mode, data] of Object.entries(allModes).sort(([, a], [, b]) => b.expected - a.expected)) {
+					const recall = data.expected > 0 ? ((data.resolved / data.expected) * 100).toFixed(1) : 'n/a';
+					resolutionTable += `| ${mode} | ${data.resolved} | ${data.expected} | ${recall}% |\n`;
+				}
+			}
+
+			resolutionTable += '\n</details>\n';
 		}
 	}
 
@@ -431,7 +474,7 @@ Self-measured on every release via CI (${benchmarkLinks}):
 ${tableHeader}
 ${rows}
 Metrics are normalized per file for cross-version comparability. Times above are for a full initial build — incremental rebuilds only re-parse changed files.
-`;
+${resolutionTable}`;
 
 	// Match the performance section from header to next h2/h3 header or end.
 	// The lookahead stops at ## (h2) or ### (h3) so subsections like

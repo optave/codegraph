@@ -1,0 +1,112 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "zig",
+  "description": "Hand-annotated call edges for Zig resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "main", "file": "main.zig" },
+      "target": { "name": "UserRepository.init", "file": "repository.zig" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserRepository.init() — struct init function via @import"
+    },
+    {
+      "source": { "name": "main", "file": "main.zig" },
+      "target": { "name": "UserService.init", "file": "service.zig" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "UserService.init() — struct init function via @import"
+    },
+    {
+      "source": { "name": "main", "file": "main.zig" },
+      "target": { "name": "validateEmail", "file": "validators.zig" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators.validateEmail() — function call via @import"
+    },
+    {
+      "source": { "name": "main", "file": "main.zig" },
+      "target": { "name": "UserService.createUser", "file": "service.zig" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.createUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "main", "file": "main.zig" },
+      "target": { "name": "UserService.getUser", "file": "service.zig" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.getUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "main", "file": "main.zig" },
+      "target": { "name": "UserService.removeUser", "file": "service.zig" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.removeUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "main", "file": "main.zig" },
+      "target": { "name": "UserService.summary", "file": "service.zig" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.summary() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "service.zig" },
+      "target": { "name": "validateName", "file": "validators.zig" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators.validateName() — function call via @import"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "service.zig" },
+      "target": { "name": "validateEmail", "file": "validators.zig" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators.validateEmail() — function call via @import"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "service.zig" },
+      "target": { "name": "UserRepository.save", "file": "repository.zig" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.save() — method call on *UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.getUser", "file": "service.zig" },
+      "target": { "name": "UserRepository.findById", "file": "repository.zig" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.findById() — method call on *UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "service.zig" },
+      "target": { "name": "UserRepository.delete", "file": "repository.zig" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.delete() — method call on *UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.summary", "file": "service.zig" },
+      "target": { "name": "UserRepository.count", "file": "repository.zig" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "self.repo.count() — method call on *UserRepository field"
+    },
+    {
+      "source": { "name": "validateName", "file": "validators.zig" },
+      "target": { "name": "isNotEmpty", "file": "validators.zig" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    },
+    {
+      "source": { "name": "validateEmail", "file": "validators.zig" },
+      "target": { "name": "isNotEmpty", "file": "validators.zig" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private helper function"
+    }
+  ]
+}

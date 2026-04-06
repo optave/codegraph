@@ -1,0 +1,56 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "scala",
+  "description": "Hand-annotated call edges for Scala resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "UserService.createUser", "file": "Service.scala" },
+      "target": { "name": "User", "file": "Repository.scala" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "User(id, name, email) — case class instantiation"
+    },
+    {
+      "source": { "name": "ServiceFactory.createService", "file": "Service.scala" },
+      "target": { "name": "UserRepository", "file": "Repository.scala" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "ServiceFactory.createService", "file": "Service.scala" },
+      "target": { "name": "UserService", "file": "Service.scala" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserService(repo) — class instantiation"
+    },
+    {
+      "source": { "name": "Main.directRepoAccess", "file": "Main.scala" },
+      "target": { "name": "UserRepository", "file": "Repository.scala" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "Main.directRepoAccess", "file": "Main.scala" },
+      "target": { "name": "User", "file": "Repository.scala" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "User(\"2\", \"Bob\", ...) — case class instantiation"
+    },
+    {
+      "source": { "name": "Validators.validateUser", "file": "Validators.scala" },
+      "target": { "name": "Validators.validateEmail", "file": "Validators.scala" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "validateEmail(user.email) — same-object method call (unresolved: call name 'validateEmail' does not match qualified node 'Validators.validateEmail')"
+    },
+    {
+      "source": { "name": "Main.main", "file": "Main.scala" },
+      "target": { "name": "ServiceFactory.createService", "file": "Service.scala" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "ServiceFactory.createService() — qualified companion object call (unresolved: extracted as receiver='ServiceFactory' name='createService')"
+    }
+  ]
+}

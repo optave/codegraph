@@ -1,0 +1,98 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "tsx",
+  "description": "Hand-annotated call edges for TSX resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "validateUser", "file": "validators.tsx" },
+      "target": { "name": "isValidName", "file": "validators.tsx" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file helper call within validators"
+    },
+    {
+      "source": { "name": "validateUser", "file": "validators.tsx" },
+      "target": { "name": "isValidEmail", "file": "validators.tsx" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file helper call within validators"
+    },
+    {
+      "source": { "name": "createUser", "file": "service.tsx" },
+      "target": { "name": "validateUser", "file": "validators.tsx" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call from validators"
+    },
+    {
+      "source": { "name": "createUser", "file": "service.tsx" },
+      "target": { "name": "formatErrors", "file": "validators.tsx" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call from validators"
+    },
+    {
+      "source": { "name": "createUser", "file": "service.tsx" },
+      "target": { "name": "generateId", "file": "service.tsx" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file helper call within service"
+    },
+    {
+      "source": { "name": "App", "file": "App.tsx" },
+      "target": { "name": "validateUser", "file": "validators.tsx" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call from validators"
+    },
+    {
+      "source": { "name": "App", "file": "App.tsx" },
+      "target": { "name": "formatErrors", "file": "validators.tsx" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call from validators"
+    },
+    {
+      "source": { "name": "App", "file": "App.tsx" },
+      "target": { "name": "ErrorBanner", "file": "App.tsx" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file component call within App"
+    },
+    {
+      "source": { "name": "App", "file": "App.tsx" },
+      "target": { "name": "createUser", "file": "service.tsx" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call from service"
+    },
+    {
+      "source": { "name": "App", "file": "App.tsx" },
+      "target": { "name": "getUser", "file": "service.tsx" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call from service"
+    },
+    {
+      "source": { "name": "App", "file": "App.tsx" },
+      "target": { "name": "UserCard", "file": "App.tsx" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file component call within App"
+    },
+    {
+      "source": { "name": "App", "file": "App.tsx" },
+      "target": { "name": "listUsers", "file": "service.tsx" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call from service"
+    },
+    {
+      "source": { "name": "App", "file": "App.tsx" },
+      "target": { "name": "removeUser", "file": "service.tsx" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct imported function call from service"
+    }
+  ]
+}

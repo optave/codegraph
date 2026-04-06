@@ -7,49 +7,49 @@
       "source": { "name": "JsonSerializer.serialize", "file": "serializer.ts" },
       "target": { "name": "formatJson", "file": "serializer.ts" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "same-file",
       "notes": "Same-file function call from method"
     },
     {
       "source": { "name": "JsonSerializer.deserialize", "file": "serializer.ts" },
       "target": { "name": "parseJson", "file": "serializer.ts" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "same-file",
       "notes": "Same-file function call from method"
     },
     {
       "source": { "name": "UserService.getUser", "file": "service.ts" },
       "target": { "name": "UserRepository.findById", "file": "repository.ts" },
       "kind": "calls",
-      "mode": "receiver-typed",
+      "mode": "interface-dispatched",
       "notes": "this.repo.findById() — typed as Repository<User>, resolved to UserRepository"
     },
     {
       "source": { "name": "UserService.getUser", "file": "service.ts" },
       "target": { "name": "JsonSerializer.serialize", "file": "serializer.ts" },
       "kind": "calls",
-      "mode": "receiver-typed",
+      "mode": "interface-dispatched",
       "notes": "this.serializer.serialize() — typed as Serializer<User>, resolved to JsonSerializer"
     },
     {
       "source": { "name": "UserService.addUser", "file": "service.ts" },
       "target": { "name": "JsonSerializer.deserialize", "file": "serializer.ts" },
       "kind": "calls",
-      "mode": "receiver-typed",
+      "mode": "interface-dispatched",
       "notes": "this.serializer.deserialize() — typed as Serializer<User>"
     },
     {
       "source": { "name": "UserService.addUser", "file": "service.ts" },
       "target": { "name": "UserRepository.save", "file": "repository.ts" },
       "kind": "calls",
-      "mode": "receiver-typed",
+      "mode": "interface-dispatched",
       "notes": "this.repo.save() — typed as Repository<User>"
     },
     {
       "source": { "name": "UserService.removeUser", "file": "service.ts" },
       "target": { "name": "UserRepository.delete", "file": "repository.ts" },
       "kind": "calls",
-      "mode": "receiver-typed",
+      "mode": "interface-dispatched",
       "notes": "this.repo.delete() — typed as Repository<User>"
     },
     {
@@ -119,28 +119,28 @@
       "source": { "name": "withExplicitType", "file": "index.ts" },
       "target": { "name": "JsonSerializer", "file": "serializer.ts" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "constructor",
       "notes": "new JsonSerializer() — class instantiation tracked as consumption"
     },
     {
       "source": { "name": "createRepository", "file": "repository.ts" },
       "target": { "name": "UserRepository", "file": "repository.ts" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "constructor",
       "notes": "new UserRepository() — class instantiation tracked as consumption"
     },
     {
       "source": { "name": "createService", "file": "service.ts" },
       "target": { "name": "JsonSerializer", "file": "serializer.ts" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "constructor",
       "notes": "new JsonSerializer() — class instantiation tracked as consumption"
     },
     {
       "source": { "name": "createService", "file": "service.ts" },
       "target": { "name": "UserService", "file": "service.ts" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "constructor",
       "notes": "new UserService(repo, serializer) — class instantiation tracked as consumption"
     }
   ]

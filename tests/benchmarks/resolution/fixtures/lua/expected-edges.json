@@ -1,0 +1,98 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "lua",
+  "description": "Hand-annotated call edges for Lua resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "main", "file": "main.lua" },
+      "target": { "name": "M.validate_email", "file": "validators.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators.validate_email() — call via required module table"
+    },
+    {
+      "source": { "name": "main", "file": "main.lua" },
+      "target": { "name": "M.create_user", "file": "service.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service.create_user() — call via required module table"
+    },
+    {
+      "source": { "name": "main", "file": "main.lua" },
+      "target": { "name": "M.get_user", "file": "service.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service.get_user() — call via required module table"
+    },
+    {
+      "source": { "name": "main", "file": "main.lua" },
+      "target": { "name": "M.remove_user", "file": "service.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service.remove_user() — call via required module table"
+    },
+    {
+      "source": { "name": "main", "file": "main.lua" },
+      "target": { "name": "M.summary", "file": "service.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service.summary() — call via required module table"
+    },
+    {
+      "source": { "name": "M.create_user", "file": "service.lua" },
+      "target": { "name": "M.validate_name", "file": "validators.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators.validate_name() — call via required module table"
+    },
+    {
+      "source": { "name": "M.create_user", "file": "service.lua" },
+      "target": { "name": "M.validate_email", "file": "validators.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators.validate_email() — call via required module table"
+    },
+    {
+      "source": { "name": "M.create_user", "file": "service.lua" },
+      "target": { "name": "M.save", "file": "repository.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.save() — call via required module table"
+    },
+    {
+      "source": { "name": "M.get_user", "file": "service.lua" },
+      "target": { "name": "M.find_by_id", "file": "repository.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.find_by_id() — call via required module table"
+    },
+    {
+      "source": { "name": "M.remove_user", "file": "service.lua" },
+      "target": { "name": "M.delete", "file": "repository.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.delete() — call via required module table"
+    },
+    {
+      "source": { "name": "M.summary", "file": "service.lua" },
+      "target": { "name": "M.count", "file": "repository.lua" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository.count() — call via required module table"
+    },
+    {
+      "source": { "name": "M.validate_name", "file": "validators.lua" },
+      "target": { "name": "check_not_empty", "file": "validators.lua" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to local helper function"
+    },
+    {
+      "source": { "name": "M.validate_email", "file": "validators.lua" },
+      "target": { "name": "check_not_empty", "file": "validators.lua" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to local helper function"
+    }
+  ]
+}

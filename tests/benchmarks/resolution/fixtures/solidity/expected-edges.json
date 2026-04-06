@@ -1,0 +1,98 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "solidity",
+  "description": "Hand-annotated call edges for Solidity resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "Main.constructor", "file": "Main.sol" },
+      "target": { "name": "UserRepository", "file": "Repository.sol" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserRepository() — contract instantiation"
+    },
+    {
+      "source": { "name": "Main.constructor", "file": "Main.sol" },
+      "target": { "name": "UserService", "file": "Service.sol" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserService(repo) — contract instantiation"
+    },
+    {
+      "source": { "name": "Main.run", "file": "Main.sol" },
+      "target": { "name": "UserService.createUser", "file": "Service.sol" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.createUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "Main.run", "file": "Main.sol" },
+      "target": { "name": "UserService.getUser", "file": "Service.sol" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.getUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "Main.run", "file": "Main.sol" },
+      "target": { "name": "UserService.removeUser", "file": "Service.sol" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.removeUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "Main.run", "file": "Main.sol" },
+      "target": { "name": "UserRepository.count", "file": "Repository.sol" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.count() — method call on UserRepository instance"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "Service.sol" },
+      "target": { "name": "Validators.validateUserInput", "file": "Validators.sol" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Validators.validateUserInput() — library function call"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "Service.sol" },
+      "target": { "name": "UserRepository.save", "file": "Repository.sol" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.save() — method call on UserRepository instance"
+    },
+    {
+      "source": { "name": "UserService.getUser", "file": "Service.sol" },
+      "target": { "name": "UserRepository.findById", "file": "Repository.sol" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.findById() — method call on UserRepository instance"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "Service.sol" },
+      "target": { "name": "UserRepository.findById", "file": "Repository.sol" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.findById() — existence check before removal"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "Service.sol" },
+      "target": { "name": "UserRepository.remove", "file": "Repository.sol" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.remove() — method call on UserRepository instance"
+    },
+    {
+      "source": { "name": "Validators.validateUserInput", "file": "Validators.sol" },
+      "target": { "name": "Validators.validateName", "file": "Validators.sol" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-library call within Validators"
+    },
+    {
+      "source": { "name": "Validators.validateUserInput", "file": "Validators.sol" },
+      "target": { "name": "Validators.validateEmail", "file": "Validators.sol" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-library call within Validators"
+    }
+  ]
+}

@@ -1,0 +1,133 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "dart",
+  "description": "Hand-annotated call edges for Dart resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "UserRepository", "file": "repository.dart" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserRepository() — default constructor call"
+    },
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "UserService", "file": "service.dart" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserService(repo) — constructor call"
+    },
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "validateEmail", "file": "validators.dart" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "validateEmail() — imported top-level function"
+    },
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "UserService.createUser", "file": "service.dart" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.createUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "UserService.getUser", "file": "service.dart" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.getUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "UserService.removeUser", "file": "service.dart" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.removeUser() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "UserService.summary", "file": "service.dart" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.summary() — method call on UserService instance"
+    },
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "Order", "file": "models.dart" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "Order() — constructor call to create Order instance"
+    },
+    {
+      "source": { "name": "main", "file": "main.dart" },
+      "target": { "name": "validateAmount", "file": "validators.dart" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "validateAmount() — imported top-level function"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "service.dart" },
+      "target": { "name": "validateName", "file": "validators.dart" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "validateName() — imported top-level function"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "service.dart" },
+      "target": { "name": "validateEmail", "file": "validators.dart" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "validateEmail() — imported top-level function"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "service.dart" },
+      "target": { "name": "User", "file": "models.dart" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "User() — constructor call to create User instance"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "service.dart" },
+      "target": { "name": "UserRepository.save", "file": "repository.dart" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "_repo.save() — method call on UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.getUser", "file": "service.dart" },
+      "target": { "name": "UserRepository.findById", "file": "repository.dart" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "_repo.findById() — method call on UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "service.dart" },
+      "target": { "name": "UserRepository.delete", "file": "repository.dart" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "_repo.delete() — method call on UserRepository field"
+    },
+    {
+      "source": { "name": "UserService.summary", "file": "service.dart" },
+      "target": { "name": "UserRepository.count", "file": "repository.dart" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "_repo.count() — method call on UserRepository field"
+    },
+    {
+      "source": { "name": "validateName", "file": "validators.dart" },
+      "target": { "name": "isNotEmpty", "file": "validators.dart" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to helper function"
+    },
+    {
+      "source": { "name": "validateEmail", "file": "validators.dart" },
+      "target": { "name": "isNotEmpty", "file": "validators.dart" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to helper function"
+    }
+  ]
+}
