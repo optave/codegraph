@@ -1,0 +1,140 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "php",
+  "description": "Hand-annotated call edges for PHP resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "Validators.validateUser", "file": "Validators.php" },
+      "target": { "name": "Validators.isValidEmail", "file": "Validators.php" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "self::isValidEmail() — static method calling sibling in same class"
+    },
+    {
+      "source": { "name": "Validators.validateUser", "file": "Validators.php" },
+      "target": { "name": "Validators.isValidName", "file": "Validators.php" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "self::isValidName() — static method calling sibling in same class"
+    },
+    {
+      "source": { "name": "UserService.getUser", "file": "Service.php" },
+      "target": { "name": "UserRepository.findById", "file": "Repository.php" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "$this->repo->findById() — typed as UserRepository"
+    },
+    {
+      "source": { "name": "UserService.addUser", "file": "Service.php" },
+      "target": { "name": "Validators.validateUser", "file": "Validators.php" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Validators::validateUser() — static class method call"
+    },
+    {
+      "source": { "name": "UserService.addUser", "file": "Service.php" },
+      "target": { "name": "UserRepository.save", "file": "Repository.php" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "$this->repo->save() — typed as UserRepository"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "Service.php" },
+      "target": { "name": "UserRepository.findById", "file": "Repository.php" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "$this->repo->findById() — typed as UserRepository"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "Service.php" },
+      "target": { "name": "UserRepository.delete", "file": "Repository.php" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "$this->repo->delete() — typed as UserRepository"
+    },
+    {
+      "source": { "name": "main", "file": "index.php" },
+      "target": { "name": "UserRepository", "file": "Repository.php" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "main", "file": "index.php" },
+      "target": { "name": "UserService", "file": "Service.php" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserService($repo) — constructor with dependency injection"
+    },
+    {
+      "source": { "name": "main", "file": "index.php" },
+      "target": { "name": "User", "file": "Repository.php" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new User('1', 'Alice', 'alice@example.com') — class instantiation"
+    },
+    {
+      "source": { "name": "main", "file": "index.php" },
+      "target": { "name": "Validators.isValidEmail", "file": "Validators.php" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Validators::isValidEmail() — static class method call"
+    },
+    {
+      "source": { "name": "main", "file": "index.php" },
+      "target": { "name": "UserService.addUser", "file": "Service.php" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "$service->addUser() — typed as UserService"
+    },
+    {
+      "source": { "name": "main", "file": "index.php" },
+      "target": { "name": "UserService.getUser", "file": "Service.php" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "$service->getUser() — typed as UserService"
+    },
+    {
+      "source": { "name": "main", "file": "index.php" },
+      "target": { "name": "UserService.removeUser", "file": "Service.php" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "$service->removeUser() — typed as UserService"
+    },
+    {
+      "source": { "name": "runWithValidation", "file": "index.php" },
+      "target": { "name": "UserRepository", "file": "Repository.php" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "runWithValidation", "file": "index.php" },
+      "target": { "name": "UserService", "file": "Service.php" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserService($repo) — constructor with dependency injection"
+    },
+    {
+      "source": { "name": "runWithValidation", "file": "index.php" },
+      "target": { "name": "User", "file": "Repository.php" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new User('2', 'Bob', 'bob@example.com') — class instantiation"
+    },
+    {
+      "source": { "name": "runWithValidation", "file": "index.php" },
+      "target": { "name": "Validators.validateUser", "file": "Validators.php" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Validators::validateUser() — static class method call"
+    },
+    {
+      "source": { "name": "runWithValidation", "file": "index.php" },
+      "target": { "name": "UserService.addUser", "file": "Service.php" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "$service->addUser() — typed as UserService"
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "java",
+  "description": "Hand-annotated call edges for Java resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "Validator.validateUser", "file": "Validator.java" },
+      "target": { "name": "Validator.isNonEmpty", "file": "Validator.java" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Static method call within the same class"
+    },
+    {
+      "source": { "name": "Validator.validateUser", "file": "Validator.java" },
+      "target": { "name": "Validator.isValidEmail", "file": "Validator.java" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Static method call within the same class"
+    },
+    {
+      "source": { "name": "UserService.UserService", "file": "UserService.java" },
+      "target": { "name": "Validator", "file": "Validator.java" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new Validator() in constructor body"
+    },
+    {
+      "source": { "name": "UserService.getUser", "file": "UserService.java" },
+      "target": { "name": "BaseService.log", "file": "BaseService.java" },
+      "kind": "calls",
+      "mode": "class-inheritance",
+      "notes": "log() inherited from BaseService via extends"
+    },
+    {
+      "source": { "name": "UserService.getUser", "file": "UserService.java" },
+      "target": { "name": "InMemoryUserRepository.findById", "file": "InMemoryUserRepository.java" },
+      "kind": "calls",
+      "mode": "interface-dispatched",
+      "notes": "repo.findById() — typed as UserRepository interface, resolved to InMemoryUserRepository"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "UserService.java" },
+      "target": { "name": "Validator.validateUser", "file": "Validator.java" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "validator.validateUser() — call on typed Validator field"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "UserService.java" },
+      "target": { "name": "InMemoryUserRepository.save", "file": "InMemoryUserRepository.java" },
+      "kind": "calls",
+      "mode": "interface-dispatched",
+      "notes": "repo.save() — typed as UserRepository interface, resolved to InMemoryUserRepository"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "UserService.java" },
+      "target": { "name": "BaseService.log", "file": "BaseService.java" },
+      "kind": "calls",
+      "mode": "class-inheritance",
+      "notes": "log() inherited from BaseService via extends"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "UserService.java" },
+      "target": { "name": "BaseService.log", "file": "BaseService.java" },
+      "kind": "calls",
+      "mode": "class-inheritance",
+      "notes": "log() inherited from BaseService via extends"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "UserService.java" },
+      "target": { "name": "InMemoryUserRepository.delete", "file": "InMemoryUserRepository.java" },
+      "kind": "calls",
+      "mode": "interface-dispatched",
+      "notes": "repo.delete() — typed as UserRepository interface, resolved to InMemoryUserRepository"
+    },
+    {
+      "source": { "name": "UserService.createDefault", "file": "UserService.java" },
+      "target": { "name": "InMemoryUserRepository", "file": "InMemoryUserRepository.java" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new InMemoryUserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "UserService.createDefault", "file": "UserService.java" },
+      "target": { "name": "UserService", "file": "UserService.java" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserService(repo) — class instantiation"
+    },
+    {
+      "source": { "name": "Main.main", "file": "Main.java" },
+      "target": { "name": "UserService.createDefault", "file": "UserService.java" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct static method call UserService.createDefault()"
+    },
+    {
+      "source": { "name": "Main.main", "file": "Main.java" },
+      "target": { "name": "UserService.createUser", "file": "UserService.java" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.createUser() — typed as UserService via assignment"
+    },
+    {
+      "source": { "name": "Main.main", "file": "Main.java" },
+      "target": { "name": "UserService.getUser", "file": "UserService.java" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.getUser() — typed as UserService via assignment"
+    },
+    {
+      "source": { "name": "Main.main", "file": "Main.java" },
+      "target": { "name": "Validator.isValidEmail", "file": "Validator.java" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Direct static method call Validator.isValidEmail()"
+    },
+    {
+      "source": { "name": "Main.main", "file": "Main.java" },
+      "target": { "name": "UserService.removeUser", "file": "UserService.java" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.removeUser() — typed as UserService via assignment"
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "csharp",
+  "description": "Hand-annotated call edges for C# resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "Validators.ValidateUser", "file": "Validators.cs" },
+      "target": { "name": "Validators.IsValidEmail", "file": "Validators.cs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Static method calling sibling static method in same class"
+    },
+    {
+      "source": { "name": "Validators.ValidateUser", "file": "Validators.cs" },
+      "target": { "name": "Validators.IsValidName", "file": "Validators.cs" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Static method calling sibling static method in same class"
+    },
+    {
+      "source": { "name": "UserService.GetUser", "file": "Service.cs" },
+      "target": { "name": "IRepository.FindById", "file": "Repository.cs" },
+      "kind": "calls",
+      "mode": "interface-dispatched",
+      "notes": "_repo.FindById() — typed as IRepository"
+    },
+    {
+      "source": { "name": "UserService.AddUser", "file": "Service.cs" },
+      "target": { "name": "Validators.ValidateUser", "file": "Validators.cs" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Static method call: Validators.ValidateUser(user)"
+    },
+    {
+      "source": { "name": "UserService.AddUser", "file": "Service.cs" },
+      "target": { "name": "IRepository.Save", "file": "Repository.cs" },
+      "kind": "calls",
+      "mode": "interface-dispatched",
+      "notes": "_repo.Save() — typed as IRepository"
+    },
+    {
+      "source": { "name": "UserService.RemoveUser", "file": "Service.cs" },
+      "target": { "name": "IRepository.FindById", "file": "Repository.cs" },
+      "kind": "calls",
+      "mode": "interface-dispatched",
+      "notes": "_repo.FindById() — typed as IRepository"
+    },
+    {
+      "source": { "name": "UserService.RemoveUser", "file": "Service.cs" },
+      "target": { "name": "IRepository.Delete", "file": "Repository.cs" },
+      "kind": "calls",
+      "mode": "interface-dispatched",
+      "notes": "_repo.Delete() — typed as IRepository"
+    },
+    {
+      "source": { "name": "Program.Main", "file": "Program.cs" },
+      "target": { "name": "UserRepository", "file": "Repository.cs" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "Program.Main", "file": "Program.cs" },
+      "target": { "name": "UserService", "file": "Service.cs" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserService(repo) — constructor with dependency injection"
+    },
+    {
+      "source": { "name": "Program.Main", "file": "Program.cs" },
+      "target": { "name": "User", "file": "Repository.cs" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new User { ... } — object initializer"
+    },
+    {
+      "source": { "name": "Program.Main", "file": "Program.cs" },
+      "target": { "name": "Validators.IsValidEmail", "file": "Validators.cs" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Static method call: Validators.IsValidEmail(user.Email)"
+    },
+    {
+      "source": { "name": "Program.Main", "file": "Program.cs" },
+      "target": { "name": "UserService.AddUser", "file": "Service.cs" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.AddUser() — typed as UserService"
+    },
+    {
+      "source": { "name": "Program.Main", "file": "Program.cs" },
+      "target": { "name": "UserService.GetUser", "file": "Service.cs" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.GetUser() — typed as UserService"
+    },
+    {
+      "source": { "name": "Program.Main", "file": "Program.cs" },
+      "target": { "name": "UserService.RemoveUser", "file": "Service.cs" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.RemoveUser() — typed as UserService"
+    },
+    {
+      "source": { "name": "Program.RunWithValidation", "file": "Program.cs" },
+      "target": { "name": "UserRepository", "file": "Repository.cs" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "Program.RunWithValidation", "file": "Program.cs" },
+      "target": { "name": "UserService", "file": "Service.cs" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new UserService(repo) — constructor with dependency injection"
+    },
+    {
+      "source": { "name": "Program.RunWithValidation", "file": "Program.cs" },
+      "target": { "name": "User", "file": "Repository.cs" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "new User { ... } — object initializer"
+    },
+    {
+      "source": { "name": "Program.RunWithValidation", "file": "Program.cs" },
+      "target": { "name": "Validators.ValidateUser", "file": "Validators.cs" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Static method call: Validators.ValidateUser(user)"
+    },
+    {
+      "source": { "name": "Program.RunWithValidation", "file": "Program.cs" },
+      "target": { "name": "UserService.AddUser", "file": "Service.cs" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "service.AddUser() — typed as UserService"
+    }
+  ]
+}

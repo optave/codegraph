@@ -1,0 +1,140 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "kotlin",
+  "description": "Hand-annotated call edges for Kotlin resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "validateEmail", "file": "Validators.kt" },
+      "target": { "name": "checkLength", "file": "Validators.kt" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file top-level function call"
+    },
+    {
+      "source": { "name": "validateName", "file": "Validators.kt" },
+      "target": { "name": "checkLength", "file": "Validators.kt" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file top-level function call"
+    },
+    {
+      "source": { "name": "UserRepository.saveIfValid", "file": "Repository.kt" },
+      "target": { "name": "validateName", "file": "Validators.kt" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Top-level function call via same-package visibility"
+    },
+    {
+      "source": { "name": "UserRepository.saveIfValid", "file": "Repository.kt" },
+      "target": { "name": "validateEmail", "file": "Validators.kt" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Top-level function call via same-package visibility"
+    },
+    {
+      "source": { "name": "UserRepository.saveIfValid", "file": "Repository.kt" },
+      "target": { "name": "Repository.save", "file": "Repository.kt" },
+      "kind": "calls",
+      "mode": "class-inheritance",
+      "notes": "save() inherited from parent class Repository"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "Service.kt" },
+      "target": { "name": "validateName", "file": "Validators.kt" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Top-level function call via same-package visibility"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "Service.kt" },
+      "target": { "name": "validateEmail", "file": "Validators.kt" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Top-level function call via same-package visibility"
+    },
+    {
+      "source": { "name": "UserService.createUser", "file": "Service.kt" },
+      "target": { "name": "UserRepository.saveIfValid", "file": "Repository.kt" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.saveIfValid() — receiver typed as UserRepository"
+    },
+    {
+      "source": { "name": "UserService.getUser", "file": "Service.kt" },
+      "target": { "name": "Repository.findByName", "file": "Repository.kt" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.findByName() — inherited method via UserRepository receiver"
+    },
+    {
+      "source": { "name": "UserService.removeUser", "file": "Service.kt" },
+      "target": { "name": "Repository.delete", "file": "Repository.kt" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "repo.delete() — inherited method via UserRepository receiver"
+    },
+    {
+      "source": { "name": "buildService", "file": "Service.kt" },
+      "target": { "name": "UserRepository", "file": "Repository.kt" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserRepository() — class instantiation"
+    },
+    {
+      "source": { "name": "buildService", "file": "Service.kt" },
+      "target": { "name": "UserService", "file": "Service.kt" },
+      "kind": "calls",
+      "mode": "constructor",
+      "notes": "UserService(repo) — class instantiation"
+    },
+    {
+      "source": { "name": "checkInput", "file": "Main.kt" },
+      "target": { "name": "validateName", "file": "Validators.kt" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Top-level function call via same-package visibility"
+    },
+    {
+      "source": { "name": "checkInput", "file": "Main.kt" },
+      "target": { "name": "validateEmail", "file": "Validators.kt" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Top-level function call via same-package visibility"
+    },
+    {
+      "source": { "name": "main", "file": "Main.kt" },
+      "target": { "name": "checkInput", "file": "Main.kt" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file top-level function call"
+    },
+    {
+      "source": { "name": "main", "file": "Main.kt" },
+      "target": { "name": "buildService", "file": "Service.kt" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Top-level function call from another file"
+    },
+    {
+      "source": { "name": "main", "file": "Main.kt" },
+      "target": { "name": "UserService.createUser", "file": "Service.kt" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.createUser() — receiver typed as UserService via buildService() return"
+    },
+    {
+      "source": { "name": "main", "file": "Main.kt" },
+      "target": { "name": "UserService.getUser", "file": "Service.kt" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.getUser() — receiver typed as UserService via buildService() return"
+    },
+    {
+      "source": { "name": "main", "file": "Main.kt" },
+      "target": { "name": "UserService.removeUser", "file": "Service.kt" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.removeUser() — receiver typed as UserService via buildService() return"
+    }
+  ]
+}

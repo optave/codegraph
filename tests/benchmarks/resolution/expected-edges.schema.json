@@ -41,8 +41,23 @@
           },
           "mode": {
             "type": "string",
-            "enum": ["static", "receiver-typed", "interface-dispatched"],
-            "description": "Resolution mode that should produce this edge"
+            "enum": [
+              "static",
+              "receiver-typed",
+              "interface-dispatched",
+              "closure",
+              "re-export",
+              "dynamic-import",
+              "class-inheritance",
+              "same-file",
+              "constructor",
+              "callback",
+              "higher-order",
+              "trait-dispatch",
+              "module-function",
+              "package-function"
+            ],
+            "description": "Resolution category — describes the language feature exercised by this edge"
           },
           "notes": {
             "type": "string",

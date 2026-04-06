@@ -60,11 +60,14 @@ interface LangResult {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+// Files to skip when copying fixtures (not source code for codegraph)
+const SKIP_FILES = new Set(['expected-edges.json', 'driver.mjs']);
+
 function copyFixture(lang: string): string {
 	const src = path.join(FIXTURES_DIR, lang);
 	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `codegraph-resolution-${lang}-`));
 	for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-		if (entry.name === 'expected-edges.json') continue;
+		if (SKIP_FILES.has(entry.name)) continue;
 		if (!entry.isFile()) {
 			console.error(`  Warning: skipping subdirectory "${entry.name}" in ${lang} fixture (flat copy only)`);
 			continue;

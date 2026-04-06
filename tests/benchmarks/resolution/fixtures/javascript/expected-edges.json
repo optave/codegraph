@@ -42,35 +42,35 @@
       "source": { "name": "Logger.info", "file": "logger.js" },
       "target": { "name": "Logger._write", "file": "logger.js" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "same-file",
       "notes": "this._write() — same-class method call"
     },
     {
       "source": { "name": "Logger.warn", "file": "logger.js" },
       "target": { "name": "Logger._write", "file": "logger.js" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "same-file",
       "notes": "this._write() — same-class method call"
     },
     {
       "source": { "name": "Logger.error", "file": "logger.js" },
       "target": { "name": "Logger._write", "file": "logger.js" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "same-file",
       "notes": "this._write() — same-class method call"
     },
     {
       "source": { "name": "validate", "file": "validators.js" },
       "target": { "name": "checkLength", "file": "validators.js" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "same-file",
       "notes": "Same-file function call"
     },
     {
       "source": { "name": "normalize", "file": "validators.js" },
       "target": { "name": "trimWhitespace", "file": "validators.js" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "same-file",
       "notes": "Same-file function call"
     },
     {
@@ -105,28 +105,28 @@
       "source": { "name": "directInstantiation", "file": "index.js" },
       "target": { "name": "UserService.createUser", "file": "service.js" },
       "kind": "calls",
-      "mode": "receiver-typed",
+      "mode": "constructor",
       "notes": "svc.createUser() — receiver typed via new UserService()"
     },
     {
       "source": { "name": "directInstantiation", "file": "index.js" },
       "target": { "name": "UserService", "file": "service.js" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "constructor",
       "notes": "new UserService() — class instantiation tracked as consumption"
     },
     {
       "source": { "name": "UserService.constructor", "file": "service.js" },
       "target": { "name": "Logger", "file": "logger.js" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "constructor",
       "notes": "new Logger('UserService') — class instantiation in constructor"
     },
     {
       "source": { "name": "buildService", "file": "service.js" },
       "target": { "name": "UserService", "file": "service.js" },
       "kind": "calls",
-      "mode": "static",
+      "mode": "constructor",
       "notes": "new UserService() — class instantiation tracked as consumption"
     }
   ]

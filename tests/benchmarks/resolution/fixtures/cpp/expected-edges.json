@@ -1,0 +1,105 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "cpp",
+  "description": "Hand-annotated call edges for C++ resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "validate_email", "file": "validators.cpp" },
+      "target": { "name": "check_length", "file": "validators.cpp" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file free function call"
+    },
+    {
+      "source": { "name": "validate_name", "file": "validators.cpp" },
+      "target": { "name": "check_length", "file": "validators.cpp" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file free function call"
+    },
+    {
+      "source": { "name": "UserService::UserService", "file": "service.cpp" },
+      "target": { "name": "UserService::log_action", "file": "service.cpp" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Constructor calls private method in same file"
+    },
+    {
+      "source": { "name": "UserService::process", "file": "service.cpp" },
+      "target": { "name": "UserService::create_user", "file": "service.cpp" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-class method call within same file"
+    },
+    {
+      "source": { "name": "UserService::create_user", "file": "service.cpp" },
+      "target": { "name": "validate_name", "file": "validators.cpp" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Free function call via #include \"validators.h\""
+    },
+    {
+      "source": { "name": "UserService::create_user", "file": "service.cpp" },
+      "target": { "name": "validate_email", "file": "validators.cpp" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Free function call via #include \"validators.h\""
+    },
+    {
+      "source": { "name": "UserService::create_user", "file": "service.cpp" },
+      "target": { "name": "UserService::log_action", "file": "service.cpp" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-class private method call"
+    },
+    {
+      "source": { "name": "UserService::delete_user", "file": "service.cpp" },
+      "target": { "name": "UserService::log_action", "file": "service.cpp" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-class private method call"
+    },
+    {
+      "source": { "name": "run_service", "file": "main.cpp" },
+      "target": { "name": "UserService::create_user", "file": "service.cpp" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.create_user() — receiver typed as UserService"
+    },
+    {
+      "source": { "name": "run_service", "file": "main.cpp" },
+      "target": { "name": "UserService::delete_user", "file": "service.cpp" },
+      "kind": "calls",
+      "mode": "receiver-typed",
+      "notes": "svc.delete_user() — receiver typed as UserService"
+    },
+    {
+      "source": { "name": "check_input", "file": "main.cpp" },
+      "target": { "name": "validate_name", "file": "validators.cpp" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Free function call via #include \"validators.h\""
+    },
+    {
+      "source": { "name": "check_input", "file": "main.cpp" },
+      "target": { "name": "validate_email", "file": "validators.cpp" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Free function call via #include \"validators.h\""
+    },
+    {
+      "source": { "name": "main", "file": "main.cpp" },
+      "target": { "name": "check_input", "file": "main.cpp" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file free function call"
+    },
+    {
+      "source": { "name": "main", "file": "main.cpp" },
+      "target": { "name": "run_service", "file": "main.cpp" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file free function call"
+    }
+  ]
+}
