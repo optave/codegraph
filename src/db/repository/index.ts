@@ -1,5 +1,6 @@
 // Barrel re-export for repository/ modules.
 
+export type { FnDepsCallerNode, FnDepsEntry, FnDepsNode, FnDepsResult } from './base.js';
 export { Repository } from './base.js';
 export { purgeFileData, purgeFilesData } from './build-stmts.js';
 export { cachedStmt } from './cached-stmt.js';

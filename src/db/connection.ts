@@ -360,7 +360,7 @@ function openRepoNative(customDbPath?: string): { repo: Repository; close(): voi
  */
 export function openRepo(
   customDbPath?: string,
-  opts: { repo?: Repository } = {},
+  opts: { repo?: Repository; engine?: 'native' | 'wasm' | 'auto' } = {},
 ): { repo: Repository; close(): void } {
   if (opts.repo != null) {
     if (!(opts.repo instanceof Repository)) {
@@ -371,8 +371,12 @@ export function openRepo(
     return { repo: opts.repo, close() {} };
   }
 
+  // Respect explicit engine selection: opts.engine > CODEGRAPH_ENGINE env > auto.
+  // This ensures --engine wasm and benchmark workers bypass the native path.
+  const engine = opts.engine || process.env.CODEGRAPH_ENGINE || 'auto';
+
   // Try native rusqlite path first (Phase 6.14)
-  if (isNativeAvailable()) {
+  if (engine !== 'wasm' && isNativeAvailable()) {
     try {
       return openRepoNative(customDbPath);
     } catch (e) {
@@ -412,8 +416,11 @@ export function openReadonlyWithNative(customPath?: string): {
 } {
   const db = openReadonlyOrFail(customPath);
 
+  // Respect explicit engine selection, consistent with openRepo().
+  const engine = process.env.CODEGRAPH_ENGINE || 'auto';
+
   let nativeDb: NativeDatabase | undefined;
-  if (isNativeAvailable()) {
+  if (engine !== 'wasm' && isNativeAvailable()) {
     try {
       const dbPath = findDbPath(customPath);
       const native = getNative();
