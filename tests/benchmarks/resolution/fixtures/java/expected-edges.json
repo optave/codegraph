@@ -33,7 +33,10 @@
     },
     {
       "source": { "name": "UserService.getUser", "file": "UserService.java" },
-      "target": { "name": "InMemoryUserRepository.findById", "file": "InMemoryUserRepository.java" },
+      "target": {
+        "name": "InMemoryUserRepository.findById",
+        "file": "InMemoryUserRepository.java"
+      },
       "kind": "calls",
       "mode": "interface-dispatched",
       "notes": "repo.findById() — typed as UserRepository interface, resolved to InMemoryUserRepository"

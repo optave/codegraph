@@ -7,11 +7,11 @@
  * Run via: node --import ../tracer/loader-hook.mjs driver.mjs
  */
 
-// Import raw modules then instrument them
-import * as _validators from './validators.js';
+import * as _index from './index.js';
 import * as _logger from './logger.js';
 import * as _service from './service.js';
-import * as _index from './index.js';
+// Import raw modules then instrument them
+import * as _validators from './validators.js';
 
 const validators = globalThis.__tracer.instrumentExports(_validators, 'validators.js');
 const logger = globalThis.__tracer.instrumentExports(_logger, 'logger.js');

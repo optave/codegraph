@@ -34,16 +34,12 @@ if (!fs.existsSync(driverPath)) {
 }
 
 try {
-  const result = execFileSync(
-    process.execPath,
-    ['--import', loaderHook, driverPath],
-    {
-      cwd: fixtureDir,
-      encoding: 'utf-8',
-      timeout: 10_000,
-      env: { ...process.env, NODE_NO_WARNINGS: '1' },
-    },
-  );
+  const result = execFileSync(process.execPath, ['--import', loaderHook, driverPath], {
+    cwd: fixtureDir,
+    encoding: 'utf-8',
+    timeout: 10_000,
+    env: { ...process.env, NODE_NO_WARNINGS: '1' },
+  });
   // The driver should output JSON edges to stdout
   process.stdout.write(result);
 } catch (e) {

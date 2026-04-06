@@ -11,10 +11,7 @@
  * After the driver finishes, call `globalThis.__tracer.dump()` to get edges.
  */
 
-import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
-
-const als = new AsyncLocalStorage();
 
 /** @type {Array<{source_name: string, source_file: string, target_name: string, target_file: string}>} */
 const edges = [];
@@ -89,7 +86,7 @@ function wrapFunction(fn, name, file) {
  * Wrap all methods on a class prototype.
  */
 function wrapClassMethods(cls, className, file) {
-  if (!cls || !cls.prototype) return cls;
+  if (!cls?.prototype) return cls;
   const proto = cls.prototype;
 
   for (const key of Object.getOwnPropertyNames(proto)) {
@@ -102,7 +99,7 @@ function wrapClassMethods(cls, className, file) {
 
   // Also wrap the constructor to track instantiation calls
   const origConstructor = cls;
-  const wrappedClass = function (...args) {
+  const wrappedClass = (...args) => {
     if (callStack.length > 0) {
       const caller = callStack[callStack.length - 1];
       recordEdge(caller.name, caller.file, `${className}.constructor`, file);
