@@ -61,6 +61,7 @@ const SKIP_VERSIONS = new Set(['3.8.0']);
  * underlying issue is being fixed.
  *
  * Format: "version:metric-label" (must match the label passed to checkRegression).
+ * Resolution keys use: "version:resolution <lang> precision" or "version:resolution <lang> recall".
  *
  * - 3.9.0:1-file rebuild — native incremental path re-runs graph-wide phases
  *   (structureMs, AST, CFG, dataflow) on single-file rebuilds. Documented in
