@@ -210,9 +210,10 @@ switch (config.type) {
       process.exit(1);
     }
     // For ESM hook: use process.execPath directly for node, findCommand for tsx
-    const cmd = config.cmd === process.execPath
-      ? process.execPath
-      : findCommand(config.cmd, config.fallback || []);
+    const cmd =
+      config.cmd === process.execPath
+        ? process.execPath
+        : findCommand(config.cmd, config.fallback || []);
     if (!cmd) {
       console.error(`Runtime not found: ${config.cmd}`);
       process.stdout.write(JSON.stringify({ edges: [], error: `${config.cmd} not available` }));
