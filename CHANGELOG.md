@@ -2,13 +2,9 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
-## [3.10.0](https://github.com/optave/ops-codegraph-tool/compare/v3.9.0...v3.10.0) (2026-04-05)
+## [3.9.1](https://github.com/optave/ops-codegraph-tool/compare/v3.9.0...v3.9.1) (2026-04-05)
 
-**Dead code accuracy, native query performance, and supply-chain security.** This release significantly improves dead code detection — class instantiations via `new`, type-only imports, barrel re-exports, and same-file constants are now correctly tracked as consumption. The native Rust engine gains a composite `fnDeps` query that runs dependency resolution in a single cross-language call, and a critical 1238% incremental rebuild regression from v3.9.0 is fixed. A new WASM grammar validation step hardens the supply chain by verifying grammar integrity at build time. CLI reliability improves with a fix for hangs in git worktree environments.
-
-### Features
-
-* **security:** WASM grammar validation and npm audit CI ([#834](https://github.com/optave/ops-codegraph-tool/pull/834))
+**Dead code accuracy, native query performance, and supply-chain hardening.** This release significantly improves dead code detection — class instantiations via `new`, type-only imports, barrel re-exports, and same-file constants are now correctly tracked as consumption. The native Rust engine gains a composite `fnDeps` query that runs dependency resolution in a single cross-language call, and a critical 1238% incremental rebuild regression from v3.9.0 is fixed. WASM grammar validation and npm audit harden the build pipeline. CLI reliability improves with a fix for hangs in git worktree environments.
 
 ### Bug Fixes
 
@@ -45,6 +41,7 @@ All notable changes to this project will be documented in this file. See [commit
 
 ### Chores
 
+* **security:** WASM grammar validation and npm audit CI ([#834](https://github.com/optave/ops-codegraph-tool/pull/834))
 * **deps:** bump @modelcontextprotocol/sdk from 1.28.0 to 1.29.0 ([#829](https://github.com/optave/ops-codegraph-tool/pull/829))
 * **deps-dev:** bump @huggingface/transformers from 3.8.1 to 4.0.1 ([#831](https://github.com/optave/ops-codegraph-tool/pull/831))
 * **deps-dev:** bump @biomejs/biome from 2.4.9 to 2.4.10 ([#828](https://github.com/optave/ops-codegraph-tool/pull/828))
