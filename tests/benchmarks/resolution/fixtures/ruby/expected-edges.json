@@ -4,109 +4,81 @@
   "description": "Hand-annotated call edges for Ruby resolution benchmark",
   "edges": [
     {
-      "source": { "name": "Validators.validate_user", "file": "validators.rb" },
-      "target": { "name": "Validators.valid_name?", "file": "validators.rb" },
+      "source": { "name": "validate_user", "file": "validators.rb" },
+      "target": { "name": "valid_name?", "file": "validators.rb" },
       "kind": "calls",
       "mode": "same-file",
-      "notes": "Same-file module method call within Validators"
+      "notes": "Same-file function call within validators"
     },
     {
-      "source": { "name": "Validators.validate_user", "file": "validators.rb" },
-      "target": { "name": "Validators.valid_email?", "file": "validators.rb" },
+      "source": { "name": "validate_user", "file": "validators.rb" },
+      "target": { "name": "valid_email?", "file": "validators.rb" },
       "kind": "calls",
       "mode": "same-file",
-      "notes": "Same-file module method call within Validators"
+      "notes": "Same-file function call within validators"
     },
     {
-      "source": { "name": "UserRepository.save", "file": "repository.rb" },
-      "target": { "name": "Repository.save", "file": "repository.rb" },
-      "kind": "calls",
-      "mode": "class-inheritance",
-      "notes": "super(user) calls parent class Repository#save"
-    },
-    {
-      "source": { "name": "UserService.create_user", "file": "service.rb" },
-      "target": { "name": "Validators.validate_user", "file": "validators.rb" },
+      "source": { "name": "create_user", "file": "service.rb" },
+      "target": { "name": "validate_user", "file": "validators.rb" },
       "kind": "calls",
       "mode": "static",
-      "notes": "Validators.validate_user() — direct module method call on imported module"
+      "notes": "Cross-file call to validate_user via require_relative"
     },
     {
-      "source": { "name": "UserService.create_user", "file": "service.rb" },
-      "target": { "name": "UserRepository.save", "file": "repository.rb" },
-      "kind": "calls",
-      "mode": "receiver-typed",
-      "notes": "@repo.save(user) — repo is a UserRepository instance"
-    },
-    {
-      "source": { "name": "UserService.find_user", "file": "service.rb" },
-      "target": { "name": "Repository.find_by_id", "file": "repository.rb" },
-      "kind": "calls",
-      "mode": "receiver-typed",
-      "notes": "@repo.find_by_id(id) — inherited method from Repository"
-    },
-    {
-      "source": { "name": "UserService.find_user_by_email", "file": "service.rb" },
-      "target": { "name": "UserRepository.find_by_email", "file": "repository.rb" },
-      "kind": "calls",
-      "mode": "receiver-typed",
-      "notes": "@repo.find_by_email(email) — method on UserRepository"
-    },
-    {
-      "source": { "name": "UserService.remove_user", "file": "service.rb" },
-      "target": { "name": "Repository.delete", "file": "repository.rb" },
-      "kind": "calls",
-      "mode": "receiver-typed",
-      "notes": "@repo.delete(id) — inherited method from Repository"
-    },
-    {
-      "source": { "name": "build_service", "file": "service.rb" },
-      "target": { "name": "UserRepository", "file": "repository.rb" },
-      "kind": "calls",
-      "mode": "constructor",
-      "notes": "UserRepository.new — class instantiation"
-    },
-    {
-      "source": { "name": "build_service", "file": "service.rb" },
-      "target": { "name": "UserService", "file": "service.rb" },
-      "kind": "calls",
-      "mode": "constructor",
-      "notes": "UserService.new(repo) — class instantiation"
-    },
-    {
-      "source": { "name": "run", "file": "main.rb" },
-      "target": { "name": "build_service", "file": "service.rb" },
+      "source": { "name": "create_user", "file": "service.rb" },
+      "target": { "name": "repo_save", "file": "repository.rb" },
       "kind": "calls",
       "mode": "static",
-      "notes": "Direct call to imported function via require_relative"
+      "notes": "Cross-file call to repo_save via require_relative"
+    },
+    {
+      "source": { "name": "find_user", "file": "service.rb" },
+      "target": { "name": "repo_find_by_id", "file": "repository.rb" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to repo_find_by_id via require_relative"
+    },
+    {
+      "source": { "name": "find_user_by_email", "file": "service.rb" },
+      "target": { "name": "repo_find_by_email", "file": "repository.rb" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to repo_find_by_email via require_relative"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.rb" },
+      "target": { "name": "repo_delete", "file": "repository.rb" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to repo_delete via require_relative"
     },
     {
       "source": { "name": "run", "file": "main.rb" },
-      "target": { "name": "UserService.create_user", "file": "service.rb" },
+      "target": { "name": "create_user", "file": "service.rb" },
       "kind": "calls",
-      "mode": "receiver-typed",
-      "notes": "svc.create_user() — svc is a UserService from build_service"
+      "mode": "static",
+      "notes": "Cross-file call to create_user via require_relative"
     },
     {
       "source": { "name": "run", "file": "main.rb" },
-      "target": { "name": "UserService.find_user", "file": "service.rb" },
+      "target": { "name": "find_user", "file": "service.rb" },
       "kind": "calls",
-      "mode": "receiver-typed",
-      "notes": "svc.find_user() — svc is a UserService"
+      "mode": "static",
+      "notes": "Cross-file call to find_user via require_relative"
     },
     {
       "source": { "name": "run", "file": "main.rb" },
-      "target": { "name": "UserService.find_user_by_email", "file": "service.rb" },
+      "target": { "name": "find_user_by_email", "file": "service.rb" },
       "kind": "calls",
-      "mode": "receiver-typed",
-      "notes": "svc.find_user_by_email() — svc is a UserService"
+      "mode": "static",
+      "notes": "Cross-file call to find_user_by_email via require_relative"
     },
     {
       "source": { "name": "run", "file": "main.rb" },
-      "target": { "name": "UserService.remove_user", "file": "service.rb" },
+      "target": { "name": "remove_user", "file": "service.rb" },
       "kind": "calls",
-      "mode": "receiver-typed",
-      "notes": "svc.remove_user() — svc is a UserService"
+      "mode": "static",
+      "notes": "Cross-file call to remove_user via require_relative"
     }
   ]
 }
