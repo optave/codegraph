@@ -76,7 +76,7 @@ export function forkWorker(scriptPath, envKey, workerName, argv = [], timeoutMs 
 		console.error(`\n[fork] Spawning ${workerName} worker (pid isolation)...`);
 
 		const child = fork(scriptPath, argv, {
-			env: { ...process.env, [envKey]: workerName },
+			env: { ...process.env, [envKey]: workerName, CODEGRAPH_ENGINE: workerName },
 			stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
 		});
 
