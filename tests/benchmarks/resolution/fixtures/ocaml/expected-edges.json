@@ -1,0 +1,91 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "ocaml",
+  "description": "Hand-annotated call edges for OCaml resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "validate_user", "file": "service.ml" },
+      "target": { "name": "validate_name", "file": "validators.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validate_name — qualified cross-module call"
+    },
+    {
+      "source": { "name": "validate_user", "file": "service.ml" },
+      "target": { "name": "validate_email", "file": "validators.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validate_email — qualified cross-module call"
+    },
+    {
+      "source": { "name": "validate_user", "file": "service.ml" },
+      "target": { "name": "validate_age", "file": "validators.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Validators.validate_age — qualified cross-module call"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.ml" },
+      "target": { "name": "validate_user", "file": "service.ml" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to local helper function"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.ml" },
+      "target": { "name": "save", "file": "repository.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.save — qualified cross-module call"
+    },
+    {
+      "source": { "name": "get_user", "file": "service.ml" },
+      "target": { "name": "find_by_id", "file": "repository.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.find_by_id — qualified cross-module call"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.ml" },
+      "target": { "name": "delete", "file": "repository.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.delete — qualified cross-module call"
+    },
+    {
+      "source": { "name": "summary", "file": "service.ml" },
+      "target": { "name": "count", "file": "repository.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Repository.count — qualified cross-module call"
+    },
+    {
+      "source": { "name": "main", "file": "main.ml" },
+      "target": { "name": "create_user", "file": "service.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.create_user — qualified cross-module call from top-level let () ="
+    },
+    {
+      "source": { "name": "main", "file": "main.ml" },
+      "target": { "name": "get_user", "file": "service.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.get_user — qualified cross-module call from top-level let () ="
+    },
+    {
+      "source": { "name": "main", "file": "main.ml" },
+      "target": { "name": "remove_user", "file": "service.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.remove_user — qualified cross-module call from top-level let () ="
+    },
+    {
+      "source": { "name": "main", "file": "main.ml" },
+      "target": { "name": "summary", "file": "service.ml" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Service.summary — qualified cross-module call (called twice) from top-level let () ="
+    }
+  ]
+}

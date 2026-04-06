@@ -1,0 +1,91 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "erlang",
+  "description": "Hand-annotated call edges for Erlang resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "run", "file": "main.erl" },
+      "target": { "name": "init", "file": "repository.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: repository:init()"
+    },
+    {
+      "source": { "name": "run", "file": "main.erl" },
+      "target": { "name": "create_user", "file": "service.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: service:create_user(...)"
+    },
+    {
+      "source": { "name": "run", "file": "main.erl" },
+      "target": { "name": "get_user", "file": "service.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: service:get_user(...)"
+    },
+    {
+      "source": { "name": "run", "file": "main.erl" },
+      "target": { "name": "remove_user", "file": "service.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: service:remove_user(...)"
+    },
+    {
+      "source": { "name": "run", "file": "main.erl" },
+      "target": { "name": "list_all", "file": "repository.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: repository:list_all(Table)"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.erl" },
+      "target": { "name": "validate_user_input", "file": "validators.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: validators:validate_user_input(Name, Email)"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.erl" },
+      "target": { "name": "save", "file": "repository.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: repository:save(User, Table)"
+    },
+    {
+      "source": { "name": "get_user", "file": "service.erl" },
+      "target": { "name": "find_by_id", "file": "repository.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: repository:find_by_id(Id, Table)"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.erl" },
+      "target": { "name": "find_by_id", "file": "repository.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: repository:find_by_id(Id, Table)"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.erl" },
+      "target": { "name": "delete", "file": "repository.erl" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "Cross-module call: repository:delete(Id, Table)"
+    },
+    {
+      "source": { "name": "validate_user_input", "file": "validators.erl" },
+      "target": { "name": "validate_name", "file": "validators.erl" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-module call within validators"
+    },
+    {
+      "source": { "name": "validate_user_input", "file": "validators.erl" },
+      "target": { "name": "validate_email", "file": "validators.erl" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-module call within validators"
+    }
+  ]
+}

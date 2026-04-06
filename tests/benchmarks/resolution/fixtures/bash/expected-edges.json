@@ -1,0 +1,91 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "bash",
+  "description": "Hand-annotated call edges for Bash resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "validate_user", "file": "validators.sh" },
+      "target": { "name": "valid_name", "file": "validators.sh" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file helper call within validators"
+    },
+    {
+      "source": { "name": "validate_user", "file": "validators.sh" },
+      "target": { "name": "valid_email", "file": "validators.sh" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file helper call within validators"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.sh" },
+      "target": { "name": "validate_user", "file": "validators.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to validate_user via source"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.sh" },
+      "target": { "name": "format_user", "file": "service.sh" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file helper call within service"
+    },
+    {
+      "source": { "name": "create_user", "file": "service.sh" },
+      "target": { "name": "repo_save", "file": "repository.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to repo_save via source"
+    },
+    {
+      "source": { "name": "get_user", "file": "service.sh" },
+      "target": { "name": "repo_find_by_id", "file": "repository.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to repo_find_by_id via source"
+    },
+    {
+      "source": { "name": "remove_user", "file": "service.sh" },
+      "target": { "name": "repo_delete", "file": "repository.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to repo_delete via source"
+    },
+    {
+      "source": { "name": "list_users", "file": "service.sh" },
+      "target": { "name": "repo_list_all", "file": "repository.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to repo_list_all via source"
+    },
+    {
+      "source": { "name": "run", "file": "main.sh" },
+      "target": { "name": "create_user", "file": "service.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to create_user via source"
+    },
+    {
+      "source": { "name": "run", "file": "main.sh" },
+      "target": { "name": "get_user", "file": "service.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to get_user via source"
+    },
+    {
+      "source": { "name": "run", "file": "main.sh" },
+      "target": { "name": "list_users", "file": "service.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to list_users via source"
+    },
+    {
+      "source": { "name": "run", "file": "main.sh" },
+      "target": { "name": "remove_user", "file": "service.sh" },
+      "kind": "calls",
+      "mode": "static",
+      "notes": "Cross-file call to remove_user via source"
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "../../expected-edges.schema.json",
+  "language": "clojure",
+  "description": "Hand-annotated call edges for Clojure resolution benchmark",
+  "edges": [
+    {
+      "source": { "name": "run", "file": "main.clj" },
+      "target": { "name": "new-repo", "file": "repository.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository/new-repo — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "run", "file": "main.clj" },
+      "target": { "name": "create-user", "file": "service.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service/create-user — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "run", "file": "main.clj" },
+      "target": { "name": "get-user", "file": "service.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service/get-user — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "run", "file": "main.clj" },
+      "target": { "name": "remove-user", "file": "service.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service/remove-user — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "run", "file": "main.clj" },
+      "target": { "name": "summary", "file": "service.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "service/summary — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "create-user", "file": "service.clj" },
+      "target": { "name": "validate-name", "file": "validators.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators/validate-name — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "create-user", "file": "service.clj" },
+      "target": { "name": "validate-email", "file": "validators.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "validators/validate-email — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "create-user", "file": "service.clj" },
+      "target": { "name": "save", "file": "repository.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository/save — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "get-user", "file": "service.clj" },
+      "target": { "name": "find-by-id", "file": "repository.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository/find-by-id — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "remove-user", "file": "service.clj" },
+      "target": { "name": "delete", "file": "repository.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository/delete — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "summary", "file": "service.clj" },
+      "target": { "name": "count", "file": "repository.clj" },
+      "kind": "calls",
+      "mode": "module-function",
+      "notes": "repository/count — qualified call via :as alias"
+    },
+    {
+      "source": { "name": "summary", "file": "service.clj" },
+      "target": { "name": "format-summary", "file": "service.clj" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private defn- helper"
+    },
+    {
+      "source": { "name": "validate-name", "file": "validators.clj" },
+      "target": { "name": "check-length", "file": "validators.clj" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private defn- helper"
+    },
+    {
+      "source": { "name": "validate-email", "file": "validators.clj" },
+      "target": { "name": "contains-at", "file": "validators.clj" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private defn- helper"
+    },
+    {
+      "source": { "name": "count", "file": "repository.clj" },
+      "target": { "name": "count-entries", "file": "repository.clj" },
+      "kind": "calls",
+      "mode": "same-file",
+      "notes": "Same-file call to private defn- helper"
+    }
+  ]
+}

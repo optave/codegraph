@@ -65,24 +65,39 @@ const FIXTURES_DIR = path.join(import.meta.dirname, 'fixtures');
  * while still tracking regressions.
  */
 const THRESHOLDS: Record<string, { precision: number; recall: number }> = {
-  // Mature — high bars
+  // Mature — high bars (100% precision, high recall)
   javascript: { precision: 0.85, recall: 0.5 },
   typescript: { precision: 0.85, recall: 0.5 },
+  tsx: { precision: 0.85, recall: 0.8 },
+  bash: { precision: 0.85, recall: 0.8 },
+  ruby: { precision: 0.85, recall: 0.8 },
+  c: { precision: 0.6, recall: 0.2 },
   // Established — medium bars
   python: { precision: 0.7, recall: 0.3 },
   go: { precision: 0.7, recall: 0.3 },
   java: { precision: 0.7, recall: 0.3 },
   csharp: { precision: 0.5, recall: 0.2 },
+  kotlin: { precision: 0.6, recall: 0.2 },
   // Lower bars — resolution still maturing
   rust: { precision: 0.6, recall: 0.2 },
-  php: { precision: 0.6, recall: 0.2 },
-  c: { precision: 0.6, recall: 0.2 },
   cpp: { precision: 0.6, recall: 0.2 },
-  kotlin: { precision: 0.6, recall: 0.2 },
   swift: { precision: 0.5, recall: 0.15 },
-  // Minimal — call resolution not yet implemented for these
-  ruby: { precision: 0.0, recall: 0.0 },
+  haskell: { precision: 0.0, recall: 0.0 },
+  lua: { precision: 0.0, recall: 0.0 },
+  ocaml: { precision: 0.0, recall: 0.0 },
+  // Minimal — call resolution not yet implemented or grammar unavailable
   scala: { precision: 0.0, recall: 0.0 },
+  php: { precision: 0.6, recall: 0.2 },
+  elixir: { precision: 0.0, recall: 0.0 },
+  dart: { precision: 0.0, recall: 0.0 },
+  zig: { precision: 0.0, recall: 0.0 },
+  fsharp: { precision: 0.0, recall: 0.0 },
+  gleam: { precision: 0.0, recall: 0.0 },
+  clojure: { precision: 0.0, recall: 0.0 },
+  julia: { precision: 0.0, recall: 0.0 },
+  r: { precision: 0.0, recall: 0.0 },
+  erlang: { precision: 0.0, recall: 0.0 },
+  solidity: { precision: 0.0, recall: 0.0 },
 };
 
 /** Default thresholds for languages not explicitly listed. */
