@@ -1,6 +1,6 @@
-import { createUser, getUser, removeUser, listUsers } from './service';
-import { validateUser, formatErrors } from './validators';
+import { createUser, getUser, listUsers, removeUser } from './service';
 import type { User, ValidationResult } from './types';
+import { formatErrors, validateUser } from './validators';
 
 function UserCard(props: { user: User }): string {
   return `<div>${props.user.name} (${props.user.email})</div>`;
@@ -24,7 +24,7 @@ export function App(): string {
   }
 
   const card = UserCard({ user: found });
-  const all = listUsers();
+  const users = listUsers();
   removeUser(user.id);
-  return card;
+  return `${card} (${users.length} total)`;
 }
