@@ -1,9 +1,13 @@
 /**
  * ESM loader hook that instruments function calls to capture dynamic call edges.
  *
- * Uses AsyncLocalStorage to track the call stack across async boundaries.
+ * Maintains a module-scoped call stack to track caller→callee relationships.
  * Patches module exports so that every function/method call is recorded as
  * a { caller, callee } edge with file information.
+ *
+ * Note: the call stack is a shared mutable array, so concurrent async call
+ * chains may interleave. This is acceptable for the current sequential
+ * benchmark driver but would need AsyncLocalStorage for parallel execution.
  *
  * Usage:
  *   node --import ./loader-hook.mjs driver.mjs
@@ -97,23 +101,24 @@ function wrapClassMethods(cls, className, file) {
     }
   }
 
-  // Also wrap the constructor to track instantiation calls
+  // Also wrap the constructor to track instantiation calls.
+  // Must use Reflect.construct so the wrapper is a valid constructor target.
   const origConstructor = cls;
-  const wrappedClass = (...args) => {
+  function wrappedClass(...args) {
     if (callStack.length > 0) {
       const caller = callStack[callStack.length - 1];
       recordEdge(caller.name, caller.file, `${className}.constructor`, file);
     }
     callStack.push({ name: `${className}.constructor`, file });
     try {
-      const instance = new origConstructor(...args);
+      const instance = Reflect.construct(origConstructor, args, new.target || origConstructor);
       callStack.pop();
       return instance;
     } catch (e) {
       callStack.pop();
       throw e;
     }
-  };
+  }
   wrappedClass.prototype = origConstructor.prototype;
   wrappedClass.__traced = true;
   Object.defineProperty(wrappedClass, 'name', { value: className });
@@ -137,9 +142,8 @@ function instrumentExports(moduleExports, filePath) {
         ? Object.getOwnPropertyNames(value.prototype).filter((k) => k !== 'constructor')
         : [];
       if (protoKeys.length > 0 || /^[A-Z]/.test(key)) {
-        // Treat as a class
-        wrapClassMethods(value, key, file);
-        instrumented[key] = value;
+        // Treat as a class — use return value so constructor wrapping takes effect
+        instrumented[key] = wrapClassMethods(value, key, file);
       } else {
         instrumented[key] = wrapFunction(value, key, file);
       }
