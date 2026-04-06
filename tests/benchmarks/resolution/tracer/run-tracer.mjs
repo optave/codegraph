@@ -151,6 +151,17 @@ const TRACERS = {
   ocaml: { type: 'shell', tracer: 'native-tracer.sh', args: ['ocaml'] },
   gleam: { type: 'shell', tracer: 'native-tracer.sh', args: ['gleam'] },
   solidity: { type: 'shell', tracer: 'native-tracer.sh', args: ['solidity'] },
+
+  // ── Additional languages ───────────────────────────────────────────
+  objc: { type: 'shell', tracer: 'native-tracer.sh', args: ['objc'] },
+  cuda: { type: 'shell', tracer: 'native-tracer.sh', args: ['cuda'] },
+  groovy: {
+    type: 'shell',
+    tracer: 'jvm-tracer.sh',
+    args: ['groovy'],
+  },
+  verilog: { type: 'shell', tracer: 'native-tracer.sh', args: ['verilog'] },
+  hcl: { type: 'shell', tracer: 'native-tracer.sh', args: ['hcl'] },
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────

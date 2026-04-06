@@ -342,6 +342,41 @@ trace_solidity() {
     empty_result "solidity tracing requires EVM execution environment"
 }
 
+# ── Objective-C ──────────────────────────────────────────────────────
+trace_objc() {
+    # Try clang with Objective-C support
+    if ! command -v clang &>/dev/null; then
+        empty_result "clang not available"
+    fi
+
+    cp "$FIXTURE_DIR"/*.m "$TMP_DIR/" 2>/dev/null || true
+    cp "$FIXTURE_DIR"/*.h "$TMP_DIR/" 2>/dev/null || true
+    cd "$TMP_DIR"
+
+    if clang -ObjC -framework Foundation *.m -o traced 2>/dev/null; then
+        ./traced 2>/dev/null || echo '{"edges":[]}'
+    else
+        empty_result "objc compilation failed"
+    fi
+}
+
+# ── CUDA ─────────────────────────────────────────────────────────────
+trace_cuda() {
+    if ! command -v nvcc &>/dev/null; then
+        empty_result "nvcc (CUDA toolkit) not available"
+    fi
+
+    cp "$FIXTURE_DIR"/*.cu "$TMP_DIR/" 2>/dev/null || true
+    cp "$FIXTURE_DIR"/*.cuh "$TMP_DIR/" 2>/dev/null || true
+    cd "$TMP_DIR"
+
+    if nvcc *.cu -o traced 2>/dev/null; then
+        ./traced 2>/dev/null || echo '{"edges":[]}'
+    else
+        empty_result "nvcc compilation failed"
+    fi
+}
+
 # ── Dispatch ─────────────────────────────────────────────────────────────
 case "$LANG" in
     c)        trace_c_cpp "gcc" "c" ;;
@@ -356,5 +391,9 @@ case "$LANG" in
     ocaml)    trace_ocaml ;;
     gleam)    trace_gleam ;;
     solidity) trace_solidity ;;
+    objc)     trace_objc ;;
+    cuda)     trace_cuda ;;
+    verilog)  empty_result "verilog is a hardware description language — no runtime tracing" ;;
+    hcl)      empty_result "HCL/Terraform has no callable functions — no runtime tracing" ;;
     *)        empty_result "unknown language: $LANG" ;;
 esac

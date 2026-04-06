@@ -38,6 +38,12 @@ case "$LANG" in
             exit 0
         fi
         ;;
+    groovy)
+        if ! command -v groovyc &>/dev/null; then
+            echo '{"edges":[],"error":"groovyc not available"}'
+            exit 0
+        fi
+        ;;
 esac
 
 TMP_DIR="$(mktemp -d)"
@@ -48,6 +54,7 @@ case "$LANG" in
     java)   cp "$FIXTURE_DIR"/*.java "$TMP_DIR/" ;;
     kotlin) cp "$FIXTURE_DIR"/*.kt "$TMP_DIR/" ;;
     scala)  cp "$FIXTURE_DIR"/*.scala "$TMP_DIR/" ;;
+    groovy) cp "$FIXTURE_DIR"/*.groovy "$TMP_DIR/" ;;
 esac
 
 # Create the Tracer utility class
@@ -172,6 +179,15 @@ case "$LANG" in
             scala -cp . Main 2>/dev/null || echo '{"edges":[]}'
         else
             echo '{"edges":[],"error":"scala compilation failed"}'
+        fi
+        ;;
+
+    groovy)
+        cd "$TMP_DIR"
+        if javac CallTracer.java 2>/dev/null && groovyc -cp . *.groovy 2>/dev/null; then
+            groovy -cp . Main 2>/dev/null || echo '{"edges":[]}'
+        else
+            echo '{"edges":[],"error":"groovy compilation failed"}'
         fi
         ;;
 esac
