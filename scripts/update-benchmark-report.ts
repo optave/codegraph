@@ -322,6 +322,8 @@ if (prev) {
 
 // ── Resolution regression detection ─────────────────────────────────────
 // Resolution metrics are "higher is better" — warn when they DROP.
+// SYNC: These must match PRECISION_DROP_PP / RECALL_DROP_PP in
+// tests/benchmarks/regression-guard.test.ts (the hard-fail gate side).
 const PRECISION_DROP_THRESHOLD = 0.05; // warn if precision drops >5pp
 const RECALL_DROP_THRESHOLD = 0.10;    // warn if recall drops >10pp
 
@@ -462,12 +464,13 @@ if (fs.existsSync(readmePath)) {
 			});
 
 			resolutionTable += '\n<details><summary>Per-language resolution precision/recall</summary>\n\n';
-			resolutionTable += '| Language | Precision | Recall | TP | FP | FN | Edges |\n';
-			resolutionTable += '|----------|----------:|-------:|---:|---:|---:|------:|\n';
+			resolutionTable += '| Language | Precision | Recall | TP | FP | FN | Edges | Dynamic |\n';
+			resolutionTable += '|----------|----------:|-------:|---:|---:|---:|------:|--------:|\n';
 			for (const [lang, m] of sorted) {
 				const p = (m.precision * 100).toFixed(1);
 				const r = (m.recall * 100).toFixed(1);
-				resolutionTable += `| ${lang} | ${p}% | ${r}% | ${m.truePositives} | ${m.falsePositives} | ${m.falseNegatives} | ${m.totalExpected} |\n`;
+				const dyn = m.dynamicEdges != null ? `${m.dynamicConfirmed}/${m.dynamicEdges}` : '—';
+				resolutionTable += `| ${lang} | ${p}% | ${r}% | ${m.truePositives} | ${m.falsePositives} | ${m.falseNegatives} | ${m.totalExpected} | ${dyn} |\n`;
 			}
 
 			// Per-mode breakdown across all languages
