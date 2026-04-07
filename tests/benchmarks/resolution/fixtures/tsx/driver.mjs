@@ -9,7 +9,7 @@
 
 import { App } from './App.tsx';
 import { createUser, getUser, listUsers, removeUser } from './service.tsx';
-import { validateUser, formatErrors } from './validators.tsx';
+import { formatErrors, validateUser } from './validators.tsx';
 
 try {
   globalThis.__tracer.pushCall('__driver__', 'driver.mjs');

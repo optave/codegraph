@@ -17,8 +17,21 @@ function basename(filePath) {
 
 /** Keywords that look like function calls but aren't */
 const NOT_FUNCTIONS = new Set([
-  'if', 'while', 'for', 'switch', 'catch', 'return', 'new', 'throw',
-  'typeof', 'delete', 'void', 'await', 'yield', 'import', 'export',
+  'if',
+  'while',
+  'for',
+  'switch',
+  'catch',
+  'return',
+  'new',
+  'throw',
+  'typeof',
+  'delete',
+  'void',
+  'await',
+  'yield',
+  'import',
+  'export',
 ]);
 
 /**
@@ -63,6 +76,14 @@ function instrumentSource(source, filename) {
     );
     if (funcDecl) funcName = funcDecl[1];
 
+    // const/let/var NAME = async? (function | arrow)
+    if (!funcName) {
+      const assignedFunc = trimmed.match(
+        /^(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?(?:function\s*\w*\s*\(|[^=]*=>\s*\{)/,
+      );
+      if (assignedFunc) funcName = assignedFunc[1];
+    }
+
     // Class method (only inside a class body)
     if (!funcName && currentClass && braceDepth > classDepth) {
       const methodDecl = trimmed.match(
@@ -71,17 +92,12 @@ function instrumentSource(source, filename) {
       if (methodDecl && !NOT_FUNCTIONS.has(methodDecl[1])) {
         const mname = methodDecl[1];
         funcName =
-          mname === 'constructor'
-            ? `${currentClass}.constructor`
-            : `${currentClass}.${mname}`;
+          mname === 'constructor' ? `${currentClass}.constructor` : `${currentClass}.${mname}`;
       }
     }
 
     // Insert finally blocks for closing function scopes
-    while (
-      funcStack.length > 0 &&
-      newDepth <= funcStack[funcStack.length - 1].openDepth
-    ) {
+    while (funcStack.length > 0 && newDepth <= funcStack[funcStack.length - 1].openDepth) {
       funcStack.pop();
       output.push(`${indent}} finally { globalThis.__tracer?.exit(); }`);
     }
@@ -92,9 +108,7 @@ function instrumentSource(source, filename) {
     if (funcName && trimmed.endsWith('{')) {
       const inner = indent + '  ';
       const escaped = funcName.replace(/'/g, "\\'");
-      output.push(
-        `${inner}globalThis.__tracer?.enter('${escaped}', '${file}');`,
-      );
+      output.push(`${inner}globalThis.__tracer?.enter('${escaped}', '${file}');`);
       output.push(`${inner}try {`);
       funcStack.push({ name: funcName, openDepth: braceDepth });
     }
@@ -105,6 +119,13 @@ function instrumentSource(source, filename) {
       currentClass = null;
       classDepth = -1;
     }
+  }
+
+  // Safety: if brace counting drifted (e.g. braces inside strings/templates),
+  // the injected try/finally blocks are likely misplaced. Return the original
+  // source unchanged to avoid producing invalid JavaScript.
+  if (braceDepth !== 0) {
+    return source;
   }
 
   return output.join('\n');

@@ -10,10 +10,10 @@
  * Run via: node --import ../tracer/loader-hook.mjs driver.mjs
  */
 
-import { main, directInstantiation } from './index.js';
+import { directInstantiation, main } from './index.js';
 import { Logger } from './logger.js';
 import { buildService } from './service.js';
-import { validate, normalize } from './validators.js';
+import { normalize, validate } from './validators.js';
 
 try {
   globalThis.__tracer.pushCall('__driver__', 'driver.mjs');
