@@ -138,21 +138,40 @@ case "$LANG" in
             [[ "$base" == "CallTracer.java" ]] && continue
             # Add CallTracer.traceCall() after method opening braces
             # Match lines like: public void method(...) {
-            sed -i -E '/\)\s*\{$/{
-                /class |interface /!{
-                    a\        CallTracer.traceCall();
-                }
-            }' "$javafile"
-            # Also inject into constructors
-            sed -i -E '/\)\s*\{$/{
-                /class |interface /!s/$/\n        CallTracer.traceCall();/
-            }' "$javafile" 2>/dev/null || true
+            # Use portable sed -i: GNU sed uses -i alone, BSD sed (macOS) requires -i ''
+            if sed --version 2>/dev/null | grep -q GNU; then
+                sed -i -E '/\)\s*\{$/{
+                    /class |interface /!{
+                        a\        CallTracer.traceCall();
+                    }
+                }' "$javafile"
+                # Also inject into constructors
+                sed -i -E '/\)\s*\{$/{
+                    /class |interface /!s/$/\n        CallTracer.traceCall();/
+                }' "$javafile" 2>/dev/null || true
+            else
+                sed -i '' -E '/\)\s*\{$/{
+                    /class |interface /!{
+                        a\        CallTracer.traceCall();
+                    }
+                }' "$javafile"
+                # Also inject into constructors
+                sed -i '' -E '/\)\s*\{$/{
+                    /class |interface /!s/$/\n        CallTracer.traceCall();/
+                }' "$javafile" 2>/dev/null || true
+            fi
         done
 
         # Add dump call at end of main
-        sed -i '/public static void main/,/\}/ {
-            /^\s*\}/ i\        CallTracer.dump();
-        }' "$TMP_DIR/Main.java" 2>/dev/null || true
+        if sed --version 2>/dev/null | grep -q GNU; then
+            sed -i '/public static void main/,/\}/ {
+                /^\s*\}/ i\        CallTracer.dump();
+            }' "$TMP_DIR/Main.java" 2>/dev/null || true
+        else
+            sed -i '' '/public static void main/,/\}/ {
+                /^\s*\}/ i\        CallTracer.dump();
+            }' "$TMP_DIR/Main.java" 2>/dev/null || true
+        fi
 
         # Compile and run
         cd "$TMP_DIR"
