@@ -715,7 +715,7 @@ DARTTRACE
                         qualname="${current_class}.${fname}"
                     fi
                     printf '%s\n' "$line" >> "$tmpfile"
-                    printf '    CallTracer.instance.traceCall("%s", "%s"); try {\n' "$qualname" "$base" >> "$tmpfile"
+                    printf '    CallTracer.instance.traceCall("%s", "%s");\n' "$qualname" "$base" >> "$tmpfile"
                     continue
                 fi
             fi
