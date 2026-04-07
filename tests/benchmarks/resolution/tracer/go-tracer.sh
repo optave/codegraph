@@ -135,16 +135,28 @@ for gofile in "$TMP_DIR"/*.go; do
 
     # Use sed to inject traceCall() after function opening braces
     # Match: func ... { at end of line -> add traceCall() on next line
-    sed -i -E 's/^(func [^{]*\{)\s*$/\1\n\ttraceCall()/' "$gofile"
+    # Use portable sed -i: GNU sed uses -i alone, BSD sed (macOS) requires -i ''
+    if sed --version 2>/dev/null | grep -q GNU; then
+        sed -i -E 's/^(func [^{]*\{)\s*$/\1\n\ttraceCall()/' "$gofile"
+    else
+        sed -i '' -E 's/^(func [^{]*\{)\s*$/\1\n\ttraceCall()/' "$gofile"
+    fi
 done
 
 # Inject defer dumpTrace() at start of main()
-sed -i -E '/^func main\(\)\s*\{/{
-    a\	defer dumpTrace()
-}' "$TMP_DIR/main.go"
-
-# Suppress any os.Exit calls that would skip deferred dumpTrace
-sed -i 's/os\.Exit(/\/\/ os.Exit(/g' "$TMP_DIR/main.go"
+if sed --version 2>/dev/null | grep -q GNU; then
+    sed -i -E '/^func main\(\)\s*\{/{
+        a\	defer dumpTrace()
+    }' "$TMP_DIR/main.go"
+    # Suppress any os.Exit calls that would skip deferred dumpTrace
+    sed -i 's/os\.Exit(/\/\/ os.Exit(/g' "$TMP_DIR/main.go"
+else
+    sed -i '' -E '/^func main\(\)\s*\{/{
+        a\	defer dumpTrace()
+    }' "$TMP_DIR/main.go"
+    # Suppress any os.Exit calls that would skip deferred dumpTrace
+    sed -i '' 's/os\.Exit(/\/\/ os.Exit(/g' "$TMP_DIR/main.go"
+fi
 
 # Redirect fmt.Print* to stderr so only JSON goes to stdout
 cat >> "$TMP_DIR/trace_support.go" <<'REDIRECT'

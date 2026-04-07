@@ -150,8 +150,9 @@ Process.sleep(100)
 state = Agent.get(agent, & &1)
 edges = Enum.reverse(state.edges)
 
-result = Jason.encode!(%{"edges" => edges}, pretty: true)
-IO.puts(result)
+try do
+  result = Jason.encode!(%{"edges" => edges}, pretty: true)
+  IO.puts(result)
 rescue
   _ ->
     # Fallback: manual JSON output if Jason is not available
@@ -163,12 +164,18 @@ rescue
     |> Enum.with_index()
     |> Enum.each(fn {edge, idx} ->
       comma = if idx < length(edges) - 1, do: ",", else: ""
+      escaped = fn val ->
+        val
+        |> String.replace("\\", "\\\\")
+        |> String.replace("\"", "\\\"")
+      end
       IO.puts("    {")
-      IO.puts("      \"source_name\": \"#{edge["source_name"]}\",")
-      IO.puts("      \"source_file\": \"#{edge["source_file"]}\",")
-      IO.puts("      \"target_name\": \"#{edge["target_name"]}\",")
-      IO.puts("      \"target_file\": \"#{edge["target_file"]}\"")
+      IO.puts("      \"source_name\": \"#{escaped.(edge["source_name"])}\",")
+      IO.puts("      \"source_file\": \"#{escaped.(edge["source_file"])}\",")
+      IO.puts("      \"target_name\": \"#{escaped.(edge["target_name"])}\",")
+      IO.puts("      \"target_file\": \"#{escaped.(edge["target_file"])}\"")
       IO.puts("    }#{comma}")
     end)
     IO.puts("  ]")
     IO.puts("}")
+end
