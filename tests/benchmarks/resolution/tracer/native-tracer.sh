@@ -683,18 +683,23 @@ DARTTRACE
     for dartfile in "$TMP_DIR"/*.dart; do
         base="$(basename "$dartfile")"
         [[ "$base" == "trace_support.dart" ]] && continue
-        sedi "1s|^|import 'trace_support.dart';\n|" "$dartfile"
+        sedi "1s|^|import 'dart:io';\nimport 'trace_support.dart';\n|" "$dartfile"
     done
 
-    # Inject traceCall into function/method bodies
+    # Inject traceCall + try/finally into function/method bodies.
+    # We track brace depth per function so we can inject
+    # "} finally { CallTracer.instance.traceReturn(); }" at the closing brace.
     for dartfile in "$TMP_DIR"/*.dart; do
         base="$(basename "$dartfile")"
         [[ "$base" == "trace_support.dart" ]] && continue
         local current_class=""
+        local in_func=0
+        local func_brace_depth=0
         local tmpfile="$(mktemp)"
 
         while IFS= read -r line || [[ -n "$line" ]]; do
             local trimmed="${line#"${line%%[![:space:]]*}"}"
+
             # Track class
             if [[ "$trimmed" =~ ^class[[:space:]]+([A-Za-z_][A-Za-z0-9_]*) ]]; then
                 current_class="${BASH_REMATCH[1]}"
@@ -704,6 +709,23 @@ DARTTRACE
                 current_class=""
                 continue
             fi
+
+            # If inside an instrumented function, track braces to find its end
+            if (( in_func )); then
+                local opens="${line//[^\{]/}"
+                local closes="${line//[^\}]/}"
+                (( func_brace_depth += ${#opens} - ${#closes} )) || true
+                if (( func_brace_depth <= 0 )); then
+                    # This line contains the function's closing brace —
+                    # inject "} finally { traceReturn(); }" before it
+                    printf '    } finally { CallTracer.instance.traceReturn(); }\n' >> "$tmpfile"
+                    printf '%s\n' "$line" >> "$tmpfile"
+                    in_func=0
+                    func_brace_depth=0
+                    continue
+                fi
+            fi
+
             # Detect function declarations (return_type name(args) {)
             # Save capture before subsequent regexes clobber BASH_REMATCH
             if [[ "$trimmed" =~ [[:space:]]([a-zA-Z_][a-zA-Z0-9_]*)\( ]]; then
@@ -716,6 +738,9 @@ DARTTRACE
                     fi
                     printf '%s\n' "$line" >> "$tmpfile"
                     printf '    CallTracer.instance.traceCall("%s", "%s");\n' "$qualname" "$base" >> "$tmpfile"
+                    printf '    try {\n' >> "$tmpfile"
+                    in_func=1
+                    func_brace_depth=1  # we're inside the function's opening brace
                     continue
                 fi
             fi
@@ -729,11 +754,12 @@ DARTTRACE
         /^\}/ i\  CallTracer.instance.dump();
     }' "$TMP_DIR/main.dart" 2>/dev/null || true
 
-    # Redirect print to stderr in fixture files
+    # Redirect print to stderr in fixture files (trace_support.dart excluded
+    # because its dump() must write JSON to stdout; main.dart is NOT excluded
+    # so that any fixture print() calls don't pollute the JSON output)
     for dartfile in "$TMP_DIR"/*.dart; do
         base="$(basename "$dartfile")"
         [[ "$base" == "trace_support.dart" ]] && continue
-        [[ "$base" == "main.dart" ]] && continue
         sedi 's/print(/stderr.writeln(/g' "$dartfile" 2>/dev/null || true
     done
 
