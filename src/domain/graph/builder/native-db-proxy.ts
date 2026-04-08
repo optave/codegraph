@@ -33,6 +33,8 @@ export class NativeDbProxy implements BetterSqlite3Database {
           | undefined;
       },
       run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint } {
+        // NOTE: changes and lastInsertRowid are not available via queryAll —
+        // callers that rely on these values must use the native fast-paths directly.
         ndb.queryAll(sql, params as Array<string | number | null>);
         return RUN_STUB;
       },
@@ -73,6 +75,8 @@ export class NativeDbProxy implements BetterSqlite3Database {
   ): (...args: F extends (...a: infer A) => unknown ? A : never) => ReturnType<F> {
     const ndb = this.#ndb;
     return ((...args: unknown[]) => {
+      // NOTE: nested transactions (savepoints) are not supported — ensure callers
+      // do not invoke a transaction() wrapper from within an existing transaction.
       ndb.exec('BEGIN');
       try {
         const result = fn(...args);
