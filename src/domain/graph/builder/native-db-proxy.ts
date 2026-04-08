@@ -10,7 +10,11 @@
 
 import type { BetterSqlite3Database, NativeDatabase, SqliteStatement } from '../../../types.js';
 
-const RUN_STUB = Object.freeze({ changes: 0, lastInsertRowid: 0 });
+/** Sanitize params for napi-rs: better-sqlite3 treats `undefined` as NULL,
+ *  but serde_json cannot represent `undefined`. Replace with `null`. */
+function sanitize(params: unknown[]): Array<string | number | null> {
+  return params.map((p) => (p === undefined ? null : p)) as Array<string | number | null>;
+}
 
 export class NativeDbProxy implements BetterSqlite3Database {
   readonly #ndb: NativeDatabase;
@@ -25,18 +29,17 @@ export class NativeDbProxy implements BetterSqlite3Database {
     const ndb = this.#ndb;
     const stmt: SqliteStatement<TRow> = {
       all(...params: unknown[]): TRow[] {
-        return ndb.queryAll(sql, params as Array<string | number | null>) as TRow[];
+        return ndb.queryAll(sql, sanitize(params)) as TRow[];
       },
       get(...params: unknown[]): TRow | undefined {
-        return (ndb.queryGet(sql, params as Array<string | number | null>) ?? undefined) as
-          | TRow
-          | undefined;
+        return (ndb.queryGet(sql, sanitize(params)) ?? undefined) as TRow | undefined;
       },
       run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint } {
-        // NOTE: changes and lastInsertRowid are not available via queryAll —
-        // callers that rely on these values must use the native fast-paths directly.
-        ndb.queryAll(sql, params as Array<string | number | null>);
-        return RUN_STUB;
+        ndb.queryAll(sql, sanitize(params));
+        // Retrieve last_insert_rowid via SQLite scalar function so callers
+        // that depend on it (e.g. CFG block edge mapping) get correct values.
+        const row = ndb.queryGet('SELECT last_insert_rowid() AS rid', []) as { rid: number } | null;
+        return { changes: 0, lastInsertRowid: row?.rid ?? 0 };
       },
       iterate(): IterableIterator<TRow> {
         throw new Error('iterate() is not supported via NativeDbProxy');
