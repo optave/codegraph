@@ -307,6 +307,32 @@ export function diffImpactData(
     }
 
     const affectedFunctions = findAffectedFunctions(db, changedRanges, noTests);
+
+    // Short-circuit: when no function-level changes detected, skip expensive
+    // lookups (BFS, co-change, ownership, boundary checks).  All callers
+    // (CLI, MCP, benchmark) return early on empty affectedFunctions.
+    if (affectedFunctions.length === 0) {
+      const base = {
+        changedFiles: changedRanges.size,
+        newFiles: [...newFiles],
+        affectedFunctions: [] as unknown[],
+        affectedFiles: [] as string[],
+        historicallyCoupled: [] as unknown[],
+        ownership: null,
+        boundaryViolations: [] as unknown[],
+        boundaryViolationCount: 0,
+        summary: {
+          functionsChanged: 0,
+          callersAffected: 0,
+          filesAffected: 0,
+          historicallyCoupledCount: 0,
+          ownersAffected: 0,
+          boundaryViolationCount: 0,
+        },
+      };
+      return paginateResult(base, 'affectedFunctions', { limit: opts.limit, offset: opts.offset });
+    }
+
     const includeImplementors = opts.includeImplementors !== false;
     const { functionResults, allAffected } = buildFunctionImpactResults(
       db,
@@ -325,7 +351,7 @@ export function diffImpactData(
       db,
       changedRanges,
       noTests,
-      opts,
+      { ...opts, config },
       repoRoot,
     );
 
