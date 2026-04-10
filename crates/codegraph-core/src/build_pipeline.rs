@@ -403,9 +403,11 @@ pub fn run_pipeline(
     // ── Stage 8b: Analysis persistence (AST, complexity, CFG, dataflow) ──
     // Write analysis data from parsed file_symbols directly to DB tables,
     // eliminating the JS runPostNativeAnalysis step and its WASM re-parse.
+    let include_complexity = opts.complexity.unwrap_or(true);
     let include_cfg = opts.cfg.unwrap_or(true);
-    let do_analysis = include_ast || include_dataflow || include_cfg;
+    let do_analysis = include_ast || include_dataflow || include_cfg || include_complexity;
 
+    let mut analysis_ok = true;
     if do_analysis {
         // Determine which files to analyze (excludes reverse-dep files)
         let analysis_file_set: HashSet<&str> = match &analysis_scope {
@@ -420,28 +422,36 @@ pub fn run_pipeline(
         if include_ast {
             let t0 = Instant::now();
             let ast_batches = build_ast_batches(&file_symbols, &analysis_file_set);
-            let _ = ast_db::do_insert_ast_nodes(conn, &ast_batches);
+            if ast_db::do_insert_ast_nodes(conn, &ast_batches).is_err() {
+                analysis_ok = false;
+            }
             timing.ast_ms = t0.elapsed().as_secs_f64() * 1000.0;
         }
 
         // Complexity metrics
-        {
+        if include_complexity {
             let t0 = Instant::now();
-            write_complexity(conn, &file_symbols, &analysis_file_set, &node_id_map);
+            if !write_complexity(conn, &file_symbols, &analysis_file_set, &node_id_map) {
+                analysis_ok = false;
+            }
             timing.complexity_ms = t0.elapsed().as_secs_f64() * 1000.0;
         }
 
         // CFG blocks + edges
         if include_cfg {
             let t0 = Instant::now();
-            write_cfg(conn, &file_symbols, &analysis_file_set, &node_id_map);
+            if !write_cfg(conn, &file_symbols, &analysis_file_set, &node_id_map) {
+                analysis_ok = false;
+            }
             timing.cfg_ms = t0.elapsed().as_secs_f64() * 1000.0;
         }
 
         // Dataflow edges
         if include_dataflow {
             let t0 = Instant::now();
-            write_dataflow(conn, &file_symbols, &analysis_file_set);
+            if !write_dataflow(conn, &file_symbols, &analysis_file_set) {
+                analysis_ok = false;
+            }
             timing.dataflow_ms = t0.elapsed().as_secs_f64() * 1000.0;
         }
     }
@@ -481,7 +491,7 @@ pub fn run_pipeline(
         is_full_build: change_result.is_full_build,
         structure_scope: changed_file_list.clone(),
         structure_handled: use_fast_path,
-        analysis_complete: do_analysis,
+        analysis_complete: do_analysis && analysis_ok,
     })
 }
 
@@ -1005,27 +1015,47 @@ fn build_analysis_node_map(
     files: &HashSet<&str>,
 ) -> HashMap<(String, String, u32), i64> {
     let mut map = HashMap::new();
+    if files.is_empty() {
+        return map;
+    }
+
+    // Use a temp table to batch all file lookups into a single join query,
+    // avoiding N per-file round-trips through prepared-statement execution.
+    let _ = conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS _analysis_files (file TEXT NOT NULL)",
+    );
+    let _ = conn.execute("DELETE FROM temp._analysis_files", []);
+
+    if let Ok(mut ins) = conn.prepare("INSERT INTO temp._analysis_files (file) VALUES (?1)") {
+        for file in files {
+            let _ = ins.execute(rusqlite::params![file]);
+        }
+    }
+
     let mut stmt = match conn.prepare(
-        "SELECT id, file, name, line FROM nodes WHERE file = ?1 AND kind != 'file'",
+        "SELECT n.id, n.file, n.name, n.line FROM nodes n \
+         INNER JOIN temp._analysis_files af ON n.file = af.file \
+         WHERE n.kind != 'file'",
     ) {
         Ok(s) => s,
         Err(_) => return map,
     };
-    for file in files {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![file], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, u32>(3)?,
-            ))
-        }) {
-            for row in rows.flatten() {
-                let (id, file, name, line) = row;
-                map.insert((file, name, line), id);
-            }
+
+    if let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, u32>(3)?,
+        ))
+    }) {
+        for row in rows.flatten() {
+            let (id, file, name, line) = row;
+            map.insert((file, name, line), id);
         }
     }
+
+    let _ = conn.execute("DROP TABLE IF EXISTS temp._analysis_files", []);
     map
 }
 
@@ -1063,10 +1093,10 @@ fn write_complexity(
     file_symbols: &HashMap<String, FileSymbols>,
     analysis_files: &HashSet<&str>,
     node_id_map: &HashMap<(String, String, u32), i64>,
-) {
+) -> bool {
     let tx = match conn.unchecked_transaction() {
         Ok(tx) => tx,
-        Err(_) => return,
+        Err(_) => return false,
     };
 
     let mut stmt = match tx.prepare(
@@ -1080,7 +1110,7 @@ fn write_complexity(
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
     ) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(_) => return false,
     };
 
     fn insert_def_complexity(
@@ -1132,7 +1162,7 @@ fn write_complexity(
         }
     }
 
-    let _ = tx.commit();
+    tx.commit().is_ok()
 }
 
 /// Write CFG blocks and edges from parsed definitions to DB tables.
@@ -1141,10 +1171,10 @@ fn write_cfg(
     file_symbols: &HashMap<String, FileSymbols>,
     analysis_files: &HashSet<&str>,
     node_id_map: &HashMap<(String, String, u32), i64>,
-) {
+) -> bool {
     let tx = match conn.unchecked_transaction() {
         Ok(tx) => tx,
-        Err(_) => return,
+        Err(_) => return false,
     };
 
     let mut block_stmt = match tx.prepare(
@@ -1185,7 +1215,7 @@ fn write_cfg(
         }
     }
 
-    let _ = tx.commit();
+    tx.commit().is_ok()
 }
 
 /// Write CFG data for a single definition.
@@ -1243,10 +1273,10 @@ fn write_dataflow(
     conn: &Connection,
     file_symbols: &HashMap<String, FileSymbols>,
     analysis_files: &HashSet<&str>,
-) {
+) -> bool {
     let tx = match conn.unchecked_transaction() {
         Ok(tx) => tx,
-        Err(_) => return,
+        Err(_) => return false,
     };
 
     let mut insert_stmt = match tx.prepare(
@@ -1349,7 +1379,7 @@ fn write_dataflow(
         }
     }
 
-    let _ = tx.commit();
+    tx.commit().is_ok()
 }
 
 /// Resolve a function name to a node ID, trying same-file first then global.
