@@ -23,7 +23,13 @@ import { loadNative } from '../../../infrastructure/native.js';
 import { semverCompare } from '../../../infrastructure/update-check.js';
 import { toErrorMessage } from '../../../shared/errors.js';
 import { CODEGRAPH_VERSION } from '../../../shared/version.js';
-import type { BuildGraphOpts, BuildResult, Definition, ExtractorOutput } from '../../../types.js';
+import type {
+  BetterSqlite3Database,
+  BuildGraphOpts,
+  BuildResult,
+  Definition,
+  ExtractorOutput,
+} from '../../../types.js';
 import { getActiveEngine } from '../../parser.js';
 import { setWorkspaces } from '../resolve.js';
 import { PipelineContext } from './context.js';
@@ -449,6 +455,106 @@ async function runPostNativeStructure(
   return performance.now() - structureStart;
 }
 
+/**
+ * JS fallback for AST/complexity/CFG/dataflow analysis after native orchestrator.
+ * Used when the Rust addon doesn't include analysis persistence (older addon
+ * version) or when analysis failed on the Rust side.
+ */
+async function runPostNativeAnalysis(
+  ctx: PipelineContext,
+  allFileSymbols: Map<string, ExtractorOutput>,
+  changedFiles: string[] | undefined,
+): Promise<{ astMs: number; complexityMs: number; cfgMs: number; dataflowMs: number }> {
+  const timing = { astMs: 0, complexityMs: 0, cfgMs: 0, dataflowMs: 0 };
+
+  // Scope analysis fileSymbols to changed files only
+  let analysisFileSymbols: Map<string, ExtractorOutput>;
+  if (changedFiles && changedFiles.length > 0) {
+    analysisFileSymbols = new Map();
+    for (const f of changedFiles) {
+      const entry = allFileSymbols.get(f);
+      if (entry) analysisFileSymbols.set(f, entry);
+    }
+  } else {
+    analysisFileSymbols = allFileSymbols;
+  }
+
+  // Reopen nativeDb for analysis features (suspend/resume WAL pattern).
+  const native = loadNative();
+  if (native?.NativeDatabase) {
+    try {
+      ctx.nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
+      if (ctx.engineOpts) ctx.engineOpts.nativeDb = ctx.nativeDb;
+    } catch {
+      ctx.nativeDb = undefined;
+      if (ctx.engineOpts) ctx.engineOpts.nativeDb = undefined;
+    }
+  }
+
+  // Wire up WAL checkpoint callbacks for the analysis engine
+  if (ctx.nativeDb && ctx.engineOpts) {
+    ctx.engineOpts.suspendJsDb = () => {
+      ctx.db.pragma('wal_checkpoint(TRUNCATE)');
+    };
+    ctx.engineOpts.resumeJsDb = () => {
+      try {
+        ctx.nativeDb?.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      } catch (e) {
+        debug(
+          `resumeJsDb: WAL checkpoint failed (nativeDb may already be closed): ${toErrorMessage(e)}`,
+        );
+      }
+    };
+  }
+
+  try {
+    const { runAnalyses: runAnalysesFn } = (await import('../../../ast-analysis/engine.js')) as {
+      runAnalyses: (
+        db: BetterSqlite3Database,
+        fileSymbols: Map<string, ExtractorOutput>,
+        rootDir: string,
+        opts: Record<string, unknown>,
+        engineOpts?: Record<string, unknown>,
+      ) => Promise<{ astMs?: number; complexityMs?: number; cfgMs?: number; dataflowMs?: number }>;
+    };
+    const result = await runAnalysesFn(
+      ctx.db,
+      analysisFileSymbols,
+      ctx.rootDir,
+      ctx.opts as Record<string, unknown>,
+      ctx.engineOpts as Record<string, unknown> | undefined,
+    );
+    timing.astMs = result.astMs ?? 0;
+    timing.complexityMs = result.complexityMs ?? 0;
+    timing.cfgMs = result.cfgMs ?? 0;
+    timing.dataflowMs = result.dataflowMs ?? 0;
+  } catch (err) {
+    warn(`Analysis phases failed after native build: ${toErrorMessage(err)}`);
+  }
+
+  // Close nativeDb after analyses
+  if (ctx.nativeDb) {
+    try {
+      ctx.nativeDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ignore checkpoint errors */
+    }
+    try {
+      ctx.nativeDb.close();
+    } catch {
+      /* ignore close errors */
+    }
+    ctx.nativeDb = undefined;
+    if (ctx.engineOpts) {
+      ctx.engineOpts.nativeDb = undefined;
+      ctx.engineOpts.suspendJsDb = undefined;
+      ctx.engineOpts.resumeJsDb = undefined;
+    }
+  }
+
+  return timing;
+}
+
 /** Format timing result from native orchestrator phases + JS post-processing. */
 function formatNativeTimingResult(
   p: Record<string, number>,
@@ -545,7 +651,7 @@ async function tryNativeOrchestrator(
   );
 
   // ── Post-native structure + analysis ──────────────────────────────
-  const analysisTiming = {
+  let analysisTiming = {
     astMs: +(p.astMs ?? 0),
     complexityMs: +(p.complexityMs ?? 0),
     cfgMs: +(p.cfgMs ?? 0),
@@ -556,21 +662,42 @@ async function tryNativeOrchestrator(
   // already handled it. For full builds and large incrementals where Rust
   // skipped structure, we must run the JS fallback.
   const needsStructure = !result.structureHandled;
+  // When the Rust addon doesn't include analysis persistence (older addon
+  // version or analysis failed), fall back to JS-side analysis.
+  const needsAnalysisFallback =
+    !result.analysisComplete &&
+    (ctx.opts.ast !== false ||
+      ctx.opts.complexity !== false ||
+      ctx.opts.cfg !== false ||
+      ctx.opts.dataflow !== false);
 
-  if (needsStructure) {
-    // In native-first mode the proxy is already wired — no WAL handoff needed.
-    if (!ctx.nativeFirstProxy && !handoffWalAfterNativeBuild(ctx)) {
+  if (needsStructure || needsAnalysisFallback) {
+    // When analysis fallback is needed, handoff to better-sqlite3 — the
+    // analysis engine uses the suspend/resume WAL pattern that requires a
+    // real better-sqlite3 connection, not the NativeDbProxy.
+    if (needsAnalysisFallback && ctx.nativeFirstProxy) {
+      closeNativeDb(ctx, 'pre-analysis-fallback');
+      ctx.db = openDb(ctx.dbPath);
+      ctx.nativeFirstProxy = false;
+    } else if (!ctx.nativeFirstProxy && !handoffWalAfterNativeBuild(ctx)) {
       // DB reopen failed — return partial result
       return formatNativeTimingResult(p, 0, analysisTiming);
     }
 
     const fileSymbols = reconstructFileSymbolsFromDb(ctx);
-    structurePatchMs = await runPostNativeStructure(
-      ctx,
-      fileSymbols,
-      !!result.isFullBuild,
-      result.structureScope ?? result.changedFiles,
-    );
+
+    if (needsStructure) {
+      structurePatchMs = await runPostNativeStructure(
+        ctx,
+        fileSymbols,
+        !!result.isFullBuild,
+        result.structureScope ?? result.changedFiles,
+      );
+    }
+
+    if (needsAnalysisFallback) {
+      analysisTiming = await runPostNativeAnalysis(ctx, fileSymbols, result.changedFiles);
+    }
   }
 
   closeDbPair({ db: ctx.db, nativeDb: ctx.nativeDb });
@@ -588,6 +715,13 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
   // suspend it now to avoid dual-connection WAL corruption during stages.
   if (ctx.db && ctx.nativeDb) {
     suspendNativeDb(ctx, 'pre-collect');
+    // When nativeFirstProxy is true, ctx.db is a NativeDbProxy wrapping the
+    // now-closed NativeDatabase. Replace it with a real better-sqlite3
+    // connection so the JS pipeline stages can operate normally.
+    if (ctx.nativeFirstProxy) {
+      ctx.db = openDb(ctx.dbPath);
+      ctx.nativeFirstProxy = false;
+    }
   }
 
   await collectFiles(ctx);
