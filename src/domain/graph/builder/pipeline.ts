@@ -522,7 +522,7 @@ async function runPostNativeAnalysis(
       analysisFileSymbols,
       ctx.rootDir,
       ctx.opts as Record<string, unknown>,
-      ctx.engineOpts as Record<string, unknown> | undefined,
+      ctx.engineOpts as unknown as Record<string, unknown> | undefined,
     );
     timing.astMs = result.astMs ?? 0;
     timing.complexityMs = result.complexityMs ?? 0;
