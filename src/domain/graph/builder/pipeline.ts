@@ -493,7 +493,7 @@ async function runPostNativeAnalysis(
 
   // Flush JS WAL pages once so Rust can see them, then no-op callbacks.
   // Previously each feature called wal_checkpoint(TRUNCATE) individually
-  // (~68ms each × 3-4 features). One PASSIVE checkpoint suffices.
+  // (~68ms each × 3-4 features). One FULL checkpoint suffices.
   if (ctx.nativeDb && ctx.engineOpts) {
     ctx.db.pragma('wal_checkpoint(FULL)');
     ctx.engineOpts.suspendJsDb = () => {};
@@ -751,7 +751,7 @@ async function runPipelineStages(ctx: PipelineContext): Promise<void> {
   // Reopen nativeDb for feature modules (ast, cfg, complexity, dataflow).
   // Skip for small incremental builds — same rationale as insertNodes above.
   //
-  // Perf: do ONE upfront PASSIVE checkpoint to flush JS WAL pages so Rust
+  // Perf: do ONE upfront FULL checkpoint to flush JS WAL pages so Rust
   // can see the latest rows, then make suspendJsDb/resumeJsDb no-ops.
   // Previously each feature called wal_checkpoint(TRUNCATE) individually
   // (~68ms each × 3-4 features = ~200-270ms overhead on incremental builds).
