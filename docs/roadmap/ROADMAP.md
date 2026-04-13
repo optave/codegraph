@@ -1,6 +1,6 @@
 # Codegraph Roadmap
 
-> **Current version:** 3.9.2 | **Status:** Active development | **Updated:** 2026-04-06
+> **Current version:** 3.9.3 | **Status:** Active development | **Updated:** 2026-04-12
 
 Codegraph is a strong local-first code graph CLI. This roadmap describes planned improvements across fourteen phases -- closing gaps with commercial code intelligence platforms while preserving codegraph's core strengths: fully local, open source, zero cloud dependency by default.
 
