@@ -269,8 +269,15 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    // 3b. Mark symbols as exported when their files are targets of reexports edges
-    // from production-reachable barrels (traces through multi-level chains) (#837)
+    // 3b. Mark symbols as exported when their files are targets of reexport edges
+    // from production-reachable barrels (traces through multi-level chains) (#837).
+    //
+    // The recursive CTE works in two stages:
+    //   Base case: find all file nodes directly imported by production (non-test) files.
+    //   Recursive step: follow 'reexports' edges outward to discover barrel chains
+    //     (e.g. index.ts re-exports from internal.ts which re-exports from core.ts).
+    // Then: any symbol whose file is a reexport target of a prod-reachable barrel
+    // is considered exported (prevents false dead-code classification).
     {
         let sql = format!(
             "WITH RECURSIVE prod_reachable(file_id) AS (
@@ -618,8 +625,10 @@ pub(crate) fn do_classify_incremental(
     );
     let mut exported_ids = query_id_set(&tx, &exported_sql, &all_affected)?;
 
-    // Mark symbols as exported when their files are targets of reexports edges
-    // from production-reachable barrels (traces through multi-level chains) (#837)
+    // Mark symbols as exported when their files are targets of reexport edges
+    // from production-reachable barrels (traces through multi-level chains) (#837).
+    // Same recursive CTE logic as the full-classify path (step 3b), but scoped
+    // to affected files only via the additional `AND n.file IN (...)` filter.
     {
         let reexport_sql = format!(
             "WITH RECURSIVE prod_reachable(file_id) AS (
