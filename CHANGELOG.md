@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [3.9.3](https://github.com/optave/ops-codegraph-tool/compare/v3.9.2...v3.9.3) (2026-04-12)
+
+**Native engine parity and build performance.** The Rust engine now produces identical role classifications as the JS fallback — reexport chains, type-only imports, and constant classification all match. Build performance improves across the board: the entire analysis pipeline (complexity, CFG, dataflow, AST) now runs inside the Rust orchestrator on a single rusqlite connection, batched WAL checkpoints cut incremental rebuild overhead by 49%, and a full-build regression from v3.9.2 is fixed. A new CI parity job catches engine divergences before they ship. The incremental rebuild guide documents what data requires a full rebuild and adds automatic 24h staleness detection to Claude Code hooks.
+
+### Bug Fixes
+
+* **native:** align Rust role classification with JS — reexport chains, type-only imports, constant classification ([#918](https://github.com/optave/ops-codegraph-tool/pull/918))
+* **native:** strip pre-release suffix in semverCompare — dev builds were silently falling back to JS pipeline ([#898](https://github.com/optave/ops-codegraph-tool/pull/898))
+* **test:** restore strict parity assertions and add dedicated CI parity job ([#916](https://github.com/optave/ops-codegraph-tool/pull/916))
+* **release:** decouple version bumps from release PRs to fix CI failures ([#893](https://github.com/optave/ops-codegraph-tool/pull/893))
+
+### Performance
+
+* **native:** move analysis persistence (AST, complexity, CFG, dataflow) into Rust orchestrator — eliminates JS WASM re-parse ([#907](https://github.com/optave/ops-codegraph-tool/pull/907))
+* **native:** use single rusqlite connection for entire build pipeline — 12% faster full builds, 30% faster incremental, 14% smaller DB ([#897](https://github.com/optave/ops-codegraph-tool/pull/897))
+* **native:** fix full-build regression from NativeDbProxy overhead ([#906](https://github.com/optave/ops-codegraph-tool/pull/906))
+* **incremental:** batch WAL checkpoints and fix native CFG bulk insert — 49% faster incremental rebuilds ([#917](https://github.com/optave/ops-codegraph-tool/pull/917))
+* **query:** fix diffImpact latency regression from redundant config loading ([#905](https://github.com/optave/ops-codegraph-tool/pull/905))
+
+### Refactors
+
+* adopt dead helpers across codebase — 28 files, -30 net lines ([#895](https://github.com/optave/ops-codegraph-tool/pull/895))
+
+### Docs
+
+* incremental vs full rebuild guide with automatic 24h staleness check ([#919](https://github.com/optave/ops-codegraph-tool/pull/919))
+* update build, query, and incremental benchmarks for 3.9.2 ([#900](https://github.com/optave/ops-codegraph-tool/pull/900), [#901](https://github.com/optave/ops-codegraph-tool/pull/901), [#902](https://github.com/optave/ops-codegraph-tool/pull/902))
+
+### Chores
+
+* **deps:** bump web-tree-sitter from 0.26.7 to 0.26.8 ([#913](https://github.com/optave/ops-codegraph-tool/pull/913))
+* **deps:** bump actions/setup-go from 5 to 6, actions/github-script from 8 to 9, actions/setup-python from 5 to 6 ([#910](https://github.com/optave/ops-codegraph-tool/pull/910), [#909](https://github.com/optave/ops-codegraph-tool/pull/909), [#908](https://github.com/optave/ops-codegraph-tool/pull/908))
+* **deps-dev:** bump vitest from 4.1.2 to 4.1.4, @vitest/coverage-v8 from 4.1.2 to 4.1.4 ([#915](https://github.com/optave/ops-codegraph-tool/pull/915), [#912](https://github.com/optave/ops-codegraph-tool/pull/912))
+* **deps-dev:** bump tree-sitter-cli from 0.26.7 to 0.26.8, @biomejs/biome from 2.4.10 to 2.4.11 ([#911](https://github.com/optave/ops-codegraph-tool/pull/911), [#914](https://github.com/optave/ops-codegraph-tool/pull/914))
+
 ## [3.9.2](https://github.com/optave/ops-codegraph-tool/compare/v3.9.1...v3.9.2) (2026-04-06)
 
 **Engine parity fix and build performance improvements.** This patch fixes a native engine deduplication bug that caused divergent results when multiple type map entries existed for the same symbol, improving engine parity. Build performance improves with deferred native database initialization (skipping the native DB entirely on no-op rebuilds) and a fix for an incremental rebuild regression introduced in v3.9.1. The resolution benchmark suite is significantly expanded with dynamic call tracing across all language fixtures, and the release workflow now gates on precision/recall thresholds.
