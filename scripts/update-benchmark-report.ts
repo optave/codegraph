@@ -101,7 +101,7 @@ function engineRow(h, prev, engineKey) {
 	const dbTrend = trend(e.perFile.dbSizeBytes, p?.perFile?.dbSizeBytes);
 
 	return (
-		`| ${h.version} | ${engineKey} | ${h.date} | ${h.files} ` +
+		`| ${h.version} | ${engineKey} | ${h.date} | ${e.files ?? h.files} ` +
 		`| ${e.perFile.buildTimeMs}${buildTrend} ` +
 		`| ${e.queryTimeMs}${queryTrend} ` +
 		`| ${e.perFile.nodes}${nodeTrend} ` +
@@ -145,7 +145,7 @@ for (const engineKey of ['native', 'wasm']) {
 	md += `| Nodes | ${e.nodes.toLocaleString()} |\n`;
 	md += `| Edges | ${e.edges.toLocaleString()} |\n`;
 	md += `| DB size | ${formatBytes(e.dbSizeBytes)} |\n`;
-	md += `| Files | ${latest.files} |\n\n`;
+	md += `| Files | ${e.files ?? latest.files} |\n\n`;
 }
 
 // ── Shared phase definitions ──────────────────────────────────────────
