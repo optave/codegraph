@@ -40,6 +40,7 @@ if (!isWorker()) {
 	function formatEngineResult(data) {
 		if (!data) return null;
 		return {
+			files: data.files,
 			buildTimeMs: data.buildTimeMs,
 			queryTimeMs: data.queryTimeMs,
 			nodes: data.nodes,
