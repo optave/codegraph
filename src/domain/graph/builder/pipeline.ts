@@ -88,10 +88,18 @@ function checkEngineSchemaMismatch(ctx: PipelineContext): void {
     );
     ctx.forceFullRebuild = true;
   }
+  // When the native engine is active, the Rust addon's version (ctx.engineVersion)
+  // is written into codegraph_version by setBuildMeta after a native orchestrator
+  // build. The check must compare against the same version, otherwise JS and Rust
+  // fight over which version to record — causing every incremental build to be
+  // promoted to a full rebuild when npm and crate versions diverge.
+  const effectiveVersion = ctx.engineName === 'native' && ctx.engineVersion
+    ? ctx.engineVersion
+    : CODEGRAPH_VERSION;
   const prevVersion = meta('codegraph_version');
-  if (prevVersion && prevVersion !== CODEGRAPH_VERSION) {
+  if (prevVersion && prevVersion !== effectiveVersion) {
     info(
-      `Codegraph version changed (${prevVersion} → ${CODEGRAPH_VERSION}), promoting to full rebuild.`,
+      `Codegraph version changed (${prevVersion} → ${effectiveVersion}), promoting to full rebuild.`,
     );
     ctx.forceFullRebuild = true;
   }
@@ -631,10 +639,16 @@ async function tryNativeOrchestrator(
   const p = result.phases;
 
   // Sync build_meta so JS-side version/engine checks work on next build.
+  // Use the Rust addon version as codegraph_version when the native
+  // orchestrator performed the build — the Rust side's check_version_mismatch
+  // compares this value against CARGO_PKG_VERSION.  Writing the JS
+  // CODEGRAPH_VERSION here would create a permanent mismatch whenever the
+  // npm package version diverges from the Rust crate version, forcing every
+  // subsequent native build to be a full rebuild (no incremental).
   setBuildMeta(ctx.db, {
     engine: ctx.engineName,
     engine_version: ctx.engineVersion || '',
-    codegraph_version: CODEGRAPH_VERSION,
+    codegraph_version: ctx.engineVersion || CODEGRAPH_VERSION,
     schema_version: String(ctx.schemaVersion),
     built_at: new Date().toISOString(),
     node_count: String(result.nodeCount ?? 0),
