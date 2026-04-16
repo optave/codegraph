@@ -341,6 +341,20 @@ const FUNCTION_SCOPE_TYPES = new Set([
 ]);
 
 /**
+ * Return true when `node` has an ancestor whose type is in FUNCTION_SCOPE_TYPES.
+ * Used by the walk path to skip declarations inside function bodies, matching
+ * the query path's top-down FUNCTION_SCOPE_TYPES filter.
+ */
+function hasFunctionScopeAncestor(node: TreeSitterNode): boolean {
+  let p: TreeSitterNode | null = node.parent ?? null;
+  while (p) {
+    if (FUNCTION_SCOPE_TYPES.has(p.type)) return true;
+    p = p.parent ?? null;
+  }
+  return false;
+}
+
+/**
  * Recursively walk the AST to extract `const x = <literal>` as constants.
  * Skips nodes inside function scopes so only file-level / block-level constants
  * are captured — matching the native engine's behaviour.
@@ -748,12 +762,18 @@ function handleVariableDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
             line: node.startPosition.row + 1,
             endLine: nodeEndLine(node),
           });
-        } else if (isConst && nameN.type === 'object_pattern') {
+        } else if (
+          isConst &&
+          nameN.type === 'object_pattern' &&
+          !hasFunctionScopeAncestor(node)
+        ) {
           // Destructured bindings: const { handleToken, checkPermissions } = initAuth(...)
           // Each destructured property becomes a function definition so it can be
           // resolved when passed as a callback (e.g. router.use(handleToken)).
           // Restricted to const to avoid creating spurious definitions for
           // transient let/var destructuring (e.g. let { userId } = parseRequest(req)).
+          // Scope guard mirrors extractDestructuredBindingsWalk (query path) and
+          // handle_var_decl (Rust path) — skips bindings inside function bodies.
           extractDestructuredBindings(
             nameN,
             node.startPosition.row + 1,

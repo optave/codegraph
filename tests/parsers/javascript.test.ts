@@ -375,6 +375,20 @@ describe('JavaScript parser', () => {
       expect(symbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'original' }));
     });
 
+    it('does not extract destructured bindings declared inside function scope', () => {
+      // Parity with the query path (extractDestructuredBindingsWalk) and the
+      // Rust walk path (handle_var_decl) — both skip FUNCTION_SCOPE_TYPES.
+      const symbols = parseJS(
+        `function setup() { const { handleToken, checkPermissions } = initAuth(config); }`,
+      );
+      expect(symbols.definitions).not.toContainEqual(
+        expect.objectContaining({ name: 'handleToken' }),
+      );
+      expect(symbols.definitions).not.toContainEqual(
+        expect.objectContaining({ name: 'checkPermissions' }),
+      );
+    });
+
     // Line range verification
     it('sets correct line and endLine on callback definition', () => {
       const code = [
