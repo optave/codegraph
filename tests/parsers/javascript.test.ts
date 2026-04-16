@@ -355,6 +355,18 @@ describe('JavaScript parser', () => {
       );
     });
 
+    it('does not extract definitions from let/var destructured bindings', () => {
+      const letSymbols = parseJS(`let { userId, email } = parseRequest(req);`);
+      expect(letSymbols.definitions).not.toContainEqual(
+        expect.objectContaining({ name: 'userId' }),
+      );
+      expect(letSymbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'email' }));
+
+      const varSymbols = parseJS(`var { foo, bar } = getConfig();`);
+      expect(varSymbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'foo' }));
+      expect(varSymbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'bar' }));
+    });
+
     // Line range verification
     it('sets correct line and endLine on callback definition', () => {
       const code = [

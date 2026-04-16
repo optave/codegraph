@@ -386,7 +386,10 @@ function extractDestructuredBindingsWalk(node: TreeSitterNode, definitions: Defi
     }
 
     const t = declNode.type;
-    if (t === 'lexical_declaration' || t === 'variable_declaration') {
+    if (
+      (t === 'lexical_declaration' || t === 'variable_declaration') &&
+      declNode.text.startsWith('const ')
+    ) {
       for (let j = 0; j < declNode.childCount; j++) {
         const declarator = declNode.child(j);
         if (!declarator || declarator.type !== 'variable_declarator') continue;
@@ -745,10 +748,12 @@ function handleVariableDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
             line: node.startPosition.row + 1,
             endLine: nodeEndLine(node),
           });
-        } else if (nameN.type === 'object_pattern') {
+        } else if (isConst && nameN.type === 'object_pattern') {
           // Destructured bindings: const { handleToken, checkPermissions } = initAuth(...)
           // Each destructured property becomes a function definition so it can be
-          // resolved when passed as a callback (e.g. router.use(handleToken))
+          // resolved when passed as a callback (e.g. router.use(handleToken)).
+          // Restricted to const to avoid creating spurious definitions for
+          // transient let/var destructuring (e.g. let { userId } = parseRequest(req)).
           extractDestructuredBindings(
             nameN,
             node.startPosition.row + 1,
