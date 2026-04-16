@@ -280,7 +280,16 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 cfg: build_function_cfg(&value_n, "javascript", source),
                 children: opt_children(children),
             });
-        } else if is_const && name_n.kind() == "object_pattern" {
+        } else if is_const && name_n.kind() == "object_pattern"
+            && find_parent_of_types(node, &[
+                "function_declaration", "arrow_function",
+                "function_expression", "method_definition",
+                "generator_function_declaration", "generator_function",
+            ]).is_none()
+        {
+            // Parity with TS query path (extractDestructuredBindingsWalk):
+            // skip destructured const bindings inside function scopes so the
+            // Rust walk path matches FUNCTION_SCOPE_TYPES behaviour.
             extract_destructured_bindings(&name_n, source, start_line(node), end_line(node), &mut symbols.definitions);
         } else if is_const && is_js_literal(&value_n)
             && find_parent_of_types(node, &[
@@ -1761,6 +1770,22 @@ mod tests {
         let s2 = parse_js("var { foo, bar } = getConfig();");
         assert!(!s2.definitions.iter().any(|d| d.name == "foo"));
         assert!(!s2.definitions.iter().any(|d| d.name == "bar"));
+    }
+
+    #[test]
+    fn skips_destructured_bindings_inside_function_scope() {
+        // Parity with TS query path (extractDestructuredBindingsWalk), which
+        // skips FUNCTION_SCOPE_TYPES. Function-internal destructured const
+        // bindings must not be emitted as definitions in the Rust walk path.
+        let s = parse_js("function setup() { const { handleToken, checkPermissions } = initAuth(config); }");
+        assert!(
+            !s.definitions.iter().any(|d| d.name == "handleToken"),
+            "function-nested destructured binding must not be emitted"
+        );
+        assert!(
+            !s.definitions.iter().any(|d| d.name == "checkPermissions"),
+            "function-nested destructured binding must not be emitted"
+        );
     }
 
     #[test]
