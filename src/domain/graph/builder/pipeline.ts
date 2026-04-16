@@ -575,7 +575,9 @@ async function tryNativeOrchestrator(
     const native = loadNative();
     if (native?.NativeDatabase) {
       try {
-        // Close better-sqlite3 before opening rusqlite to avoid WAL conflicts
+        // Close better-sqlite3 before opening rusqlite to avoid WAL conflicts.
+        // Uses raw close() instead of closeDb() intentionally — the advisory lock
+        // is kept and transferred to the NativeDbProxy below, not released here.
         ctx.db.close();
         acquireAdvisoryLock(ctx.dbPath);
         ctx.nativeDb = native.NativeDatabase.openReadWrite(ctx.dbPath);
@@ -594,7 +596,7 @@ async function tryNativeOrchestrator(
           debug(`tryNativeOrchestrator: close failed during fallback: ${toErrorMessage(e)}`);
         }
         ctx.nativeDb = undefined;
-        ctx.nativeFirstProxy = false;
+        ctx.nativeFirstProxy = false; // defensive: reset in case future refactors move the assignment above throwing lines
         releaseAdvisoryLock(`${ctx.dbPath}.lock`);
         // Reopen better-sqlite3 for JS pipeline fallback
         ctx.db = openDb(ctx.dbPath);
