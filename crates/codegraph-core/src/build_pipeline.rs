@@ -78,9 +78,8 @@ pub struct BuildPipelineResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub structure_scope: Option<Vec<String>>,
     /// Whether the Rust pipeline handled the structure phase (directory nodes,
-    /// contains edges, file metrics). True when the small-incremental fast path
-    /// ran (≤5 changed files, >20 existing files). When false, the JS caller
-    /// must run its own structure phase as a post-processing step.
+    /// contains edges, file and directory metrics). Always true — the Rust
+    /// pipeline handles both the small-incremental fast path and full builds.
     pub structure_handled: bool,
     /// Whether the Rust pipeline wrote AST/complexity/CFG/dataflow to the DB.
     /// When true, the JS caller can skip `runPostNativeAnalysis` entirely.
@@ -373,11 +372,22 @@ pub fn run_pipeline(
             &line_count_map,
             &file_symbols,
         );
+    } else {
+        // Full structure: directory nodes, contains edges, file + directory metrics.
+        let changed_for_structure: Option<Vec<String>> = if change_result.is_full_build {
+            None
+        } else {
+            Some(changed_files.clone())
+        };
+        structure::build_full_structure(
+            conn,
+            &file_symbols,
+            &collect_result.directories,
+            root_dir,
+            &line_count_map,
+            changed_for_structure.as_deref(),
+        );
     }
-    // For full/larger builds, the JS fallback handles full structure via
-    // `features/structure.ts`. The Rust orchestrator handles the fast path
-    // for small incremental builds. Full structure computation will be
-    // ported in a follow-up.
     timing.structure_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let t0 = Instant::now();
@@ -490,7 +500,7 @@ pub fn run_pipeline(
         removed_count: change_result.removed.len(),
         is_full_build: change_result.is_full_build,
         structure_scope: changed_file_list.clone(),
-        structure_handled: use_fast_path,
+        structure_handled: true,
         analysis_complete: do_analysis && analysis_ok,
     })
 }
