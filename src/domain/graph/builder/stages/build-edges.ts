@@ -712,15 +712,18 @@ function buildClassHierarchyEdges(
 function reconnectReverseDepEdges(ctx: PipelineContext): void {
   const { db } = ctx;
   const findNodeStmt = db.prepare(
-    'SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? LIMIT 1',
+    'SELECT id FROM nodes WHERE name = ? AND kind = ? AND file = ? ORDER BY ABS(line - ?) LIMIT 1',
   );
   const reconnectedRows: EdgeRowTuple[] = [];
   let dropped = 0;
 
   for (const saved of ctx.savedReverseDepEdges) {
-    const newTarget = findNodeStmt.get(saved.tgtName, saved.tgtKind, saved.tgtFile) as
-      | { id: number }
-      | undefined;
+    const newTarget = findNodeStmt.get(
+      saved.tgtName,
+      saved.tgtKind,
+      saved.tgtFile,
+      saved.tgtLine,
+    ) as { id: number } | undefined;
     if (newTarget) {
       reconnectedRows.push([
         saved.sourceId,
