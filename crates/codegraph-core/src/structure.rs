@@ -357,6 +357,29 @@ fn insert_directory_nodes(conn: &Connection, all_dirs: &HashSet<String>) {
     let _ = tx.commit();
 }
 
+/// Load all file paths from the DB that reside in the given directories.
+/// Used during incremental builds to ensure unchanged files in affected
+/// directories retain their dir→file containment edges after cleanup.
+fn load_file_paths_in_dirs(conn: &Connection, dirs: &HashSet<String>) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut stmt = match conn.prepare(
+        "SELECT name FROM nodes WHERE kind = 'file'",
+    ) {
+        Ok(s) => s,
+        Err(_) => return result,
+    };
+    if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+        for row in rows.flatten() {
+            if let Some(dir) = parent_dir(&row) {
+                if dirs.contains(&dir) {
+                    result.push(row);
+                }
+            }
+        }
+    }
+    result
+}
+
 fn insert_contains_edges(
     conn: &Connection,
     file_symbols: &HashMap<String, FileSymbols>,
@@ -378,8 +401,28 @@ fn insert_contains_edges(
             Err(_) => return,
         };
 
-        // Directory → file edges
-        for rel_path in file_symbols.keys() {
+        // In incremental mode, we need ALL file paths in affected directories,
+        // not just the changed files in file_symbols. Load existing file nodes
+        // from the DB so unchanged files keep their dir→file containment edges.
+        let all_file_paths: Vec<String> = if affected_dirs.is_some() {
+            load_file_paths_in_dirs(&tx, affected_dirs.as_ref().unwrap())
+        } else {
+            Vec::new()
+        };
+
+        // Directory → file edges: iterate over file_symbols keys (covers
+        // changed/parsed files) plus DB-loaded paths (covers unchanged files
+        // in affected directories during incremental builds).
+        let mut seen_files: HashSet<String> = HashSet::new();
+        let file_paths_iter = file_symbols
+            .keys()
+            .map(|s| s.as_str())
+            .chain(all_file_paths.iter().map(|s| s.as_str()));
+
+        for rel_path in file_paths_iter {
+            if !seen_files.insert(rel_path.to_string()) {
+                continue; // deduplicate
+            }
             let dir = match parent_dir(rel_path) {
                 Some(d) => d,
                 None => continue,
@@ -545,12 +588,52 @@ fn compute_directory_metrics(
     all_dirs: &HashSet<String>,
     import_edges: &[ImportEdge],
 ) {
-    // Build dir→files map (transitive: each dir contains all files in all subdirs)
+    // Load ALL file paths from DB so directory metrics account for unchanged
+    // files during incremental builds (file_symbols only has changed files).
+    let all_db_files: Vec<String> = {
+        let mut v = Vec::new();
+        if let Ok(mut stmt) = conn.prepare("SELECT name FROM nodes WHERE kind = 'file'") {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for row in rows.flatten() {
+                    v.push(row);
+                }
+            }
+        }
+        v
+    };
+
+    // Build dir→files map (transitive: each dir contains all files in all subdirs).
+    // Uses DB files as the complete set, supplemented by file_symbols for any
+    // files not yet in the DB (full build where nodes were just inserted).
     let mut dir_files: HashMap<&str, Vec<&str>> = HashMap::new();
     for dir in all_dirs {
         dir_files.insert(dir.as_str(), Vec::new());
     }
+    let mut seen_files: HashSet<&str> = HashSet::new();
+    // First: DB files (complete set for incremental builds)
+    for rel_path in &all_db_files {
+        if !seen_files.insert(rel_path.as_str()) {
+            continue;
+        }
+        let mut d = match parent_dir(rel_path) {
+            Some(p) => p,
+            None => continue,
+        };
+        while !d.is_empty() && d != "." {
+            if let Some(files) = dir_files.get_mut(d.as_str()) {
+                files.push(rel_path.as_str());
+            }
+            d = match parent_dir(&d) {
+                Some(p) => p,
+                None => break,
+            };
+        }
+    }
+    // Second: file_symbols keys (covers newly-inserted files in full builds)
     for rel_path in file_symbols.keys() {
+        if !seen_files.insert(rel_path.as_str()) {
+            continue;
+        }
         let mut d = match parent_dir(rel_path) {
             Some(p) => p,
             None => continue,
@@ -612,12 +695,30 @@ fn compute_directory_metrics(
         }
     }
 
-    // Count symbols per directory (batch from file_symbols, matching JS dedup logic)
+    // Count symbols per directory.
+    // Use DB counts (covers all files including unchanged ones in incremental
+    // builds) and fall back to file_symbols for newly-inserted files.
+    let mut db_symbol_counts: HashMap<String, i64> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT file, COUNT(*) FROM nodes \
+         WHERE kind != 'file' AND kind != 'directory' \
+         GROUP BY file",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }) {
+            for row in rows.flatten() {
+                db_symbol_counts.insert(row.0, row.1);
+            }
+        }
+    }
     let mut dir_symbol_counts: HashMap<&str, i64> = HashMap::new();
     for (dir, files) in &dir_files {
         let mut count: i64 = 0;
         for f in files {
-            if let Some(sym) = file_symbols.get(*f) {
+            if let Some(&c) = db_symbol_counts.get(*f) {
+                count += c;
+            } else if let Some(sym) = file_symbols.get(*f) {
                 let mut seen = HashSet::new();
                 for d in &sym.definitions {
                     let key = format!("{}|{}|{}", d.name, d.kind, d.line);
