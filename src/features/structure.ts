@@ -165,22 +165,23 @@ function computeFileMetrics(
   fanInMap: Map<string, number>,
   fanOutMap: Map<string, number>,
 ): void {
-  // Batch-load import counts per file (distinct imported files,
-  // matching the fast-path semantics in updateChangedFileMetrics)
-  const importCountMap = new Map<string, number>();
-  for (const row of db
-    .prepare(
-      `SELECT n1.file AS src, COUNT(DISTINCT n2.file) AS cnt FROM edges e
-       JOIN nodes n1 ON e.source_id = n1.id
-       JOIN nodes n2 ON e.target_id = n2.id
-       WHERE e.kind = 'imports'
-       GROUP BY n1.file`,
-    )
-    .all() as { src: string; cnt: number }[]) {
-    importCountMap.set(row.src, row.cnt);
-  }
-
   db.transaction(() => {
+    // Batch-load import counts per file (distinct imported files,
+    // matching the fast-path semantics in updateChangedFileMetrics).
+    // Runs inside the transaction for parity with the Rust path.
+    const importCountMap = new Map<string, number>();
+    for (const row of db
+      .prepare(
+        `SELECT n1.file AS src, COUNT(DISTINCT n2.file) AS cnt FROM edges e
+         JOIN nodes n1 ON e.source_id = n1.id
+         JOIN nodes n2 ON e.target_id = n2.id
+         WHERE e.kind = 'imports'
+         GROUP BY n1.file`,
+      )
+      .all() as { src: string; cnt: number }[]) {
+      importCountMap.set(row.src, row.cnt);
+    }
+
     for (const [relPath, symbols] of fileSymbols) {
       const fileRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
       if (!fileRow) continue;
