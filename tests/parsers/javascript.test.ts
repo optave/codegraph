@@ -367,6 +367,14 @@ describe('JavaScript parser', () => {
       expect(varSymbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'bar' }));
     });
 
+    it('extracts renamed destructured const binding under its local alias', () => {
+      const symbols = parseJS(`const { original: renamed } = initAuth();`);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'renamed', kind: 'function' }),
+      );
+      expect(symbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'original' }));
+    });
+
     // Line range verification
     it('sets correct line and endLine on callback definition', () => {
       const code = [
