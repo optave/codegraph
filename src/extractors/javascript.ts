@@ -762,11 +762,7 @@ function handleVariableDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
             line: node.startPosition.row + 1,
             endLine: nodeEndLine(node),
           });
-        } else if (
-          isConst &&
-          nameN.type === 'object_pattern' &&
-          !hasFunctionScopeAncestor(node)
-        ) {
+        } else if (isConst && nameN.type === 'object_pattern' && !hasFunctionScopeAncestor(node)) {
           // Destructured bindings: const { handleToken, checkPermissions } = initAuth(...)
           // Each destructured property becomes a function definition so it can be
           // resolved when passed as a callback (e.g. router.use(handleToken)).

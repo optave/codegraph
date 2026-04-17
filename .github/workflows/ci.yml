@@ -70,6 +70,21 @@ jobs:
             fi
           done
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/codegraph-core
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@3
+
+      - name: Rebuild native addon from PR source
+        shell: bash
+        run: node scripts/ci-rebuild-native.mjs
+
       - name: Run tests
         run: npm test
 
@@ -164,6 +179,21 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/codegraph-core
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@3
+
+      - name: Rebuild native addon from PR source
+        shell: bash
+        run: node scripts/ci-rebuild-native.mjs
 
       - name: Verify native addon is available
         shell: bash
