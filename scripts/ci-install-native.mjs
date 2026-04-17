@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Build the native napi addon from the PR's Rust source and copy the resulting
- * `.node` file over the published platform binary installed in `node_modules`.
+ * Copy the PR-built `.node` artifact (produced by the `native-host-build` CI
+ * job and downloaded into `crates/codegraph-core/`) over the published
+ * platform binary installed in `node_modules`.
  *
- * Used by the CI `test` and `parity` jobs so that parity checks run against
- * the Rust source under review, not against the last-published native binary
- * (which lags behind PR changes and causes false parity failures).
+ * Used by the CI `test` and `parity` jobs so they exercise the native engine
+ * built from the PR's Rust source rather than the last-published binary,
+ * which lags behind PR changes and causes false parity failures.
  */
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,19 +45,16 @@ function resolvePackage() {
 
 const crateDir = path.join('crates', 'codegraph-core');
 
-console.log('[ci-rebuild-native] running `napi build --release`');
-execSync('napi build --release', { cwd: crateDir, stdio: 'inherit' });
-
 const built = fs
   .readdirSync(crateDir)
   .filter((f) => f.endsWith('.node'))
   .map((f) => path.join(crateDir, f));
 
 if (built.length === 0) {
-  throw new Error(`No .node artifact produced in ${crateDir}`);
+  throw new Error(`No .node artifact found in ${crateDir}`);
 }
 if (built.length > 1) {
-  console.warn(`[ci-rebuild-native] multiple .node artifacts found, using ${built[0]}`);
+  console.warn(`[ci-install-native] multiple .node artifacts found, using ${built[0]}`);
 }
 
 const src = built[0];
@@ -66,4 +63,4 @@ const dest = path.join('node_modules', pkg, 'codegraph-core.node');
 
 fs.mkdirSync(path.dirname(dest), { recursive: true });
 fs.copyFileSync(src, dest);
-console.log(`[ci-rebuild-native] copied ${src} -> ${dest}`);
+console.log(`[ci-install-native] copied ${src} -> ${dest}`);
