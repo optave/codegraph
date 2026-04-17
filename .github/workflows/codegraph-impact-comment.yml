@@ -1,3 +1,9 @@
+# This workflow posts the impact analysis comment on PRs.
+# It is split from codegraph-impact.yml so fork PRs work: the `pull_request`
+# event from a fork provides a read-only GITHUB_TOKEN, which cannot post PR
+# comments. Running here via `workflow_run` gives us a write-scoped token
+# without exposing it to untrusted fork code. See GitHub's fork-safe pattern:
+# https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
 name: Codegraph Impact Comment
 on:
   workflow_run:
@@ -6,6 +12,15 @@ on:
 
 permissions:
   pull-requests: write
+  # Required by actions/download-artifact@v4 when downloading from another
+  # workflow run (cross-run artifact API calls require actions: read).
+  actions: read
+
+concurrency:
+  # Prevent duplicate comments if two analysis runs complete in quick succession
+  # for the same PR head. Keyed by the head SHA of the triggering workflow run.
+  group: codegraph-impact-comment-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
 
 jobs:
   comment:
