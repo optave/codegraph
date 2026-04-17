@@ -38,7 +38,45 @@ jobs:
       - name: Run Biome
         run: npx @biomejs/biome check src/ tests/
 
+  native-host-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    name: Native host build (${{ matrix.os }})
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/codegraph-core
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@3
+
+      - name: Build native addon
+        working-directory: crates/codegraph-core
+        run: napi build --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-host-${{ matrix.os }}
+          path: crates/codegraph-core/*.node
+          if-no-files-found: error
+
   test:
+    needs: native-host-build
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +107,16 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Download PR-built native addon
+        uses: actions/download-artifact@v8
+        with:
+          name: native-host-${{ matrix.os }}
+          path: crates/codegraph-core
+
+      - name: Install native addon over published binary
+        shell: bash
+        run: node scripts/ci-install-native.mjs
 
       - name: Run tests
         run: npm test
@@ -135,6 +183,7 @@ jobs:
           node $STRIP_FLAG scripts/verify-imports.ts
 
   parity:
+    needs: native-host-build
     strategy:
       fail-fast: false
       matrix:
@@ -164,6 +213,16 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Download PR-built native addon
+        uses: actions/download-artifact@v8
+        with:
+          name: native-host-${{ matrix.os }}
+          path: crates/codegraph-core
+
+      - name: Install native addon over published binary
+        shell: bash
+        run: node scripts/ci-install-native.mjs
 
       - name: Verify native addon is available
         shell: bash
@@ -224,7 +283,7 @@ jobs:
 
   ci-pipeline:
     if: always()
-    needs: [lint, test, typecheck, audit, verify-imports, rust-check, parity]
+    needs: [lint, native-host-build, test, typecheck, audit, verify-imports, rust-check, parity]
     runs-on: ubuntu-latest
     name: CI Testing Pipeline
     steps:

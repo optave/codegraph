@@ -280,6 +280,17 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 cfg: build_function_cfg(&value_n, "javascript", source),
                 children: opt_children(children),
             });
+        } else if is_const && name_n.kind() == "object_pattern"
+            && find_parent_of_types(node, &[
+                "function_declaration", "arrow_function",
+                "function_expression", "method_definition",
+                "generator_function_declaration", "generator_function",
+            ]).is_none()
+        {
+            // Parity with TS query path (extractDestructuredBindingsWalk):
+            // skip destructured const bindings inside function scopes so the
+            // Rust walk path matches FUNCTION_SCOPE_TYPES behaviour.
+            extract_destructured_bindings(&name_n, source, start_line(node), end_line(node), &mut symbols.definitions);
         } else if is_const && is_js_literal(&value_n)
             && find_parent_of_types(node, &[
                 "function_declaration", "arrow_function",
@@ -302,16 +313,18 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    if let Some(fn_node) = node.child_by_field_name("function") {
-        if fn_node.kind() == "import" {
-            handle_dynamic_import(node, &fn_node, source, symbols);
-        } else if let Some(call_info) = extract_call_info(&fn_node, node, source) {
-            symbols.calls.push(call_info);
-        }
+    let Some(fn_node) = node.child_by_field_name("function") else { return };
+    if fn_node.kind() == "import" {
+        handle_dynamic_import(node, &fn_node, source, symbols);
+        return;
+    }
+    if let Some(call_info) = extract_call_info(&fn_node, node, source) {
+        symbols.calls.push(call_info);
     }
     if let Some(cb_def) = extract_callback_definition(node, source) {
         symbols.definitions.push(cb_def);
     }
+    extract_callback_reference_calls(node, source, &mut symbols.calls);
 }
 
 fn handle_new_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
@@ -861,6 +874,85 @@ fn extract_implements_depth(node: &Node, source: &[u8], result: &mut Vec<String>
             if child.child_count() > 0 {
                 extract_implements_depth(&child, source, result, depth + 1);
             }
+        }
+    }
+}
+
+fn extract_callback_reference_calls(call_node: &Node, source: &[u8], calls: &mut Vec<Call>) {
+    let args = call_node.child_by_field_name("arguments")
+        .or_else(|| find_child(call_node, "arguments"));
+    let Some(args) = args else { return };
+    let call_line = start_line(call_node);
+
+    for i in 0..args.child_count() {
+        let Some(child) = args.child(i) else { continue };
+        match child.kind() {
+            "identifier" => {
+                calls.push(Call {
+                    name: node_text(&child, source).to_string(),
+                    line: call_line,
+                    dynamic: Some(true),
+                    receiver: None,
+                });
+            }
+            "member_expression" => {
+                if let Some(prop) = child.child_by_field_name("property") {
+                    let receiver = child.child_by_field_name("object")
+                        .map(|obj| node_text(&obj, source).to_string());
+                    calls.push(Call {
+                        name: node_text(&prop, source).to_string(),
+                        line: call_line,
+                        dynamic: Some(true),
+                        receiver,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn extract_destructured_bindings(
+    pattern: &Node,
+    source: &[u8],
+    line: u32,
+    end_line: u32,
+    definitions: &mut Vec<Definition>,
+) {
+    for i in 0..pattern.child_count() {
+        let Some(child) = pattern.child(i) else { continue };
+        match child.kind() {
+            "shorthand_property_identifier_pattern" | "shorthand_property_identifier" => {
+                definitions.push(Definition {
+                    name: node_text(&child, source).to_string(),
+                    kind: "function".to_string(),
+                    line,
+                    end_line: Some(end_line),
+                    decorators: None,
+                    complexity: None,
+                    cfg: None,
+                    children: None,
+                });
+            }
+            "pair_pattern" | "pair" => {
+                if let Some(value) = child.child_by_field_name("value") {
+                    if value.kind() == "identifier"
+                        || value.kind() == "shorthand_property_identifier_pattern"
+                    {
+                        definitions.push(Definition {
+                            name: node_text(&value, source).to_string(),
+                            kind: "function".to_string(),
+                            line,
+                            end_line: Some(end_line),
+                            decorators: None,
+                            complexity: None,
+                            cfg: None,
+                            children: None,
+                        });
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1583,5 +1675,123 @@ mod tests {
         assert_eq!(dyn_imports.len(), 1);
         assert!(dyn_imports[0].names.contains(&"foo".to_string()));
         assert!(!dyn_imports[0].names.contains(&"nested".to_string()));
+    }
+
+    #[test]
+    fn extracts_callback_reference_in_router_use() {
+        let s = parse_js("router.use(handleToken);");
+        let dynamic_calls: Vec<_> = s.calls.iter().filter(|c| c.dynamic == Some(true)).collect();
+        assert!(dynamic_calls.iter().any(|c| c.name == "handleToken"), "should extract handleToken as dynamic call");
+    }
+
+    #[test]
+    fn extracts_multiple_callback_references() {
+        let s = parse_js("app.get('/api', authenticate, validate, handler);");
+        let dynamic_calls: Vec<_> = s.calls.iter().filter(|c| c.dynamic == Some(true)).collect();
+        assert!(dynamic_calls.iter().any(|c| c.name == "authenticate"));
+        assert!(dynamic_calls.iter().any(|c| c.name == "validate"));
+        assert!(dynamic_calls.iter().any(|c| c.name == "handler"));
+    }
+
+    #[test]
+    fn extracts_member_expression_callback() {
+        let s = parse_js("app.use(auth.validate);");
+        let dynamic_calls: Vec<_> = s.calls.iter().filter(|c| c.dynamic == Some(true)).collect();
+        let cb = dynamic_calls.iter().find(|c| c.name == "validate");
+        assert!(cb.is_some(), "should extract validate as dynamic call");
+        assert_eq!(cb.unwrap().receiver.as_deref(), Some("auth"));
+    }
+
+    #[test]
+    fn extracts_callback_in_array_method() {
+        let s = parse_js("items.map(transform);");
+        let dynamic_calls: Vec<_> = s.calls.iter().filter(|c| c.dynamic == Some(true)).collect();
+        assert!(dynamic_calls.iter().any(|c| c.name == "transform"));
+    }
+
+    #[test]
+    fn extracts_callback_in_settimeout() {
+        let s = parse_js("setTimeout(tick, 1000);");
+        let dynamic_calls: Vec<_> = s.calls.iter().filter(|c| c.dynamic == Some(true)).collect();
+        assert!(dynamic_calls.iter().any(|c| c.name == "tick"));
+    }
+
+    #[test]
+    fn no_dynamic_calls_for_non_identifiers() {
+        let s = parse_js("app.get('/path', {key: 1}, [], 42);");
+        let dynamic_calls: Vec<_> = s.calls.iter().filter(|c| c.dynamic == Some(true)).collect();
+        assert!(dynamic_calls.is_empty());
+    }
+
+    #[test]
+    fn no_duplicate_call_for_call_expression_arg() {
+        let s = parse_js("router.use(checkPermissions(['admin']));");
+        let cp_calls: Vec<_> = s.calls.iter().filter(|c| c.name == "checkPermissions").collect();
+        assert_eq!(cp_calls.len(), 1);
+    }
+
+    #[test]
+    fn no_dynamic_call_for_dynamic_import_arg() {
+        // Parity with TS walk path: callback-reference extraction must be skipped
+        // when the call is a dynamic `import()`. Otherwise `import(modulePath)`
+        // would emit a spurious dynamic call to `modulePath`.
+        let s = parse_js("const mod = await import(modulePath);");
+        let dyn_calls: Vec<_> = s.calls.iter().filter(|c| c.dynamic == Some(true)).collect();
+        assert!(
+            !dyn_calls.iter().any(|c| c.name == "modulePath"),
+            "import() argument must not be emitted as a dynamic call"
+        );
+    }
+
+    #[test]
+    fn extracts_destructured_const_bindings() {
+        let s = parse_js("const { handleToken, checkPermissions } = initAuth(config);");
+        let names: Vec<&str> = s.definitions.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"handleToken"), "should extract handleToken definition");
+        assert!(names.contains(&"checkPermissions"), "should extract checkPermissions definition");
+        let ht = s.definitions.iter().find(|d| d.name == "handleToken").unwrap();
+        assert_eq!(ht.kind, "function");
+    }
+
+    #[test]
+    fn extracts_exported_destructured_const_bindings() {
+        let s = parse_js("export const { handleToken, checkPermissions } = initAuth(config);");
+        let names: Vec<&str> = s.definitions.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"handleToken"));
+        assert!(names.contains(&"checkPermissions"));
+    }
+
+    #[test]
+    fn skips_let_var_destructured_bindings() {
+        let s = parse_js("let { userId, email } = parseRequest(req);");
+        assert!(!s.definitions.iter().any(|d| d.name == "userId"));
+        assert!(!s.definitions.iter().any(|d| d.name == "email"));
+
+        let s2 = parse_js("var { foo, bar } = getConfig();");
+        assert!(!s2.definitions.iter().any(|d| d.name == "foo"));
+        assert!(!s2.definitions.iter().any(|d| d.name == "bar"));
+    }
+
+    #[test]
+    fn skips_destructured_bindings_inside_function_scope() {
+        // Parity with TS query path (extractDestructuredBindingsWalk), which
+        // skips FUNCTION_SCOPE_TYPES. Function-internal destructured const
+        // bindings must not be emitted as definitions in the Rust walk path.
+        let s = parse_js("function setup() { const { handleToken, checkPermissions } = initAuth(config); }");
+        assert!(
+            !s.definitions.iter().any(|d| d.name == "handleToken"),
+            "function-nested destructured binding must not be emitted"
+        );
+        assert!(
+            !s.definitions.iter().any(|d| d.name == "checkPermissions"),
+            "function-nested destructured binding must not be emitted"
+        );
+    }
+
+    #[test]
+    fn extracts_renamed_destructured_binding() {
+        let s = parse_js("const { original: renamed } = initAuth();");
+        assert!(s.definitions.iter().any(|d| d.name == "renamed"), "should use the local alias");
+        assert!(!s.definitions.iter().any(|d| d.name == "original"), "should not use the original key");
     }
 }
