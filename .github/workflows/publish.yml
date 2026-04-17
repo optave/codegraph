@@ -31,7 +31,31 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
+
+      # Build the native addon from the current Rust source so build-parity
+      # tests compare WASM and native engines built from the same commit.
+      # Without this, npm install pulls the last-published binary, which lags
+      # behind PR changes that touch both the TS and Rust extractors.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/codegraph-core
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@3
+
       - run: npm install
+
+      - name: Build native addon from current source
+        working-directory: crates/codegraph-core
+        run: napi build --release
+
+      - name: Install native addon over published binary
+        run: node scripts/ci-install-native.mjs
+
       - run: npm test
 
   compute-version:
