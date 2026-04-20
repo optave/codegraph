@@ -328,7 +328,7 @@ pub fn run_pipeline(
     // Build call edges using existing Rust edge_builder (internal path)
     // For now, call edges are built via the existing napi-exported function's
     // internal logic. We load nodes from DB and pass to the edge builder.
-    build_and_insert_call_edges(conn, &file_symbols, &import_ctx);
+    build_and_insert_call_edges(conn, &file_symbols, &import_ctx, !change_result.is_full_build);
 
     timing.edges_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -842,32 +842,94 @@ fn build_file_hash_entries(
 }
 
 /// Build call edges using the Rust edge_builder and insert them.
+///
+/// `is_incremental`: when true, the set of nodes loaded from the DB is scoped
+/// to the files being processed plus their resolved import targets. Full
+/// builds load every node (there is no smaller set to work with anyway).
 fn build_and_insert_call_edges(
     conn: &Connection,
     file_symbols: &HashMap<String, FileSymbols>,
     import_ctx: &ImportEdgeContext,
+    is_incremental: bool,
 ) {
     use crate::edge_builder::*;
 
-    // Load all callable nodes from DB
     let node_kind_filter = "kind IN ('function','method','class','interface','struct','type','module','enum','trait','record','constant')";
-    let sql = format!("SELECT id, name, kind, file, line FROM nodes WHERE {node_kind_filter}");
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return,
+
+    // For incremental builds, scope node loading to only the files being
+    // processed + their import targets. This avoids deserializing the entire
+    // node table (~13k rows) for a small edit.
+    let all_nodes: Vec<NodeInfo> = if is_incremental && file_symbols.len() < 200 {
+        let mut relevant_files: HashSet<String> = file_symbols.keys().cloned().collect();
+        for (rel_path, symbols) in file_symbols {
+            let abs_file = Path::new(&import_ctx.root_dir).join(rel_path);
+            let abs_str = abs_file.to_str().unwrap_or("");
+            for imp in &symbols.imports {
+                let resolved = import_ctx.get_resolved(abs_str, &imp.source);
+                if !resolved.is_empty() {
+                    relevant_files.insert(resolved);
+                }
+            }
+        }
+
+        if relevant_files.is_empty() {
+            Vec::new()
+        } else {
+            let _ = conn.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS _edge_files (file TEXT NOT NULL)",
+            );
+            let _ = conn.execute("DELETE FROM _edge_files", []);
+            {
+                let mut ins = match conn.prepare("INSERT INTO _edge_files (file) VALUES (?)") {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                for f in &relevant_files {
+                    let _ = ins.execute([f]);
+                }
+            }
+
+            let sql = format!(
+                "SELECT n.id, n.name, n.kind, n.file, n.line FROM nodes n \
+                 INNER JOIN _edge_files ef ON n.file = ef.file \
+                 WHERE n.{node_kind_filter}",
+            );
+            let nodes: Vec<NodeInfo> = match conn.prepare(&sql) {
+                Ok(mut stmt) => stmt
+                    .query_map([], |row| {
+                        Ok(NodeInfo {
+                            id: row.get::<_, i64>(0)? as u32,
+                            name: row.get(1)?,
+                            kind: row.get(2)?,
+                            file: row.get(3)?,
+                            line: row.get::<_, i64>(4)? as u32,
+                        })
+                    })
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            let _ = conn.execute_batch("DROP TABLE IF EXISTS _edge_files");
+            nodes
+        }
+    } else {
+        let sql = format!("SELECT id, name, kind, file, line FROM nodes WHERE {node_kind_filter}");
+        match conn.prepare(&sql) {
+            Ok(mut stmt) => stmt
+                .query_map([], |row| {
+                    Ok(NodeInfo {
+                        id: row.get::<_, i64>(0)? as u32,
+                        name: row.get(1)?,
+                        kind: row.get(2)?,
+                        file: row.get(3)?,
+                        line: row.get::<_, i64>(4)? as u32,
+                    })
+                })
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
     };
-    let all_nodes: Vec<NodeInfo> = stmt
-        .query_map([], |row| {
-            Ok(NodeInfo {
-                id: row.get::<_, i64>(0)? as u32,
-                name: row.get(1)?,
-                kind: row.get(2)?,
-                file: row.get(3)?,
-                line: row.get::<_, i64>(4)? as u32,
-            })
-        })
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
 
     if all_nodes.is_empty() {
         return;
