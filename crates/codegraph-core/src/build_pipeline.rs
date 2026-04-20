@@ -884,16 +884,38 @@ fn build_and_insert_call_edges(
 
     let all_nodes: Vec<NodeInfo> = if scope_eligible {
         // Build the scoped set: changed/reverse-dep files + their resolved
-        // import targets + any barrel files (imports re-exported through
-        // them may resolve to nodes the edge builder needs).
+        // import targets + any barrel files on the path + the **ultimate**
+        // source files that barrel chains resolve to. The FileEdgeInput
+        // construction below (see `imported_names` at ~L1035) rewrites
+        // `target_file` to the ultimate definition file via
+        // `resolve_barrel_export`; if that file isn't in `relevant_files`
+        // the edge builder's `nodes_by_name_and_file` lookup returns
+        // nothing and the call edge is silently dropped (greptile P1).
         let mut relevant_files: HashSet<String> = file_symbols.keys().cloned().collect();
         for (rel_path, symbols) in file_symbols {
             let abs_file = Path::new(&import_ctx.root_dir).join(rel_path);
             let abs_str = abs_file.to_str().unwrap_or("");
             for imp in &symbols.imports {
                 let resolved = import_ctx.get_resolved(abs_str, &imp.source);
-                if !resolved.is_empty() {
-                    relevant_files.insert(resolved);
+                if resolved.is_empty() {
+                    continue;
+                }
+                relevant_files.insert(resolved.clone());
+                // If the resolved target is a barrel, walk the re-export
+                // chain and add every ultimate definition file that a
+                // named import could resolve to.
+                if import_ctx.is_barrel_file(&resolved) {
+                    for name in &imp.names {
+                        let clean_name = name.strip_prefix("* as ").unwrap_or(name);
+                        let mut visited = HashSet::new();
+                        if let Some(ultimate) = import_ctx.resolve_barrel_export(
+                            &resolved,
+                            clean_name,
+                            &mut visited,
+                        ) {
+                            relevant_files.insert(ultimate);
+                        }
+                    }
                 }
             }
         }
@@ -904,23 +926,29 @@ fn build_and_insert_call_edges(
         if relevant_files.is_empty() {
             Vec::new()
         } else {
+            // Schema qualification matches the existing `_analysis_files`
+            // pattern below: unqualified CREATE (temp schema is the
+            // default for TEMP tables), qualified `temp.` for every
+            // subsequent op. Index the file column so the INNER JOIN is
+            // a lookup rather than a table scan (greptile P2).
             let _ = conn.execute_batch(
-                "CREATE TEMP TABLE IF NOT EXISTS _edge_files (file TEXT NOT NULL)",
+                "CREATE TEMP TABLE IF NOT EXISTS _edge_files (file TEXT NOT NULL);\n                 CREATE INDEX IF NOT EXISTS _edge_files_file_idx ON _edge_files (file);",
             );
-            let _ = conn.execute("DELETE FROM _edge_files", []);
+            let _ = conn.execute("DELETE FROM temp._edge_files", []);
             {
-                let mut ins = match conn.prepare("INSERT INTO _edge_files (file) VALUES (?)") {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
+                let mut ins =
+                    match conn.prepare("INSERT INTO temp._edge_files (file) VALUES (?1)") {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
                 for f in &relevant_files {
-                    let _ = ins.execute([f]);
+                    let _ = ins.execute(rusqlite::params![f]);
                 }
             }
 
             let sql = format!(
                 "SELECT n.id, n.name, n.kind, n.file, n.line FROM nodes n \
-                 INNER JOIN _edge_files ef ON n.file = ef.file \
+                 INNER JOIN temp._edge_files ef ON n.file = ef.file \
                  WHERE n.{node_kind_filter}",
             );
             let nodes: Vec<NodeInfo> = match conn.prepare(&sql) {
@@ -938,7 +966,7 @@ fn build_and_insert_call_edges(
                     .unwrap_or_default(),
                 Err(_) => Vec::new(),
             };
-            let _ = conn.execute_batch("DROP TABLE IF EXISTS _edge_files");
+            let _ = conn.execute("DROP TABLE IF EXISTS temp._edge_files", []);
             nodes
         }
     } else {
