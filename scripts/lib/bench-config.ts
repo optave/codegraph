@@ -15,6 +15,11 @@ import { pathToFileURL } from 'node:url';
 
 import { getBenchmarkVersion } from '../bench-version.js';
 
+// On Windows, `npm` is `npm.cmd` and Node refuses to spawn `.cmd`/`.bat`
+// without `shell: true` (since Node 18.20 / 20.15).
+const NPM_CMD = os.platform() === 'win32' ? 'npm.cmd' : 'npm';
+const NPM_SHELL = os.platform() === 'win32';
+
 /**
  * Parse `--version <v>` and `--npm` from process.argv.
  */
@@ -69,10 +74,11 @@ export async function resolveBenchmarkSource() {
 	const maxRetries = 5;
 	for (let attempt = 1; attempt <= maxRetries; attempt++) {
 		try {
-			execFileSync('npm', ['install', `@optave/codegraph@${version}`, '--no-audit', '--no-fund'], {
+			execFileSync(NPM_CMD, ['install', `@optave/codegraph@${version}`, '--no-audit', '--no-fund'], {
 				cwd: tmpDir,
 				stdio: 'pipe',
 				timeout: 120_000,
+				shell: NPM_SHELL,
 			});
 			break;
 		} catch (err) {
@@ -113,10 +119,11 @@ export async function resolveBenchmarkSource() {
 			console.error(`Installing native package ${nativePkg}@${nativeVersion}...`);
 			for (let attempt = 1; attempt <= maxRetries; attempt++) {
 				try {
-					execFileSync('npm', ['install', `${nativePkg}@${nativeVersion}`, '--no-audit', '--no-fund', '--no-save'], {
+					execFileSync(NPM_CMD, ['install', `${nativePkg}@${nativeVersion}`, '--no-audit', '--no-fund', '--no-save'], {
 						cwd: tmpDir,
 						stdio: 'pipe',
 						timeout: 120_000,
+						shell: NPM_SHELL,
 					});
 					break;
 				} catch (innerErr) {
@@ -144,10 +151,11 @@ export async function resolveBenchmarkSource() {
 		const hfVersion = localPkg.devDependencies?.['@huggingface/transformers'];
 		if (hfVersion) {
 			console.error(`Installing @huggingface/transformers@${hfVersion} for embedding benchmarks...`);
-			execFileSync('npm', ['install', `@huggingface/transformers@${hfVersion}`, '--no-audit', '--no-fund', '--no-save'], {
+			execFileSync(NPM_CMD, ['install', `@huggingface/transformers@${hfVersion}`, '--no-audit', '--no-fund', '--no-save'], {
 				cwd: tmpDir,
 				stdio: 'pipe',
 				timeout: 120_000,
+				shell: NPM_SHELL,
 			});
 			console.error('Installed @huggingface/transformers');
 		}
