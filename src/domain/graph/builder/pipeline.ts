@@ -21,6 +21,7 @@ import { detectWorkspaces, loadConfig } from '../../../infrastructure/config.js'
 import { debug, info, warn } from '../../../infrastructure/logger.js';
 import { loadNative } from '../../../infrastructure/native.js';
 import { semverCompare } from '../../../infrastructure/update-check.js';
+import { normalizePath } from '../../../shared/constants.js';
 import { toErrorMessage } from '../../../shared/errors.js';
 import { CODEGRAPH_VERSION } from '../../../shared/version.js';
 import type {
@@ -30,8 +31,7 @@ import type {
   Definition,
   ExtractorOutput,
 } from '../../../types.js';
-import { normalizePath } from '../../../shared/constants.js';
-import { getActiveEngine, parseFilesAuto } from '../../parser.js';
+import { getActiveEngine, getInstalledWasmExtensions, parseFilesAuto } from '../../parser.js';
 import { setWorkspaces } from '../resolve.js';
 import { PipelineContext } from './context.js';
 import { batchInsertNodes, collectFiles as collectFilesUtil, loadPathAliases } from './helpers.js';
@@ -701,7 +701,13 @@ async function tryNativeOrchestrator(
   // Rust extractor/grammar is missing or fails (e.g. HCL, Scala, Swift on
   // stale native binaries). WASM handles those — backfill via WASM so both
   // engines process the same file set (#967).
-  await backfillNativeDroppedFiles(ctx);
+  //
+  // Only runs on full builds: incremental builds only touch changed files,
+  // which are parsed through parseFilesAuto (which has its own per-file
+  // backfill), so a full filesystem scan here would be wasted work.
+  if (result.isFullBuild) {
+    await backfillNativeDroppedFiles(ctx);
+  }
 
   closeDbPair({ db: ctx.db, nativeDb: ctx.nativeDb });
   return formatNativeTimingResult(p, structurePatchMs, analysisTiming);
@@ -729,11 +735,17 @@ async function backfillNativeDroppedFiles(ctx: PipelineContext): Promise<void> {
     .all() as Array<{ file: string }>;
   const existing = new Set(existingRows.map((r) => r.file));
 
+  // Restrict backfill to files with an installed WASM grammar. Extensions in
+  // LANGUAGE_REGISTRY without a shipped grammar file (e.g. groovy, erlang on
+  // minimal installs) can't be parsed by either engine, so they're not a
+  // native regression — excluding them keeps the warn count meaningful.
+  const installedExts = getInstalledWasmExtensions();
   const missingAbs: string[] = [];
   for (const rel of expected) {
-    if (!existing.has(rel)) {
-      missingAbs.push(path.join(ctx.rootDir, rel));
-    }
+    if (existing.has(rel)) continue;
+    const ext = path.extname(rel).toLowerCase();
+    if (!installedExts.has(ext)) continue;
+    missingAbs.push(path.join(ctx.rootDir, rel));
   }
   if (missingAbs.length === 0) return;
 
@@ -744,8 +756,14 @@ async function backfillNativeDroppedFiles(ctx: PipelineContext): Promise<void> {
 
   const rows: unknown[][] = [];
   for (const [relPath, symbols] of wasmResults) {
+    // File row: name=relPath, qualified_name=relPath (matches insertDefinitionsAndExports).
     rows.push([relPath, 'file', relPath, 0, null, null, relPath, null, null]);
     for (const def of symbols.definitions ?? []) {
+      // Populate qualified_name/scope the same way the JS fallback does so
+      // downstream queries (cross-file references, "go to definition") find
+      // these symbols.
+      const dotIdx = def.name.lastIndexOf('.');
+      const scope = dotIdx !== -1 ? def.name.slice(0, dotIdx) : null;
       rows.push([
         def.name,
         def.kind,
@@ -753,8 +771,8 @@ async function backfillNativeDroppedFiles(ctx: PipelineContext): Promise<void> {
         def.line,
         def.endLine ?? null,
         null,
-        null,
-        null,
+        def.name,
+        scope,
         def.visibility ?? null,
       ]);
     }

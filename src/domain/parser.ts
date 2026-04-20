@@ -338,6 +338,27 @@ export function isWasmAvailable(): boolean {
   );
 }
 
+/**
+ * Return the set of lowercase file extensions whose WASM grammar is actually
+ * installed on disk. Used to scope engine-parity backfill to files that WASM
+ * can recover — languages without an installed grammar are skipped by both
+ * engines, so they don't represent a native-engine drop.
+ *
+ * Cached on first call; the grammars directory is shipped immutable.
+ */
+let _installedWasmExts: Set<string> | null = null;
+export function getInstalledWasmExtensions(): Set<string> {
+  if (_installedWasmExts) return _installedWasmExts;
+  const exts = new Set<string>();
+  for (const entry of LANGUAGE_REGISTRY) {
+    if (fs.existsSync(grammarPath(entry.grammarFile))) {
+      for (const ext of entry.extensions) exts.add(ext.toLowerCase());
+    }
+  }
+  _installedWasmExts = exts;
+  return exts;
+}
+
 // ── Unified API ──────────────────────────────────────────────────────────────
 
 function resolveEngine(opts: ParseEngineOpts = {}): ResolvedEngine {
@@ -907,9 +928,11 @@ export async function parseFilesAuto(
   // Engine parity: native may silently drop files whose extensions are in
   // SUPPORTED_EXTENSIONS (because a WASM grammar exists) but whose Rust
   // extractor/grammar is missing or fails. WASM handles these — fall back so
-  // both engines process the same file set (#967).
+  // both engines process the same file set (#967). Restrict to installed WASM
+  // grammars so we don't warn about files that neither engine can parse.
+  const installedExts = getInstalledWasmExtensions();
   const dropped = filePaths.filter(
-    (f) => !nativeParsed.has(f) && _extToLang.has(path.extname(f).toLowerCase()),
+    (f) => !nativeParsed.has(f) && installedExts.has(path.extname(f).toLowerCase()),
   );
   if (dropped.length > 0) {
     warn(`Native engine dropped ${dropped.length} file(s); falling back to WASM for parity`);
