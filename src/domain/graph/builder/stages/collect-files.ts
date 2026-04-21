@@ -9,9 +9,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { debug, info } from '../../../../infrastructure/logger.js';
 import { normalizePath } from '../../../../shared/constants.js';
+import { compileGlobs } from '../../../../shared/globs.js';
 import { readJournal } from '../../journal.js';
 import type { PipelineContext } from '../context.js';
-import { collectFiles as collectFilesUtil } from '../helpers.js';
+import { collectFiles as collectFilesUtil, passesIncludeExclude } from '../helpers.js';
 
 /**
  * Reconstruct allFiles from DB file_hashes + journal deltas.
@@ -20,7 +21,7 @@ import { collectFiles as collectFilesUtil } from '../helpers.js';
 function tryFastCollect(
   ctx: PipelineContext,
 ): { files: string[]; directories: Set<string> } | null {
-  const { db, rootDir } = ctx;
+  const { db, rootDir, config } = ctx;
   const useNative = ctx.engineName === 'native' && !!ctx.nativeDb?.getCollectFilesData;
 
   // 1. Check that file_hashes table exists and has entries
@@ -70,10 +71,20 @@ function tryFastCollect(
     }
   }
 
-  // 5. Convert to absolute paths and compute directories
+  // 5. Convert to absolute paths and compute directories, honoring
+  //    config.include / config.exclude globs so incremental builds reflect
+  //    config changes (paths from the DB were collected under older config).
+  const includeRegexes = compileGlobs(config?.include);
+  const excludeRegexes = compileGlobs(config?.exclude);
+  const hasGlobFilters = includeRegexes.length > 0 || excludeRegexes.length > 0;
+
   const files: string[] = [];
   const directories = new Set<string>();
   for (const relPath of fileSet) {
+    if (hasGlobFilters) {
+      const normRel = normalizePath(relPath);
+      if (!passesIncludeExclude(normRel, includeRegexes, excludeRegexes)) continue;
+    }
     const absPath = path.join(rootDir, relPath);
     files.push(absPath);
     directories.add(path.dirname(absPath));
