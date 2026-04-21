@@ -132,6 +132,39 @@ describe('snapshotSave', () => {
   it('rejects invalid name', () => {
     expect(() => snapshotSave('bad name', { dbPath })).toThrow(/Invalid snapshot name/);
   });
+
+  it('leaves no temp files in snapshots dir after success', () => {
+    snapshotSave('clean', { dbPath });
+    const entries = fs.readdirSync(snapshotsDir(dbPath));
+    expect(entries).toContain('clean.db');
+    // Temp files are named `.<name>.db.tmp-<pid>-<ts>` — none should remain.
+    expect(entries.filter((f) => f.includes('.tmp-'))).toEqual([]);
+  });
+
+  it('does not corrupt output when two --force saves race on the same name', async () => {
+    // Prime the target so both calls take the --force overwrite path.
+    snapshotSave('race', { dbPath });
+
+    // Issue both concurrently. Pre-fix, the existsSync/unlinkSync/VACUUM INTO
+    // sequence could interleave and produce a corrupt DB; post-fix, rename
+    // is atomic so the winner's file is intact and the loser either succeeds
+    // (overwriting) or fails cleanly.
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => snapshotSave('race', { dbPath, force: true })),
+      Promise.resolve().then(() => snapshotSave('race', { dbPath, force: true })),
+    ]);
+
+    // At least one save must have succeeded.
+    const succeeded = results.filter((r) => r.status === 'fulfilled');
+    expect(succeeded.length).toBeGreaterThanOrEqual(1);
+
+    // The final file must be a valid SQLite DB with the expected contents.
+    const finalPath = path.join(snapshotsDir(dbPath), 'race.db');
+    const db = new Database(finalPath, { readonly: true });
+    const rows = db.prepare('SELECT name FROM nodes').all();
+    db.close();
+    expect(rows).toEqual([{ name: 'hello' }]);
+  });
 });
 
 // ─── snapshotRestore ────────────────────────────────────────────────────

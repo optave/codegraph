@@ -37,22 +37,40 @@ export function snapshotSave(
   const dir = snapshotsDir(dbPath);
   const dest = path.join(dir, `${name}.db`);
 
-  if (fs.existsSync(dest)) {
-    if (!options.force) {
-      throw new ConfigError(`Snapshot "${name}" already exists. Use --force to overwrite.`);
-    }
-    fs.unlinkSync(dest);
-    debug(`Deleted existing snapshot: ${dest}`);
+  if (!options.force && fs.existsSync(dest)) {
+    throw new ConfigError(`Snapshot "${name}" already exists. Use --force to overwrite.`);
   }
 
   fs.mkdirSync(dir, { recursive: true });
 
+  // VACUUM INTO a unique temp path on the same filesystem, then atomically
+  // rename over the destination. This closes the TOCTOU window between
+  // existsSync/unlinkSync/VACUUM INTO where two concurrent saves could
+  // observe a missing file or interleave their VACUUM writes.
+  const tmp = path.join(dir, `.${name}.db.tmp-${process.pid}-${Date.now()}`);
+  try {
+    fs.unlinkSync(tmp);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+
   const Database = getDatabase();
   const db = new Database(dbPath, { readonly: true });
   try {
-    db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
   } finally {
     db.close();
+  }
+
+  try {
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* cleanup best-effort */
+    }
+    throw err;
   }
 
   const stat = fs.statSync(dest);
@@ -74,16 +92,36 @@ export function snapshotRestore(name: string, options: SnapshotDbPathOptions = {
     throw new DbError(`Snapshot "${name}" not found at ${src}`, { file: src });
   }
 
-  // Remove WAL/SHM sidecar files for a clean restore
+  // Remove WAL/SHM sidecars first so the old journal can't be replayed over
+  // the restored DB. unlink then check ENOENT — avoids the existsSync/unlinkSync
+  // race another process could wedge into.
   for (const suffix of ['-wal', '-shm']) {
     const sidecar = dbPath + suffix;
-    if (fs.existsSync(sidecar)) {
+    try {
       fs.unlinkSync(sidecar);
       debug(`Removed sidecar: ${sidecar}`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
   }
 
-  fs.copyFileSync(src, dbPath);
+  // Copy to a temp path next to the DB, then rename atomically. Readers that
+  // open dbPath during restore see either the pre-restore or post-restore
+  // file, never a partially-written one.
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const tmp = `${dbPath}.restore-tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.copyFileSync(src, tmp);
+    fs.renameSync(tmp, dbPath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* cleanup best-effort */
+    }
+    throw err;
+  }
+
   debug(`Restored snapshot "${name}" → ${dbPath}`);
 }
 
@@ -122,10 +160,13 @@ export function snapshotDelete(name: string, options: SnapshotDbPathOptions = {}
   const dir = snapshotsDir(dbPath);
   const target = path.join(dir, `${name}.db`);
 
-  if (!fs.existsSync(target)) {
-    throw new DbError(`Snapshot "${name}" not found at ${target}`, { file: target });
+  try {
+    fs.unlinkSync(target);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new DbError(`Snapshot "${name}" not found at ${target}`, { file: target });
+    }
+    throw err;
   }
-
-  fs.unlinkSync(target);
   debug(`Deleted snapshot: ${target}`);
 }
