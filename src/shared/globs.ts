@@ -23,9 +23,18 @@ export function globToRegex(pattern: string): RegExp {
   while (i < pattern.length) {
     const ch = pattern[i] as string;
     if (ch === '*' && pattern[i + 1] === '*') {
-      re += '.*';
       i += 2;
-      if (pattern[i] === '/') i++;
+      if (pattern[i] === '/') {
+        // `**/` matches zero or more full path segments, preserving the
+        // directory boundary before the next segment. Without this, patterns
+        // like `**/foo.ts` would compile to `^.*foo\.ts$` and match
+        // `barfoo.ts`, diverging from Rust `globset` semantics.
+        re += '(?:[^/]+/)*';
+        i++;
+      } else {
+        // Bare `**` (e.g. `dir/**`, or trailing) matches anything.
+        re += '.*';
+      }
     } else if (ch === '*') {
       re += '[^/]*';
       i++;
