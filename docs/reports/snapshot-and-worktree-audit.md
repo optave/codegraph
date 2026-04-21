@@ -15,7 +15,7 @@
   - #996 — journal append isn't locked
   - #997 — journal header lags appended entries during watch → silent performance cliff
 - **Omnigraph's "commits are snapshots, branches are references" model does not fit us** — it couples graph freshness to git commits, which breaks the "graph tracks your working tree live" invariant that is codegraph's whole point.
-- **Content-addressed parse cache (R1 below)** was the most promising omnigraph-inspired optimization, but parsing is ~10% of build time. A cache would save ~10% on first-build-in-new-worktree and near-zero on incremental/watch. **Not worth the engineering cost.** Rejected.
+- **Content-addressed parse cache (R1 in §4)** was the most promising omnigraph-inspired optimization, but parsing is ~10% of build time. A cache would save ~10% on first-build-in-new-worktree and near-zero on incremental/watch. **Not worth the engineering cost.** Rejected.
 - **Honest scope limit:** omnigraph's public docs are thin on internals. Claims about their concurrency model and merge semantics come from marketing pages, not source. Calibrate the "what to learn" findings accordingly.
 
 ---
@@ -163,10 +163,10 @@ The remaining 90% lives in: import resolution (`domain/graph/resolve.ts`, 6-leve
 | **A1** | Fix #995 — snapshot save TOCTOU race. Use `<name>.db.tmp-<pid>` + atomic rename, or a real file lock. | **Do** |
 | **A2** | Fix #996 — lock journal mutations (or replace with a per-line append-only log). | **Do** |
 | **A3** | Fix #997 — watcher updates journal header in the same critical section as entry appends. | **Do** |
-| ~~R1~~ | ~~Content-addressed parse cache.~~ | **Rejected** — 10% parse share |
-| R3 | Bind snapshot names to git identity + metadata + GC. | Nice-to-have. Not urgent. |
-| R4 | Share more than parses across worktrees (resolved edges, embeddings) by content hash. | Speculative — conditional on verifying content-purity. Not recommended now. |
-| R5 | Replace SQLite-as-materialized-graph with append-only versioned store. | Long-horizon, out of scope. |
+| ~~R1~~ | ~~Content-addressed parse cache.~~ (evaluated and rejected in §4) | **Rejected** — 10% parse share |
+| R2 | Bind snapshot names to git identity + metadata + GC. | Nice-to-have. Not urgent. |
+| R3 | Share more than parses across worktrees (resolved edges, embeddings) by content hash. | Speculative — conditional on verifying content-purity. Not recommended now. |
+| R4 | Replace SQLite-as-materialized-graph with append-only versioned store. | Long-horizon, out of scope. |
 
 ---
 
@@ -174,7 +174,7 @@ The remaining 90% lives in: import resolution (`domain/graph/resolve.ts`, 6-leve
 
 - I did not read omnigraph's source. Their concurrency model, merge semantics, and on-disk layout are guessed from marketing pages.
 - The 10% parse-time figure is one data point, not a profile. Embedding-enabled builds will skew differently.
-- I did not audit whether resolved edges are content-pure (R4 hinges on this). Probably not — resolution depends on sibling files.
+- I did not audit whether resolved edges are content-pure (R3 hinges on this). Probably not — resolution depends on sibling files.
 - The 3 filed bugs are individually small. Together they matter because the "multi-worktree + watcher + manual build" workflow is the documented use case (CLAUDE.md "Parallel Sessions"), and that's exactly when the races fire.
 
 ---
