@@ -641,8 +641,10 @@ fn reparse_barrel_candidates(
     if !barrel_paths_to_parse.is_empty() {
         barrel_paths_to_parse.sort();
         barrel_paths_to_parse.dedup();
-        // Barrel files are re-export-only — no function bodies or dataflow,
-        // so skip dataflow/AST analysis to avoid unnecessary overhead.
+        // Re-parse barrel candidates — these may be hybrid barrels (reexports
+        // AND local definitions / call sites, see #979). Dataflow/AST analysis
+        // is skipped because the barrel is not itself a "changed" file; Stage 7
+        // will reconstruct all outgoing edge kinds from the fresh parse.
         let barrel_parsed = parallel::parse_files_parallel(
             &barrel_paths_to_parse,
             root_dir,
@@ -652,22 +654,23 @@ fn reparse_barrel_candidates(
         for mut sym in barrel_parsed {
             let rel = relative_path(root_dir, &sym.file);
             sym.file = rel.clone();
-            // Delete the outgoing edge kinds that Stage 7 re-emits for re-parsed
+            // Delete every outgoing edge kind that Stage 7 re-emits for re-parsed
             // barrel candidates. Previously only 'imports' and 'reexports' were
             // purged, so 'calls', 'receiver', 'extends', 'implements',
             // 'imports-type', and 'dynamic-imports' accumulated duplicates on
             // every incremental rebuild (#979).
             //
-            // Do NOT touch 'contains' / 'parameter_of': those are emitted by
-            // Stage 5 (insert_nodes) which only runs on the original
+            // Use a negative filter (`NOT IN`) rather than an allowlist so any
+            // future edge kind added to Stage 7 is automatically covered. Only
+            // 'contains' and 'parameter_of' must be preserved: those are emitted
+            // by Stage 5 (insert_nodes) which only runs on the original
             // file_symbols (changed + reverse-deps). Barrel candidates are
             // merged into file_symbols here in Stage 6b *after* Stage 5 has
             // already run, so wiping contains/parameter_of would permanently
             // drop them.
             let _ = conn.execute(
                 "DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?1) \
-                 AND kind IN ('imports', 'imports-type', 'dynamic-imports', 'reexports', \
-                              'calls', 'receiver', 'extends', 'implements')",
+                 AND kind NOT IN ('contains', 'parameter_of')",
                 rusqlite::params![&rel],
             );
             // Re-resolve imports for the barrel file
