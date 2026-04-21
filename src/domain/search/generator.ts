@@ -75,11 +75,17 @@ export async function buildEmbeddings(
 
   // Prefer the repo root recorded at build time — embed may be invoked from a
   // different cwd (e.g. `codegraph embed --db /abs/path/graph.db`) and the
-  // positional rootDir will be wrong in that case. Fall back to the DB's
-  // parent (`<root>/.codegraph/graph.db` → `<root>`) if metadata is missing,
-  // then finally the caller-provided rootDir for pre-metadata compat.
+  // positional rootDir will be wrong in that case. For legacy DBs without
+  // root_dir metadata, fall back to `<dbParent>` only when the DB lives at
+  // the conventional `<root>/.codegraph/graph.db` layout — otherwise trust
+  // the caller-provided rootDir (which may be an explicit positional arg).
+  // `path.dirname(...)` is always non-empty (`'.'` at minimum), so the
+  // conventional-layout check is required to keep the rootDir path reachable.
   const metaRoot = getBuildMeta(db, 'root_dir');
-  const dbParent = path.dirname(path.dirname(path.resolve(dbPath)));
+  const resolvedDbPath = path.resolve(dbPath);
+  const dbDirName = path.basename(path.dirname(resolvedDbPath));
+  const dbParent =
+    dbDirName === '.codegraph' ? path.dirname(path.dirname(resolvedDbPath)) : undefined;
   const resolvedRoot = metaRoot || dbParent || rootDir;
 
   db.exec('DELETE FROM embeddings');
