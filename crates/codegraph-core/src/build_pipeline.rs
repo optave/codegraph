@@ -652,11 +652,22 @@ fn reparse_barrel_candidates(
         for mut sym in barrel_parsed {
             let rel = relative_path(root_dir, &sym.file);
             sym.file = rel.clone();
-            // Delete outgoing import/reexport edges for barrel files being re-parsed
-            // (scoped to import-related kinds to avoid dropping calls edges)
+            // Delete the outgoing edge kinds that Stage 7 re-emits for re-parsed
+            // barrel candidates. Previously only 'imports' and 'reexports' were
+            // purged, so 'calls', 'receiver', 'extends', 'implements',
+            // 'imports-type', and 'dynamic-imports' accumulated duplicates on
+            // every incremental rebuild (#979).
+            //
+            // Do NOT touch 'contains' / 'parameter_of': those are emitted by
+            // Stage 5 (insert_nodes) which only runs on the original
+            // file_symbols (changed + reverse-deps). Barrel candidates are
+            // merged into file_symbols here in Stage 6b *after* Stage 5 has
+            // already run, so wiping contains/parameter_of would permanently
+            // drop them.
             let _ = conn.execute(
                 "DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?1) \
-                 AND kind IN ('imports', 'reexports')",
+                 AND kind IN ('imports', 'imports-type', 'dynamic-imports', 'reexports', \
+                              'calls', 'receiver', 'extends', 'implements')",
                 rusqlite::params![&rel],
             );
             // Re-resolve imports for the barrel file
