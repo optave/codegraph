@@ -976,6 +976,10 @@ export async function buildGraph(
             `Codegraph version changed (${prevVersion} → ${CODEGRAPH_VERSION}), promoting to full rebuild.`,
           );
           ctx.forceFullRebuild = true;
+          // Re-check embeddings: the initial warnOnEmbeddingsWipe ran before
+          // forceFullRebuild was set here, so the silent-data-loss guard
+          // would otherwise miss this late-promotion path (#986 follow-up).
+          warnOnEmbeddingsWipe(ctx);
         }
       }
     }
