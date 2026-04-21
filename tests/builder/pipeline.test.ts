@@ -31,6 +31,8 @@ describe('buildGraph pipeline', () => {
     expect(result).toBeDefined();
     expect(result.phases).toBeDefined();
     expect(typeof result.phases.setupMs).toBe('number');
+    expect(typeof result.phases.collectMs).toBe('number');
+    expect(typeof result.phases.detectMs).toBe('number');
     expect(typeof result.phases.parseMs).toBe('number');
     expect(typeof result.phases.insertMs).toBe('number');
     expect(typeof result.phases.resolveMs).toBe('number');

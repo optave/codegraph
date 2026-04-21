@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { debug, info } from '../../../../infrastructure/logger.js';
 import { normalizePath } from '../../../../shared/constants.js';
 import { readJournal } from '../../journal.js';
@@ -86,45 +87,50 @@ function tryFastCollect(
 }
 
 export async function collectFiles(ctx: PipelineContext): Promise<void> {
-  const { rootDir, config, opts } = ctx;
+  const start = performance.now();
+  try {
+    const { rootDir, config, opts } = ctx;
 
-  if (opts.scope) {
-    // Scoped rebuild: rebuild only specified files
-    const scopedFiles = opts.scope.map((f: string) => normalizePath(f));
-    const existing: Array<{ file: string; relPath: string }> = [];
-    const missing: string[] = [];
-    for (const rel of scopedFiles) {
-      const abs = path.join(rootDir, rel);
-      if (fs.existsSync(abs)) {
-        existing.push({ file: abs, relPath: rel });
-      } else {
-        missing.push(rel);
+    if (opts.scope) {
+      // Scoped rebuild: rebuild only specified files
+      const scopedFiles = opts.scope.map((f: string) => normalizePath(f));
+      const existing: Array<{ file: string; relPath: string }> = [];
+      const missing: string[] = [];
+      for (const rel of scopedFiles) {
+        const abs = path.join(rootDir, rel);
+        if (fs.existsSync(abs)) {
+          existing.push({ file: abs, relPath: rel });
+        } else {
+          missing.push(rel);
+        }
       }
-    }
-    ctx.allFiles = existing.map((e) => e.file);
-    ctx.discoveredDirs = new Set(existing.map((e) => path.dirname(e.file)));
-    ctx.parseChanges = existing;
-    ctx.metadataUpdates = [];
-    ctx.removed = missing;
-    ctx.isFullBuild = false;
-    info(`Scoped rebuild: ${existing.length} files to rebuild, ${missing.length} to purge`);
-    return;
-  }
-
-  // Incremental fast path: reconstruct file list from DB + journal deltas
-  // instead of full recursive filesystem scan (~8ms savings on 473 files).
-  if (ctx.incremental && !ctx.forceFullRebuild) {
-    const fast = tryFastCollect(ctx);
-    if (fast) {
-      ctx.allFiles = fast.files;
-      ctx.discoveredDirs = fast.directories;
-      info(`Found ${ctx.allFiles.length} files (cached)`);
+      ctx.allFiles = existing.map((e) => e.file);
+      ctx.discoveredDirs = new Set(existing.map((e) => path.dirname(e.file)));
+      ctx.parseChanges = existing;
+      ctx.metadataUpdates = [];
+      ctx.removed = missing;
+      ctx.isFullBuild = false;
+      info(`Scoped rebuild: ${existing.length} files to rebuild, ${missing.length} to purge`);
       return;
     }
-  }
 
-  const collected = collectFilesUtil(rootDir, [], config, new Set<string>());
-  ctx.allFiles = collected.files;
-  ctx.discoveredDirs = collected.directories;
-  info(`Found ${ctx.allFiles.length} files to parse`);
+    // Incremental fast path: reconstruct file list from DB + journal deltas
+    // instead of full recursive filesystem scan (~8ms savings on 473 files).
+    if (ctx.incremental && !ctx.forceFullRebuild) {
+      const fast = tryFastCollect(ctx);
+      if (fast) {
+        ctx.allFiles = fast.files;
+        ctx.discoveredDirs = fast.directories;
+        info(`Found ${ctx.allFiles.length} files (cached)`);
+        return;
+      }
+    }
+
+    const collected = collectFilesUtil(rootDir, [], config, new Set<string>());
+    ctx.allFiles = collected.files;
+    ctx.discoveredDirs = collected.directories;
+    info(`Found ${ctx.allFiles.length} files to parse`);
+  } finally {
+    ctx.timing.collectMs = performance.now() - start;
+  }
 }

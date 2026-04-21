@@ -1053,6 +1053,8 @@ export interface BuildGraphOpts {
 export interface BuildResult {
   phases: {
     setupMs: number;
+    collectMs: number;
+    detectMs: number;
     parseMs: number;
     insertMs: number;
     resolveMs: number;
