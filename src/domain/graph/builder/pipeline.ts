@@ -106,6 +106,21 @@ function checkEngineSchemaMismatch(ctx: PipelineContext): void {
   }
 }
 
+function warnOnEmbeddingsWipe(ctx: PipelineContext): void {
+  const willBeFullBuild = !ctx.incremental || ctx.forceFullRebuild;
+  if (!willBeFullBuild) return;
+  let count = 0;
+  try {
+    count = (ctx.db.prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c;
+  } catch {
+    return; // embeddings table missing — nothing to warn about
+  }
+  if (count === 0) return;
+  warn(
+    `Full rebuild will discard ${count} embedding${count === 1 ? '' : 's'}; re-run \`codegraph embed\` after the build.`,
+  );
+}
+
 function loadAliases(ctx: PipelineContext): void {
   ctx.aliases = loadPathAliases(ctx.rootDir);
   if (ctx.config.aliases) {
@@ -151,6 +166,7 @@ function setupPipeline(ctx: PipelineContext): void {
 
   initializeEngine(ctx);
   checkEngineSchemaMismatch(ctx);
+  warnOnEmbeddingsWipe(ctx);
   loadAliases(ctx);
 
   // Workspace packages (monorepo)
