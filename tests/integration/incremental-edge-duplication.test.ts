@@ -86,6 +86,13 @@ describe('Issue #979: incremental edges do not duplicate', () => {
       // Invariant 2: incremental must not introduce new duplicates beyond the
       // pre-existing duplicates present in a clean full build.
       expect(history[2].duplicates).toBeLessThanOrEqual(freshFull.duplicates);
+
+      // Invariant 3: after applying all 3 bumps, both dirs describe the same
+      // code, so the incremental edge total must match a clean full build.
+      // This catches stale edges that survive the scoped DELETE (e.g. edges
+      // pointing at orphaned node ids) which would not be flagged as
+      // (source, target, kind) duplicates.
+      expect(history[2].total).toBe(freshFull.total);
     } finally {
       fs.rmSync(tmpBase, { recursive: true, force: true });
     }
