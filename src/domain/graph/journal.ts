@@ -103,3 +103,54 @@ export function writeJournalHeader(rootDir: string, timestamp: number): void {
     }
   }
 }
+
+/**
+ * Atomically append entries while advancing the header timestamp.
+ *
+ * Used by the watcher: without this, the header timestamp stays frozen at the
+ * last build's finalize time while entries accumulate, so the next build's
+ * Tier 0 check sees `journal.timestamp < MAX(file_hashes.mtime)`, rejects the
+ * journal, and falls through to the expensive mtime+size / hash scan.
+ *
+ * Writes a tmp file then renames — a crash mid-rename leaves the previous
+ * journal state intact.
+ */
+export function appendJournalEntriesAndStampHeader(
+  rootDir: string,
+  entries: Array<{ file: string; deleted?: boolean }>,
+  timestamp: number,
+): void {
+  const dir = path.join(rootDir, '.codegraph');
+  const journalPath = path.join(dir, JOURNAL_FILENAME);
+  const tmpPath = `${journalPath}.tmp`;
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  let existingBody = '';
+  try {
+    const content = fs.readFileSync(journalPath, 'utf-8');
+    const newlineIdx = content.indexOf('\n');
+    if (newlineIdx >= 0) existingBody = content.slice(newlineIdx + 1);
+  } catch {
+    /* no existing journal — fall through to write header + new entries */
+  }
+  if (existingBody && !existingBody.endsWith('\n')) existingBody = `${existingBody}\n`;
+
+  const newLines = entries.map((e) => (e.deleted ? `DELETED ${e.file}` : e.file));
+  const appended = newLines.length > 0 ? `${newLines.join('\n')}\n` : '';
+  const content = `${HEADER_PREFIX}${timestamp}\n${existingBody}${appended}`;
+
+  try {
+    fs.writeFileSync(tmpPath, content);
+    fs.renameSync(tmpPath, journalPath);
+  } catch (err) {
+    warn(`Failed to update journal: ${(err as Error).message}`);
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      /* ignore */
+    }
+  }
+}

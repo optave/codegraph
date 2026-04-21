@@ -7,7 +7,7 @@ import { DbError } from '../../shared/errors.js';
 import { createParseTreeCache, getActiveEngine } from '../parser.js';
 import { type IncrementalStmts, rebuildFile } from './builder/incremental.js';
 import { appendChangeEvents, buildChangeEvent, diffSymbols } from './change-journal.js';
-import { appendJournalEntries } from './journal.js';
+import { appendJournalEntriesAndStampHeader } from './journal.js';
 
 function shouldIgnorePath(filePath: string): boolean {
   const parts = filePath.split(path.sep);
@@ -100,7 +100,7 @@ function writeJournalAndChangeEvents(rootDir: string, updates: RebuildResult[]):
     deleted: r.deleted || false,
   }));
   try {
-    appendJournalEntries(rootDir, entries);
+    appendJournalEntriesAndStampHeader(rootDir, entries, Date.now());
   } catch (e: unknown) {
     debug(`Journal write failed (non-fatal): ${(e as Error).message}`);
   }
@@ -284,7 +284,7 @@ function setupShutdownHandler(ctx: WatcherContext, cleanup: () => void): void {
         file: normalizePath(path.relative(ctx.rootDir, filePath)),
       }));
       try {
-        appendJournalEntries(ctx.rootDir, entries);
+        appendJournalEntriesAndStampHeader(ctx.rootDir, entries, Date.now());
       } catch (e: unknown) {
         debug(`Journal flush on exit failed (non-fatal): ${(e as Error).message}`);
       }
