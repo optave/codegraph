@@ -274,15 +274,35 @@ function startNativeWatcher(ctx: WatcherContext): () => void {
   return () => watcher.close();
 }
 
+/**
+ * Build journal entries for a pending-path set, detecting deletions by
+ * existence check.
+ *
+ * `ctx.pending` is an untyped `Set<string>` — it carries no event-type
+ * metadata. Without this check, a file deleted during the watch session
+ * would be journaled as "changed", causing the next incremental build to
+ * try to re-parse a non-existent file instead of removing it from the graph.
+ * Mirrors the deletion detection in `rebuildFile` (see builder/incremental.ts).
+ *
+ * Exported for unit-testing; prefer `setupShutdownHandler` in production paths.
+ */
+export function buildFlushEntriesFromPending(
+  rootDir: string,
+  pending: Iterable<string>,
+): Array<{ file: string; deleted: boolean }> {
+  return [...pending].map((filePath) => ({
+    file: normalizePath(path.relative(rootDir, filePath)),
+    deleted: !fs.existsSync(filePath),
+  }));
+}
+
 /** Register SIGINT handler to flush journal and clean up. */
 function setupShutdownHandler(ctx: WatcherContext, cleanup: () => void): void {
   process.once('SIGINT', () => {
     info('Stopping watcher...');
     cleanup();
     if (ctx.pending.size > 0) {
-      const entries = [...ctx.pending].map((filePath) => ({
-        file: normalizePath(path.relative(ctx.rootDir, filePath)),
-      }));
+      const entries = buildFlushEntriesFromPending(ctx.rootDir, ctx.pending);
       try {
         appendJournalEntriesAndStampHeader(ctx.rootDir, entries, Date.now());
       } catch (e: unknown) {
