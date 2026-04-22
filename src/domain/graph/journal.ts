@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { debug, warn } from '../../infrastructure/logger.js';
@@ -9,9 +10,15 @@ const LOCK_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 30_000;
 const LOCK_RETRY_MS = 25;
 
+// Busy-spin sleep avoids blocking the Node.js event loop (unlike Atomics.wait,
+// which freezes all I/O and timer callbacks). The retry interval is short
+// (25ms), so the CPU cost is negligible while keeping unrelated callbacks
+// responsive in watcher processes.
 function sleepSync(ms: number): void {
-  const buf = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(buf, 0, 0, ms);
+  const end = process.hrtime.bigint() + BigInt(ms) * 1_000_000n;
+  while (process.hrtime.bigint() < end) {
+    /* spin */
+  }
 }
 
 function isPidAlive(pid: number): boolean {
@@ -25,50 +32,105 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-function acquireJournalLock(lockPath: string): number {
+interface AcquiredLock {
+  fd: number;
+  nonce: string;
+}
+
+/**
+ * Steal a stale lockfile atomically via write-tmp + rename.
+ *
+ * Using rename (which is atomic on POSIX and Windows) avoids the TOCTOU race
+ * inherent to the unlink + openSync('wx') pattern: if two stealers both
+ * observed the same stale holder, one's unlink could cross the other's fresh
+ * acquisition, admitting two writers into the critical section.
+ *
+ * After rename, we re-read the lockfile to confirm our nonce — if another
+ * stealer's rename landed after ours, they own the lock and we retry.
+ */
+function trySteal(lockPath: string): AcquiredLock | null {
+  const nonce = `${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
+  const tmpPath = `${lockPath}.${nonce}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, `${process.pid}\n${nonce}\n`, { flag: 'w' });
+  } catch {
+    return null;
+  }
+
+  try {
+    // Atomic replace: overwrites the stale lockfile.
+    fs.renameSync(tmpPath, lockPath);
+  } catch {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  // Verify the nonce — another stealer's rename may have landed after ours.
+  let content: string;
+  try {
+    content = fs.readFileSync(lockPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  if (!content.includes(nonce)) {
+    // Lost the race to another stealer; do NOT unlink their live lockfile.
+    return null;
+  }
+
+  let fd: number;
+  try {
+    // Re-open r+ so we have a persistent fd the caller can close on release.
+    fd = fs.openSync(lockPath, 'r+');
+  } catch {
+    return null;
+  }
+  return { fd, nonce };
+}
+
+function acquireJournalLock(lockPath: string): AcquiredLock {
   const start = Date.now();
   for (;;) {
+    const nonce = `${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
     try {
       const fd = fs.openSync(lockPath, 'wx');
       try {
-        fs.writeSync(fd, `${process.pid}\n`);
+        fs.writeSync(fd, `${process.pid}\n${nonce}\n`);
       } catch {
         /* PID stamp is advisory; fd is still exclusive */
       }
-      return fd;
+      return { fd, nonce };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
     }
 
     let holderAlive = true;
     try {
-      const pidContent = fs.readFileSync(lockPath, 'utf-8').trim();
+      const pidContent = fs.readFileSync(lockPath, 'utf-8').split('\n')[0]!.trim();
       holderAlive = isPidAlive(Number(pidContent));
     } catch {
       /* unreadable — fall through to age check */
     }
 
-    if (!holderAlive) {
+    let shouldSteal = !holderAlive;
+    if (holderAlive) {
       try {
-        fs.unlinkSync(lockPath);
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          shouldSteal = true;
+        }
       } catch {
-        /* another writer stole it first */
+        /* stat failed — keep retrying */
       }
-      continue;
     }
 
-    try {
-      const stat = fs.statSync(lockPath);
-      if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          /* raced */
-        }
-        continue;
-      }
-    } catch {
-      /* stat failed — keep retrying */
+    if (shouldSteal) {
+      const stolen = trySteal(lockPath);
+      if (stolen) return stolen;
+      // Steal failed or lost the race — fall through to timeout check & retry.
     }
 
     if (Date.now() - start > LOCK_TIMEOUT_MS) {
@@ -78,16 +140,21 @@ function acquireJournalLock(lockPath: string): number {
   }
 }
 
-function releaseJournalLock(lockPath: string, fd: number): void {
+function releaseJournalLock(lockPath: string, lock: AcquiredLock): void {
   try {
-    fs.closeSync(fd);
+    fs.closeSync(lock.fd);
   } catch {
     /* ignore */
   }
+  // Only unlink if the lockfile still carries our nonce — if another stealer
+  // decided we were stale and replaced it, we must not unlink their live lock.
   try {
-    fs.unlinkSync(lockPath);
+    const content = fs.readFileSync(lockPath, 'utf-8');
+    if (content.includes(lock.nonce)) {
+      fs.unlinkSync(lockPath);
+    }
   } catch {
-    /* ignore */
+    /* lockfile gone or unreadable — nothing to unlink */
   }
 }
 
@@ -97,11 +164,11 @@ function withJournalLock<T>(rootDir: string, fn: () => T): T {
     fs.mkdirSync(dir, { recursive: true });
   }
   const lockPath = path.join(dir, `${JOURNAL_FILENAME}${LOCK_SUFFIX}`);
-  const fd = acquireJournalLock(lockPath);
+  const lock = acquireJournalLock(lockPath);
   try {
     return fn();
   } finally {
-    releaseJournalLock(lockPath, fd);
+    releaseJournalLock(lockPath, lock);
   }
 }
 

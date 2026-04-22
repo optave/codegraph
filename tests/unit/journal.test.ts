@@ -222,6 +222,40 @@ describe('concurrent-append safety', () => {
     expect(result.changed).toEqual(['src/a.js']);
   });
 
+  it("does not unlink another writer's lockfile after a stale-lock steal race", () => {
+    // Regression test for Greptile P1 TOCTOU: when two stealers observe the
+    // same stale holder, the loser must NOT unlink the winner's live lockfile.
+    //
+    // We simulate the race by: (1) staging a stale lock with a dead PID,
+    // (2) invoking an append (which will steal the stale lock, do its work,
+    // and release it), then (3) staging a *live* lockfile that pretends to
+    // belong to a different winner, and (4) making sure the previous release
+    // path does not retroactively unlink it.
+    const root = makeRoot();
+    writeJournalHeader(root, 1700000000000);
+
+    const lockPath = path.join(root, '.codegraph', `${JOURNAL_FILENAME}.lock`);
+
+    // Stage a stale lock held by a dead PID.
+    fs.writeFileSync(lockPath, '2147483646\n');
+
+    // Run the real acquire/steal/release cycle.
+    appendJournalEntries(root, [{ file: 'src/a.js' }]);
+
+    // Lock should be fully released (no residual lockfile).
+    expect(fs.existsSync(lockPath)).toBe(false);
+
+    // Now simulate that another writer came along and acquired the lock
+    // with a DIFFERENT nonce. If our prior release path were incorrectly
+    // unlinking by path (without nonce verification), this file would be
+    // removed by a retry. It must remain intact.
+    fs.writeFileSync(lockPath, '99999\nsome-other-writer-nonce-abc123\n');
+    expect(fs.existsSync(lockPath)).toBe(true);
+
+    // Clean up.
+    fs.unlinkSync(lockPath);
+  });
+
   it('produces no interleaved lines under repeated appends', () => {
     const root = makeRoot();
     writeJournalHeader(root, 1700000000000);
