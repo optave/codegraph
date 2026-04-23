@@ -55,37 +55,35 @@ Import resolution: native batch vs JS fallback throughput.
 
 ### Latest results
 
-**Version:** 3.9.4 | **Files:** 668 | **Date:** 2026-04-18
-
-#### Native (Rust)
-
-| Metric | Value |
-|--------|------:|
-| Full build | 2.1s |
-| No-op rebuild | 9ms |
-| 1-file rebuild | 406ms |
-
-#### WASM
-
-| Metric | Value |
-|--------|------:|
-| Full build | 7.6s |
-| No-op rebuild | 19ms |
-| 1-file rebuild | 61ms |
+**Version:** 3.9.5 | **Files:** 742 | **Date:** 2026-04-23
 
 #### Import Resolution
 
 | Metric | Value |
 |--------|------:|
-| Import pairs | 957 |
-| Native batch | 6ms |
-| JS fallback | 9ms |
+| Import pairs | 987 |
+| Native batch | 7ms |
+| JS fallback | 10ms |
 | Per-import (native) | 0ms |
 | Per-import (JS) | 0ms |
-| Speedup ratio | 1.6x |
+| Speedup ratio | 1.5x |
 
 <!-- INCREMENTAL_BENCHMARK_DATA
 [
+  {
+    "version": "3.9.5",
+    "date": "2026-04-23",
+    "files": 742,
+    "wasm": null,
+    "native": null,
+    "resolve": {
+      "imports": 987,
+      "nativeBatchMs": 6.5,
+      "jsFallbackMs": 9.8,
+      "perImportNativeMs": 0,
+      "perImportJsMs": 0
+    }
+  },
   {
     "version": "3.9.4",
     "date": "2026-04-18",
