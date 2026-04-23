@@ -6,7 +6,7 @@
 
 use crate::parser_registry::LanguageKind;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -57,14 +57,16 @@ const COMPILE_CACHE_MAX: usize = 32;
 /// repeatedly with the same config. Reusing compiled `GlobSet`s across
 /// those invocations avoids paying the parse cost on every rebuild.
 struct GlobCache {
-    order: Vec<Vec<String>>,
+    // `VecDeque` gives O(1) `pop_front` for FIFO eviction; `Vec::remove(0)`
+    // would shift every remaining element on each eviction.
+    order: VecDeque<Vec<String>>,
     map: HashMap<Vec<String>, Arc<GlobSet>>,
 }
 
 impl GlobCache {
     fn new() -> Self {
         Self {
-            order: Vec::new(),
+            order: VecDeque::new(),
             map: HashMap::new(),
         }
     }
@@ -78,11 +80,12 @@ impl GlobCache {
             self.map.insert(key, value);
             return;
         }
-        if self.map.len() >= COMPILE_CACHE_MAX && !self.order.is_empty() {
-            let oldest = self.order.remove(0);
-            self.map.remove(&oldest);
+        if self.map.len() >= COMPILE_CACHE_MAX {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
         }
-        self.order.push(key.clone());
+        self.order.push_back(key.clone());
         self.map.insert(key, value);
     }
 
