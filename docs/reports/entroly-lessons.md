@@ -16,7 +16,7 @@ Most of entroly's surface (federated swarm learning, self-evolving daemons, SAST
 3. **Dep-graph-constrained packing** — when budget is tight, keep selected symbols' direct dependencies together rather than dropping them independently. Codegraph already *computes* the edges; the packing policy is missing.
 4. **Entropy as a secondary ranking signal** — compression-ratio-derived information density, used alongside fan-in/complexity to break ties when selecting which symbols to show.
 
-Four concrete, bounded additions are proposed below (F1–F4). None require the ML/self-learning machinery. All plug into existing codegraph layers.
+Four concrete, bounded additions are proposed below (F1–F4), numbered in the recommended build order. None require the ML/self-learning machinery. All plug into existing codegraph layers.
 
 ---
 
@@ -44,7 +44,7 @@ Four concrete, bounded additions are proposed below (F1–F4). None require the 
 
 ## What Codegraph Already Has (verified)
 
-Before proposing additions, facts that bound the gap analysis (verified against `src/` on this branch):
+Before proposing additions, facts that bound the gap analysis (verified against `src/` on this branch). Line numbers below are accurate at commit `0d7fa6a` — treat `:N` suffixes as pointers, not load-bearing references; if drift matters, grep for the named symbol.
 
 | Capability | Status | Location |
 |---|---|---|
@@ -65,7 +65,46 @@ So: codegraph is strong on *what the graph contains* and weak on *how to serve a
 
 ## Proposed Additions
 
-### F1 — Token-Budgeted Output Flag
+### F1 — Whole-Repo File Skeleton Map
+
+**What:** A new command `codegraph skeleton-map` (or extend `map --per-file`) that prints, for every non-test file in the repo, a single line of the form:
+
+```
+src/domain/parser.ts → LANGUAGE_REGISTRY, parseFile(), extractImports(), EXTRACTORS{…}
+src/db/index.ts → openDb(), insertNode(), insertEdge(), applySchema()
+```
+
+One line per file, top N exported symbols per file, sorted by fan-in or path. Designed to fit in a 2K–10K token budget for a medium repo.
+
+**Why:** Codegraph's existing `map` reports directory connectivity (`src/presentation/queries-cli/overview.ts` — `TopNode[]` with in/out edge counts). That answers "which files are central" but not "what does this codebase expose." The file-skeleton map is the canonical cold-start context for an agent: before any query, show the LLM what *exists*. Entroly's `compress_level1` (`entroly-core/src/hierarchical.rs`) is exactly this pattern, and it's the cheapest form of full-repo visibility.
+
+**Where it plugs in:**
+- Query: already have `symbols_by_file` and `exports` in `src/domain/queries.ts` / `src/domain/analysis/`. Aggregate them — no new schema.
+- Presentation: new file `src/presentation/skeleton-map.ts`.
+- Also register as an MCP tool `repo_skeleton` in `src/mcp/tool-registry.ts`, budget-aware (F3). This is the single most useful tool to give an agent before it starts asking questions.
+
+**Effort:** ~1 day. Mostly a new SELECT + a formatter.
+
+---
+
+### F2 — Skeleton / Signature-Only Output Mode
+
+**What:** A formal `--skeleton` (or `--level signatures`) output mode that emits, for each selected symbol: kind, name, parameters, return type, modifiers, and a one-line leading comment — but not the body. Works on `context`, `audit`, `exports`, and `where --file`.
+
+**Why:** Entroly's empirical claim (from `entroly-core/src/skeleton.rs`: "skeleton carries ~90% of structural information at ~10–30% of the token cost") matches the intuition every code reviewer already has: signatures are usually enough. Today, `--no-source` elides bodies *and* most metadata — there's no middle setting.
+
+**Where it plugs in:**
+- Tree-sitter already gives us parameter ranges and return-type ranges during extraction (`src/domain/parser.ts`, per-language extractors). We can emit signature slices without re-parsing if we persist signature byte offsets on the node row. For v1, re-slice on demand from the source file — fast enough to avoid a schema change.
+- Add a renderer in `src/presentation/skeleton.ts` that walks selected nodes and emits the signature format. Reuse from F3's degradation ladder.
+- Language coverage: JS/TS/Python/Go/Rust cover the hot path; other languages can fall back to the full signature line from `nodes.start_line` through the first `{` / `:` / newline.
+
+**Non-goals:** Do not ship entroly's regex-style fallback (`entroly-core/src/skeleton.rs` detects language from filename and pattern-matches — fragile). We already have tree-sitter; use it.
+
+**Effort:** ~2 days for the renderer plus per-language signature-extent coverage.
+
+---
+
+### F3 — Token-Budgeted Output Flag
 
 **What:** Add `--budget <tokens>` (and `--model <name>` to pick a tokenizer) to commands whose output is commonly piped into an LLM: `context`, `audit`, `batch`, `brief`, `query`, and `exports`. When the flag is set, the command measures its serialized output against the budget and progressively downgrades detail until it fits.
 
@@ -83,53 +122,14 @@ So: codegraph is strong on *what the graph contains* and weak on *how to serve a
 
 ---
 
-### F2 — Skeleton / Signature-Only Output Mode
-
-**What:** A formal `--skeleton` (or `--level signatures`) output mode that emits, for each selected symbol: kind, name, parameters, return type, modifiers, and a one-line leading comment — but not the body. Works on `context`, `audit`, `exports`, and `where --file`.
-
-**Why:** Entroly's empirical claim (from `entroly-core/src/skeleton.rs`: "skeleton carries ~90% of structural information at ~10–30% of the token cost") matches the intuition every code reviewer already has: signatures are usually enough. Today, `--no-source` elides bodies *and* most metadata — there's no middle setting.
-
-**Where it plugs in:**
-- Tree-sitter already gives us parameter ranges and return-type ranges during extraction (`src/domain/parser.ts`, per-language extractors). We can emit signature slices without re-parsing if we persist signature byte offsets on the node row. For v1, re-slice on demand from the source file — fast enough to avoid a schema change.
-- Add a renderer in `src/presentation/skeleton.ts` that walks selected nodes and emits the signature format. Reuse from F1's degradation ladder.
-- Language coverage: JS/TS/Python/Go/Rust cover the hot path; other languages can fall back to the full signature line from `nodes.start_line` through the first `{` / `:` / newline.
-
-**Non-goals:** Do not ship entroly's regex-style fallback (`entroly-core/src/skeleton.rs` detects language from filename and pattern-matches — fragile). We already have tree-sitter; use it.
-
-**Effort:** ~2 days for the renderer plus per-language signature-extent coverage.
-
----
-
-### F3 — Whole-Repo File Skeleton Map
-
-**What:** A new command `codegraph skeleton-map` (or extend `map --per-file`) that prints, for every non-test file in the repo, a single line of the form:
-
-```
-src/domain/parser.ts → LANGUAGE_REGISTRY, parseFile(), extractImports(), EXTRACTORS{…}
-src/db/index.ts → openDb(), insertNode(), insertEdge(), applySchema()
-```
-
-One line per file, top N exported symbols per file, sorted by fan-in or path. Designed to fit in a 2K–10K token budget for a medium repo.
-
-**Why:** Codegraph's existing `map` reports directory connectivity (`src/presentation/queries-cli/overview.ts:261` — `TopNode[]` with in/out edge counts). That answers "which files are central" but not "what does this codebase expose." The file-skeleton map is the canonical cold-start context for an agent: before any query, show the LLM what *exists*. Entroly's `compress_level1` (`entroly-core/src/hierarchical.rs`) is exactly this pattern, and it's the cheapest form of full-repo visibility.
-
-**Where it plugs in:**
-- Query: already have `symbols_by_file` and `exports` in `src/domain/queries.ts` / `src/domain/analysis/`. Aggregate them — no new schema.
-- Presentation: new file `src/presentation/skeleton-map.ts`.
-- Also register as an MCP tool `repo_skeleton` in `src/mcp/tool-registry.ts`, budget-aware (F1). This is the single most useful tool to give an agent before it starts asking questions.
-
-**Effort:** ~1 day. Mostly a new SELECT + a formatter.
-
----
-
 ### F4 — Dep-Aware Context Packing
 
-**What:** When `context <name>` or `audit` emits callees/callers under a budget (F1), prefer keeping direct dependencies of an included symbol over unrelated siblings. I.e., if `foo` is in the output, `foo`'s called functions should be preferred over other candidates at the same rank.
+**What:** When `context <name>` or `audit` emits callees/callers under a budget (F3), prefer keeping direct dependencies of an included symbol over unrelated siblings. I.e., if `foo` is in the output, `foo`'s called functions should be preferred over other candidates at the same rank.
 
 **Why:** Entroly frames this as "context is not additive" (`entroly-core/src/depgraph.rs`): dropping a called function from a kept caller produces a broken slice the LLM hallucinates over. Codegraph already has the `calls` edges to enforce this — the packing policy just doesn't use them today.
 
 **Where it plugs in:**
-- Sort-phase modification in `src/domain/analysis/context.ts` (or wherever the F1 greedy fill lives): after scoring, add a second pass that boosts the score of candidates that are direct callees of already-selected symbols. Single-pass boost is fine; no need for iterative fixed-point.
+- Sort-phase modification in `src/domain/analysis/context.ts` (or wherever the F3 greedy fill lives): after scoring, add a second pass that boosts the score of candidates that are direct callees of already-selected symbols. Single-pass boost is fine; no need for iterative fixed-point.
 - Same policy naturally falls out for `features/sequence.ts` output (BFS already pins callees).
 
 **Non-goals:** Don't ship entroly's connected-component analysis or graph-constrained DP. A one-pass dependency boost captures ≥80% of the value at a fraction of the complexity.
@@ -150,19 +150,19 @@ Documenting these so a future agent doesn't re-open the question.
 | LLM response distillation ("strip 40% filler") | Codegraph doesn't produce LLM responses. |
 | Telegram/Discord/Slack chat integrations | Scope creep. Hooks and the MCP server are the correct integration surface. |
 | SimHash + multi-probe LSH dedup (`entroly-core/src/lsh.rs`) | Our "fragments" are graph nodes with stable IDs; near-dup detection is unnecessary. This matters for entroly because it treats arbitrary text chunks as candidates. |
-| Differentiable soft-bisection knapsack (`knapsack.rs`) | The 100+ lines of Lagrangian/KKT math are optimizing for a regime codegraph doesn't hit (500+ candidates with continuous feedback signals). Sorted greedy fill under F1 is within 5% of optimal for our case and 50× simpler to review. |
+| Differentiable soft-bisection knapsack (`knapsack.rs`) | The 100+ lines of Lagrangian/KKT math are optimizing for a regime codegraph doesn't hit (500+ candidates with continuous feedback signals). Sorted greedy fill under F3 is within 5% of optimal for our case and 50× simpler to review. |
 | BM25 implementation | Already have it via SQLite FTS5 — `src/domain/search/index.ts:10`. |
 
 ---
 
 ## Implementation Order
 
-F3 (skeleton map) → F2 (signature mode) → F1 (budget flag, using F2 as the middle rung) → F4 (dep-aware packing).
+F1 (skeleton map) → F2 (signature mode) → F3 (budget flag, using F2 as the middle rung) → F4 (dep-aware packing). The F-numbers match this order — F1 is built first.
 
 This order ships user-visible value at each step:
-- After F3: agents get a cheap cold-start map — improvement even without budget support.
+- After F1: agents get a cheap cold-start map — improvement even without budget support.
 - After F2: human users get a readable middle-detail mode.
-- After F1: MCP tool calls become safe under context-window constraints.
+- After F3: MCP tool calls become safe under context-window constraints.
 - After F4: quality-of-slice for the already-useful tools improves.
 
 Total estimated effort: ~5 engineering days. No schema migrations. No new runtime dependencies beyond a tokenizer (opt-in, falls back to char heuristic).
