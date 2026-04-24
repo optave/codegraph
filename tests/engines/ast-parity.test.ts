@@ -227,6 +227,181 @@ public class App {
 }
 `,
     },
+    // ── Minimal fixtures for languages added in PR #1016 ───────────────
+    // Each exercises at least one string literal + one other ast_node kind
+    // from AST_TYPE_MAPS to catch silent WASM/native divergence.
+    {
+      langId: 'csharp',
+      ext: '.cs',
+      code: `
+using System;
+public class App {
+    public static void Main() {
+        string s = "hello world";
+        throw new InvalidOperationException("bad");
+    }
+}
+`,
+    },
+    {
+      langId: 'ruby',
+      ext: '.rb',
+      code: `
+class MyError < StandardError; end
+def load_data
+  s = "hello world"
+  raise MyError, "no data"
+end
+`,
+    },
+    {
+      langId: 'php',
+      ext: '.php',
+      code: `<?php
+class App {
+    public function run() {
+        $s = "hello world";
+        $o = new \\RuntimeException("bad");
+        throw $o;
+    }
+}
+`,
+    },
+    {
+      langId: 'c',
+      ext: '.c',
+      code: `
+#include <stdio.h>
+int main(void) {
+    const char *s = "hello world";
+    printf("%s\\n", s);
+    return 0;
+}
+`,
+    },
+    {
+      langId: 'cpp',
+      ext: '.cpp',
+      code: `
+#include <stdexcept>
+#include <string>
+int run() {
+    std::string s = "hello world";
+    auto *p = new int(42);
+    throw std::runtime_error("bad");
+    return *p;
+}
+`,
+    },
+    {
+      langId: 'kotlin',
+      ext: '.kt',
+      code: `
+fun run() {
+    val s = "hello world"
+    throw RuntimeException("bad")
+}
+`,
+    },
+    {
+      langId: 'swift',
+      ext: '.swift',
+      code: `
+enum MyError: Error { case bad }
+func run() async throws -> String {
+    let s = "hello world"
+    let r = try await load()
+    throw MyError.bad
+}
+`,
+    },
+    {
+      langId: 'scala',
+      ext: '.scala',
+      code: `
+object App {
+  def run(): Unit = {
+    val s = "hello world"
+    val o = new Exception("bad")
+    throw o
+  }
+}
+`,
+    },
+    {
+      langId: 'bash',
+      ext: '.sh',
+      code: `
+#!/bin/bash
+s="hello world"
+echo "$s"
+`,
+    },
+    {
+      langId: 'elixir',
+      ext: '.ex',
+      code: `
+defmodule App do
+  def run do
+    s = "hello world"
+    r = ~r/^[a-z]+$/
+    {s, r}
+  end
+end
+`,
+    },
+    {
+      langId: 'lua',
+      ext: '.lua',
+      code: `
+local function run()
+    local s = "hello world"
+    return s
+end
+`,
+    },
+    {
+      langId: 'dart',
+      ext: '.dart',
+      code: `
+Future<String> run() async {
+  final s = "hello world";
+  final r = await load();
+  throw Exception("bad");
+}
+`,
+    },
+    {
+      langId: 'zig',
+      ext: '.zig',
+      code: `
+const std = @import("std");
+pub fn main() void {
+    const s = "hello world";
+    std.debug.print("{s}\\n", .{s});
+}
+`,
+    },
+    {
+      langId: 'haskell',
+      ext: '.hs',
+      code: `
+module Main where
+main :: IO ()
+main = do
+  let s = "hello world"
+  putStrLn s
+`,
+    },
+    {
+      langId: 'ocaml',
+      ext: '.ml',
+      code: `
+let run () =
+  let s = "hello world" in
+  print_endline s
+`,
+    },
   ];
 
   async function wasmExtractAstNodes(code: string, ext: string, langId: string): Promise<number> {
