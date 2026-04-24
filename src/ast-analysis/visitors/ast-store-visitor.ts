@@ -36,6 +36,11 @@ const CALL_TYPES = new Set<string>([
 
 const DEFAULT_STRING_CONFIG: AstStringConfig = { quoteChars: '\'"`', stringPrefixes: '' };
 
+// Keyword tokens skipped when extracting the inner expression text of a
+// throw/raise/await/new node. Module-level constant avoids reallocating on
+// every call (can be hot in large files).
+const CHILD_EXPR_SKIP_KEYWORDS = new Set<string>(['throw', 'raise', 'await', 'new']);
+
 interface AstStoreRow {
   file: string;
   line: number;
@@ -118,11 +123,10 @@ function extractAwaitName(node: TreeSitterNode): string {
 
 /** Extract text of the expression inside a throw/await, skipping the keyword. */
 function extractChildExpressionText(node: TreeSitterNode): string | null {
-  const keywords = new Set(['throw', 'raise', 'await', 'new']);
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (!child) continue;
-    if (!keywords.has(child.type)) return truncate(child.text);
+    if (!CHILD_EXPR_SKIP_KEYWORDS.has(child.type)) return truncate(child.text);
   }
   return truncate(node.text);
 }
