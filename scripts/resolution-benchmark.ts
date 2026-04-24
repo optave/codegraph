@@ -306,5 +306,5 @@ try {
 	console.log = origLog;
 	await disposeParsers();
 	cleanup();
-	process.exit(0);
 }
+process.exit(0);
