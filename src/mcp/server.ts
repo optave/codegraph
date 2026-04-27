@@ -163,11 +163,17 @@ function createCallToolHandler(
   customDbPath: string | undefined,
   allowedRepos: string[] | undefined,
   getQueries: () => Promise<unknown>,
+  enabledToolNames: Set<string>,
 ) {
   return async (request: any) => {
     const { name, arguments: args } = request.params;
     try {
       validateMultiRepoAccess(multiRepo, name, args);
+
+      if (!enabledToolNames.has(name)) {
+        return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
+      }
+
       const dbPath = await resolveDbPath(customDbPath, args, allowedRepos);
 
       const toolEntry = TOOL_HANDLERS.get(name);
@@ -209,6 +215,9 @@ export async function startMCPServer(
   // Apply config-based MCP page-size overrides
   const config = options.config || loadConfig();
   initMcpDefaults(config.mcp?.defaults ? { ...config.mcp.defaults } : undefined);
+  const disabledTools = config.mcp?.disabledTools ? [...config.mcp.disabledTools] : undefined;
+  const enabledTools = buildToolList(multiRepo, disabledTools);
+  const enabledToolNames = new Set(enabledTools.map((tool) => tool.name));
 
   const { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } =
     await loadMCPSdk();
@@ -225,12 +234,12 @@ export async function startMCPServer(
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: buildToolList(multiRepo),
+    tools: enabledTools,
   }));
 
   server.setRequestHandler(
     CallToolRequestSchema,
-    createCallToolHandler(multiRepo, customDbPath, allowedRepos, getQueries),
+    createCallToolHandler(multiRepo, customDbPath, allowedRepos, getQueries, enabledToolNames),
   );
 
   const transport = new (StdioServerTransport as any)();
