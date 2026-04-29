@@ -32,7 +32,12 @@ import type {
   ExtractorOutput,
   SqliteStatement,
 } from '../../../types.js';
-import { getActiveEngine, getInstalledWasmExtensions, parseFilesAuto } from '../../parser.js';
+import {
+  classifyNativeDrops,
+  getActiveEngine,
+  getInstalledWasmExtensions,
+  parseFilesAuto,
+} from '../../parser.js';
 import { setWorkspaces } from '../resolve.js';
 import { PipelineContext } from './context.js';
 import { batchInsertNodes, collectFiles as collectFilesUtil, loadPathAliases } from './helpers.js';
@@ -735,6 +740,26 @@ async function tryNativeOrchestrator(
 }
 
 /**
+ * Render `{ ext → paths[] }` as `ext (n: sample.ext, ...)` slices for log lines.
+ * Caps at 3 sample paths per extension and 6 extensions total to keep warnings
+ * readable when many languages are dropped at once.
+ */
+function formatDropExtensionSummary(buckets: Map<string, string[]>): string {
+  const MAX_EXTS = 6;
+  const MAX_SAMPLES = 3;
+  const entries = Array.from(buckets.entries()).sort((a, b) => b[1].length - a[1].length);
+  const shown = entries.slice(0, MAX_EXTS).map(([ext, paths]) => {
+    const sample = paths.slice(0, MAX_SAMPLES).join(', ');
+    const more = paths.length > MAX_SAMPLES ? `, +${paths.length - MAX_SAMPLES} more` : '';
+    return `${ext} (${paths.length}: ${sample}${more})`;
+  });
+  if (entries.length > MAX_EXTS) {
+    shown.push(`+${entries.length - MAX_EXTS} more extension(s)`);
+  }
+  return shown.join('; ');
+}
+
+/**
  * Backfill files that the native orchestrator silently dropped during parse.
  * Falls back to WASM + inserts file/symbol nodes so engine counts match (#967).
  */
@@ -761,18 +786,32 @@ async function backfillNativeDroppedFiles(ctx: PipelineContext): Promise<void> {
   // minimal installs) can't be parsed by either engine, so they're not a
   // native regression — excluding them keeps the warn count meaningful.
   const installedExts = getInstalledWasmExtensions();
+  const missingRel: string[] = [];
   const missingAbs: string[] = [];
   for (const rel of expected) {
     if (existing.has(rel)) continue;
     const ext = path.extname(rel).toLowerCase();
     if (!installedExts.has(ext)) continue;
+    missingRel.push(rel);
     missingAbs.push(path.join(ctx.rootDir, rel));
   }
   if (missingAbs.length === 0) return;
 
-  warn(
-    `Native orchestrator dropped ${missingAbs.length} file(s); backfilling via WASM for engine parity`,
-  );
+  // Classify drops so users see per-extension reasons instead of just a count
+  // (#1011). `unsupported-by-native` is a legitimate parser limit (no Rust
+  // extractor); `native-extractor-failure` indicates a real native bug since
+  // the language IS supported by the addon yet the file was dropped anyway.
+  const { byReason, totals } = classifyNativeDrops(missingRel);
+  if (totals['unsupported-by-native'] > 0) {
+    info(
+      `Native orchestrator skipped ${totals['unsupported-by-native']} file(s) in languages without a Rust extractor; backfilling via WASM: ${formatDropExtensionSummary(byReason['unsupported-by-native'])}`,
+    );
+  }
+  if (totals['native-extractor-failure'] > 0) {
+    warn(
+      `Native orchestrator dropped ${totals['native-extractor-failure']} file(s) in natively-supported languages — likely a Rust extractor bug. Backfilling via WASM: ${formatDropExtensionSummary(byReason['native-extractor-failure'])}`,
+    );
+  }
   const wasmResults = await parseFilesAuto(missingAbs, ctx.rootDir, { engine: 'wasm' });
 
   const rows: unknown[][] = [];

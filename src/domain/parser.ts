@@ -412,6 +412,106 @@ export function getInstalledWasmExtensions(): Set<string> {
   return exts;
 }
 
+/**
+ * Lowercase file extensions covered by the native Rust addon.
+ *
+ * Mirrors `LanguageKind::from_extension` in
+ * `crates/codegraph-core/src/parser_registry.rs`. Used to classify why the
+ * native orchestrator dropped a file: extensions outside this set are a
+ * legitimate parser limit (no Rust extractor exists), while extensions inside
+ * it indicate a real native bug (parse/read/extract failure).
+ *
+ * Keep this list in sync with the Rust enum — the native addon is a separate
+ * npm package, so JS has no runtime way to discover its language coverage.
+ */
+export const NATIVE_SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.ts',
+  '.tsx',
+  '.py',
+  '.pyi',
+  '.tf',
+  '.hcl',
+  '.go',
+  '.rs',
+  '.java',
+  '.cs',
+  '.rb',
+  '.rake',
+  '.gemspec',
+  '.php',
+  '.phtml',
+  '.c',
+  '.h',
+  '.cpp',
+  '.cc',
+  '.cxx',
+  '.hpp',
+  '.kt',
+  '.kts',
+  '.swift',
+  '.scala',
+  '.sh',
+  '.bash',
+  '.ex',
+  '.exs',
+  '.lua',
+  '.dart',
+  '.zig',
+  '.hs',
+  '.ml',
+  '.mli',
+]);
+
+/**
+ * Classification for a file the native orchestrator dropped.
+ * - `unsupported-by-native`: extension has no Rust extractor (legitimate parser limit).
+ * - `native-extractor-failure`: extension is supported by native but the file was
+ *   still dropped — points at a real bug (read error, parse failure, extractor crash).
+ */
+export type NativeDropReason = 'unsupported-by-native' | 'native-extractor-failure';
+
+export interface NativeDropClassification {
+  /** Per-reason → per-extension → list of relative paths that hit that bucket. */
+  byReason: Record<NativeDropReason, Map<string, string[]>>;
+  /** Total file count per reason. */
+  totals: Record<NativeDropReason, number>;
+}
+
+/**
+ * Group the missing files (relative paths) by drop reason and extension so the
+ * caller can log per-extension counts and a sample path. Pure function — no
+ * I/O, safe to unit-test independently of the build pipeline.
+ */
+export function classifyNativeDrops(relPaths: Iterable<string>): NativeDropClassification {
+  const byReason: Record<NativeDropReason, Map<string, string[]>> = {
+    'unsupported-by-native': new Map(),
+    'native-extractor-failure': new Map(),
+  };
+  const totals: Record<NativeDropReason, number> = {
+    'unsupported-by-native': 0,
+    'native-extractor-failure': 0,
+  };
+  for (const rel of relPaths) {
+    const ext = path.extname(rel).toLowerCase();
+    const reason: NativeDropReason = NATIVE_SUPPORTED_EXTENSIONS.has(ext)
+      ? 'native-extractor-failure'
+      : 'unsupported-by-native';
+    const bucket = byReason[reason];
+    let list = bucket.get(ext);
+    if (!list) {
+      list = [];
+      bucket.set(ext, list);
+    }
+    list.push(rel);
+    totals[reason]++;
+  }
+  return { byReason, totals };
+}
+
 // ── Unified API ──────────────────────────────────────────────────────────────
 
 function resolveEngine(opts: ParseEngineOpts = {}): ResolvedEngine {
