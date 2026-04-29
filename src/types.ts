@@ -1201,7 +1201,7 @@ export interface CodegraphConfig {
 
   mcp: {
     defaults: McpDefaults;
-    disabledTools: string[];
+    disabledTools?: string[];
   };
 }
 

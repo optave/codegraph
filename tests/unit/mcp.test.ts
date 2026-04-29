@@ -1101,8 +1101,7 @@ describe('startMCPServer handler dispatch', () => {
       params: { name: 'list_repos', arguments: {} },
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Multi-repo access is disabled');
-    expect(result.content[0].text).toContain('--multi-repo');
+    expect(result.content[0].text).toContain('Unknown tool: list_repos');
   });
 
   it('tools/list in single-repo mode has no repo property and no list_repos', async () => {
