@@ -168,11 +168,11 @@ function createCallToolHandler(
   return async (request: any) => {
     const { name, arguments: args } = request.params;
     try {
-      validateMultiRepoAccess(multiRepo, name, args);
-
       if (!enabledToolNames.has(name)) {
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
       }
+
+      validateMultiRepoAccess(multiRepo, name, args);
 
       const dbPath = await resolveDbPath(customDbPath, args, allowedRepos);
 

@@ -30,7 +30,10 @@ const PAGINATION_PROPS: Record<string, unknown> = {
 };
 
 function normalizeToolName(name: string): string {
-  return name.trim().toLowerCase().replace(/^codegraph\d+_/, '');
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/^codegraph\d+_/, '');
 }
 
 function buildDisabledToolSet(disabledTools?: string[]): Set<string> {
