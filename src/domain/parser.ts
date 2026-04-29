@@ -512,6 +512,28 @@ export function classifyNativeDrops(relPaths: Iterable<string>): NativeDropClass
   return { byReason, totals };
 }
 
+/**
+ * Render `{ ext → paths[] }` as `ext (n: sample.ext, ...)` slices for log lines.
+ * Caps at 3 sample paths per extension and 6 extensions total to keep warnings
+ * readable when many languages are dropped at once. Extensions are sorted by
+ * descending file count so the loudest offender shows up first; ties keep
+ * insertion order. Pure function — safe to unit-test independently.
+ */
+export function formatDropExtensionSummary(buckets: Map<string, string[]>): string {
+  const MAX_EXTS = 6;
+  const MAX_SAMPLES = 3;
+  const entries = Array.from(buckets.entries()).sort((a, b) => b[1].length - a[1].length);
+  const shown = entries.slice(0, MAX_EXTS).map(([ext, paths]) => {
+    const sample = paths.slice(0, MAX_SAMPLES).join(', ');
+    const more = paths.length > MAX_SAMPLES ? `, +${paths.length - MAX_SAMPLES} more` : '';
+    return `${ext} (${paths.length}: ${sample}${more})`;
+  });
+  if (entries.length > MAX_EXTS) {
+    shown.push(`+${entries.length - MAX_EXTS} more extension(s)`);
+  }
+  return shown.join('; ');
+}
+
 // ── Unified API ──────────────────────────────────────────────────────────────
 
 function resolveEngine(opts: ParseEngineOpts = {}): ResolvedEngine {
