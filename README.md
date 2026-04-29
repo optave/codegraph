@@ -833,6 +833,20 @@ The command is split on whitespace and executed with `execFileSync` (no shell in
 
 Works with any secret manager: 1Password CLI (`op`), Bitwarden (`bw`), `pass`, HashiCorp Vault, macOS Keychain (`security`), AWS Secrets Manager, etc.
 
+### MCP tool filtering
+
+Codegraph's MCP server exposes 30+ tools by default. For models with a small context window, you can shrink the schema by disabling tools you don't use:
+
+```json
+{
+  "mcp": {
+    "disabledTools": ["execution_flow", "sequence", "communities", "co_changes"]
+  }
+}
+```
+
+Names are matched case-insensitively and a leading `codegraph<digits>_` prefix (e.g. `codegraph2_module_map`) is stripped before comparison. Disabled tools are removed from `tools/list` and any `tools/call` invocation returns `Unknown tool: <name>`. See **[docs/guides/mcp-tool-filtering.md](docs/guides/mcp-tool-filtering.md)** for the full tool catalog and recipes.
+
 ## 📖 Programmatic API
 
 Codegraph also exports a full API for use in your own tools:
