@@ -773,7 +773,7 @@ Copy `.github/workflows/codegraph-impact.yml` to your repo, and every PR will ge
 
 ## 🛠️ Configuration
 
-Create a `.codegraphrc.json` in your project root to customize behavior:
+Create a `.codegraphrc.json` in your project root to customize behavior. The snippets below cover the most-used keys — see **[docs/guides/configuration.md](docs/guides/configuration.md)** for the full reference (every group, every key, every default).
 
 ```json
 {
@@ -845,7 +845,7 @@ Codegraph's MCP server exposes 30+ tools by default. For models with a small con
 }
 ```
 
-Names are matched case-insensitively and a leading `codegraph<digits>_` prefix (e.g. `codegraph2_module_map`) is stripped before comparison. Disabled tools are removed from `tools/list` and any `tools/call` invocation returns `Unknown tool: <name>`. See **[docs/guides/mcp-tool-filtering.md](docs/guides/mcp-tool-filtering.md)** for the full tool catalog and recipes.
+Names are matched case-insensitively and a leading `codegraph<digits>_` prefix (e.g. `codegraph2_module_map`) is stripped before comparison. Disabled tools are removed from `tools/list` and any `tools/call` invocation returns `Unknown tool: <name>`. See **[docs/guides/configuration.md#mcp-tool-filtering](docs/guides/configuration.md#mcp-tool-filtering)** for the full tool catalog, and the rest of that guide for every other config option.
 
 ## 📖 Programmatic API
 
