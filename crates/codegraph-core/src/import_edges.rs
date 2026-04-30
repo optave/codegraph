@@ -153,24 +153,48 @@ pub fn detect_barrel_only_files(ctx: &ImportEdgeContext) -> HashSet<String> {
     barrel_only
 }
 
-/// Look up a file node ID from the database.
-fn get_file_node_id(conn: &Connection, rel_path: &str) -> Option<i64> {
-    conn.query_row(
-        "SELECT id FROM nodes WHERE name = ? AND kind = 'file' AND file = ? AND line = 0",
-        [rel_path, rel_path],
-        |row| row.get(0),
-    )
-    .ok()
+/// Load every file node ID into a HashMap in one query — replaces per-import
+/// `conn.query_row` lookups that paid the SQLite prepare/execute cycle on each
+/// call (#1013).
+fn load_file_node_ids(conn: &Connection) -> HashMap<String, i64> {
+    let mut map = HashMap::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0")
+    {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }) {
+            for r in rows.flatten() {
+                map.insert(r.0, r.1);
+            }
+        }
+    }
+    map
 }
 
-/// Look up the first symbol node ID by name and file (for type-only import resolution).
-fn get_symbol_node_id(conn: &Connection, name: &str, file: &str) -> Option<i64> {
-    conn.query_row(
-        "SELECT id FROM nodes WHERE name = ? AND file = ? AND kind != 'file' LIMIT 1",
-        [name, file],
-        |row| row.get(0),
-    )
-    .ok()
+/// Load every (name, file) -> id mapping for non-file nodes in one query.
+/// Mirrors the JS `nodesByNameAndFile` lookup map; preserves the first-row
+/// semantics of the legacy `LIMIT 1` query by keeping the first ID seen per
+/// key. Skipped entirely when no type-only imports exist (saves one full
+/// scan of `nodes` on the common case).
+fn load_symbol_node_ids(conn: &Connection) -> HashMap<(String, String), i64> {
+    let mut map = HashMap::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT name, file, id FROM nodes WHERE kind != 'file'")
+    {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        }) {
+            for r in rows.flatten() {
+                map.entry((r.0, r.1)).or_insert(r.2);
+            }
+        }
+    }
+    map
 }
 
 /// Build import edges from parsed file symbols.
@@ -185,10 +209,23 @@ fn get_symbol_node_id(conn: &Connection, name: &str, file: &str) -> Option<i64> 
 pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<EdgeRow> {
     let mut edges = Vec::new();
 
+    // Pre-load all file node IDs once. Previously this was N x query_row,
+    // each of which ran a fresh sqlite3_prepare/step/finalize cycle (#1013).
+    let file_node_ids = load_file_node_ids(conn);
+    let needs_symbol_map = ctx
+        .file_symbols
+        .values()
+        .any(|s| s.imports.iter().any(|i| i.type_only.unwrap_or(false)));
+    let symbol_node_ids = if needs_symbol_map {
+        load_symbol_node_ids(conn)
+    } else {
+        HashMap::new()
+    };
+
     for (rel_path, symbols) in &ctx.file_symbols {
         let is_barrel_only = ctx.barrel_only_files.contains(rel_path);
-        let file_node_id = match get_file_node_id(conn, rel_path) {
-            Some(id) => id,
+        let file_node_id = match file_node_ids.get(rel_path) {
+            Some(&id) => id,
             None => continue,
         };
 
@@ -203,8 +240,8 @@ pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<Edg
             }
 
             let resolved_path = ctx.get_resolved(abs_str, &imp.source);
-            let target_id = match get_file_node_id(conn, &resolved_path) {
-                Some(id) => id,
+            let target_id = match file_node_ids.get(&resolved_path) {
+                Some(&id) => id,
                 None => continue,
             };
 
@@ -238,7 +275,9 @@ pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<Edg
                             target_file = actual;
                         }
                     }
-                    if let Some(sym_id) = get_symbol_node_id(conn, clean_name, &target_file) {
+                    if let Some(&sym_id) =
+                        symbol_node_ids.get(&(clean_name.to_string(), target_file))
+                    {
                         edges.push(EdgeRow {
                             source_id: file_node_id,
                             target_id: sym_id,
@@ -262,7 +301,7 @@ pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<Edg
                         if actual_source != resolved_path
                             && resolved_sources.insert(actual_source.clone())
                         {
-                            if let Some(actual_id) = get_file_node_id(conn, &actual_source) {
+                            if let Some(&actual_id) = file_node_ids.get(&actual_source) {
                                 let through_kind = match edge_kind {
                                     "imports-type" => "imports-type",
                                     "dynamic-imports" => "dynamic-imports",
@@ -286,7 +325,15 @@ pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<Edg
     edges
 }
 
-/// Batch insert edges into the database.
+/// 199 rows × 5 params = 995 bind parameters, safely under the legacy
+/// `SQLITE_MAX_VARIABLE_NUMBER` default of 999. Mirrors `edges_db::CHUNK`.
+const INSERT_CHUNK: usize = 199;
+
+/// Batch insert edges into the database using multi-row VALUES chunks.
+///
+/// Replaces the previous one-prepared-statement-per-row pattern that paid a
+/// per-edge bind/step/reset cycle. With the chunked path each chunk runs a
+/// single VM execution against a cached statement (#1013).
 pub fn insert_edges(conn: &Connection, edges: &[EdgeRow]) {
     if edges.is_empty() {
         return;
@@ -295,18 +342,38 @@ pub fn insert_edges(conn: &Connection, edges: &[EdgeRow]) {
         Ok(tx) => tx,
         Err(_) => return,
     };
-    if let Ok(mut stmt) = tx.prepare(
-        "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, ?, ?)",
-    ) {
-        for e in edges {
-            let _ = stmt.execute(rusqlite::params![
-                e.source_id,
-                e.target_id,
-                e.kind,
-                e.confidence,
-                e.dynamic,
-            ]);
+
+    for chunk in edges.chunks(INSERT_CHUNK) {
+        let placeholders: Vec<String> = (0..chunk.len())
+            .map(|i| {
+                let base = i * 5;
+                format!(
+                    "(?{},?{},?{},?{},?{})",
+                    base + 1,
+                    base + 2,
+                    base + 3,
+                    base + 4,
+                    base + 5
+                )
+            })
+            .collect();
+        let sql = format!(
+            "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES {}",
+            placeholders.join(",")
+        );
+        let mut stmt = match tx.prepare_cached(&sql) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        for (i, edge) in chunk.iter().enumerate() {
+            let base = i * 5;
+            let _ = stmt.raw_bind_parameter(base + 1, edge.source_id);
+            let _ = stmt.raw_bind_parameter(base + 2, edge.target_id);
+            let _ = stmt.raw_bind_parameter(base + 3, edge.kind.as_str());
+            let _ = stmt.raw_bind_parameter(base + 4, edge.confidence);
+            let _ = stmt.raw_bind_parameter(base + 5, edge.dynamic);
         }
+        let _ = stmt.raw_execute();
     }
     let _ = tx.commit();
 }
