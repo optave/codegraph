@@ -471,17 +471,19 @@ pub fn reconnect_reverse_dep_edges(
                 |row| row.get::<_, i64>(0),
             ) {
                 Ok(new_id) => {
-                    if insert_stmt
-                        .execute(rusqlite::params![
-                            s.source_id,
-                            new_id,
-                            &s.edge_kind,
-                            s.confidence,
-                            s.dynamic,
-                        ])
-                        .is_ok()
-                    {
-                        reconnected += 1;
+                    // INSERT OR IGNORE silently swallows duplicate-row constraint
+                    // errors and returns Ok(0). Only count rows that actually
+                    // inserted so the diagnostic counter isn't inflated by no-ops.
+                    match insert_stmt.execute(rusqlite::params![
+                        s.source_id,
+                        new_id,
+                        &s.edge_kind,
+                        s.confidence,
+                        s.dynamic,
+                    ]) {
+                        Ok(n) if n > 0 => reconnected += 1,
+                        Ok(_) => {} // duplicate skipped by INSERT OR IGNORE
+                        Err(_) => dropped += 1,
                     }
                 }
                 Err(_) => {
