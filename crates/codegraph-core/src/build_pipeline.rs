@@ -185,6 +185,11 @@ pub fn run_pipeline(
     // strategy and lets us skip re-parsing reverse-dep files entirely:
     // parse/insert/structure/roles/analysis all scope to truly-changed files.
     let mut saved_reverse_dep_edges: Vec<change_detection::SavedReverseDepEdge> = Vec::new();
+    // Files that import a removed file. Save+reconnect doesn't apply (the
+    // target node is gone for good), but their role records go stale because
+    // edges to the deleted file's nodes get purged in Stage 3. Reclassify them
+    // in Stage 8 so fan-out reflects reality. (#1027 review)
+    let mut removal_reverse_deps: Vec<String> = Vec::new();
 
     // Handle full build: clear all graph data
     if change_result.is_full_build {
@@ -199,6 +204,15 @@ pub fn run_pipeline(
         if !opts.no_reverse_deps.unwrap_or(false) {
             saved_reverse_dep_edges =
                 change_detection::save_reverse_dep_edges(conn, &changed_paths);
+
+            if !change_result.removed.is_empty() {
+                let removed_set: HashSet<String> =
+                    change_result.removed.iter().cloned().collect();
+                removal_reverse_deps =
+                    change_detection::find_reverse_dependencies(conn, &removed_set, root_dir)
+                        .into_iter()
+                        .collect();
+            }
         }
 
         let files_to_purge: Vec<String> = change_result
@@ -377,14 +391,26 @@ pub fn run_pipeline(
     timing.structure_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let t0 = Instant::now();
-    // Role classification needs only the truly-changed files —
-    // `do_classify_incremental` expands to neighbours via the edges table, so
-    // reverse-dep files are picked up automatically when their fan-in/fan-out
-    // is affected by edges to/from changed files.
+    // Role classification needs the truly-changed files plus reverse-deps of
+    // any removed files. `do_classify_incremental` expands to neighbours via
+    // the edges table, so reverse-deps of *changed* files are picked up
+    // automatically when their fan-in/fan-out is affected. Reverse-deps of
+    // *removed* files have to be added explicitly — the deleted file's nodes
+    // are gone, so neighbour expansion can't reach the importer. Without this
+    // seed, removal-only builds skip role classification entirely. (#1027)
     let changed_file_list: Option<Vec<String>> = if change_result.is_full_build {
         None
     } else {
-        Some(changed_files)
+        let mut files = changed_files;
+        if !removal_reverse_deps.is_empty() {
+            let existing: HashSet<String> = files.iter().cloned().collect();
+            for f in removal_reverse_deps {
+                if !existing.contains(&f) {
+                    files.push(f);
+                }
+            }
+        }
+        Some(files)
     };
     if let Some(ref files) = changed_file_list {
         if !files.is_empty() {
