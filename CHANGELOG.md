@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [3.9.6](https://github.com/optave/ops-codegraph-tool/compare/v3.9.5...v3.9.6) (2026-04-29)
+
+**Native engine parity and incremental-build performance.** Native single-file incremental rebuilds drop from 876ms to 43ms (95% faster, 0.78× WASM) by adopting the WASM save-and-reconnect strategy so reverse-dep files no longer get re-parsed when they didn't change. Native full-build edge construction now beats WASM (119ms vs 184ms) by replacing per-row `query_row` lookups with one-shot HashMap pre-loads and chunked multi-row inserts. AST-node extraction is now within 0.12% parity between engines after fixing three independent divergences (missing language coverage in WASM, `await_expression` recursion, UTF-8 byte-length gating). The release-triggered benchmark workflow that silently hung at 600s on v3.9.5 is fixed — workers now dispose the WASM parser pool and embedding progress writes to stderr instead of corrupting stdout JSON. A new CI parity gate runs after every release benchmark and fails loudly when any of five engine-parity thresholds regress, so silent drift can no longer ship.
+
+### Bug Fixes
+
+* **parity:** align WASM and native `ast_nodes` extraction — registered 19 missing languages in WASM's `AST_TYPE_MAPS`, removed `await_expression` `skipChildren` quirk, and fixed UTF-8 byte-length gating in native; total AST-node parity now within 0.12% across self-build (was ~7,200 row delta) ([#1016](https://github.com/optave/ops-codegraph-tool/pull/1016))
+* **parity:** log per-file reasons for native orchestrator drops — bucket dropped files by `unsupported-by-native` (info) vs `native-extractor-failure` (warn) with sample paths so legitimate parser limits no longer mask real Rust extractor bugs ([#1024](https://github.com/optave/ops-codegraph-tool/pull/1024))
+* **bench:** dispose WASM worker pool and keep progress off stdout — release-triggered benchmark workflow no longer hangs at 600s; embedding progress writes to stderr so JSON-consuming workers stop parsing `Unexpected token 'E'` ([#1009](https://github.com/optave/ops-codegraph-tool/pull/1009))
+
+### Performance
+
+* **native:** scope incremental rebuild to truly-changed files — 1-file incremental drops from 876ms to 43ms (95% faster, 0.78× WASM) by saving reverse-dep edges before purge and reconnecting them post-rebuild instead of re-parsing the full reverse-dep cone ([#1027](https://github.com/optave/ops-codegraph-tool/pull/1027))
+* **native:** batch-load file/symbol IDs in edges phase — replaces per-import `query_row` lookups with one-shot HashMap pre-loads and chunks import-edge inserts into 199-row `VALUES` batches; full-build `edges` phase now 119ms vs WASM's 184ms (0.65×) ([#1028](https://github.com/optave/ops-codegraph-tool/pull/1028))
+
+### CI
+
+* **bench:** gate release benchmark on engine parity thresholds — five thresholds (file-set gap, DB size ratio, edges/roles ratios, 1-file incremental ratio) fail the release benchmark workflow when engine parity regresses, with a markdown summary linking each breach to its tracking issue ([#1014](https://github.com/optave/ops-codegraph-tool/pull/1014))
+
+### Chores
+
+* **deps-dev:** bump @vitest/coverage-v8 from 4.1.4 to 4.1.5 ([#1021](https://github.com/optave/ops-codegraph-tool/pull/1021))
+* **deps-dev:** bump @biomejs/biome from 2.4.11 to 2.4.13 ([#1019](https://github.com/optave/ops-codegraph-tool/pull/1019))
+* **deps-dev:** bump @commitlint/cli from 20.5.0 to 20.5.2 ([#1018](https://github.com/optave/ops-codegraph-tool/pull/1018))
+* **deps-dev:** bump tree-sitter-erlang from 0.0.0 to 0.16 ([#1017](https://github.com/optave/ops-codegraph-tool/pull/1017))
+* **deps-dev:** bump tree-sitter-gleam from `0153f8b` to `1627dc5` ([#1020](https://github.com/optave/ops-codegraph-tool/pull/1020))
+
 ## [3.9.5](https://github.com/optave/ops-codegraph-tool/compare/v3.9.4...v3.9.5) (2026-04-23)
 
 **Incremental build correctness and concurrency safety.** This release hardens the incremental build path end-to-end. Duplicate edges that silently accumulated on every incremental rebuild of hybrid barrel files are eliminated — edge counts are now stable across consecutive rebuilds. `config.include` and `config.exclude` globs were declared in `DEFAULTS` but never consumed by either engine; both the Rust and WASM collectors now compile and apply them identically during initial walks and fast-path rebuilds. Concurrent journal appends from watch sessions and manual builds are serialized via lockfile, and watcher writes now advance the header timestamp so the first build after every watch session no longer falls through to an expensive full rescan. `snapshot save --force` and `snapshot restore` use per-pid temp files + atomic rename to close TOCTOU races. WASM parsing is isolated in a worker thread so a V8 fatal error skips one file instead of aborting the whole build, and extractor exceptions are now per-file rather than pipeline-fatal. The `watch` command gains `-d/--db` for consistency with every other DB-scoped command, `--no-incremental` warns before discarding embeddings, and `build:wasm` shows a one-line remediation banner instead of 700 lines of ENOENT noise when `tree-sitter-cli` is missing.
