@@ -156,11 +156,17 @@ pub fn detect_barrel_only_files(ctx: &ImportEdgeContext) -> HashSet<String> {
 /// Load every file node ID into a HashMap in one query — replaces per-import
 /// `conn.query_row` lookups that paid the SQLite prepare/execute cycle on each
 /// call (#1013).
+///
+/// Includes the explicit `name = file` predicate that matched the legacy
+/// per-row lookup (`WHERE name = ? AND file = ?` with both binds set to
+/// `rel_path`). For file-kind nodes `name` and `file` are conventionally
+/// identical, but keeping the guard prevents an unrelated row from silently
+/// overwriting the map entry for `file`.
 fn load_file_node_ids(conn: &Connection) -> HashMap<String, i64> {
     let mut map = HashMap::new();
-    if let Ok(mut stmt) =
-        conn.prepare("SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0")
-    {
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0 AND name = file",
+    ) {
         if let Ok(rows) = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         }) {
@@ -172,29 +178,93 @@ fn load_file_node_ids(conn: &Connection) -> HashMap<String, i64> {
     map
 }
 
-/// Load every (name, file) -> id mapping for non-file nodes in one query.
-/// Mirrors the JS `nodesByNameAndFile` lookup map; preserves the first-row
-/// semantics of the legacy `LIMIT 1` query by keeping the first ID seen per
-/// key. Skipped entirely when no type-only imports exist (saves one full
-/// scan of `nodes` on the common case).
-fn load_symbol_node_ids(conn: &Connection) -> HashMap<(String, String), i64> {
-    let mut map = HashMap::new();
-    if let Ok(mut stmt) =
-        conn.prepare("SELECT name, file, id FROM nodes WHERE kind != 'file'")
-    {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        }) {
-            for r in rows.flatten() {
-                map.entry((r.0, r.1)).or_insert(r.2);
+/// Load symbol node IDs for the supplied `(name, file)` pairs in one chunked
+/// query. Mirrors the JS `nodesByNameAndFile` lookup map; preserves the
+/// first-row semantics of the legacy `LIMIT 1` query by keeping the first ID
+/// seen per key.
+///
+/// The pairs are pre-computed by walking the type-only imports in
+/// `ctx.file_symbols`, so we never scan the entire `nodes` table — even on
+/// monorepos with 100k+ symbols, only the small slice actually referenced by
+/// type-only imports is hit (#1013, #1028 review).
+fn load_symbol_node_ids(
+    conn: &Connection,
+    needed_pairs: &HashSet<(String, String)>,
+) -> HashMap<(String, String), i64> {
+    let mut map: HashMap<(String, String), i64> = HashMap::new();
+    if needed_pairs.is_empty() {
+        return map;
+    }
+
+    // 332 pairs × 2 params + 1 spare = 665 binds, comfortably under
+    // `SQLITE_MAX_VARIABLE_NUMBER`'s legacy 999 default.
+    const SYMBOL_LOOKUP_CHUNK: usize = 332;
+
+    let pairs: Vec<&(String, String)> = needed_pairs.iter().collect();
+    for chunk in pairs.chunks(SYMBOL_LOOKUP_CHUNK) {
+        let placeholders: Vec<String> = (0..chunk.len())
+            .map(|i| {
+                let base = i * 2;
+                format!("(?{},?{})", base + 1, base + 2)
+            })
+            .collect();
+        let sql = format!(
+            "SELECT name, file, id FROM nodes WHERE kind != 'file' AND (name, file) IN ({})",
+            placeholders.join(",")
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 2);
+        for (name, file) in chunk {
+            params.push(name);
+            params.push(file);
+        }
+
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            }) {
+                for r in rows.flatten() {
+                    map.entry((r.0, r.1)).or_insert(r.2);
+                }
             }
         }
     }
     map
+}
+
+/// Walk type-only imports in `ctx.file_symbols` and return the distinct
+/// `(name, file)` pairs that `build_import_edges` will need to look up.
+/// Resolves barrel files the same way the edge-building loop does so the
+/// pre-computed set matches the actual lookup keys.
+fn collect_type_only_lookup_pairs(ctx: &ImportEdgeContext) -> HashSet<(String, String)> {
+    let mut pairs = HashSet::new();
+    for (rel_path, symbols) in &ctx.file_symbols {
+        let abs_file = Path::new(&ctx.root_dir).join(rel_path);
+        let abs_str = abs_file.to_str().unwrap_or("");
+        for imp in &symbols.imports {
+            if !imp.type_only.unwrap_or(false) {
+                continue;
+            }
+            let resolved_path = ctx.get_resolved(abs_str, &imp.source);
+            for name in &imp.names {
+                let clean_name = name.strip_prefix("* as ").unwrap_or(name);
+                let mut target_file = resolved_path.clone();
+                if ctx.is_barrel_file(&resolved_path) {
+                    let mut visited = HashSet::new();
+                    if let Some(actual) =
+                        ctx.resolve_barrel_export(&resolved_path, clean_name, &mut visited)
+                    {
+                        target_file = actual;
+                    }
+                }
+                pairs.insert((clean_name.to_string(), target_file));
+            }
+        }
+    }
+    pairs
 }
 
 /// Build import edges from parsed file symbols.
@@ -212,14 +282,15 @@ pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<Edg
     // Pre-load all file node IDs once. Previously this was N x query_row,
     // each of which ran a fresh sqlite3_prepare/step/finalize cycle (#1013).
     let file_node_ids = load_file_node_ids(conn);
-    let needs_symbol_map = ctx
-        .file_symbols
-        .values()
-        .any(|s| s.imports.iter().any(|i| i.type_only.unwrap_or(false)));
-    let symbol_node_ids = if needs_symbol_map {
-        load_symbol_node_ids(conn)
-    } else {
+    // Only the symbols actually referenced by type-only imports are needed —
+    // skip the lookup entirely when no type-only imports exist (the common
+    // case), and otherwise issue a chunked `(name, file) IN (...)` query so
+    // memory stays bounded even on large monorepos (#1028 review).
+    let needed_symbol_pairs = collect_type_only_lookup_pairs(ctx);
+    let symbol_node_ids = if needed_symbol_pairs.is_empty() {
         HashMap::new()
+    } else {
+        load_symbol_node_ids(conn, &needed_symbol_pairs)
     };
 
     for (rel_path, symbols) in &ctx.file_symbols {

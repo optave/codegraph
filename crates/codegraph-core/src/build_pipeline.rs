@@ -1084,11 +1084,17 @@ fn build_and_insert_call_edges(
     // Pre-load every file node ID into a HashMap with one query, replacing
     // the per-file `query_row` cycle that paid a fresh sqlite3_prepare for
     // each entry in `file_symbols` (#1013).
+    //
+    // The `name = file` predicate matches the legacy per-row lookup
+    // (`WHERE name = ? AND file = ?` with both binds set to `rel_path`).
+    // For file-kind nodes `name` and `file` are conventionally identical,
+    // but keeping the guard prevents an unrelated row from silently
+    // overwriting the map entry for `file` (#1028 review).
     let file_node_ids: HashMap<String, u32> = {
         let mut map = HashMap::new();
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0")
-        {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0 AND name = file",
+        ) {
             if let Ok(rows) = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u32))
             }) {
