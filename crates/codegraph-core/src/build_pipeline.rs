@@ -323,7 +323,13 @@ pub fn run_pipeline(
     // look up the new target node and recreate the edge with the original
     // source_id (still valid; reverse-dep nodes were never purged).
     if !saved_reverse_dep_edges.is_empty() {
-        change_detection::reconnect_reverse_dep_edges(conn, &saved_reverse_dep_edges);
+        let (reconnected, dropped) =
+            change_detection::reconnect_reverse_dep_edges(conn, &saved_reverse_dep_edges);
+        if dropped > 0 {
+            eprintln!(
+                "[codegraph] reconnect_reverse_dep_edges: {reconnected} reconnected, {dropped} dropped (target nodes not found)"
+            );
+        }
     }
 
     timing.edges_ms = t0.elapsed().as_secs_f64() * 1000.0;
