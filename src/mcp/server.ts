@@ -215,7 +215,7 @@ export async function startMCPServer(
   // Apply config-based MCP page-size overrides
   const config = options.config || loadConfig();
   initMcpDefaults(config.mcp?.defaults ? { ...config.mcp.defaults } : undefined);
-  const disabledTools = config.mcp?.disabledTools ? [...config.mcp.disabledTools] : undefined;
+  const disabledTools = [...(config.mcp?.disabledTools ?? [])];
   const enabledTools = buildToolList(multiRepo, disabledTools);
   const enabledToolNames = new Set(enabledTools.map((tool) => tool.name));
 
