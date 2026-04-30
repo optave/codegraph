@@ -404,49 +404,74 @@ const INSERT_CHUNK: usize = 199;
 ///
 /// Replaces the previous one-prepared-statement-per-row pattern that paid a
 /// per-edge bind/step/reset cycle. With the chunked path each chunk runs a
-/// single VM execution against a cached statement (#1013).
+/// single VM execution against a freshly prepared statement (#1013).
+///
+/// Bind/execute errors are surfaced via a stderr warning and the offending
+/// chunk is skipped — silently swallowing them previously could produce
+/// `NULL` columns in the inserted edge rows.
 pub fn insert_edges(conn: &Connection, edges: &[EdgeRow]) {
     if edges.is_empty() {
         return;
     }
     let tx = match conn.unchecked_transaction() {
         Ok(tx) => tx,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("[codegraph] insert_edges: failed to start transaction: {e}");
+            return;
+        }
     };
 
     for chunk in edges.chunks(INSERT_CHUNK) {
-        let placeholders: Vec<String> = (0..chunk.len())
-            .map(|i| {
-                let base = i * 5;
-                format!(
-                    "(?{},?{},?{},?{},?{})",
-                    base + 1,
-                    base + 2,
-                    base + 3,
-                    base + 4,
-                    base + 5
-                )
-            })
-            .collect();
-        let sql = format!(
-            "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES {}",
-            placeholders.join(",")
-        );
-        let mut stmt = match tx.prepare_cached(&sql) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        for (i, edge) in chunk.iter().enumerate() {
-            let base = i * 5;
-            let _ = stmt.raw_bind_parameter(base + 1, edge.source_id);
-            let _ = stmt.raw_bind_parameter(base + 2, edge.target_id);
-            let _ = stmt.raw_bind_parameter(base + 3, edge.kind.as_str());
-            let _ = stmt.raw_bind_parameter(base + 4, edge.confidence);
-            let _ = stmt.raw_bind_parameter(base + 5, edge.dynamic);
+        if let Err(e) = insert_edge_chunk(&tx, chunk) {
+            eprintln!(
+                "[codegraph] insert_edges: skipped chunk of {} rows due to error: {e}",
+                chunk.len()
+            );
         }
-        let _ = stmt.raw_execute();
     }
-    let _ = tx.commit();
+    if let Err(e) = tx.commit() {
+        eprintln!("[codegraph] insert_edges: commit failed: {e}");
+    }
+}
+
+/// Bind and execute a single chunk in its own fallible scope so the caller
+/// can log the failure and continue with the next chunk.
+///
+/// `prepare` (not `prepare_cached`) is used because the SQL string varies
+/// with chunk length — caching keyed on dynamic SQL would churn the LRU
+/// for every partial trailing chunk and obscure the intent of the cache.
+fn insert_edge_chunk(
+    tx: &rusqlite::Transaction<'_>,
+    chunk: &[EdgeRow],
+) -> rusqlite::Result<()> {
+    let placeholders: Vec<String> = (0..chunk.len())
+        .map(|i| {
+            let base = i * 5;
+            format!(
+                "(?{},?{},?{},?{},?{})",
+                base + 1,
+                base + 2,
+                base + 3,
+                base + 4,
+                base + 5
+            )
+        })
+        .collect();
+    let sql = format!(
+        "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES {}",
+        placeholders.join(",")
+    );
+    let mut stmt = tx.prepare(&sql)?;
+    for (i, edge) in chunk.iter().enumerate() {
+        let base = i * 5;
+        stmt.raw_bind_parameter(base + 1, edge.source_id)?;
+        stmt.raw_bind_parameter(base + 2, edge.target_id)?;
+        stmt.raw_bind_parameter(base + 3, edge.kind.as_str())?;
+        stmt.raw_bind_parameter(base + 4, edge.confidence)?;
+        stmt.raw_bind_parameter(base + 5, edge.dynamic)?;
+    }
+    stmt.raw_execute()?;
+    Ok(())
 }
 
 #[cfg(test)]
