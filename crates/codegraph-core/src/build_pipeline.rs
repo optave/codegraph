@@ -180,30 +180,40 @@ pub fn run_pipeline(
         });
     }
 
-    // Track reverse-dep files that need re-parsing for edge reconstruction.
-    // Also track their relative paths so we can exclude them from analysis_scope —
-    // reverse-dep files are re-parsed for edge rebuilding but their content didn't
-    // change, so running AST/complexity/CFG/dataflow on them is wasted work (#761).
-    let mut reverse_dep_abs_paths: Vec<String> = Vec::new();
-    let mut reverse_dep_rel_paths: HashSet<String> = HashSet::new();
+    // Save reverse-dep → changed-file edges before purge so we can reconnect
+    // them to new node IDs after Stage 5 (#1012). This matches the WASM/JS
+    // strategy and lets us skip re-parsing reverse-dep files entirely:
+    // parse/insert/structure/roles/analysis all scope to truly-changed files.
+    let mut saved_reverse_dep_edges: Vec<change_detection::SavedReverseDepEdge> = Vec::new();
+    // Files that import a removed file. Save+reconnect doesn't apply (the
+    // target node is gone for good), but their role records go stale because
+    // edges to the deleted file's nodes get purged in Stage 3. Reclassify them
+    // in Stage 8 so fan-out reflects reality. (#1027 review)
+    let mut removal_reverse_deps: Vec<String> = Vec::new();
 
     // Handle full build: clear all graph data
     if change_result.is_full_build {
         let has_embeddings = change_detection::has_embeddings(conn);
         change_detection::clear_all_graph_data(conn, has_embeddings);
     } else {
-        // Incremental: find reverse deps and purge changed files
-        let changed_rel_paths: HashSet<String> = parse_changes
-            .iter()
-            .map(|c| c.rel_path.clone())
-            .chain(change_result.removed.iter().cloned())
-            .collect();
+        // Incremental: save reverse-dep edges (if reverse-dep tracking is enabled),
+        // then purge changed files only.
+        let changed_paths: Vec<String> =
+            parse_changes.iter().map(|c| c.rel_path.clone()).collect();
 
-        let reverse_deps = if opts.no_reverse_deps.unwrap_or(false) {
-            HashSet::new()
-        } else {
-            change_detection::find_reverse_dependencies(conn, &changed_rel_paths, root_dir)
-        };
+        if !opts.no_reverse_deps.unwrap_or(false) {
+            saved_reverse_dep_edges =
+                change_detection::save_reverse_dep_edges(conn, &changed_paths);
+
+            if !change_result.removed.is_empty() {
+                let removed_set: HashSet<String> =
+                    change_result.removed.iter().cloned().collect();
+                removal_reverse_deps =
+                    change_detection::find_reverse_dependencies(conn, &removed_set, root_dir)
+                        .into_iter()
+                        .collect();
+            }
+        }
 
         let files_to_purge: Vec<String> = change_result
             .removed
@@ -211,28 +221,20 @@ pub fn run_pipeline(
             .chain(parse_changes.iter().map(|c| &c.rel_path))
             .cloned()
             .collect();
-        let reverse_dep_list: Vec<String> = reverse_deps.iter().cloned().collect();
-        change_detection::purge_changed_files(conn, &files_to_purge, &reverse_dep_list);
-
-        // Track reverse-dep absolute paths so we can re-parse them for edge
-        // rebuilding. Their nodes are still in the DB (only edges were purged),
-        // but we need fresh FileSymbols so Stage 7 can reconstruct their
-        // import and call edges.
-        for rdep in &reverse_dep_list {
-            let abs = Path::new(root_dir).join(rdep);
-            if abs.exists() {
-                reverse_dep_abs_paths.push(abs.to_str().unwrap_or("").to_string());
-                reverse_dep_rel_paths.insert(rdep.clone());
-            }
-        }
+        // Pass empty reverse_dep_files: purge already deletes both directions
+        // for changed files (which removes the saved reverse-dep → changed-file
+        // edges from the live table), and other outgoing edges from reverse-dep
+        // files remain valid and must NOT be deleted — they will be reconnected
+        // to new target IDs after insert.
+        change_detection::purge_changed_files(conn, &files_to_purge, &[]);
     }
 
     // ── Stage 4: Parse files ───────────────────────────────────────────
+    // Only truly-changed files are parsed. Reverse-dep files are not re-parsed —
+    // their edges to changed files are reconstructed via save+reconnect (#1012).
     let t0 = Instant::now();
-    let mut files_to_parse: Vec<String> =
+    let files_to_parse: Vec<String> =
         parse_changes.iter().map(|c| c.abs_path.clone()).collect();
-    // Include reverse-dep files so their edges are rebuilt after purging
-    files_to_parse.extend(reverse_dep_abs_paths);
     let parsed =
         parallel::parse_files_parallel(&files_to_parse, root_dir, include_dataflow, include_ast);
 
@@ -330,32 +332,36 @@ pub fn run_pipeline(
     // internal logic. We load nodes from DB and pass to the edge builder.
     build_and_insert_call_edges(conn, &file_symbols, &import_ctx, !change_result.is_full_build);
 
+    // Reconnect saved reverse-dep edges to new node IDs (#1012). Mirrors
+    // `reconnectReverseDepEdges` in build-edges.ts — for each saved edge,
+    // look up the new target node and recreate the edge with the original
+    // source_id (still valid; reverse-dep nodes were never purged).
+    if !saved_reverse_dep_edges.is_empty() {
+        let (reconnected, dropped) =
+            change_detection::reconnect_reverse_dep_edges(conn, &saved_reverse_dep_edges);
+        if dropped > 0 {
+            eprintln!(
+                "[codegraph] reconnect_reverse_dep_edges: {reconnected} reconnected, {dropped} dropped (target nodes not found)"
+            );
+        }
+    }
+
     timing.edges_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     // ── Stage 8: Structure + roles ─────────────────────────────────────
     let t0 = Instant::now();
     let line_count_map = structure::build_line_count_map(&file_symbols, root_dir);
+    // file_symbols only contains truly-changed files (reverse-deps are not
+    // re-parsed; their edges are reconnected via save+reconnect — #1012), so
+    // analysis_scope == changed_files.
     let changed_files: Vec<String> = file_symbols.keys().cloned().collect();
-    // Build analysis_scope excluding reverse-dep files — they were re-parsed for
-    // edge reconstruction but their content didn't change, so AST/complexity/CFG/
-    // dataflow analysis would be redundant (#761). This matches the JS pipeline's
-    // _reverseDepOnly filtering in run-analyses.ts.
     let analysis_scope: Option<Vec<String>> = if change_result.is_full_build {
         None
     } else {
-        Some(
-            changed_files
-                .iter()
-                .filter(|f| !reverse_dep_rel_paths.contains(f.as_str()))
-                .cloned()
-                .collect(),
-        )
+        Some(changed_files.clone())
     };
 
     let existing_file_count = structure::get_existing_file_count(conn);
-    // Use parse_changes.len() for the threshold — changed_files includes
-    // reverse-dep files added for edge rebuilding, which inflates the count
-    // and would skip the fast path even for single-file incremental builds.
     let use_fast_path =
         !change_result.is_full_build && parse_changes.len() <= FAST_PATH_MAX_CHANGED_FILES && existing_file_count > FAST_PATH_MIN_EXISTING_FILES;
 
@@ -385,15 +391,26 @@ pub fn run_pipeline(
     timing.structure_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let t0 = Instant::now();
-    // Role classification intentionally uses the full `changed_files` list
-    // (including reverse-dep files), not `analysis_scope`. Reverse-dep files
-    // had their edges rebuilt, which can change fan-in/fan-out and therefore
-    // role assignments — so they must be re-classified even though their
-    // content didn't change and they are excluded from AST analysis.
+    // Role classification needs the truly-changed files plus reverse-deps of
+    // any removed files. `do_classify_incremental` expands to neighbours via
+    // the edges table, so reverse-deps of *changed* files are picked up
+    // automatically when their fan-in/fan-out is affected. Reverse-deps of
+    // *removed* files have to be added explicitly — the deleted file's nodes
+    // are gone, so neighbour expansion can't reach the importer. Without this
+    // seed, removal-only builds skip role classification entirely. (#1027)
     let changed_file_list: Option<Vec<String>> = if change_result.is_full_build {
         None
     } else {
-        Some(changed_files)
+        let mut files = changed_files;
+        if !removal_reverse_deps.is_empty() {
+            let existing: HashSet<String> = files.iter().cloned().collect();
+            for f in removal_reverse_deps {
+                if !existing.contains(&f) {
+                    files.push(f);
+                }
+            }
+        }
+        Some(files)
     };
     if let Some(ref files) = changed_file_list {
         if !files.is_empty() {

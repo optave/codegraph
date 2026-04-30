@@ -345,6 +345,157 @@ fn file_mtime_size(path: &str) -> (i64, i64) {
     }
 }
 
+/// A reverse-dep edge captured before purge so it can be reconnected to the
+/// new target node ID after the changed file's nodes are re-inserted.
+#[derive(Debug, Clone)]
+pub struct SavedReverseDepEdge {
+    pub source_id: i64,
+    pub tgt_name: String,
+    pub tgt_kind: String,
+    pub tgt_file: String,
+    pub tgt_line: i64,
+    pub edge_kind: String,
+    pub confidence: f64,
+    pub dynamic: i64,
+}
+
+/// Save edges from reverse-dep files → changed files BEFORE purge so they
+/// can be reconnected to new target node IDs after node insertion (#1012).
+///
+/// Mirrors the JS `purgeAndAddReverseDeps` path in `detect-changes.ts`. By
+/// saving the edge topology and reconnecting after insert, we avoid the need
+/// to re-parse every reverse-dep file just to rebuild its edges. That re-parse
+/// is what made the native pipeline scale parse/insert/structure/roles with
+/// the full reverse-dep cone (47 files for a 1-file change) instead of just
+/// the truly-changed files (1 file).
+pub fn save_reverse_dep_edges(
+    conn: &Connection,
+    changed_paths: &[String],
+) -> Vec<SavedReverseDepEdge> {
+    let mut saved = Vec::new();
+    if changed_paths.is_empty() {
+        return saved;
+    }
+    let changed_set: HashSet<&str> = changed_paths.iter().map(|s| s.as_str()).collect();
+
+    let mut stmt = match conn.prepare(
+        "SELECT e.source_id, n_tgt.name, n_tgt.kind, n_tgt.file, n_tgt.line, \
+                e.kind, e.confidence, e.dynamic, n_src.file \
+         FROM edges e \
+         JOIN nodes n_src ON e.source_id = n_src.id \
+         JOIN nodes n_tgt ON e.target_id = n_tgt.id \
+         WHERE n_tgt.file = ?1 AND n_src.file != n_tgt.file",
+    ) {
+        Ok(s) => s,
+        Err(_) => return saved,
+    };
+
+    for changed in changed_paths {
+        let rows = match stmt.query_map([changed], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, String>(8)?,
+            ))
+        }) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for row in rows.flatten() {
+            // Skip edges whose source is itself being purged — buildEdges will
+            // re-emit them with correct new IDs.
+            if changed_set.contains(row.8.as_str()) {
+                continue;
+            }
+            saved.push(SavedReverseDepEdge {
+                source_id: row.0,
+                tgt_name: row.1,
+                tgt_kind: row.2,
+                tgt_file: row.3,
+                tgt_line: row.4,
+                edge_kind: row.5,
+                confidence: row.6,
+                dynamic: row.7,
+            });
+        }
+    }
+    saved
+}
+
+/// Reconnect saved reverse-dep edges to the new target node IDs.
+///
+/// The source node ID is still valid (reverse-dep nodes were never purged).
+/// The target was deleted and re-inserted with a new ID — look it up by
+/// (name, kind, file) using nearest-line matching, and recreate the edge.
+/// Mirrors `reconnectReverseDepEdges` in `build-edges.ts`.
+///
+/// Returns (reconnected, dropped) counts.
+pub fn reconnect_reverse_dep_edges(
+    conn: &Connection,
+    saved: &[SavedReverseDepEdge],
+) -> (usize, usize) {
+    if saved.is_empty() {
+        return (0, 0);
+    }
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(_) => return (0, 0),
+    };
+
+    let mut reconnected = 0usize;
+    let mut dropped = 0usize;
+    {
+        let mut find_stmt = match tx.prepare(
+            "SELECT id FROM nodes WHERE name = ?1 AND kind = ?2 AND file = ?3 \
+             ORDER BY ABS(line - ?4) LIMIT 1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return (0, 0),
+        };
+        let mut insert_stmt = match tx.prepare(
+            "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        ) {
+            Ok(s) => s,
+            Err(_) => return (0, 0),
+        };
+        for s in saved {
+            match find_stmt.query_row(
+                rusqlite::params![&s.tgt_name, &s.tgt_kind, &s.tgt_file, s.tgt_line],
+                |row| row.get::<_, i64>(0),
+            ) {
+                Ok(new_id) => {
+                    // INSERT OR IGNORE silently swallows duplicate-row constraint
+                    // errors and returns Ok(0). Only count rows that actually
+                    // inserted so the diagnostic counter isn't inflated by no-ops.
+                    match insert_stmt.execute(rusqlite::params![
+                        s.source_id,
+                        new_id,
+                        &s.edge_kind,
+                        s.confidence,
+                        s.dynamic,
+                    ]) {
+                        Ok(n) if n > 0 => reconnected += 1,
+                        Ok(_) => {} // duplicate skipped by INSERT OR IGNORE
+                        Err(_) => dropped += 1,
+                    }
+                }
+                Err(_) => {
+                    dropped += 1;
+                }
+            }
+        }
+    }
+    let _ = tx.commit();
+    (reconnected, dropped)
+}
+
 /// Find files that import from changed files (reverse dependencies).
 pub fn find_reverse_dependencies(
     conn: &Connection,
