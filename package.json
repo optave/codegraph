@@ -122,7 +122,7 @@
   },
   "homepage": "https://github.com/optave/ops-codegraph-tool#readme",
   "dependencies": {
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^13.0.1",
     "commander": "^15.0.0",
     "web-tree-sitter": "^0.26.5"
   },
