@@ -691,10 +691,14 @@ gh pr checkout "$PR" --repo "$REPO" || { echo "ERROR: could not check out PR #$P
 git fetch origin main || { echo "ERROR: git fetch failed"; exit 1; }
 
 # Capture every line this PR authored, relative to its own merge base, BEFORE touching
-# main. Each line is recorded together with the file it came from (tab-separated) —
-# checking a line against that file specifically, not against any changed file, is what
-# the later check needs to catch a line dropped from file A while identical or
-# containing text happens to survive in file B (I4 must preserve line identity).
+# main. Each line is recorded together with the file it came from and how many times it
+# was added in that file (tab-separated: file, count, line) — checking a line's exact
+# occurrence count within that specific file, not just file-scoped presence, is what the
+# later check needs to catch a line dropped from file A while identical or containing
+# text happens to survive in file B (I4 must preserve line identity), AND to catch one
+# dropped copy of a line the PR added twice in the SAME file (I4 must preserve
+# multiplicity too — `sort -u` would otherwise collapse both copies to one baseline entry
+# that the surviving copy alone would satisfy).
 BASE=$(git merge-base origin/main HEAD)
 git diff "$BASE" HEAD --name-only > .codegraph/fixer/authored-files.txt
 
@@ -702,7 +706,7 @@ git diff "$BASE" HEAD --name-only > .codegraph/fixer/authored-files.txt
 while IFS= read -r F; do
   [ -z "$F" ] && continue
   git diff "$BASE" HEAD -- "$F" | grep -E '^\+[^+]' | sed -E 's/^\+//' | sed -E 's/^[[:space:]]+//' \
-    | grep -vE '^$' | sort -u | while IFS= read -r L; do printf '%s\t%s\n' "$F" "$L"; done
+    | grep -vE '^$' | sort | uniq -c | while read -r COUNT L; do printf '%s\t%s\t%s\n' "$F" "$COUNT" "$L"; done
 done < .codegraph/fixer/authored-files.txt >> .codegraph/fixer/authored-lines.tsv
 echo "fixer: PR #$PR authored $(wc -l < .codegraph/fixer/authored-lines.tsv) distinct (file, line) pair(s) — recorded for the integrity check"
 ```
@@ -719,21 +723,29 @@ else
   echo "fixer: conflicts — run /resolve on this PR, then re-run this integrity check"
 fi
 
-# I4 integrity check: every line the PR authored must still exist, as a whole line, in
-# the SAME file it was authored in. Checking per-file (rather than against a combined
-# haystack of every changed file) is what prevents a dropped line in file A from being
-# masked by identical or containing text that happens to survive in file B. Whole-line
-# match (-x) is what prevents a REMOVED line from being masked by some other, longer
-# line in that same file that merely contains its text as a substring — `grep -F`
-# without `-x` would wrongly report that as still present. Leading whitespace is
-# stripped from the file's lines before comparison to match how $LINE was normalised
-# when it was recorded above. A file that no longer exists (legitimately renamed or
-# deleted by main) is reported as a lost line below rather than treated as a grep error.
+# I4 integrity check: every line the PR authored must still exist, as a whole line and at
+# its full original occurrence count, in the SAME file it was authored in. Checking
+# per-file (rather than against a combined haystack of every changed file) is what
+# prevents a dropped line in file A from being masked by identical or containing text
+# that happens to survive in file B. Whole-line match (-x) is what prevents a REMOVED
+# line from being masked by some other, longer line in that same file that merely
+# contains its text as a substring — `grep -F` without `-x` would wrongly report that as
+# still present. Comparing occurrence COUNTS (not just existence) is what catches one
+# dropped copy of a line the PR added twice in the same file — an existence-only check
+# would be satisfied by the single surviving copy. Leading whitespace is stripped from
+# the file's lines before comparison to match how $LINE was normalised when it was
+# recorded above. A file that no longer exists (legitimately renamed or deleted by main)
+# is reported as a lost line below rather than treated as a grep error.
 MISSING=0
-while IFS=$'\t' read -r F LINE; do
+while IFS=$'\t' read -r F COUNT LINE; do
   [ -z "$LINE" ] && continue
-  if [ ! -f "$F" ] || ! sed -E 's/^[[:space:]]+//' "$F" | grep -qxF -- "$LINE"; then
-    echo "  LOST: [$F] $LINE"
+  if [ ! -f "$F" ]; then
+    ACTUAL=0
+  else
+    ACTUAL=$(sed -E 's/^[[:space:]]+//' "$F" | grep -xcF -- "$LINE")
+  fi
+  if [ "$ACTUAL" -lt "$COUNT" ]; then
+    echo "  LOST: [$F] expected $COUNT occurrence(s), found $ACTUAL: $LINE"
     MISSING=$((MISSING + 1))
   fi
 done < .codegraph/fixer/authored-lines.tsv
@@ -805,7 +817,7 @@ All state is under `.codegraph/fixer/`:
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
 | `outcome` | text | `abandoned`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
 | `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
-| `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>line`) |
+| `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>count<TAB>line`) |
 
 ---
 
