@@ -214,11 +214,25 @@ mkdir -p .codegraph/fixer
 while true; do
   HEAD_ISSUE=$(jq -r '.[0].issue // empty' .codegraph/fixer/queue.json)
   [ -z "$HEAD_ISSUE" ] && break
-  TERMINAL=$(jq --argjson issue "$HEAD_ISSUE" \
-    '[.issues[] | select(.issue == $issue) | select(.status=="merged" or .status=="parked" or .status=="abandoned")] | length' \
+  STATUS=$(jq -r --argjson issue "$HEAD_ISSUE" \
+    '[.issues[] | select(.issue == $issue)] | if length > 0 then .[0].status else empty end' \
     .codegraph/fixer/state.json)
-  [ "$TERMINAL" -eq 0 ] && break
-  echo "fixer: issue #$HEAD_ISSUE already resolved in state.json — dropping stale queue head (resume safety)"
+  case "$STATUS" in merged | parked | abandoned) ;; *) break ;; esac
+  echo "fixer: issue #$HEAD_ISSUE already resolved in state.json ($STATUS) — dropping stale queue head (resume safety)"
+
+  # 2g writes state.json's terminal record and parked.txt's append as two separate
+  # writes. A stop between them leaves a parked PR's state.json entry in place but its
+  # parked.txt entry missing — this queue head still gets dropped as resolved above, so
+  # without this, that PR would silently never enter Phase: Drain Parked PRs. Reconstruct
+  # the missing parked.txt entry from state.json's own record of the PR before moving on.
+  if [ "$STATUS" = "parked" ]; then
+    PR=$(jq -r --argjson issue "$HEAD_ISSUE" '[.issues[] | select(.issue == $issue)][0].pr' .codegraph/fixer/state.json)
+    if [ -n "$PR" ] && [ "$PR" != "null" ] && ! grep -qxF "$PR" .codegraph/fixer/parked.txt 2>/dev/null; then
+      printf '%s\n' "$PR" >> .codegraph/fixer/parked.txt
+      echo "fixer: reconstructed missing parked.txt entry for PR #$PR (issue #$HEAD_ISSUE) — resume safety"
+    fi
+  fi
+
   TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
   trap 'rm -f "$TMP_QUEUE"' EXIT
   jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
