@@ -622,13 +622,21 @@ PR=$(head -1 .codegraph/fixer/parked.txt)
 gh pr checkout "$PR" --repo "$REPO" || { echo "ERROR: could not check out PR #$PR"; exit 1; }
 git fetch origin main || { echo "ERROR: git fetch failed"; exit 1; }
 
-# Capture every line this PR authored, relative to its own merge base, BEFORE touching main
+# Capture every line this PR authored, relative to its own merge base, BEFORE touching
+# main. Each line is recorded together with the file it came from (tab-separated) —
+# checking a line against that file specifically, not against any changed file, is what
+# the later check needs to catch a line dropped from file A while identical or
+# containing text happens to survive in file B (I4 must preserve line identity).
 BASE=$(git merge-base origin/main HEAD)
-git diff "$BASE" HEAD | grep -E '^\+[^+]' | sed -E 's/^\+//' | sed -E 's/^[[:space:]]+//' \
-  | grep -vE '^$' | sort -u > .codegraph/fixer/authored-lines.txt
-echo "fixer: PR #$PR authored $(wc -l < .codegraph/fixer/authored-lines.txt) distinct line(s) — recorded for the integrity check"
-
 git diff "$BASE" HEAD --name-only > .codegraph/fixer/authored-files.txt
+
+> .codegraph/fixer/authored-lines.tsv
+while IFS= read -r F; do
+  [ -z "$F" ] && continue
+  git diff "$BASE" HEAD -- "$F" | grep -E '^\+[^+]' | sed -E 's/^\+//' | sed -E 's/^[[:space:]]+//' \
+    | grep -vE '^$' | sort -u | while IFS= read -r L; do printf '%s\t%s\n' "$F" "$L"; done
+done < .codegraph/fixer/authored-files.txt >> .codegraph/fixer/authored-lines.tsv
+echo "fixer: PR #$PR authored $(wc -l < .codegraph/fixer/authored-lines.tsv) distinct (file, line) pair(s) — recorded for the integrity check"
 ```
 
 Merge `main` in — never rebase (I5) — and resolve any conflicts via `/resolve`, then verify:
@@ -643,27 +651,20 @@ else
   echo "fixer: conflicts — run /resolve on this PR, then re-run this integrity check"
 fi
 
-# I4 integrity check: every line the PR authored must still exist in the working tree.
-# Build the haystack once instead of grepping per line, and skip authored paths that no
-# longer exist — main may have legitimately renamed or deleted a file, which is expected
-# and is reported as a lost line below rather than as a grep error.
-# Trailing X's: see the note in Phase: Solve and Merge Loop — a suffix breaks BSD mktemp
-HAYSTACK=$(mktemp "${TMPDIR:-/tmp}/fixer-haystack.XXXXXXXXXX")
-trap 'rm -f "$HAYSTACK"' EXIT
-while IFS= read -r F; do
-  [ -f "$F" ] && cat "$F" >> "$HAYSTACK"
-done < .codegraph/fixer/authored-files.txt
-
+# I4 integrity check: every line the PR authored must still exist in the SAME file it
+# was authored in. Checking per-file (rather than against a combined haystack of every
+# changed file) is what prevents a dropped line in file A from being masked by
+# identical or containing text that happens to survive in file B. A file that no longer
+# exists (legitimately renamed or deleted by main) is reported as a lost line below
+# rather than treated as a grep error.
 MISSING=0
-while IFS= read -r LINE; do
+while IFS=$'\t' read -r F LINE; do
   [ -z "$LINE" ] && continue
-  if ! grep -qF -- "$LINE" "$HAYSTACK"; then
-    echo "  LOST: $LINE"
+  if [ ! -f "$F" ] || ! grep -qF -- "$LINE" "$F"; then
+    echo "  LOST: [$F] $LINE"
     MISSING=$((MISSING + 1))
   fi
-done < .codegraph/fixer/authored-lines.txt
-rm -f "$HAYSTACK"
-trap - EXIT
+done < .codegraph/fixer/authored-lines.tsv
 
 if [ "$MISSING" -eq 0 ]; then
   echo "fixer: I4 PASS — all authored lines survived the catch-up merge"
@@ -730,7 +731,7 @@ All state is under `.codegraph/fixer/`:
 | `state.json` | `{"issues":[{issue, status, pr}]}` | per-issue outcome; drives resume |
 | `parked.txt` | newline-separated PR numbers | input to Phase: Drain Parked PRs |
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
-| `authored-lines.txt`, `authored-files.txt` | text | I4 integrity-check baseline |
+| `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>line`) |
 
 ---
 
