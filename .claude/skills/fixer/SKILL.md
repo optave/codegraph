@@ -445,17 +445,36 @@ else
   echo "G1 FAIL: Greptile score '${SCORE:-none yet}' — address the gaps its summary names"; GATE_FAIL=1
 fi
 
-# --- G2: every Greptile inline comment has a reply from us ---
+# --- G2: every reviewer's feedback has been addressed — inline comments from ANY
+# reviewer (not just Greptile), plus top-level review bodies (Claude, Greptile, or a
+# human), since a PR can carry unresolved Claude/human/review-body feedback with zero
+# unanswered Greptile inline comments. ---
 ALL_COMMENTS=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate)
 UNANSWERED=0
-for CID in $(printf '%s\n' "$ALL_COMMENTS" | jq -r '[.[] | select(.user.login|test("greptile";"i")) | select(.in_reply_to_id == null)] | .[].id'); do
-  REPLIES=$(printf '%s\n' "$ALL_COMMENTS" | jq -s "[.[][] | select(.in_reply_to_id == $CID) | select(.user.login|test(\"greptile\";\"i\") | not)] | length")
+for CID in $(printf '%s\n' "$ALL_COMMENTS" | jq -r '[.[] | select(.in_reply_to_id == null)] | .[].id'); do
+  ORIGIN_USER=$(printf '%s\n' "$ALL_COMMENTS" | jq -r --argjson cid "$CID" '[.[] | select(.id == $cid)][0].user.login')
+  REPLIES=$(printf '%s\n' "$ALL_COMMENTS" | jq -s --argjson cid "$CID" --arg origin "$ORIGIN_USER" \
+    '[.[][] | select(.in_reply_to_id == $cid) | select(.user.login != $origin)] | length')
   [ "$REPLIES" -eq 0 ] && UNANSWERED=$((UNANSWERED + 1))
 done
+
+# Top-level review bodies (Claude's CHANGES_REQUESTED/COMMENT summary, Greptile's
+# summary, or a human's) have no `path`/`line` and therefore no inline reply mechanism —
+# they must be answered on the issue-comment thread instead, after the review was posted.
+ISSUE_COMMENTS=$(gh api "repos/$REPO/issues/$PR/comments" --paginate)
+REVIEWS=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate)
+for RID in $(printf '%s\n' "$REVIEWS" | jq -r '[.[] | select(.body != "")] | .[].id'); do
+  SUBMITTED_AT=$(printf '%s\n' "$REVIEWS" | jq -r --argjson rid "$RID" '[.[] | select(.id == $rid)][0].submitted_at')
+  REVIEWER=$(printf '%s\n' "$REVIEWS" | jq -r --argjson rid "$RID" '[.[] | select(.id == $rid)][0].user.login')
+  REPLY_AFTER=$(printf '%s\n' "$ISSUE_COMMENTS" | jq --arg since "$SUBMITTED_AT" --arg reviewer "$REVIEWER" \
+    '[.[] | select(.created_at > $since) | select(.user.login != $reviewer)] | length')
+  [ "$REPLY_AFTER" -eq 0 ] && UNANSWERED=$((UNANSWERED + 1))
+done
+
 if [ "$UNANSWERED" -eq 0 ]; then
   echo "G2 PASS: no unanswered reviewer comments"
 else
-  echo "G2 FAIL: $UNANSWERED unanswered Greptile comment(s)"; GATE_FAIL=1
+  echo "G2 FAIL: $UNANSWERED unanswered reviewer item(s) (inline comments and/or review bodies, any reviewer)"; GATE_FAIL=1
 fi
 
 # --- G3: branch contains origin/main (required by strict:true) ---
