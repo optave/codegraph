@@ -242,6 +242,14 @@ DRY_RUN=$(cat .codegraph/fixer/dry-run)
 ISSUE=$(jq -r '.[0].issue' .codegraph/fixer/queue.json)
 BRANCH="fix/issue-$ISSUE"
 
+# A fresh branch means a fresh PR lifecycle. Clear any outcome/round/current-pr/gate-fail
+# left behind by an interrupted earlier attempt on this same issue — e.g. a crash after
+# convergence hit the round cap and wrote outcome=parked, but before 2g recorded it in
+# state.json and cleared these files (the dedup loop above only filters on state.json, so
+# that crash window still lands here). Without this, the new attempt would inherit a
+# stale "parked" verdict or an inflated round count before it has even opened its own PR.
+rm -f .codegraph/fixer/outcome .codegraph/fixer/round .codegraph/fixer/current-pr .codegraph/fixer/gate-fail
+
 if ! printf '%s\n' "$BRANCH" | grep -qE '^(feat|fix|docs|refactor|test|chore|ci|perf|build|release|dependabot|revert)/'; then
   echo "ERROR: branch '$BRANCH' fails the repo's Validate branch name check"; exit 1
 fi
@@ -475,11 +483,14 @@ done
 # they must be answered on the issue-comment thread instead, after the review was posted.
 ISSUE_COMMENTS=$(gh api "repos/$REPO/issues/$PR/comments" --paginate)
 REVIEWS=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate)
+ME=$(gh api user --jq '.login')
 for RID in $(printf '%s\n' "$REVIEWS" | jq -r '[.[] | select(.body != "")] | .[].id'); do
   SUBMITTED_AT=$(printf '%s\n' "$REVIEWS" | jq -r --argjson rid "$RID" '[.[] | select(.id == $rid)][0].submitted_at')
-  REVIEWER=$(printf '%s\n' "$REVIEWS" | jq -r --argjson rid "$RID" '[.[] | select(.id == $rid)][0].user.login')
-  REPLY_AFTER=$(printf '%s\n' "$ISSUE_COMMENTS" | jq --arg since "$SUBMITTED_AT" --arg reviewer "$REVIEWER" \
-    '[.[] | select(.created_at > $since) | select(.user.login != $reviewer)] | length')
+  # A comment from ANY other bot/contributor/reviewer after this timestamp is not evidence
+  # that this specific review body was addressed — only our own reply counts, and a bare
+  # re-trigger ping ("@greptileai"/"@claude") is not a substantive acknowledgment either.
+  REPLY_AFTER=$(printf '%s\n' "$ISSUE_COMMENTS" | jq --arg since "$SUBMITTED_AT" --arg me "$ME" \
+    '[.[] | select(.created_at > $since) | select(.user.login == $me) | select((.body | test("^@(greptileai|claude)\\s*$")) | not)] | length')
   [ "$REPLY_AFTER" -eq 0 ] && UNANSWERED=$((UNANSWERED + 1))
 done
 
@@ -696,16 +707,20 @@ else
   echo "fixer: conflicts — run /resolve on this PR, then re-run this integrity check"
 fi
 
-# I4 integrity check: every line the PR authored must still exist in the SAME file it
-# was authored in. Checking per-file (rather than against a combined haystack of every
-# changed file) is what prevents a dropped line in file A from being masked by
-# identical or containing text that happens to survive in file B. A file that no longer
-# exists (legitimately renamed or deleted by main) is reported as a lost line below
-# rather than treated as a grep error.
+# I4 integrity check: every line the PR authored must still exist, as a whole line, in
+# the SAME file it was authored in. Checking per-file (rather than against a combined
+# haystack of every changed file) is what prevents a dropped line in file A from being
+# masked by identical or containing text that happens to survive in file B. Whole-line
+# match (-x) is what prevents a REMOVED line from being masked by some other, longer
+# line in that same file that merely contains its text as a substring — `grep -F`
+# without `-x` would wrongly report that as still present. Leading whitespace is
+# stripped from the file's lines before comparison to match how $LINE was normalised
+# when it was recorded above. A file that no longer exists (legitimately renamed or
+# deleted by main) is reported as a lost line below rather than treated as a grep error.
 MISSING=0
 while IFS=$'\t' read -r F LINE; do
   [ -z "$LINE" ] && continue
-  if [ ! -f "$F" ] || ! grep -qF -- "$LINE" "$F"; then
+  if [ ! -f "$F" ] || ! sed -E 's/^[[:space:]]+//' "$F" | grep -qxF -- "$LINE"; then
     echo "  LOST: [$F] $LINE"
     MISSING=$((MISSING + 1))
   fi
