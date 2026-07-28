@@ -296,7 +296,19 @@ Then build real context with codegraph, per CLAUDE.md — pick the commands that
 
 Use the global `codegraph` binary or `node dist/cli.js`. Never `npx codegraph` inside this repo — it hangs.
 
-If the issue turns out to be already fixed, invalid, or a duplicate, do not invent work. Close it with an explanatory comment, record status `abandoned`, and move to the next queue entry.
+If the issue turns out to be already fixed, invalid, or a duplicate, do not invent work. Close it with an explanatory comment, record status `abandoned`, and move to the next queue entry:
+
+```bash
+mkdir -p .codegraph/fixer
+REPO=$(cat .codegraph/fixer/repo)
+ISSUE=$(jq -r '.[0].issue' .codegraph/fixer/queue.json)
+gh issue close "$ISSUE" --repo "$REPO" --comment "<why this is already fixed, invalid, or a duplicate>" || {
+  echo "ERROR: could not close issue #$ISSUE"; exit 1; }
+printf '%s\n' "abandoned" > .codegraph/fixer/outcome
+echo "fixer: issue #$ISSUE abandoned — no PR opened"
+```
+
+Then skip directly to step 2g to record the outcome and advance.
 
 If the issue is genuinely too large for one PR, still attempt it — the queue is unfiltered by explicit choice. Split the work into a coherent first PR that fully solves a self-contained part, and open a tracked follow-up issue for the remainder rather than leaving the original half-done. State this clearly in the PR body and the final report.
 
@@ -505,6 +517,25 @@ printf '%s\n' "$GATE_FAIL" > .codegraph/fixer/gate-fail
 [ "$GATE_FAIL" -eq 0 ] && echo "fixer: PR #$PR passes all five gate conditions" || echo "fixer: PR #$PR is not mergeable yet"
 ```
 
+Track convergence rounds and park once the cap is hit (I6). This is the only place `outcome` is set to `parked`:
+
+```bash
+mkdir -p .codegraph/fixer
+GATE_FAIL=$(cat .codegraph/fixer/gate-fail)
+# 2>/dev/null: the round file is expected to be absent on the first convergence round — || supplies the starting count of 0
+ROUND=$(( $(cat .codegraph/fixer/round 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$ROUND" > .codegraph/fixer/round
+if [ "$GATE_FAIL" -eq 0 ]; then
+  rm -f .codegraph/fixer/round
+elif [ "$ROUND" -ge 3 ]; then
+  printf '%s\n' "parked" > .codegraph/fixer/outcome
+  rm -f .codegraph/fixer/round
+  echo "fixer: convergence round $ROUND/3 exhausted — PR #$(cat .codegraph/fixer/current-pr) will be parked (I6)"
+else
+  echo "fixer: convergence round $ROUND/3 — re-evaluate after fixing the failing condition(s)"
+fi
+```
+
 **Fixing each failed condition:**
 
 - **G1 / G2 — reviewer feedback.** Address every comment from every reviewer, including nits, and reply to each explaining what you did. Critically, **mine the Greptile summary body itself, not just the inline comments** — a score below 5/5 always names at least one gap in prose, and those gaps frequently have no inline comment. Any score below 5/5 with no inline comments means the finding is summary-only. If something is genuinely out of scope, file a tracked `follow-up` issue first and reference it in the reply — never defer untracked. Re-trigger Greptile with a `@greptileai` comment **only after** every Greptile comment has a reply. Re-trigger `@claude` only if you addressed Claude's own feedback. `/sweep` already encodes this whole procedure — delegating to it is the preferred route rather than re-deriving it here.
@@ -523,13 +554,18 @@ REPO=$(cat .codegraph/fixer/repo)
 PR=$(cat .codegraph/fixer/current-pr)
 GATE_FAIL=$(cat .codegraph/fixer/gate-fail)
 
-if [ "$GATE_FAIL" -ne 0 ]; then
+# 2>/dev/null: outcome is expected to be absent before a PR's first convergence round — an empty OUTCOME just skips the "already parked" branch below
+OUTCOME=$(cat .codegraph/fixer/outcome 2>/dev/null)
+if [ "$OUTCOME" = "parked" ]; then
+  echo "fixer: PR #$PR already parked after 3 convergence rounds — not merging"
+elif [ "$GATE_FAIL" -ne 0 ]; then
   echo "fixer: gate not satisfied — fix the failing condition or park PR #$PR. Not merging."
 elif [ "$DRY_RUN" = "true" ]; then
   echo "[DRY RUN] Would merge PR #$PR with --squash --admin"
 else
   gh pr merge "$PR" --repo "$REPO" --squash --admin --delete-branch || {
     echo "ERROR: merge of PR #$PR failed — read the error above; do not retry blindly"; exit 1; }
+  printf '%s\n' "merged" > .codegraph/fixer/outcome
   echo "fixer: merged PR #$PR"
 fi
 ```
@@ -549,9 +585,18 @@ if [ -z "$ISSUE" ] || [ "$ISSUE" = "null" ]; then
   echo "ERROR: queue is empty — nothing to record. The loop should have exited already."
   exit 1
 fi
-# Set STATUS to merged | parked | abandoned, and PR to the PR number (or "null" when none was opened)
-STATUS="merged"
-PR=$(cat .codegraph/fixer/current-pr)
+# STATUS comes from .codegraph/fixer/outcome, written by whichever path this issue
+# actually took: "abandoned" in 2b, "parked" once the convergence-round cap is hit in
+# 2f, or "merged" right after a successful `gh pr merge`. Never hardcode it here — that
+# previously recorded every issue as "merged" regardless of what actually happened.
+# 2>/dev/null: an empty STATUS below is expected if an earlier step failed to write it, and is handled explicitly
+STATUS=$(cat .codegraph/fixer/outcome 2>/dev/null)
+if [ -z "$STATUS" ]; then
+  echo "ERROR: .codegraph/fixer/outcome was not set — an earlier step should have written abandoned/merged/parked before reaching this point"
+  exit 1
+fi
+# 2>/dev/null: expected when the issue was abandoned in 2b and no PR was ever opened
+PR=$(cat .codegraph/fixer/current-pr 2>/dev/null)
 # --argjson rejects an empty string, so an absent PR must become the JSON literal null
 [ -z "$PR" ] && PR="null"
 
@@ -574,7 +619,7 @@ TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
 trap 'rm -f "$TMP_QUEUE"' EXIT
 jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
 trap - EXIT
-rm -f .codegraph/fixer/current-pr .codegraph/fixer/gate-fail
+rm -f .codegraph/fixer/current-pr .codegraph/fixer/gate-fail .codegraph/fixer/outcome .codegraph/fixer/round
 
 echo "fixer: issue #$ISSUE recorded as $STATUS; $(jq 'length' .codegraph/fixer/queue.json) remaining"
 ```
@@ -731,6 +776,8 @@ All state is under `.codegraph/fixer/`:
 | `state.json` | `{"issues":[{issue, status, pr}]}` | per-issue outcome; drives resume |
 | `parked.txt` | newline-separated PR numbers | input to Phase: Drain Parked PRs |
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
+| `outcome` | text | `abandoned`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
+| `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
 | `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>line`) |
 
 ---
