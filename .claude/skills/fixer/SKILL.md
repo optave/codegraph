@@ -484,14 +484,26 @@ done
 ISSUE_COMMENTS=$(gh api "repos/$REPO/issues/$PR/comments" --paginate)
 REVIEWS=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate)
 ME=$(gh api user --jq '.login')
-for RID in $(printf '%s\n' "$REVIEWS" | jq -r '[.[] | select(.body != "")] | .[].id'); do
-  SUBMITTED_AT=$(printf '%s\n' "$REVIEWS" | jq -r --argjson rid "$RID" '[.[] | select(.id == $rid)][0].submitted_at')
-  # A comment from ANY other bot/contributor/reviewer after this timestamp is not evidence
-  # that this specific review body was addressed — only our own reply counts, and a bare
-  # re-trigger ping ("@greptileai"/"@claude") is not a substantive acknowledgment either.
-  REPLY_AFTER=$(printf '%s\n' "$ISSUE_COMMENTS" | jq --arg since "$SUBMITTED_AT" --arg me "$ME" \
-    '[.[] | select(.created_at > $since) | select(.user.login == $me) | select((.body | test("^@(greptileai|claude)\\s*$")) | not)] | length')
-  [ "$REPLY_AFTER" -eq 0 ] && UNANSWERED=$((UNANSWERED + 1))
+
+# Give each review body its OWN acknowledgment window: [this review's submitted_at, the
+# NEXT review's submitted_at) — or +infinity for the most recent one. A single ME-authored
+# reply posted after every review would otherwise fall inside every earlier review's
+# "after" range too and retroactively "answer" all of them by account+timestamp alone,
+# which is temporal correlation, not evidence that specific review's content was read.
+# Requiring the reply to land strictly before the NEXT review closes that gap.
+REVIEW_TIMES=$(printf '%s\n' "$REVIEWS" | jq -r '[.[] | select(.body != "")] | sort_by(.submitted_at) | .[].submitted_at')
+IDX=0
+for SINCE in $REVIEW_TIMES; do
+  IDX=$((IDX + 1))
+  UNTIL=$(printf '%s\n' "$REVIEW_TIMES" | sed -n "$((IDX + 1))p")
+  if [ -n "$UNTIL" ]; then
+    REPLY_IN_WINDOW=$(printf '%s\n' "$ISSUE_COMMENTS" | jq --arg since "$SINCE" --arg until "$UNTIL" --arg me "$ME" \
+      '[.[] | select(.created_at > $since) | select(.created_at < $until) | select(.user.login == $me) | select((.body | test("^@(greptileai|claude)\\s*$")) | not)] | length')
+  else
+    REPLY_IN_WINDOW=$(printf '%s\n' "$ISSUE_COMMENTS" | jq --arg since "$SINCE" --arg me "$ME" \
+      '[.[] | select(.created_at > $since) | select(.user.login == $me) | select((.body | test("^@(greptileai|claude)\\s*$")) | not)] | length')
+  fi
+  [ "$REPLY_IN_WINDOW" -eq 0 ] && UNANSWERED=$((UNANSWERED + 1))
 done
 
 if [ "$UNANSWERED" -eq 0 ]; then
