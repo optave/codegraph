@@ -207,6 +207,25 @@ jq -r '.[] | "  #\(.issue)  \(.title)"' .codegraph/fixer/queue.json | head -"$TO
 
 For each issue `ISSUE` in the queue whose recorded status is not `merged`, `parked`, or `abandoned`, run steps 2a–2g.
 
+`state.json` and `queue.json` are updated by two separate writes in step 2g (Pattern 1 — bash blocks do not share variables, so the outcome is appended in one `jq`/`mv` and the queue is shifted in another). If a run stops between those two writes, `queue.json[0]` is still the issue that `state.json` already recorded as resolved. Filter it out before ever reading the queue head, so a resumed run never re-branches or re-PRs completed work:
+
+```bash
+mkdir -p .codegraph/fixer
+while true; do
+  HEAD_ISSUE=$(jq -r '.[0].issue // empty' .codegraph/fixer/queue.json)
+  [ -z "$HEAD_ISSUE" ] && break
+  TERMINAL=$(jq --argjson issue "$HEAD_ISSUE" \
+    '[.issues[] | select(.issue == $issue) | select(.status=="merged" or .status=="parked" or .status=="abandoned")] | length' \
+    .codegraph/fixer/state.json)
+  [ "$TERMINAL" -eq 0 ] && break
+  echo "fixer: issue #$HEAD_ISSUE already resolved in state.json — dropping stale queue head (resume safety)"
+  TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
+  trap 'rm -f "$TMP_QUEUE"' EXIT
+  jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
+  trap - EXIT
+done
+```
+
 ### 2a. Cut a fresh branch from `origin/main` (invariant I1)
 
 This is the single most important step in the skill. The branch **must** come from a just-fetched `origin/main`, never from the current HEAD and never from another issue's branch.
