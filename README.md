@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Foptave%2Fops-codegraph-tool.svg)](https://mcptoplist.com/server/glama%2Foptave%2Fops-codegraph-tool)
+
 <p align="center">
   <img src="https://img.shields.io/badge/codegraph-dependency%20intelligence-blue?style=for-the-badge&logo=graphql&logoColor=white" alt="codegraph" />
 </p>
