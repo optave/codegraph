@@ -840,8 +840,15 @@ Each pass does three things, in order:
    ```bash
    mkdir -p .codegraph/fixer
    # MERGED_PR is the PR number just merged in this step
-   grep -vxF "$MERGED_PR" .codegraph/fixer/parked.txt > .codegraph/fixer/parked.txt.tmp \
-     && mv .codegraph/fixer/parked.txt.tmp .codegraph/fixer/parked.txt
+   # grep -v's exit status reports whether any line PASSED the inverted filter, not whether
+   # the redirect succeeded — when $MERGED_PR is the ONLY entry in parked.txt, every line is
+   # excluded, zero lines are written, and grep exits 1 even though parked.txt.tmp was
+   # created correctly (empty, as desired). A chained `&& mv` would then never run on
+   # exactly the case that matters most (draining the last parked PR), silently leaving the
+   # just-merged PR's number in parked.txt forever. `|| true` decouples the mv from grep's
+   # match-count exit code so the empty-result case moves the file same as any other.
+   grep -vxF "$MERGED_PR" .codegraph/fixer/parked.txt > .codegraph/fixer/parked.txt.tmp || true
+   mv .codegraph/fixer/parked.txt.tmp .codegraph/fixer/parked.txt
    echo "fixer: removed merged PR #$MERGED_PR from parked.txt — $(wc -l < .codegraph/fixer/parked.txt) remaining"
 
    # Reconcile state.json: the issue tied to this PR was recorded as "parked" back when it
