@@ -508,11 +508,18 @@ fi
 # unanswered Greptile inline comments. ---
 ALL_COMMENTS=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate)
 UNANSWERED=0
+# Identities of the currently-unanswered comments, not just their count — two rounds can
+# both show "2 unanswered" while the actual pair differs (one answered, a new one landed),
+# which a bare count would wrongly read as zero movement. Folded into the gate signature below.
+UNANSWERED_IDS=""
 for CID in $(printf '%s\n' "$ALL_COMMENTS" | jq -r '[.[] | select(.in_reply_to_id == null)] | .[].id'); do
   ORIGIN_USER=$(printf '%s\n' "$ALL_COMMENTS" | jq -r --argjson cid "$CID" '[.[] | select(.id == $cid)][0].user.login')
   REPLIES=$(printf '%s\n' "$ALL_COMMENTS" | jq -s --argjson cid "$CID" --arg origin "$ORIGIN_USER" \
     '[.[][] | select(.in_reply_to_id == $cid) | select(.user.login != $origin)] | length')
-  [ "$REPLIES" -eq 0 ] && UNANSWERED=$((UNANSWERED + 1))
+  if [ "$REPLIES" -eq 0 ]; then
+    UNANSWERED=$((UNANSWERED + 1))
+    UNANSWERED_IDS="$UNANSWERED_IDS,$CID"
+  fi
 done
 
 # Top-level review bodies (Claude's CHANGES_REQUESTED/COMMENT summary, Greptile's
@@ -581,7 +588,20 @@ printf '%s\n' "$GATE_FAIL" > .codegraph/fixer/gate-fail
 # in between — that is the actual definition of "blocked" this skill parks on, not an
 # arbitrary round count. Order the fields consistently so an unrelated field re-ordering
 # never masquerades as a change.
-printf '%s\n' "score=${SCORE:-none};unanswered=$UNANSWERED;g3=$(git merge-base --is-ancestor origin/main HEAD && echo ok || echo behind);mergeable=$MERGEABLE;failed=$FAILED_CHECKS" \
+#
+# The aggregate score, unanswered count, mergeability, and failing-check names alone are
+# too coarse: a new commit, a fresh Greptile review, or a new CI run can all leave every
+# one of those aggregates reading identical to the previous round (score lags a push,
+# a re-review restates the same score for different reasons, a rerun fails the same named
+# check for a different cause) — which would misread real activity as a stall. `commit`
+# (the pushed SHA) and `greptile_hash` (a hash of every Greptile comment/review body, not
+# just the extracted digit) both change the instant that activity happens, even before the
+# aggregates catch up, so genuine progress is never mistaken for zero measurable change.
+# `unanswered_ids` likewise tracks which comments are outstanding, not just how many, so a
+# reply that resolves one comment while a new one lands does not cancel out to "no change".
+GREPTILE_HASH=$(printf '%s' "$GREP_BODY" | cksum | awk '{print $1}')
+COMMIT=$(git rev-parse HEAD)
+printf '%s\n' "score=${SCORE:-none};greptile_hash=$GREPTILE_HASH;unanswered=$UNANSWERED;unanswered_ids=${UNANSWERED_IDS:-none};g3=$(git merge-base --is-ancestor origin/main HEAD && echo ok || echo behind);mergeable=$MERGEABLE;failed=$FAILED_CHECKS;commit=$COMMIT" \
   > .codegraph/fixer/gate-signature
 ```
 
@@ -994,7 +1014,7 @@ All state is under `.codegraph/fixer/`:
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
 | `outcome` | text | `abandoned`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
 | `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
-| `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state, used to detect a stalled (blocked) PR rather than counting rounds |
+| `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state (score, a hash of the full Greptile review text, which specific comments are unanswered, branch ancestry, mergeability, failing checks, and the current commit SHA), used to detect a stalled (blocked) PR rather than counting rounds |
 | `stall-count` | text | consecutive convergence rounds with an unchanged gate signature; park threshold is 3 |
 | `drain-pass`, `drain-stall`, `drain-parked-count` | text | drain-phase pass counter, consecutive no-merge passes, and `parked.txt` length as of the last pass — the same stall-detection pattern applied to draining |
 | `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>count<TAB>line`) |
