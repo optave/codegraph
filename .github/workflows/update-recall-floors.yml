@@ -32,7 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v6
@@ -66,22 +65,28 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # The commit that the triggering Publish run actually built. Deriving the
-          # version from THIS sha (rather than from whatever main's tip happens to be
-          # when this job runs) keeps the version label bound to the artifact even if
-          # a newer release lands on main before this job starts — e.g. an older
-          # workflow_dispatch retry that finishes late.
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git fetch --tags
-          VERSION=$(git describe --tags --match "v*" --abbrev=0 "$HEAD_SHA" 2>/dev/null | sed 's/^v//')
-          if [ -z "$VERSION" ]; then
+          # Read the version straight from the benchmark artifact instead of
+          # deriving it via `git describe` on the triggering run's head_sha.
+          # The Publish workflow's own release tag is pushed by its `publish`
+          # job against whatever `main` HEAD is at that point in the pipeline
+          # (preflight → compute-version → build-native → pre-publish-benchmark
+          # → publish) — not against head_sha — so if main advances mid-run
+          # (e.g. during a slow workflow_dispatch retry), the new tag lands on
+          # a commit that isn't in head_sha's ancestry. `git describe` would
+          # then silently walk back further and resolve to the *previous*
+          # release's tag instead of failing. This artifact's `version` field
+          # is written from compute-version's output at the start of this same
+          # run and is the exact string later used to build that tag, so it's
+          # immune to the race.
+          VERSION=$(node -p "require('./benchmark-results-json/benchmark-result.json').version")
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
             # Refuse to fall back to a shared placeholder branch name: two different
             # unresolved runs would force-push over each other's floor updates on it.
-            echo "::error::Could not resolve a release tag reachable from $HEAD_SHA — refusing to guess a branch name."
+            echo "::error::Could not read a valid version from the benchmark artifact (got '${VERSION}') — refusing to guess a branch name."
             exit 1
           fi
           BRANCH="chore/recall-floors-v${VERSION}"
