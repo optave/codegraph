@@ -1,0 +1,99 @@
+name: Update Recall Floors
+
+# Runs after every successful stable Publish (release or workflow_dispatch retry).
+# Dev builds (the daily schedule trigger, and push → Publish) are excluded via the
+# job condition — neither produces a benchmark-results-json artifact.
+#
+# Downloads the benchmark-result.json artifact produced by the
+# pre-publish-benchmark gate, then calls scripts/update-recall-floors.mjs to
+# raise any language floor that improved. Opens a PR only when at least one
+# floor changed.
+
+on:
+  workflow_run:
+    workflows: [Publish]
+    types: [completed]
+
+jobs:
+  update-floors:
+    name: Bump recall floors
+    # Only stable releases produce a benchmark artifact: a published release, or a
+    # workflow_dispatch retry of one. The daily schedule trigger and push (dev builds)
+    # do not, and would fail at the "Download benchmark results" step below.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'release' ||
+       github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Download benchmark results
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download ${{ github.event.workflow_run.id }} \
+            --repo "$GITHUB_REPOSITORY" \
+            -n benchmark-results-json
+
+      - name: Update recall floors
+        # gh run download places the artifact contents in a subdirectory named
+        # after the artifact (benchmark-results-json/benchmark-result.json).
+        run: node scripts/update-recall-floors.mjs benchmark-results-json/benchmark-result.json
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No floors improved — skipping PR."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The commit that the triggering Publish run actually built. Deriving the
+          # version from THIS sha (rather than from whatever main's tip happens to be
+          # when this job runs) keeps the version label bound to the artifact even if
+          # a newer release lands on main before this job starts — e.g. an older
+          # workflow_dispatch retry that finishes late.
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch --tags
+          VERSION=$(git describe --tags --match "v*" --abbrev=0 "$HEAD_SHA" 2>/dev/null | sed 's/^v//' || echo "unknown")
+          BRANCH="chore/recall-floors-v${VERSION}"
+
+          # Idempotent: if this branch already exists (e.g. re-run), reset it.
+          git checkout -B "$BRANCH"
+          git add tests/benchmarks/resolution/resolution-benchmark.test.ts
+          git commit -m "chore: bump recall floors after v${VERSION} release"
+          git push origin "$BRANCH" --force
+
+          # Avoid duplicate PRs on re-runs.
+          if gh pr view "$BRANCH" --json state -q '.state' 2>/dev/null | grep -q OPEN; then
+            echo "PR for $BRANCH already open — skipping gh pr create."
+          else
+            RUN_URL="${{ github.event.workflow_run.html_url }}"
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: bump recall floors after v${VERSION} release" \
+              --body "Recall floors are a one-way ratchet: only floors that improved in this release are raised. Triggered automatically by a successful stable [Publish workflow run](${RUN_URL})."
+          fi
