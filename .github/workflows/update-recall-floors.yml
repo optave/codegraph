@@ -87,12 +87,14 @@ jobs:
           # run and is the exact string later used to build that tag, so it's
           # immune to the race.
           VERSION=$(node -p "require('./benchmark-results-json/benchmark-result.json').version")
-          # Allow an optional SemVer build-metadata suffix (e.g. "2.1.0+build.1")
-          # in addition to the prerelease suffix — compute-version's `release`
-          # path takes github.event.release.tag_name verbatim with no format
-          # validation, so a real GitHub Release tagged with legitimate SemVer
-          # build metadata must not be rejected here.
-          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
+          # Allow an optional SemVer prerelease and/or build-metadata suffix
+          # (e.g. "2.1.0-rc-hotfix", "2.1.0+build.1") — compute-version's
+          # `release` path takes github.event.release.tag_name verbatim with
+          # no format validation, so a real GitHub Release tagged with a
+          # legitimate SemVer version must not be rejected here. SemVer
+          # prerelease/build identifiers may themselves contain hyphens
+          # (e.g. "rc-hotfix"), so the suffix character classes include `-`.
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$'; then
             # Refuse to fall back to a shared placeholder branch name: two different
             # unresolved runs would force-push over each other's floor updates on it.
             echo "::error::Could not read a valid version from the benchmark artifact (got '${VERSION}') — refusing to guess a branch name."
