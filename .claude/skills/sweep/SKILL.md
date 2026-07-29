@@ -257,7 +257,7 @@ After addressing all comments for a PR:
 ```bash
 me=$(gh api user --jq '.login')
 trigger_count=$(gh api repos/optave/codegraph/issues/<number>/comments --paginate \
-  | jq --arg me "$me" '[.[] | select(.user.login == $me and (.body | test("^@greptileai\\s*$")))] | length')
+  | jq -s --arg me "$me" '[.[][] | select(.user.login == $me and (.body | test("^@greptileai\\s*$")))] | length')
 echo "Greptile has been re-triggered $trigger_count time(s) so far by this sweep."
 ```
 
