@@ -1,0 +1,142 @@
+name: Update Recall Floors
+
+# Runs after every successful stable Publish (release or workflow_dispatch retry).
+# Dev builds (the daily schedule trigger, and push → Publish) are excluded via the
+# job condition — neither produces a benchmark-results-json artifact.
+#
+# Downloads the benchmark-result.json artifact produced by the
+# pre-publish-benchmark gate, then calls scripts/update-recall-floors.mjs to
+# raise any language floor that improved. Opens a PR only when at least one
+# floor changed.
+
+on:
+  workflow_run:
+    workflows: [Publish]
+    types: [completed]
+
+jobs:
+  update-floors:
+    name: Bump recall floors
+    # Only stable releases produce a benchmark artifact: a published release, or a
+    # workflow_dispatch retry of one. The daily schedule trigger and push (dev builds)
+    # do not, and would fail at the "Download benchmark results" step below.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'release' ||
+       github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # Pinned to commit SHAs (not the mutable v6 tags) because this job runs
+      # with contents:write + pull-requests:write and passes its write-scoped
+      # token straight into the checkout step — an upstream tag compromise
+      # would otherwise run unreviewed code with that authority.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+
+      - name: Download benchmark results
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download ${{ github.event.workflow_run.id }} \
+            --repo "$GITHUB_REPOSITORY" \
+            -n benchmark-results-json
+
+      - name: Extract and validate release version
+        id: version
+        run: |
+          # Read the version straight from the benchmark artifact instead of
+          # deriving it via `git describe` on the triggering run's head_sha.
+          # The Publish workflow's own release tag is pushed by its `publish`
+          # job against whatever `main` HEAD is at that point in the pipeline
+          # (preflight → compute-version → build-native → pre-publish-benchmark
+          # → publish) — not against head_sha — so if main advances mid-run
+          # (e.g. during a slow workflow_dispatch retry), the new tag lands on
+          # a commit that isn't in head_sha's ancestry. `git describe` would
+          # then silently walk back further and resolve to the *previous*
+          # release's tag instead of failing. This artifact's `version` field
+          # is written from compute-version's output at the start of this same
+          # run and is the exact string later used to build that tag, so it's
+          # immune to the race.
+          VERSION=$(node -p "require('./benchmark-results-json/benchmark-result.json').version")
+          # Allow an optional SemVer prerelease and/or build-metadata suffix
+          # (e.g. "2.1.0-rc-hotfix", "2.1.0+build.1") — compute-version's
+          # `release` path takes github.event.release.tag_name verbatim with
+          # no format validation, so a real GitHub Release tagged with a
+          # legitimate SemVer version must not be rejected here. SemVer
+          # prerelease/build identifiers may themselves contain hyphens
+          # (e.g. "rc-hotfix"), so the suffix character classes include `-`.
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$'; then
+            # Refuse to fall back to a shared placeholder branch name: two different
+            # unresolved runs would force-push over each other's floor updates on it.
+            echo "::error::Could not read a valid version from the benchmark artifact (got '${VERSION}') — refusing to guess a branch name."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # `workflow_run.event == 'release'` fires for GitHub prereleases too,
+          # and Publish's own compute-version step doesn't distinguish them
+          # either (it takes the tag verbatim). A SemVer prerelease identifier
+          # — the "-xyz" component preceding any "+build" metadata — is the
+          # only reliable stable-vs-prerelease signal available here. Floors
+          # are a one-way ratchet meant to track the stable baseline, so a
+          # prerelease's benchmark numbers must not be allowed to raise them.
+          if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-'; then
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            echo "Version $VERSION is a prerelease — skipping floor ratchet (stable releases only)."
+          else
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update recall floors
+        if: steps.version.outputs.stable == 'true'
+        # gh run download places the artifact contents in a subdirectory named
+        # after the artifact (benchmark-results-json/benchmark-result.json).
+        run: node scripts/update-recall-floors.mjs benchmark-results-json/benchmark-result.json
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No floors improved — skipping PR."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="chore/recall-floors-v${VERSION}"
+
+          # Idempotent: if this branch already exists (e.g. re-run), reset it.
+          git checkout -B "$BRANCH"
+          git add tests/benchmarks/resolution/resolution-benchmark.test.ts
+          git commit -m "chore: bump recall floors after v${VERSION} release"
+          git push origin "$BRANCH" --force
+
+          # Avoid duplicate PRs on re-runs.
+          if gh pr view "$BRANCH" --json state -q '.state' 2>/dev/null | grep -q OPEN; then
+            echo "PR for $BRANCH already open — skipping gh pr create."
+          else
+            RUN_URL="${{ github.event.workflow_run.html_url }}"
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: bump recall floors after v${VERSION} release" \
+              --body "Recall floors are a one-way ratchet: only floors that improved in this release are raised. Triggered automatically by a successful stable [Publish workflow run](${RUN_URL})."
+          fi
