@@ -141,7 +141,9 @@ case "$(git rev-parse --show-toplevel)" in
 esac
 ```
 
-**Resume handling.** A non-empty `queue.json` means a previous invocation stopped mid-batch (crash, interruption) with unresolved work. A non-empty `parked.txt` means a previous invocation stopped mid-drain (Phase: Drain Parked PRs runs *after* `queue.json` is legitimately already empty, so `queue.json` alone cannot distinguish "batch loop finished, draining in progress" from "run genuinely complete"). Either signal alone is enough to treat this as a resume, not a fresh run — an absent/empty `queue.json` **and** an absent/empty `parked.txt` together are what mean the last invocation ran all the way to completion (Phase: Continue the Batch Loop, or Proceed to Drain always leaves `queue.json` empty when it decides to stop or drain, and Phase: Drain Parked PRs always leaves `parked.txt` empty once everything is merged), so only then is every run-scoped artifact — including `batches-done`, `queue.json`, and `parked.txt` itself — reset. Conflating these cases is exactly how a stale `batches-done` count or a stale empty `queue.json` leaks into a brand-new invocation and silently skips newly opened issues or hits the batch safety cap prematurely — and, just as badly, how an interruption mid-drain (e.g. between `parked.txt`'s removal of a just-merged PR and the separate `state.json` update reconciling it) gets read as "nothing left to do," deleting `parked.txt` and wiping `state.json` before Phase: Drain Parked PRs' own self-heal step ever gets a chance to run, silently erasing every still-parked PR along with the evidence needed to recover the interrupted merge.
+**Resume handling.** A non-empty `queue.json` means a previous invocation stopped mid-batch (crash, interruption) with unresolved work. A non-empty `parked.txt` *can* mean a previous invocation stopped mid-drain (Phase: Drain Parked PRs runs *after* `queue.json` is legitimately already empty, so `queue.json` alone cannot distinguish "batch loop finished, draining in progress" from "run genuinely complete") — but only if that drain hadn't already reached ITS OWN terminal state. Phase: Drain Parked PRs' own exit condition is "every PR merged, or reported as needing human review" — once a drain stops because 3 consecutive passes merged nothing, or the 15-pass cap was hit, the remaining entries in `parked.txt` are a **closed, already-reported matter for that run**, not evidence of an interruption. Treating a closed-but-blocked drain the same as a genuinely-interrupted one would make every subsequent invocation skip Phase 1-3 forever, re-attempting the same permanently-stuck PRs and never queuing newly opened issues. `drain-stall`/`drain-pass` (Phase: Drain Parked PRs already maintains these) are what distinguish the two: if they show the stall/cap threshold was already hit, this `parked.txt` is a reported terminal state, not a resume signal.
+
+So the fresh-vs-resume decision is: a previous run is resumable if `queue.json` is non-empty (mid-batch), OR `parked.txt` is non-empty **and** its drain had not yet reached the stall/cap threshold (mid-drain, genuinely interrupted). Only when neither holds did the last invocation run all the way to a reported completion, so only then is every run-scoped artifact — including `batches-done`, `queue.json`, `parked.txt`, `drain-pass`, and `drain-stall` — reset. Conflating these cases is exactly how a stale `batches-done` count or a stale empty `queue.json` leaks into a brand-new invocation and silently skips newly opened issues or hits the batch safety cap prematurely; how an interruption mid-drain (e.g. between `parked.txt`'s removal of a just-merged PR and the separate `state.json` update reconciling it) gets read as "nothing left to do," deleting `parked.txt` and wiping `state.json` before Phase: Drain Parked PRs' own self-heal step ever gets a chance to run; and, in the opposite direction, how a drain that already stopped and reported its blocked PRs gets misread as still-interrupted, permanently locking out new work.
 
 ```bash
 mkdir -p .codegraph/fixer
@@ -153,14 +155,28 @@ QUEUE_LEN=$(jq 'length' .codegraph/fixer/queue.json 2>/dev/null || echo 0)
 # in progress rather than long since complete.
 PARKED_LEN=0
 [ -s .codegraph/fixer/parked.txt ] && PARKED_LEN=$(wc -l < .codegraph/fixer/parked.txt)
-if { [ -f .codegraph/fixer/queue.json ] && [ "$QUEUE_LEN" -gt 0 ]; } || [ "$PARKED_LEN" -gt 0 ]; then
+# A non-empty parked.txt is ONLY a resume signal if the drain that left it there hadn't
+# already reached its own stall/cap threshold — Phase: Drain Parked PRs stops and reports
+# to the human at exactly that threshold, so parked.txt at that point is a closed matter,
+# not an interruption. Without this check, a drain that legitimately finished by reporting
+# blocked PRs would look identical to one cut off mid-flight forever, permanently skipping
+# Phase 1-3 and starving newly opened issues of any batch.
+DRAIN_STALL=$(cat .codegraph/fixer/drain-stall 2>/dev/null || echo 0)
+DRAIN_PASS_COUNT=$(cat .codegraph/fixer/drain-pass 2>/dev/null || echo 0)
+DRAIN_ALREADY_REPORTED=0
+if [ "$PARKED_LEN" -gt 0 ] && { [ "$DRAIN_STALL" -ge 3 ] || [ "$DRAIN_PASS_COUNT" -ge 15 ]; }; then
+  DRAIN_ALREADY_REPORTED=1
+fi
+if { [ -f .codegraph/fixer/queue.json ] && [ "$QUEUE_LEN" -gt 0 ]; } || { [ "$PARKED_LEN" -gt 0 ] && [ "$DRAIN_ALREADY_REPORTED" -eq 0 ]; }; then
   echo "fixer: resuming an interrupted run — previous state:"
   jq -r '.issues[] | "  #\(.issue)  \(.status)  \(if .pr then "PR #\(.pr)" else "no PR" end)"' .codegraph/fixer/state.json 2>/dev/null
   if [ "$QUEUE_LEN" -eq 0 ] && [ "$PARKED_LEN" -gt 0 ]; then
     echo "fixer: queue.json is empty but parked.txt has $PARKED_LEN PR(s) — the batch loop had already finished and this run was mid-drain. Skip Phase 1-3 entirely and go straight to Phase: Drain Parked PRs."
   fi
 else
-  if [ -f .codegraph/fixer/state.json ]; then
+  if [ "$DRAIN_ALREADY_REPORTED" -eq 1 ]; then
+    echo "fixer: previous run's drain already stopped and reported $PARKED_LEN blocked PR(s) to a human (stall=$DRAIN_STALL pass=$DRAIN_PASS_COUNT) — that run is done. Starting a genuinely fresh run, not resuming it."
+  elif [ -f .codegraph/fixer/state.json ]; then
     echo "fixer: previous run's artifacts are still on disk but its last batch already completed — that run is done. Starting a genuinely fresh run, not resuming it."
   else
     echo "fixer: fresh run — state initialised"
@@ -173,7 +189,7 @@ else
 fi
 ```
 
-**Exit condition:** `git`, `gh`, `jq`, `mktemp` present; inside a git repo; `gh` authenticated; no in-progress merge; repo slug, test command, and lint command persisted to `.codegraph/fixer/`; arguments parsed and persisted; worktree isolation confirmed or requested; `state.json` exists. If resuming with an empty `queue.json` but a non-empty `parked.txt`, proceed directly to Phase: Drain Parked PRs — do not rebuild or reuse a queue for a batch loop that already finished.
+**Exit condition:** `git`, `gh`, `jq`, `mktemp` present; inside a git repo; `gh` authenticated; no in-progress merge; repo slug, test command, and lint command persisted to `.codegraph/fixer/`; arguments parsed and persisted; worktree isolation confirmed or requested; `state.json` exists. If resuming with an empty `queue.json` but a non-empty `parked.txt` whose drain had not yet stalled/capped out, proceed directly to Phase: Drain Parked PRs — do not rebuild or reuse a queue for a batch loop that already finished. If the previous drain had already stalled/capped out and reported its blocked PRs, this is a fresh run: those specific PRs remain open on GitHub for a human (or a future `/fixer`/`/sweep`/`/resolve` invocation) to pick up — they are not silently lost, only no longer tracked in this run's local state.
 
 ---
 
@@ -1065,7 +1081,7 @@ Also list, explicitly:
 - every issue that was split, with the follow-up covering the remainder
 - anything left for a human, with the specific blocker
 
-**Cleanup.** State lives in `.codegraph/fixer/`. It is left on disk after this run finishes, but Phase 0's resume handling already treats a completed run's artifacts as stale on the *next* invocation — an empty `queue.json` **and** an empty `parked.txt` together mean the next `/fixer` call starts genuinely fresh, not "resuming" this run's results. The only thing left on disk that matters afterward is `state.json` as a historical record of what this run did; `rm -rf .codegraph/fixer` removes it entirely if you don't want even that.
+**Cleanup.** State lives in `.codegraph/fixer/`. It is left on disk after this run finishes, but Phase 0's resume handling already treats a completed run's artifacts as stale on the *next* invocation — an empty `queue.json`, together with a `parked.txt` that is either empty or already stalled/capped out (per `drain-stall`/`drain-pass`), means the next `/fixer` call starts genuinely fresh, not "resuming" this run's results. The only thing left on disk that matters afterward is `state.json` as a historical record of what this run did; `rm -rf .codegraph/fixer` removes it entirely if you don't want even that.
 
 **Exit condition:** The user has a per-issue table covering every batch this run processed, the merged count, the batch count, every follow-up issue number, every bypass with its justification, and an explicit list of anything unfinished (including a resume command if the 15-batch safety cap was hit).
 
@@ -1082,7 +1098,7 @@ All state is under `.codegraph/fixer/`:
 | `test-cmd`, `lint-cmd` | text | detected package-manager commands |
 | `queue.json` | JSON array of `{issue, title}` | current batch's remaining work, ascending; entries are shifted off as they complete. **A present-but-empty `queue.json` means the batch loop fully completed** — Phase 0 uses this, together with `parked.txt`, to decide fresh-run vs. resume |
 | `state.json` | `{"issues":[{issue, status, pr}]}` | per-issue outcome, accumulated across every batch this run has processed; reset to empty whenever Phase 0 detects a fresh run |
-| `parked.txt` | newline-separated PR numbers | accumulated across every batch; input to Phase: Drain Parked PRs; a merged PR's number is removed from this file the moment it merges. **Only ever emptied, never deleted, by a completed drain** — Phase 0 also treats a non-empty `parked.txt` as evidence of a resumable (mid-drain) run, since `queue.json` is legitimately already empty by the time draining starts |
+| `parked.txt` | newline-separated PR numbers | accumulated across every batch; input to Phase: Drain Parked PRs; a merged PR's number is removed from this file the moment it merges. **Only ever emptied, never deleted, by a fully-merged drain** — Phase 0 treats a non-empty `parked.txt` as evidence of a resumable (mid-drain) run only if `drain-stall`/`drain-pass` show the drain hadn't already stalled/capped out; once it has, the remaining entries are a closed, already-reported matter, not a resume signal |
 | `batches-done` | text | count of batches completed this run; read by Phase 3 and the final report; reset on a fresh run |
 | `loop-decision` | text | `loop`/`stop` — Phase 3's verdict on whether to start another batch |
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
@@ -1090,7 +1106,7 @@ All state is under `.codegraph/fixer/`:
 | `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
 | `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state (score, a hash of the full Greptile review text, which specific comments are unanswered, branch ancestry, mergeability, each non-green check's name plus its completion timestamp, and the current commit SHA), used to detect a stalled (blocked) PR rather than counting rounds |
 | `stall-count` | text | consecutive convergence rounds with an unchanged gate signature; park threshold is 3 |
-| `drain-pass`, `drain-stall`, `drain-parked-count` | text | drain-phase pass counter, consecutive no-merge passes, and `parked.txt` length as of the last pass — the same stall-detection pattern applied to draining |
+| `drain-pass`, `drain-stall`, `drain-parked-count` | text | drain-phase pass counter, consecutive no-merge passes, and `parked.txt` length as of the last pass — the same stall-detection pattern applied to draining. Also read by Phase 0 on the next invocation to tell a genuinely-interrupted drain (resumable) apart from one that already stalled/capped out and reported its blocked PRs (not resumable) |
 | `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>count<TAB>line`) |
 
 ---
@@ -1130,7 +1146,7 @@ All state is under `.codegraph/fixer/`:
 - **The run's objective is the whole backlog, not one batch.** By default, keep starting new batches (Phase 3) until no qualifying open issues remain or the 15-batch cap is hit. Pass `--once` to process exactly one batch and stop.
 - **Only ever act on the repo detected in Phase 0.** Never search, open issues on, or open PRs against any other repository — including when this repo's queue comes up empty. Read the slug from `.codegraph/fixer/repo`; never hardcode it (see issue #2164).
 - **An empty queue is success, not failure.** If Phase 1 finds no qualifying open issues, report that plainly and exit 0 — never search other repos, never lower the `--author`/`blocked`-label bar to manufacture a queue, and never invent unrelated work (stale files, refactors, drive-by fixes) to fill a batch.
-- **A completed run is not a resumable run.** Phase 0 resumes when `queue.json` is non-empty (a batch stopped mid-flight) OR `parked.txt` is non-empty (draining stopped mid-flight — `queue.json` is legitimately already empty by the time Phase: Drain Parked PRs starts, so it alone cannot tell "draining in progress" apart from "run genuinely complete"). Only when BOTH are empty or absent did the previous run finish, so only then is every run-scoped artifact (`batches-done`, `queue.json`, `parked.txt`, `state.json`, per-issue scratch state) reset before starting — never let a finished run's counters leak into a new invocation and skip issues or hit the batch cap early, and never let an interrupted drain be mistaken for a finished one and lose its still-parked PRs.
+- **A completed run is not a resumable run — but neither is a drain that already gave up and reported.** Phase 0 resumes when `queue.json` is non-empty (a batch stopped mid-flight), OR `parked.txt` is non-empty AND `drain-stall`/`drain-pass` show the drain had not yet stalled/capped out (draining stopped mid-flight — `queue.json` is legitimately already empty by the time Phase: Drain Parked PRs starts, so it alone cannot tell "draining in progress" apart from "run genuinely complete"). A `parked.txt` left behind by a drain that already hit 3 stalled passes or the 15-pass cap is a closed, already-reported matter, not a resume signal — treating it as one would make every future invocation skip Phase 1-3 forever and starve newly opened issues. Only when none of these hold did the previous run finish, so only then is every run-scoped artifact (`batches-done`, `queue.json`, `parked.txt`, `drain-pass`, `drain-stall`, `state.json`, per-issue scratch state) reset before starting — never let a finished run's counters leak into a new invocation and skip issues or hit the batch cap early, never let an interrupted drain be mistaken for a finished one and lose its still-parked PRs, and never let an already-reported blocked drain be mistaken for an interrupted one and lock out new work indefinitely.
 - **No co-author lines** in commit messages or PR bodies.
 - **No Claude Code or Anthropic references** in commits, PR bodies, comments, or issues.
 - **Never trigger `@greptileai` until every Greptile comment has a reply.** Do not trigger Greptile for feedback that came from Claude or the user.
