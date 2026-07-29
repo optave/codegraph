@@ -845,6 +845,24 @@ This is the mode switch: stop solving new issues, and work the parked PRs as a s
 
 ```bash
 mkdir -p .codegraph/fixer
+
+# Self-heal a parked.txt / state.json split-brain left by an interruption landing between
+# this phase's own two-write reconciliation below (parked.txt removal, then a SEPARATE
+# state.json update) — if the process stopped exactly there, parked.txt already lost the
+# PR (correctly, since it merged) but state.json still records it as "parked". Left
+# uncorrected, that merge is invisible to Phase 5's final report, and since queue.json is
+# already empty by the time draining starts, a later invocation would read this as a
+# genuinely fresh run and silently wipe the stale-but-recoverable record instead of fixing
+# it. Reconcile before anything else touches parked.txt or state.json this pass.
+for STALE_PR in $(jq -r '[.issues[] | select(.status=="parked") | .pr // empty] | .[]' .codegraph/fixer/state.json 2>/dev/null); do
+  if ! grep -qxF "$STALE_PR" .codegraph/fixer/parked.txt 2>/dev/null; then
+    TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
+    jq --argjson pr "$STALE_PR" '(.issues[] | select(.pr == $pr and .status=="parked") | .status) = "merged"' \
+      .codegraph/fixer/state.json > "$TMP_STATE" && mv "$TMP_STATE" .codegraph/fixer/state.json
+    echo "fixer: reconciled state.json entry for PR #$STALE_PR from a prior interrupted drain — parked.txt no longer lists it, so it must have already merged; corrected parked -> merged before continuing"
+  fi
+done
+
 if [ ! -s .codegraph/fixer/parked.txt ]; then
   echo "fixer: no parked PRs — skipping drain phase"
 else
