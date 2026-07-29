@@ -1,13 +1,17 @@
 ---
 name: fixer
-description: Solve the N lowest-numbered open issues end-to-end — one fresh branch per issue, PR, review convergence, and merge — then drain any stragglers in a final sweep phase
-argument-hint: "[count] [--author <login>] [--start-from <issue>] [--dry-run]"
+description: Solve open issues end-to-end in batches of N — one fresh branch per issue, PR, review convergence, and merge — looping across batches until the whole backlog for --author is drained (or a safety cap is hit), then draining any stragglers in a final sweep phase. Never operates outside the current repo; if there is nothing to do, does nothing.
+argument-hint: "[count] [--author <login>] [--start-from <issue>] [--once] [--dry-run]"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Monitor, Agent
 ---
 
-# /fixer — Solve, Ship, and Merge a Batch of Issues
+# /fixer — Solve, Ship, and Merge Until the Backlog Is Actually Done
 
-Work the lowest-numbered open issues in this repository from open issue to merged PR, one at a time, until `count` issues (default 10) are done. Each issue gets its own branch cut from a freshly fetched `origin/main`, its own PR, its own review-convergence loop, and its own merge. Any PR that cannot be brought to a mergeable state inline is **parked** so the loop keeps moving, and Phase 4 drains all parked PRs with `/sweep` and `/resolve` until every one is merged or provably blocked.
+Work the lowest-numbered open issues in **this repository only** from open issue to merged PR, one at a time, in batches of `count` (default 10). Each issue gets its own branch cut from a freshly fetched `origin/main`, its own PR, its own review-convergence loop, and its own merge. Any PR that cannot be brought to a mergeable state inline is **parked** so the batch keeps moving, and Phase: Drain Parked PRs drains all parked PRs with `/sweep` and `/resolve` until every one is merged or provably blocked.
+
+**The objective is the whole qualifying backlog, not one arbitrary batch.** Once a batch's issues are all merged/parked/abandoned and Phase: Drain Parked PRs has run, Phase: Continue the Batch Loop, or Proceed to Drain checks whether more open issues by `AUTHOR` still qualify. If they do, the next batch starts automatically. Pass `--once` to process a single batch and stop instead, regardless of what remains.
+
+**Repo scope.** /fixer only ever acts on the repo it is invoked in (detected dynamically in Phase 0 — on this checkout, `optave/ops-codegraph-tool`). It never searches, opens issues on, or opens PRs against any other repository, even when this repo currently has nothing to do. **An empty queue is a successful outcome, not a failure**: if there is nothing to do, Phase 1 reports that and stops — it does not look elsewhere, does not lower the `--author`/`blocked`-label bar to manufacture a queue, and does not invent unrelated work (stale files, refactors, drive-by fixes) to fill a batch.
 
 ---
 
@@ -35,9 +39,10 @@ Parse `$ARGUMENTS` into these state variables, persisted to `.codegraph/fixer/` 
 
 | Token | Variable | Default | Meaning |
 |-------|----------|---------|---------|
-| first bare integer | `COUNT` | `10` | How many issues to take to merged state |
+| first bare integer | `COUNT` | `10` | How many issues to process per batch. The run loops across batches (Phase: Continue the Batch Loop, or Proceed to Drain) until the backlog is drained, unless `--once` is set |
 | `--author <login>` | `AUTHOR` | `carlos-alm` | Only consider issues opened by this login |
-| `--start-from <issue>` | `START_FROM` | none | Skip queue entries below this issue number (resume) |
+| `--start-from <issue>` | `START_FROM` | none | Skip queue entries below this issue number (resume, or manual batch offset) |
+| `--once` | `ONCE` | `false` | Process a single batch of `COUNT` issues and stop, even if more qualifying open issues remain |
 | `--dry-run` | `DRY_RUN` | `false` | Plan and analyse only — create no branch, commit, PR, or merge |
 
 ```bash
@@ -61,12 +66,14 @@ START_FROM=$(printf '%s\n' "$ARGS" | grep -oE '\-\-start-from[= ]+[0-9]+' | head
 [ -z "$START_FROM" ] && START_FROM=0
 
 case "$ARGS" in *--dry-run*) DRY_RUN=true ;; *) DRY_RUN=false ;; esac
+case "$ARGS" in *--once*) ONCE=true ;; *) ONCE=false ;; esac
 
 printf '%s\n' "$COUNT"      > .codegraph/fixer/count
 printf '%s\n' "$AUTHOR"     > .codegraph/fixer/author
 printf '%s\n' "$START_FROM" > .codegraph/fixer/start-from
 printf '%s\n' "$DRY_RUN"    > .codegraph/fixer/dry-run
-echo "fixer: count=$COUNT author=$AUTHOR start-from=$START_FROM dry-run=$DRY_RUN"
+printf '%s\n' "$ONCE"       > .codegraph/fixer/once
+echo "fixer: count=$COUNT author=$AUTHOR start-from=$START_FROM once=$ONCE dry-run=$DRY_RUN"
 ```
 
 ---
@@ -101,6 +108,8 @@ gh repo view --json nameWithOwner --jq '.nameWithOwner' > .codegraph/fixer/repo 
   echo "ERROR: could not determine the repo slug — is this a GitHub remote?"; exit 1; }
 echo "fixer: operating on $(cat .codegraph/fixer/repo)"
 ```
+
+**This is the only repo /fixer touches for the rest of this run.** Every `gh` command in every phase below targets `$(cat .codegraph/fixer/repo)` exclusively. Do not `cd` into another repo, do not pass `--repo` with a different slug, and do not fall back to a different repository's issue queue for any reason — including an empty queue in Phase 1. Hardcoding the slug instead of reading it from this file is exactly the bug this skill avoids (see issue #2164 — the `sweep` skill hardcoded `optave/codegraph` while the real repo is `optave/ops-codegraph-tool` — for what that looks like when it goes wrong).
 
 Detect the package manager once and persist the commands (Pattern 6 — never assume `npm`):
 
@@ -177,8 +186,9 @@ fi
 
 QUEUED=$(jq 'length' .codegraph/fixer/queue.json)
 if [ "$QUEUED" -eq 0 ]; then
-  echo "ERROR: no open issues by '$AUTHOR' at or above #$START_FROM — nothing to do"
-  exit 1
+  echo "fixer: no open issues by '$AUTHOR' at or above #$START_FROM in $(cat .codegraph/fixer/repo) — nothing to do."
+  echo "fixer: this is the correct terminal state, not a failure. Do NOT search other repositories, do NOT lower the '$AUTHOR'/blocked-label bar to manufacture a queue, and do NOT invent unrelated work (stale files, refactors, drive-by fixes) to fill a batch. Stop here."
+  exit 0
 fi
 if [ "$QUEUED" -lt "$COUNT" ]; then
   echo "WARN: only $QUEUED open issues available (requested $COUNT) — the batch will be short"
@@ -256,13 +266,15 @@ DRY_RUN=$(cat .codegraph/fixer/dry-run)
 ISSUE=$(jq -r '.[0].issue' .codegraph/fixer/queue.json)
 BRANCH="fix/issue-$ISSUE"
 
-# A fresh branch means a fresh PR lifecycle. Clear any outcome/round/current-pr/gate-fail
-# left behind by an interrupted earlier attempt on this same issue — e.g. a crash after
-# convergence hit the round cap and wrote outcome=parked, but before 2g recorded it in
-# state.json and cleared these files (the dedup loop above only filters on state.json, so
-# that crash window still lands here). Without this, the new attempt would inherit a
-# stale "parked" verdict or an inflated round count before it has even opened its own PR.
-rm -f .codegraph/fixer/outcome .codegraph/fixer/round .codegraph/fixer/current-pr .codegraph/fixer/gate-fail
+# A fresh branch means a fresh PR lifecycle. Clear any outcome/round/current-pr/gate-fail/
+# stall state left behind by an interrupted earlier attempt on this same issue — e.g. a
+# crash after convergence hit the park threshold and wrote outcome=parked, but before 2g
+# recorded it in state.json and cleared these files (the dedup loop above only filters on
+# state.json, so that crash window still lands here). Without this, the new attempt would
+# inherit a stale "parked" verdict, an inflated round count, or a stall counter/signature
+# from the previous issue's PR before it has even opened its own.
+rm -f .codegraph/fixer/outcome .codegraph/fixer/round .codegraph/fixer/current-pr .codegraph/fixer/gate-fail \
+      .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature
 
 if ! printf '%s\n' "$BRANCH" | grep -qE '^(feat|fix|docs|refactor|test|chore|ci|perf|build|release|dependabot|revert)/'; then
   echo "ERROR: branch '$BRANCH' fails the repo's Validate branch name check"; exit 1
@@ -432,7 +444,7 @@ fi
 
 ### 2f. Converge the PR and merge it (invariant I2)
 
-A PR merges only when **all five** gate conditions hold. Evaluate them together; if any is false, fix that specific condition and re-evaluate. Cap at **3 convergence rounds** — beyond that, park the PR and move on (I6).
+A PR merges only when **all five** gate conditions hold. Evaluate them together; if any is false, fix that specific condition and re-evaluate. **Do not cap this on a fixed round count** — some PRs genuinely need many rounds of real back-and-forth with reviewers. Instead, park the PR only when it is **blocked** (I6): 3 consecutive rounds where the gate signature (below) did not change at all, meaning nothing about the PR's state moved between rounds despite your fixes. As long as each round changes something — a comment answered, a check turning green, the Greptile score moving — keep going. A 15-round absolute cap exists purely as a backstop against a genuinely runaway loop (e.g. a reviewer bot stuck in a reply loop); hitting it is itself worth flagging as unusual in the final report, not a normal outcome.
 
 | # | Condition | Check |
 |---|-----------|-------|
@@ -552,9 +564,17 @@ fi
 
 printf '%s\n' "$GATE_FAIL" > .codegraph/fixer/gate-fail
 [ "$GATE_FAIL" -eq 0 ] && echo "fixer: PR #$PR passes all five gate conditions" || echo "fixer: PR #$PR is not mergeable yet"
+
+# A compact fingerprint of everything this round measured. Two consecutive rounds with an
+# IDENTICAL signature mean nothing about the PR's state moved despite whatever was fixed
+# in between — that is the actual definition of "blocked" this skill parks on, not an
+# arbitrary round count. Order the fields consistently so an unrelated field re-ordering
+# never masquerades as a change.
+printf '%s\n' "score=${SCORE:-none};unanswered=$UNANSWERED;g3=$(git merge-base --is-ancestor origin/main HEAD && echo ok || echo behind);mergeable=$MERGEABLE;failed=$FAILED_CHECKS" \
+  > .codegraph/fixer/gate-signature
 ```
 
-Track convergence rounds and park once the cap is hit (I6). This is the only place `outcome` is set to `parked`:
+Track convergence rounds and park only when the PR is genuinely **blocked** (I6) — never on a fixed round count. This is the only place `outcome` is set to `parked`:
 
 ```bash
 mkdir -p .codegraph/fixer
@@ -562,14 +582,36 @@ GATE_FAIL=$(cat .codegraph/fixer/gate-fail)
 # 2>/dev/null: the round file is expected to be absent on the first convergence round — || supplies the starting count of 0
 ROUND=$(( $(cat .codegraph/fixer/round 2>/dev/null || echo 0) + 1 ))
 printf '%s\n' "$ROUND" > .codegraph/fixer/round
+
+CURRENT_SIG=$(cat .codegraph/fixer/gate-signature)
+# 2>/dev/null: prev-gate-signature is expected to be absent on round 1 — an empty PREV_SIG
+# just means "no prior round to compare against", never treated as a false match below
+PREV_SIG=$(cat .codegraph/fixer/prev-gate-signature 2>/dev/null || echo "")
+printf '%s\n' "$CURRENT_SIG" > .codegraph/fixer/prev-gate-signature
+
 if [ "$GATE_FAIL" -eq 0 ]; then
-  rm -f .codegraph/fixer/round
-elif [ "$ROUND" -ge 3 ]; then
-  printf '%s\n' "parked" > .codegraph/fixer/outcome
-  rm -f .codegraph/fixer/round
-  echo "fixer: convergence round $ROUND/3 exhausted — PR #$(cat .codegraph/fixer/current-pr) will be parked (I6)"
+  rm -f .codegraph/fixer/round .codegraph/fixer/stall-count .codegraph/fixer/prev-gate-signature .codegraph/fixer/gate-signature
+elif [ -n "$PREV_SIG" ] && [ "$CURRENT_SIG" = "$PREV_SIG" ]; then
+  # 2>/dev/null: stall-count is expected to be absent before the first stalled round
+  STALL=$(( $(cat .codegraph/fixer/stall-count 2>/dev/null || echo 0) + 1 ))
+  printf '%s\n' "$STALL" > .codegraph/fixer/stall-count
+  echo "fixer: round $ROUND made no measurable progress vs. the previous round (stall $STALL/3)"
 else
-  echo "fixer: convergence round $ROUND/3 — re-evaluate after fixing the failing condition(s)"
+  printf '%s\n' 0 > .codegraph/fixer/stall-count
+  echo "fixer: round $ROUND changed the PR's state vs. the previous round — real progress, resetting stall counter"
+fi
+
+STALL=$(cat .codegraph/fixer/stall-count 2>/dev/null || echo 0)
+if [ "$GATE_FAIL" -ne 0 ] && { [ "$STALL" -ge 3 ] || [ "$ROUND" -ge 15 ]; }; then
+  printf '%s\n' "parked" > .codegraph/fixer/outcome
+  rm -f .codegraph/fixer/round .codegraph/fixer/stall-count .codegraph/fixer/prev-gate-signature .codegraph/fixer/gate-signature
+  if [ "$STALL" -ge 3 ]; then
+    echo "fixer: parking PR #$(cat .codegraph/fixer/current-pr) — blocked (3 consecutive rounds with zero measurable progress)"
+  else
+    echo "fixer: parking PR #$(cat .codegraph/fixer/current-pr) — 15-round safety cap reached despite ongoing progress; flag this as unusual in the final report"
+  fi
+elif [ "$GATE_FAIL" -ne 0 ]; then
+  echo "fixer: round $ROUND — re-evaluate after fixing the failing condition(s)"
 fi
 ```
 
@@ -594,7 +636,7 @@ GATE_FAIL=$(cat .codegraph/fixer/gate-fail)
 # 2>/dev/null: outcome is expected to be absent before a PR's first convergence round — an empty OUTCOME just skips the "already parked" branch below
 OUTCOME=$(cat .codegraph/fixer/outcome 2>/dev/null)
 if [ "$OUTCOME" = "parked" ]; then
-  echo "fixer: PR #$PR already parked after 3 convergence rounds — not merging"
+  echo "fixer: PR #$PR already parked (blocked or safety cap reached) — not merging"
 elif [ "$GATE_FAIL" -ne 0 ]; then
   echo "fixer: gate not satisfied — fix the failing condition or park PR #$PR. Not merging."
 elif [ "$DRY_RUN" = "true" ]; then
@@ -656,7 +698,8 @@ TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
 trap 'rm -f "$TMP_QUEUE"' EXIT
 jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
 trap - EXIT
-rm -f .codegraph/fixer/current-pr .codegraph/fixer/gate-fail .codegraph/fixer/outcome .codegraph/fixer/round
+rm -f .codegraph/fixer/current-pr .codegraph/fixer/gate-fail .codegraph/fixer/outcome .codegraph/fixer/round \
+      .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature
 
 echo "fixer: issue #$ISSUE recorded as $STATUS; $(jq 'length' .codegraph/fixer/queue.json) remaining"
 ```
@@ -667,11 +710,66 @@ Loop back to step 2a for the next queue entry. **Only after the current PR is me
 
 ---
 
-## Phase 3 — Drain Parked PRs
+## Phase 3 — Continue the Batch Loop, or Proceed to Drain
+
+Phase 1 and Phase 2 together process exactly one batch of up to `COUNT` issues. **The run's objective is the whole qualifying backlog, not one batch** — this phase decides whether more work remains before moving on to drain and report.
+
+Stop looping and go straight to Phase: Drain Parked PRs if `ONCE` or `DRY_RUN` is `true` — a single batch is the entire run in either case:
+
+```bash
+mkdir -p .codegraph/fixer
+# 2>/dev/null: once is expected to be absent on a fixer version predating this flag — || supplies the safe default
+ONCE=$(cat .codegraph/fixer/once 2>/dev/null || echo false)
+DRY_RUN=$(cat .codegraph/fixer/dry-run)
+if [ "$ONCE" = "true" ] || [ "$DRY_RUN" = "true" ]; then
+  echo "fixer: --once or --dry-run set — this batch is the whole run, proceeding to drain"
+  printf '%s\n' "stop" > .codegraph/fixer/loop-decision
+else
+  REPO=$(cat .codegraph/fixer/repo)
+  AUTHOR=$(cat .codegraph/fixer/author)
+  # One past the highest issue number this run has recorded, so the next batch's queue
+  # never re-examines an issue this run already marked merged/parked/abandoned.
+  NEXT_START=$(( $(jq '[.issues[].issue] | max // 0' .codegraph/fixer/state.json) + 1 ))
+  REMAINING=$(gh issue list --repo "$REPO" --state open --limit 400 \
+    --json number,labels,author \
+    --jq "[.[] | select(.author.login==\"$AUTHOR\") | select([.labels[].name]|index(\"blocked\")|not) | select(.number >= $NEXT_START)] | length")
+
+  # 2>/dev/null: batches-done is expected to be absent before the first batch completes
+  BATCHES_DONE=$(( $(cat .codegraph/fixer/batches-done 2>/dev/null || echo 0) + 1 ))
+  printf '%s\n' "$BATCHES_DONE" > .codegraph/fixer/batches-done
+
+  if [ "$REMAINING" -eq 0 ]; then
+    echo "fixer: no more qualifying open issues at or above #$NEXT_START — backlog drained after $BATCHES_DONE batch(es)"
+    printf '%s\n' "stop" > .codegraph/fixer/loop-decision
+  elif [ "$BATCHES_DONE" -ge 15 ]; then
+    echo "fixer: safety cap of 15 batches reached with $REMAINING qualifying issue(s) still open at or above #$NEXT_START"
+    echo "fixer: resume with: /fixer --author $AUTHOR --start-from $NEXT_START"
+    printf '%s\n' "stop" > .codegraph/fixer/loop-decision
+  else
+    echo "fixer: $REMAINING more qualifying issue(s) open at or above #$NEXT_START — starting batch $((BATCHES_DONE + 1))"
+    # Clear per-batch scratch state so Phase 1 builds a genuinely fresh queue. state.json
+    # and parked.txt are deliberately NOT cleared here — they accumulate across every
+    # batch in this run so Phase: Drain Parked PRs and the final report cover the whole
+    # run, not just the most recent batch.
+    rm -f .codegraph/fixer/queue.json .codegraph/fixer/current-pr .codegraph/fixer/gate-fail \
+          .codegraph/fixer/outcome .codegraph/fixer/round
+    printf '%s\n' "$NEXT_START" > .codegraph/fixer/start-from
+    printf '%s\n' "loop" > .codegraph/fixer/loop-decision
+  fi
+fi
+```
+
+If `.codegraph/fixer/loop-decision` is `loop`, go back to Phase 1 and process another batch — do **not** re-run Phase 0 (the repo slug, test/lint commands, and `state.json` are already established for this run, and re-running Phase 0's resume-detection would misread the mid-run `state.json` as a crash to resume from). If it is `stop`, proceed to Phase: Drain Parked PRs.
+
+**Exit condition:** `.codegraph/fixer/loop-decision` is `loop` (with a fresh `start-from` persisted and per-batch scratch state cleared) or `stop`. Every batch processed this run is recorded cumulatively in `state.json` — nothing from an earlier batch is lost or overwritten by a later one.
+
+---
+
+## Phase 4 — Drain Parked PRs
 
 Skip this phase entirely if `.codegraph/fixer/parked.txt` is absent or empty — on a clean run, Phase: Solve and Merge Loop merges everything inline and there is nothing to drain.
 
-This is the mode switch: stop solving new issues, and work the parked PRs as a set until each is merged or provably blocked. Run at most **3 passes**; report anything still unmerged afterwards as needing human review rather than looping forever.
+This is the mode switch: stop solving new issues, and work the parked PRs as a set until each is merged or provably blocked. **Do not cap this at a fixed pass count** — keep running passes as long as each one makes progress. Stop only after 3 consecutive passes that merge nothing (blocked), or a 15-pass absolute safety cap; report anything still unmerged afterwards as needing human review.
 
 ```bash
 mkdir -p .codegraph/fixer
@@ -688,6 +786,38 @@ Each pass does three things, in order:
 1. **Sweep.** Invoke `/sweep` once. It processes every open PR in parallel: resolves conflicts, fixes CI, mines the Greptile summary as well as inline comments, addresses and replies to all reviewer feedback, and re-triggers reviewers. Do not re-derive that procedure here.
 2. **Resolve.** For any parked PR still reporting `mergeable != MERGEABLE`, invoke `/resolve <pr>` on it individually. `/resolve` reads both sides' intent before choosing, and stops rather than guessing on genuinely ambiguous conflicts.
 3. **Merge the lowest-numbered ready PR first**, then re-evaluate. Merging lowest-first matches the requested order and keeps the catch-up cost predictable.
+
+**After each pass**, record whether it made progress and decide whether to run another one:
+
+```bash
+mkdir -p .codegraph/fixer
+# 2>/dev/null: expected to be absent before drain's first pass
+PARKED_BEFORE=$(cat .codegraph/fixer/drain-parked-count 2>/dev/null || wc -l < .codegraph/fixer/parked.txt)
+PARKED_AFTER=$(wc -l < .codegraph/fixer/parked.txt)
+DRAIN_PASS=$(( $(cat .codegraph/fixer/drain-pass 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$DRAIN_PASS" > .codegraph/fixer/drain-pass
+
+if [ "$PARKED_AFTER" -eq 0 ]; then
+  echo "fixer: all parked PRs merged after $DRAIN_PASS pass(es)"
+  rm -f .codegraph/fixer/drain-pass .codegraph/fixer/drain-stall .codegraph/fixer/drain-parked-count
+elif [ "$PARKED_AFTER" -lt "$PARKED_BEFORE" ]; then
+  echo "fixer: pass $DRAIN_PASS merged $((PARKED_BEFORE - PARKED_AFTER)) PR(s) — progress, resetting drain-stall"
+  printf '%s\n' 0 > .codegraph/fixer/drain-stall
+else
+  # 2>/dev/null: expected to be absent before the first stalled pass
+  DRAIN_STALL=$(( $(cat .codegraph/fixer/drain-stall 2>/dev/null || echo 0) + 1 ))
+  printf '%s\n' "$DRAIN_STALL" > .codegraph/fixer/drain-stall
+  echo "fixer: pass $DRAIN_PASS merged nothing (drain-stall $DRAIN_STALL/3)"
+fi
+printf '%s\n' "$PARKED_AFTER" > .codegraph/fixer/drain-parked-count
+
+DRAIN_STALL=$(cat .codegraph/fixer/drain-stall 2>/dev/null || echo 0)
+if [ "$PARKED_AFTER" -gt 0 ] && { [ "$DRAIN_STALL" -ge 3 ] || [ "$DRAIN_PASS" -ge 15 ]; }; then
+  echo "fixer: stopping drain — $([ "$DRAIN_STALL" -ge 3 ] && echo "3 consecutive passes with no merges (blocked)" || echo "15-pass safety cap reached"). $PARKED_AFTER PR(s) remain: report each as needing human review."
+elif [ "$PARKED_AFTER" -gt 0 ]; then
+  echo "fixer: running another pass ($((DRAIN_PASS + 1)))"
+fi
+```
 
 ### The catch-up merge, and the check that protects solved work (invariant I4)
 
@@ -777,13 +907,13 @@ A reported line is not automatically a bug — `main` may have legitimately supe
 
 After the integrity check passes, re-run local verification and push, then re-evaluate the five gate conditions from Phase: Solve and Merge Loop before merging.
 
-**Exit condition:** Every PR listed in `parked.txt` is merged, or is reported as needing human review with a specific reason. No catch-up merge was pushed without a passing I4 integrity check. At most 3 drain passes were run.
+**Exit condition:** Every PR listed in `parked.txt` is merged, or is reported as needing human review with a specific reason. No catch-up merge was pushed without a passing I4 integrity check. Drain stopped only once a pass merged nothing 3 times in a row, or the 15-pass safety cap was hit — never on a fixed pass count while merges were still happening.
 
 ---
 
-## Phase 4 — Final Report
+## Phase 5 — Final Report
 
-Report honestly. If something was skipped, left unmerged, bypassed, or split into a follow-up, say so explicitly.
+Report honestly, across **every batch this run processed** (Phase 3 loops back to Phase 1 as long as qualifying issues remain, so `state.json` may cover several batches, not just the last one). If something was skipped, left unmerged, bypassed, or split into a follow-up, say so explicitly.
 
 ```bash
 mkdir -p .codegraph/fixer
@@ -794,7 +924,8 @@ if [ "$TOTAL" -gt 0 ]; then
 else
   PCT=0  # no issues attempted — avoid dividing by zero
 fi
-echo "fixer: $MERGED/$TOTAL issues merged (${PCT}%)"
+BATCHES_DONE=$(cat .codegraph/fixer/batches-done 2>/dev/null || echo 1)
+echo "fixer: $MERGED/$TOTAL issues merged (${PCT}%) across $BATCHES_DONE batch(es)"
 jq -r '.issues[] | "  #\(.issue)  \(.status)  \(if .pr then "PR #\(.pr)" else "no PR" end)"' .codegraph/fixer/state.json
 ```
 
@@ -812,7 +943,7 @@ Also list, explicitly:
 
 **Cleanup.** State lives in `.codegraph/fixer/`. It is deliberately kept after a successful run so a later `/fixer` can report on it and so a crashed run can resume. Remove it with `rm -rf .codegraph/fixer` to force a completely fresh batch.
 
-**Exit condition:** The user has a per-issue table, the merged count, every follow-up issue number, every bypass with its justification, and an explicit list of anything unfinished.
+**Exit condition:** The user has a per-issue table covering every batch this run processed, the merged count, the batch count, every follow-up issue number, every bypass with its justification, and an explicit list of anything unfinished (including a resume command if the 15-batch safety cap was hit).
 
 ---
 
@@ -822,26 +953,33 @@ All state is under `.codegraph/fixer/`:
 
 | File | Format | Purpose |
 |------|--------|---------|
-| `repo` | text | `owner/name` slug |
-| `count`, `author`, `start-from`, `dry-run` | text | parsed arguments |
+| `repo` | text | `owner/name` slug — the only repo this run ever touches |
+| `count`, `author`, `start-from`, `once`, `dry-run` | text | parsed arguments |
 | `test-cmd`, `lint-cmd` | text | detected package-manager commands |
-| `queue.json` | JSON array of `{issue, title}` | remaining work, ascending; entries are shifted off as they complete |
-| `state.json` | `{"issues":[{issue, status, pr}]}` | per-issue outcome; drives resume |
-| `parked.txt` | newline-separated PR numbers | input to Phase: Drain Parked PRs |
+| `queue.json` | JSON array of `{issue, title}` | current batch's remaining work, ascending; entries are shifted off as they complete; cleared and rebuilt at the start of each new batch |
+| `state.json` | `{"issues":[{issue, status, pr}]}` | per-issue outcome, accumulated across every batch this run has processed; drives resume |
+| `parked.txt` | newline-separated PR numbers | accumulated across every batch; input to Phase: Drain Parked PRs |
+| `batches-done` | text | count of batches completed this run; read by Phase 3 and the final report |
+| `loop-decision` | text | `loop`/`stop` — Phase 3's verdict on whether to start another batch |
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
 | `outcome` | text | `abandoned`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
 | `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
+| `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state, used to detect a stalled (blocked) PR rather than counting rounds |
+| `stall-count` | text | consecutive convergence rounds with an unchanged gate signature; park threshold is 3 |
+| `drain-pass`, `drain-stall`, `drain-parked-count` | text | drain-phase pass counter, consecutive no-merge passes, and `parked.txt` length as of the last pass — the same stall-detection pattern applied to draining |
 | `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>count<TAB>line`) |
 
 ---
 
 ## Examples
 
-- `/fixer` — take the 10 lowest-numbered open issues by `carlos-alm` to merged, one at a time.
-- `/fixer 3` — same, but only the 3 lowest-numbered issues. Good for a first run to confirm the loop behaves.
-- `/fixer --dry-run` — print the queue and the plan for all 10 without creating a branch, commit, PR, or merge.
-- `/fixer 5 --start-from 1900` — the 5 lowest-numbered open issues at or above #1900.
-- `/fixer --author someone-else` — run the batch against another author's issues.
+- `/fixer` — work through every open issue by `carlos-alm`, 10 at a time, looping across batches until none remain (or the 15-batch safety cap is hit).
+- `/fixer 3` — same, but 3 issues per batch. Good for a first run to confirm the loop behaves before letting it run unattended.
+- `/fixer 3 --once` — process exactly 3 issues and stop, even if more are open. Use this to sanity-check a single batch.
+- `/fixer --dry-run` — print the queue and the plan for one batch of 10 without creating a branch, commit, PR, or merge (dry runs never loop past one batch).
+- `/fixer 5 --start-from 1900` — starting at #1900, work 5 issues per batch until the backlog above that point is drained.
+- `/fixer --author someone-else` — run against another author's issues instead of the default.
+- If there are no open issues matching `--author` (and not `blocked`), /fixer reports that plainly and exits — it does not search other repos or invent work.
 
 ---
 
@@ -863,9 +1001,12 @@ All state is under `.codegraph/fixer/`:
 - **Branch names must match** `^(feat|fix|docs|refactor|test|chore|ci|perf|build|release|dependabot|revert)/`; commits must be Conventional Commits with a header ≤ 100 characters.
 - **Never silently skip verification.** If lint, tests, or a build cannot run or fail for any reason, stop and report to the user. Do not decide on their behalf to proceed.
 - **Never document a bug as expected behaviour.** Engine divergence is a bug in the less accurate engine — fix the root cause.
-- **Park, don't stall (I6).** After 3 convergence rounds, park the PR and move to the next issue. Phase: Drain Parked PRs handles it.
-- **Bounded loops only.** 3 convergence rounds per PR, 3 drain passes. Then report for human review.
+- **Park when blocked, not on a fixed round count (I6).** Keep converging as long as each round changes the gate signature — a comment answered, a check going green, the Greptile score moving. Park only after 3 consecutive rounds with zero measurable change (genuinely blocked), or the 15-round absolute safety cap. Then move to the next issue; Phase: Drain Parked PRs handles it.
+- **Bounded loops only, but bounded by progress, not by an arbitrary count where it matters.** Convergence rounds and drain passes are both capped by stall detection (3 consecutive rounds/passes with zero measurable progress) with a 15-round / 15-pass safety backstop; the whole run is capped at 15 batches. Then report for human review or resume.
+- **The run's objective is the whole backlog, not one batch.** By default, keep starting new batches (Phase 3) until no qualifying open issues remain or the 15-batch cap is hit. Pass `--once` to process exactly one batch and stop.
+- **Only ever act on the repo detected in Phase 0.** Never search, open issues on, or open PRs against any other repository — including when this repo's queue comes up empty. Read the slug from `.codegraph/fixer/repo`; never hardcode it (see issue #2164).
+- **An empty queue is success, not failure.** If Phase 1 finds no qualifying open issues, report that plainly and exit 0 — never search other repos, never lower the `--author`/`blocked`-label bar to manufacture a queue, and never invent unrelated work (stale files, refactors, drive-by fixes) to fill a batch.
 - **No co-author lines** in commit messages or PR bodies.
 - **No Claude Code or Anthropic references** in commits, PR bodies, comments, or issues.
 - **Never trigger `@greptileai` until every Greptile comment has a reply.** Do not trigger Greptile for feedback that came from Claude or the user.
-- **Report faithfully.** State what merged, what parked, what was bypassed and why, what was split, and what needs a human.
+- **Report faithfully.** State what merged, what parked, what was bypassed and why, what was split, what needs a human, and how many batches the run took.
