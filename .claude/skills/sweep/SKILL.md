@@ -299,7 +299,7 @@ After re-triggering:
 1. Wait for the new reviews to come in (check after a reasonable interval).
 2. Fetch new comments again (repeat Step 2d).
 3. If there are **new** comments from Greptile or Claude, go back to Step 2e and address them.
-4. **Repeat this loop for a maximum of 3 rounds.** If after 3 rounds there are still actionable comments, mark the PR as "needs human review" in the result.
+4. **Repeat this loop for a maximum of 50 rounds.** If after 50 rounds there are still actionable comments, mark the PR as "needs human review" in the result.
 5. Verify CI is still green after all changes.
 
 ### 2i. Return result
