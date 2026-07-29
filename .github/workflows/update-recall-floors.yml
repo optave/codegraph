@@ -50,29 +50,9 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             -n benchmark-results-json
 
-      - name: Update recall floors
-        # gh run download places the artifact contents in a subdirectory named
-        # after the artifact (benchmark-results-json/benchmark-result.json).
-        run: node scripts/update-recall-floors.mjs benchmark-results-json/benchmark-result.json
-
-      - name: Check for changes
-        id: diff
+      - name: Extract and validate release version
+        id: version
         run: |
-          if git diff --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No floors improved — skipping PR."
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Open PR
-        if: steps.diff.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
           # Read the version straight from the benchmark artifact instead of
           # deriving it via `git describe` on the triggering run's head_sha.
           # The Publish workflow's own release tag is pushed by its `publish`
@@ -100,6 +80,47 @@ jobs:
             echo "::error::Could not read a valid version from the benchmark artifact (got '${VERSION}') — refusing to guess a branch name."
             exit 1
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # `workflow_run.event == 'release'` fires for GitHub prereleases too,
+          # and Publish's own compute-version step doesn't distinguish them
+          # either (it takes the tag verbatim). A SemVer prerelease identifier
+          # — the "-xyz" component preceding any "+build" metadata — is the
+          # only reliable stable-vs-prerelease signal available here. Floors
+          # are a one-way ratchet meant to track the stable baseline, so a
+          # prerelease's benchmark numbers must not be allowed to raise them.
+          if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-'; then
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            echo "Version $VERSION is a prerelease — skipping floor ratchet (stable releases only)."
+          else
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update recall floors
+        if: steps.version.outputs.stable == 'true'
+        # gh run download places the artifact contents in a subdirectory named
+        # after the artifact (benchmark-results-json/benchmark-result.json).
+        run: node scripts/update-recall-floors.mjs benchmark-results-json/benchmark-result.json
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No floors improved — skipping PR."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           BRANCH="chore/recall-floors-v${VERSION}"
 
           # Idempotent: if this branch already exists (e.g. re-run), reset it.
