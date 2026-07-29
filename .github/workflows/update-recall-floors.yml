@@ -77,7 +77,13 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git fetch --tags
-          VERSION=$(git describe --tags --match "v*" --abbrev=0 "$HEAD_SHA" 2>/dev/null | sed 's/^v//' || echo "unknown")
+          VERSION=$(git describe --tags --match "v*" --abbrev=0 "$HEAD_SHA" 2>/dev/null | sed 's/^v//')
+          if [ -z "$VERSION" ]; then
+            # Refuse to fall back to a shared placeholder branch name: two different
+            # unresolved runs would force-push over each other's floor updates on it.
+            echo "::error::Could not resolve a release tag reachable from $HEAD_SHA — refusing to guess a branch name."
+            exit 1
+          fi
           BRANCH="chore/recall-floors-v${VERSION}"
 
           # Idempotent: if this branch already exists (e.g. re-run), reset it.
