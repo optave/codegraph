@@ -584,6 +584,16 @@ else
   echo "G5 FAIL: not green — $FAILED_CHECKS"; GATE_FAIL=1
 fi
 
+# Per-check completion timestamp (not just the name) of every currently non-green check.
+# A manual "Re-run failed jobs" or a flaky-test retry on the SAME commit produces a NEW
+# completedAt/startedAt for the SAME named check — real CI activity that a name-only list
+# cannot see, since the check's name, the commit SHA, and every other gate field stay
+# identical while it reruns. Folded into the gate signature below instead of the plain
+# name list so a rerun that fails the same check for a different reason is never mistaken
+# for zero measurable change.
+CHECK_FINGERPRINT=$(gh pr view "$PR" --repo "$REPO" --json statusCheckRollup \
+  --jq '[.statusCheckRollup[] | select((.conclusion // "PENDING") | test("SUCCESS|NEUTRAL|SKIPPED") | not)] | map("\(.name // .context)@\(.completedAt // .startedAt // .createdAt // "pending")") | sort | join(", ")')
+
 printf '%s\n' "$GATE_FAIL" > .codegraph/fixer/gate-fail
 [ "$GATE_FAIL" -eq 0 ] && echo "fixer: PR #$PR passes all five gate conditions" || echo "fixer: PR #$PR is not mergeable yet"
 
@@ -596,16 +606,18 @@ printf '%s\n' "$GATE_FAIL" > .codegraph/fixer/gate-fail
 # The aggregate score, unanswered count, mergeability, and failing-check names alone are
 # too coarse: a new commit, a fresh Greptile review, or a new CI run can all leave every
 # one of those aggregates reading identical to the previous round (score lags a push,
-# a re-review restates the same score for different reasons, a rerun fails the same named
-# check for a different cause) — which would misread real activity as a stall. `commit`
-# (the pushed SHA) and `greptile_hash` (a hash of every Greptile comment/review body, not
-# just the extracted digit) both change the instant that activity happens, even before the
-# aggregates catch up, so genuine progress is never mistaken for zero measurable change.
-# `unanswered_ids` likewise tracks which comments are outstanding, not just how many, so a
-# reply that resolves one comment while a new one lands does not cancel out to "no change".
+# a re-review restates the same score for different reasons, a rerun on the SAME commit
+# fails the same named check for a different cause) — which would misread real activity as
+# a stall. `commit` (the pushed SHA), `greptile_hash` (a hash of every Greptile comment/
+# review body, not just the extracted digit), and `checks` (each non-green check's name
+# PLUS its completion timestamp, not just its name) all change the instant that activity
+# happens, even before the aggregates catch up, so genuine progress — including a same-
+# commit CI rerun — is never mistaken for zero measurable change. `unanswered_ids`
+# likewise tracks which comments are outstanding, not just how many, so a reply that
+# resolves one comment while a new one lands does not cancel out to "no change".
 GREPTILE_HASH=$(printf '%s' "$GREP_BODY" | cksum | awk '{print $1}')
 COMMIT=$(git rev-parse HEAD)
-printf '%s\n' "score=${SCORE:-none};greptile_hash=$GREPTILE_HASH;unanswered=$UNANSWERED;unanswered_ids=${UNANSWERED_IDS:-none};g3=$(git merge-base --is-ancestor origin/main HEAD && echo ok || echo behind);mergeable=$MERGEABLE;failed=$FAILED_CHECKS;commit=$COMMIT" \
+printf '%s\n' "score=${SCORE:-none};greptile_hash=$GREPTILE_HASH;unanswered=$UNANSWERED;unanswered_ids=${UNANSWERED_IDS:-none};g3=$(git merge-base --is-ancestor origin/main HEAD && echo ok || echo behind);mergeable=$MERGEABLE;checks=$CHECK_FINGERPRINT;commit=$COMMIT" \
   > .codegraph/fixer/gate-signature
 ```
 
@@ -1022,7 +1034,7 @@ All state is under `.codegraph/fixer/`:
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
 | `outcome` | text | `abandoned`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
 | `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
-| `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state (score, a hash of the full Greptile review text, which specific comments are unanswered, branch ancestry, mergeability, failing checks, and the current commit SHA), used to detect a stalled (blocked) PR rather than counting rounds |
+| `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state (score, a hash of the full Greptile review text, which specific comments are unanswered, branch ancestry, mergeability, each non-green check's name plus its completion timestamp, and the current commit SHA), used to detect a stalled (blocked) PR rather than counting rounds |
 | `stall-count` | text | consecutive convergence rounds with an unchanged gate signature; park threshold is 3 |
 | `drain-pass`, `drain-stall`, `drain-parked-count` | text | drain-phase pass counter, consecutive no-merge passes, and `parked.txt` length as of the last pass — the same stall-detection pattern applied to draining |
 | `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>count<TAB>line`) |
