@@ -187,16 +187,28 @@ else
   # --author filters server-side so the --limit ceiling bounds this author's own backlog,
   # not the repo's entire open-issue count (gh issue list defaults to --limit 30 with no
   # server-side author filter, which previously meant issues by other authors could crowd
-  # this author's own low-numbered issues out of the fetched window). 1000 is a deliberately
-  # generous safety bound on one author's queue, not a realistic ceiling to ever hit.
-  gh issue list --state open --author "$AUTHOR" --limit 1000 \
-    --json number,title,labels,author \
-    --jq "[.[] | select([.labels[].name] | index(\"blocked\") | not)
+  # this author's own low-numbered issues out of the fetched window).
+  #
+  # ISSUE_FETCH_LIMIT is NOT "a generous number" — any fixed number, however large, is a
+  # silent truncation point some author's backlog can eventually exceed (this skill already
+  # went 400 -> 1000 once and Greptile correctly flagged 1000 as the same class of bug, not
+  # a fix). Set it astronomically high instead, and treat hitting it as a hard error rather
+  # than something to guess a bigger constant for: if RAW_COUNT below ever equals this limit,
+  # the fetch was truncated and completeness genuinely cannot be trusted, so fail loudly
+  # instead of silently reporting an incomplete queue or a falsely-drained backlog.
+  ISSUE_FETCH_LIMIT=100000
+  RAW_ISSUES=$(gh issue list --state open --author "$AUTHOR" --limit "$ISSUE_FETCH_LIMIT" \
+    --json number,title,labels,author) || { echo "ERROR: failed to fetch issues from GitHub"; exit 1; }
+  RAW_COUNT=$(printf '%s' "$RAW_ISSUES" | jq 'length')
+  if [ "$RAW_COUNT" -eq "$ISSUE_FETCH_LIMIT" ]; then
+    echo "ERROR: gh issue list returned exactly the $ISSUE_FETCH_LIMIT-issue fetch limit for author '$AUTHOR' — the result is truncated and queue completeness cannot be trusted. This should never happen in practice; investigate '$AUTHOR' before continuing."
+    exit 1
+  fi
+  printf '%s' "$RAW_ISSUES" | jq "[.[] | select([.labels[].name] | index(\"blocked\") | not)
              | {issue: .number, title: .title}]
           | sort_by(.issue)
           | map(select(.issue >= ($START_FROM|tonumber)))
-          | .[0:($COUNT|tonumber)]" > .codegraph/fixer/queue.json || {
-    echo "ERROR: failed to fetch issues from GitHub"; exit 1; }
+          | .[0:($COUNT|tonumber)]" > .codegraph/fixer/queue.json
 fi
 
 QUEUED=$(jq 'length' .codegraph/fixer/queue.json)
@@ -777,13 +789,22 @@ else
   # One past the highest issue number this run has recorded, so the next batch's queue
   # never re-examines an issue this run already marked merged/parked/abandoned.
   NEXT_START=$(( $(jq '[.issues[].issue] | max // 0' .codegraph/fixer/state.json) + 1 ))
-  # --author filters server-side (see Phase 1) and --limit 1000 is a generous safety bound
-  # on this author's own backlog, not a real ceiling — a hard 400-issue window silently
-  # under-reported REMAINING as 0 in a repo with more open issues than that, reporting the
-  # backlog as drained while qualifying issues past the window went uncounted.
-  REMAINING=$(gh issue list --repo "$REPO" --state open --author "$AUTHOR" --limit 1000 \
-    --json number,labels,author \
-    --jq "[.[] | select([.labels[].name]|index(\"blocked\")|not) | select(.number >= $NEXT_START)] | length")
+  # --author filters server-side (see Phase 1) and reuses the same ISSUE_FETCH_LIMIT /
+  # truncation-detection pattern: a hard 400-issue window once silently under-reported
+  # REMAINING as 0 in a repo with more open issues than that, reporting the backlog as
+  # drained while qualifying issues past the window went uncounted. Raising the number
+  # (400 -> 1000) only moved the same silent-truncation risk further out rather than
+  # removing it, so this fetches against an effectively-unbounded limit and fails loudly
+  # if that limit is ever actually hit, instead of trusting a fixed-size guess.
+  ISSUE_FETCH_LIMIT=100000
+  RAW_ISSUES=$(gh issue list --repo "$REPO" --state open --author "$AUTHOR" --limit "$ISSUE_FETCH_LIMIT" \
+    --json number,labels,author) || { echo "ERROR: failed to fetch issues from GitHub for the batch-completion check"; exit 1; }
+  RAW_COUNT=$(printf '%s' "$RAW_ISSUES" | jq 'length')
+  if [ "$RAW_COUNT" -eq "$ISSUE_FETCH_LIMIT" ]; then
+    echo "ERROR: gh issue list returned exactly the $ISSUE_FETCH_LIMIT-issue fetch limit for author '$AUTHOR' — the result is truncated and the drained/remaining determination cannot be trusted. This should never happen in practice; investigate '$AUTHOR' before continuing."
+    exit 1
+  fi
+  REMAINING=$(printf '%s' "$RAW_ISSUES" | jq "[.[] | select([.labels[].name]|index(\"blocked\")|not) | select(.number >= $NEXT_START)] | length")
 
   # 2>/dev/null: batches-done is expected to be absent before the first batch completes
   BATCHES_DONE=$(( $(cat .codegraph/fixer/batches-done 2>/dev/null || echo 0) + 1 ))
