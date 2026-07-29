@@ -52,9 +52,11 @@ let updatedCount = 0;
 for (const [lang, metrics] of Object.entries(results)) {
   if (typeof metrics?.precision !== 'number' || typeof metrics?.recall !== 'number') continue;
 
-  // Match lines of the form:  `  lang: { precision: X, recall: Y },`
+  // Match lines of the form `  lang: { precision: X, recall: Y },` (bare identifier
+  // keys) or `  'lang-with-hyphens': { precision: X, recall: Y },` (keys that aren't
+  // valid bare identifiers, e.g. "pts-javascript", are quoted in the source).
   const pattern = new RegExp(
-    `(  ${escapeRegExp(lang)}: \\{ precision: )([\\d.]+)(, recall: )([\\d.]+)( \\})`,
+    `(  '?${escapeRegExp(lang)}'?: \\{ precision: )([\\d.]+)(, recall: )([\\d.]+)( \\})`,
   );
   const match = content.match(pattern);
   if (!match) continue;
