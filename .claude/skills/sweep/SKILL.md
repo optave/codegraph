@@ -43,11 +43,29 @@ Launch **all** PR agents in a single message (one tool call per PR) so they run 
 
 Each agent will return a result summary. Collect all results for the final summary table in Step 3.
 
+### If a subagent pauses instead of finishing
+
+A subagent may end its turn with text like "I'll wait for X to finish" or "pausing until Y completes" instead of actually finishing. (The "Before you start: how to wait" instruction given to every subagent exists to prevent exactly this, but it can still happen, especially across long sessions.) If it does:
+
+- Resume it with `SendMessage`, explicitly instructing it to poll to a real terminal result in a continuous sequence of tool calls rather than end its turn again.
+- **Do not substitute your own point-in-time `gh` check for the subagent's job and tell it "you're done, report ready."** PR state under active review changes in minutes — a check you ran even a few minutes ago can already be stale by the time you relay it, and a stale "confirmed done" from you is how a real reviewer finding gets missed. If you check state directly to unblock a stalled agent, pass it along only as a data point ("as of my check just now, X") and instruct the agent to do its own final live re-verification (Step 2h.1) before reporting — never hand it a final verdict to just relay verbatim.
+
 ---
 
 ## PR Processing Instructions (for each subagent)
 
 The following steps are executed by each subagent for its assigned PR.
+
+### Before you start: how to wait (read this first)
+
+Several steps below require waiting on something external — CI runs, `npm test`, or a reviewer's response. **You are a background subagent: nothing wakes you up automatically when a shell job, CI run, or reviewer response finishes on its own.** If you end your turn with text like "I'll wait for X to finish" or "pausing until Y completes" and make no further tool call, you simply stop — no process resumes you, and the sweep stalls silently, sometimes for hours, until a human notices and manually re-prompts you.
+
+**Rule: never end your turn to wait. Poll instead, in a continuous sequence of tool calls, until you have a concrete terminal result (pass/fail, complete/incomplete) in hand.** Concretely:
+
+- For a long-running command (`npm test`, `npm install`), either run it in the foreground with a long timeout (up to 600000ms), or start it in the background and poll for completion (`ps`, checking for its output, or a bash `while` loop with `sleep`) across multiple Bash calls without ending your turn in between.
+- For CI (`gh pr checks <number>`), poll on an interval (e.g. every 60–120s) inside a bash loop or a sequence of Bash calls — native builds and full test matrices can take 15–20+ minutes, so don't give up early, but also don't stop after one check and declare victory.
+- For a reviewer response (Greptile/Claude), a real review typically posts within minutes but can take 15–30+ minutes. Poll for new comments on an interval rather than checking once and assuming silence means "satisfied."
+- Only stop polling once you have an actual terminal state: a check conclusion, a test exit code, or (for reviews) either a new comment/reaction or enough elapsed real time that you're confident nothing more is coming.
 
 ### 2a. Check out the PR branch
 
@@ -104,10 +122,7 @@ If any checks are failing:
 4. Run tests locally to verify: `npm test`
 5. Run lint locally: `npm run lint`
 6. Commit the fix with a descriptive message: `fix: <what was broken and why>`
-7. Push and wait for CI to re-run. Check again:
-   ```bash
-   gh pr checks <number>
-   ```
+7. Push, then poll `gh pr checks <number>` on an interval until every check is COMPLETED — see "Before you start: how to wait" above. Do not end your turn between polls.
 8. Repeat until CI is green.
 
 ### 2d. Gather all review comments
@@ -237,6 +252,18 @@ After addressing all comments for a PR:
 
 ### 2g. Re-trigger reviewers
 
+**Hard cap: 3 total Greptile re-triggers per PR, counted from live data, not memory.** Long sessions span multiple turns and resumes — don't rely on remembering how many rounds you've done. Before anything else in this step, count the `@greptileai` comments you've actually posted:
+
+```bash
+trigger_count=$(gh api repos/optave/codegraph/issues/<number>/comments --paginate \
+  --jq '[.[] | select(.user.login != "greptile-apps[bot]" and (.body | test("^@greptileai\\s*$")))] | length')
+echo "Greptile has been re-triggered $trigger_count time(s) so far."
+```
+
+If `trigger_count` is already **3 or more**: do NOT trigger again, no matter how many real findings you just fixed. Reply to any outstanding comment (per Step 2e) so nothing is left unacknowledged, then skip straight to Step 2i and report `Status: needs-human-review`, noting in Notes how many rounds occurred and what the last item was. Fixing a real bug on round 4+ does not extend the cap — it's a budget on wall-clock and review noise, not a correctness gate; a human reviews the rest.
+
+If `trigger_count` is under 3, proceed:
+
 **Greptile:** Always re-trigger after replying to Greptile comments — whether the comment was actionable or not. First, run the verification script below to confirm all Greptile comments have replies. Then, skip the actual trigger only if Greptile already reacted to your most recent reply with a positive emoji (thumbs up, check, etc.), which means it is already satisfied.
 
 **CRITICAL — verify all Greptile comments have replies BEFORE triggering.** Posting `@greptileai` without replying to every comment is worse than not triggering at all — it starts a new review cycle while the old one still has unanswered feedback. Run this check first:
@@ -296,11 +323,15 @@ If all changes were only in response to Greptile feedback, do NOT re-trigger Cla
 
 After re-triggering:
 
-1. Wait for the new reviews to come in (check after a reasonable interval).
-2. Fetch new comments again (repeat Step 2d).
-3. If there are **new** comments from Greptile or Claude, go back to Step 2e and address them.
-4. **Repeat this loop for a maximum of 3 rounds.** If after 3 rounds there are still actionable comments, mark the PR as "needs human review" in the result.
+1. Poll for new reviews on an interval — see "Before you start: how to wait." Do not end your turn to wait passively, and don't declare a round "done" from a single check taken right after triggering — Greptile can take 15–30 minutes to respond.
+2. Fetch new comments again (repeat Step 2d + 2d.1 — re-mine the summary body too, not just inline comments).
+3. If there are **new** comments from Greptile or Claude, go back to Step 2e and address them, then re-trigger per 2g **only if** the trigger-count cap in 2g hasn't already been hit.
+4. **The 3-trigger cap in Step 2g is the actual stop condition — not a mental "round" count.** If you hit the cap mid-loop, stop re-triggering immediately (you may still reply to outstanding comments) and go to 2i with `Status: needs-human-review`.
 5. Verify CI is still green after all changes.
+
+### 2h.1. Final fresh check — do this immediately before reporting, every time
+
+Right before you write your Step 2i result, re-run Step 2d + 2d.1 **one more time, live** — regardless of how confident you are that things are settled. Comments arrive asynchronously; a check from even 10–15 minutes ago can already be stale, and reporting `Status: ready` on stale data is worse than reporting late or as `needs-human-review`. If this final check turns up anything new, handle it (reply, and re-trigger only if the Step 2g cap allows it) before finalizing. Only write your Step 2i block once this last check is clean, or you've hit a hard stop (the 3-trigger cap, or 3 rounds of CI fixes).
 
 ### 2i. Return result
 
@@ -350,3 +381,6 @@ If any subagent failed or returned an error, note it in the Status column as `ag
 - **Flag scope creep.** If a PR's diff contains files unrelated to its stated purpose (e.g., a docs PR carrying `src/` or test changes from a merged feature branch), flag it immediately. Split the unrelated changes into a separate branch and PR. Do not proceed with review until the PR is scoped correctly — scope creep is not acceptable.
 - If a PR is fundamentally broken beyond what review feedback can fix, note it in the summary and skip to the next PR.
 - **Never defer without tracking.** Do not reply "acknowledged as follow-up", "noted for later", or "tracking for follow-up" to a reviewer comment without creating a GitHub issue first. If you can't fix it now and it's genuinely out of scope, create an issue with the `follow-up` label and include the issue link in your reply. Untracked acknowledgements are the same as ignoring the comment — they will never be revisited.
+- **Never end a turn to passively "wait."** You are a background subagent — nothing wakes you up when a shell job, CI run, or reviewer response completes on its own. Poll actively across a continuous sequence of tool calls (see "Before you start: how to wait") until you have a concrete result. Ending your turn with "I'll wait for X" and no further tool call stalls the sweep silently, sometimes for hours, until a human notices and manually re-prompts you.
+- **The 3-Greptile-trigger cap is counted from live data (actual `@greptileai` comments posted), not from memory of "how many rounds I've done."** Check it mechanically (Step 2g) before every trigger. Once hit, stop triggering even if you just fixed a real bug — reply, don't trigger, and report `needs-human-review`.
+- **Never declare `Status: ready` from a stale check.** Re-verify comments and CI live, immediately before writing your Step 2i result (Step 2h.1) — not from a check earlier in the session, and not just because you feel confident nothing more is coming. The orchestrator relaying a manual spot-check to you is not a substitute for this either — always do your own final live check.
