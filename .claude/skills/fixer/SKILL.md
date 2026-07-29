@@ -184,14 +184,10 @@ START_FROM=$(cat .codegraph/fixer/start-from)
 if [ -f .codegraph/fixer/queue.json ]; then
   echo "fixer: reusing existing queue (Pattern 12 — artifact reuse). Delete .codegraph/fixer/queue.json to rebuild."
 else
-  # --author filters server-side so the --limit ceiling bounds this author's own backlog,
-  # not the repo's entire open-issue count (gh issue list defaults to --limit 30 with no
-  # server-side author filter, which previously meant issues by other authors could crowd
-  # this author's own low-numbered issues out of the fetched window). 1000 is a deliberately
-  # generous safety bound on one author's queue, not a realistic ceiling to ever hit.
-  gh issue list --state open --author "$AUTHOR" --limit 1000 \
+  gh issue list --state open --limit 400 \
     --json number,title,labels,author \
-    --jq "[.[] | select([.labels[].name] | index(\"blocked\") | not)
+    --jq "[.[] | select(.author.login==\"$AUTHOR\")
+             | select([.labels[].name] | index(\"blocked\") | not)
              | {issue: .number, title: .title}]
           | sort_by(.issue)
           | map(select(.issue >= ($START_FROM|tonumber)))
@@ -512,18 +508,11 @@ fi
 # unanswered Greptile inline comments. ---
 ALL_COMMENTS=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate)
 UNANSWERED=0
-# Identities of the currently-unanswered comments, not just their count — two rounds can
-# both show "2 unanswered" while the actual pair differs (one answered, a new one landed),
-# which a bare count would wrongly read as zero movement. Folded into the gate signature below.
-UNANSWERED_IDS=""
 for CID in $(printf '%s\n' "$ALL_COMMENTS" | jq -r '[.[] | select(.in_reply_to_id == null)] | .[].id'); do
   ORIGIN_USER=$(printf '%s\n' "$ALL_COMMENTS" | jq -r --argjson cid "$CID" '[.[] | select(.id == $cid)][0].user.login')
   REPLIES=$(printf '%s\n' "$ALL_COMMENTS" | jq -s --argjson cid "$CID" --arg origin "$ORIGIN_USER" \
     '[.[][] | select(.in_reply_to_id == $cid) | select(.user.login != $origin)] | length')
-  if [ "$REPLIES" -eq 0 ]; then
-    UNANSWERED=$((UNANSWERED + 1))
-    UNANSWERED_IDS="$UNANSWERED_IDS,$CID"
-  fi
+  [ "$REPLIES" -eq 0 ] && UNANSWERED=$((UNANSWERED + 1))
 done
 
 # Top-level review bodies (Claude's CHANGES_REQUESTED/COMMENT summary, Greptile's
@@ -592,20 +581,7 @@ printf '%s\n' "$GATE_FAIL" > .codegraph/fixer/gate-fail
 # in between — that is the actual definition of "blocked" this skill parks on, not an
 # arbitrary round count. Order the fields consistently so an unrelated field re-ordering
 # never masquerades as a change.
-#
-# The aggregate score, unanswered count, mergeability, and failing-check names alone are
-# too coarse: a new commit, a fresh Greptile review, or a new CI run can all leave every
-# one of those aggregates reading identical to the previous round (score lags a push,
-# a re-review restates the same score for different reasons, a rerun fails the same named
-# check for a different cause) — which would misread real activity as a stall. `commit`
-# (the pushed SHA) and `greptile_hash` (a hash of every Greptile comment/review body, not
-# just the extracted digit) both change the instant that activity happens, even before the
-# aggregates catch up, so genuine progress is never mistaken for zero measurable change.
-# `unanswered_ids` likewise tracks which comments are outstanding, not just how many, so a
-# reply that resolves one comment while a new one lands does not cancel out to "no change".
-GREPTILE_HASH=$(printf '%s' "$GREP_BODY" | cksum | awk '{print $1}')
-COMMIT=$(git rev-parse HEAD)
-printf '%s\n' "score=${SCORE:-none};greptile_hash=$GREPTILE_HASH;unanswered=$UNANSWERED;unanswered_ids=${UNANSWERED_IDS:-none};g3=$(git merge-base --is-ancestor origin/main HEAD && echo ok || echo behind);mergeable=$MERGEABLE;failed=$FAILED_CHECKS;commit=$COMMIT" \
+printf '%s\n' "score=${SCORE:-none};unanswered=$UNANSWERED;g3=$(git merge-base --is-ancestor origin/main HEAD && echo ok || echo behind);mergeable=$MERGEABLE;failed=$FAILED_CHECKS" \
   > .codegraph/fixer/gate-signature
 ```
 
@@ -765,13 +741,9 @@ else
   # One past the highest issue number this run has recorded, so the next batch's queue
   # never re-examines an issue this run already marked merged/parked/abandoned.
   NEXT_START=$(( $(jq '[.issues[].issue] | max // 0' .codegraph/fixer/state.json) + 1 ))
-  # --author filters server-side (see Phase 1) and --limit 1000 is a generous safety bound
-  # on this author's own backlog, not a real ceiling — a hard 400-issue window silently
-  # under-reported REMAINING as 0 in a repo with more open issues than that, reporting the
-  # backlog as drained while qualifying issues past the window went uncounted.
-  REMAINING=$(gh issue list --repo "$REPO" --state open --author "$AUTHOR" --limit 1000 \
+  REMAINING=$(gh issue list --repo "$REPO" --state open --limit 400 \
     --json number,labels,author \
-    --jq "[.[] | select([.labels[].name]|index(\"blocked\")|not) | select(.number >= $NEXT_START)] | length")
+    --jq "[.[] | select(.author.login==\"$AUTHOR\") | select([.labels[].name]|index(\"blocked\")|not) | select(.number >= $NEXT_START)] | length")
 
   # 2>/dev/null: batches-done is expected to be absent before the first batch completes
   BATCHES_DONE=$(( $(cat .codegraph/fixer/batches-done 2>/dev/null || echo 0) + 1 ))
@@ -824,25 +796,13 @@ Each pass does three things, in order:
 
 1. **Sweep.** Invoke `/sweep` once. It processes every open PR in parallel: resolves conflicts, fixes CI, mines the Greptile summary as well as inline comments, addresses and replies to all reviewer feedback, and re-triggers reviewers. Do not re-derive that procedure here.
 2. **Resolve.** For any parked PR still reporting `mergeable != MERGEABLE`, invoke `/resolve <pr>` on it individually. `/resolve` reads both sides' intent before choosing, and stops rather than guessing on genuinely ambiguous conflicts.
-3. **Merge the lowest-numbered ready PR first**, then re-evaluate. Merging lowest-first matches the requested order and keeps the catch-up cost predictable. **Immediately remove that PR's number from `parked.txt` AND flip its `state.json` entry from `parked` to `merged`** — the `parked.txt` removal is what makes the progress check below meaningful (without it, the file never shrinks and every pass looks stalled even when merges are happening); the `state.json` update is what keeps Phase 5's final report honest (without it, a PR merged here still reads as `parked` there, undercounting merged issues and reporting completed work as unfinished):
+3. **Merge the lowest-numbered ready PR first**, then re-evaluate. Merging lowest-first matches the requested order and keeps the catch-up cost predictable. **Immediately remove that PR's number from `parked.txt`** — this is what makes the progress check below meaningful; without it, `parked.txt` never shrinks and every pass looks stalled even when merges are happening:
    ```bash
    mkdir -p .codegraph/fixer
    # MERGED_PR is the PR number just merged in this step
    grep -vxF "$MERGED_PR" .codegraph/fixer/parked.txt > .codegraph/fixer/parked.txt.tmp \
      && mv .codegraph/fixer/parked.txt.tmp .codegraph/fixer/parked.txt
    echo "fixer: removed merged PR #$MERGED_PR from parked.txt — $(wc -l < .codegraph/fixer/parked.txt) remaining"
-
-   # Reconcile state.json: the issue tied to this PR was recorded as "parked" back when it
-   # first hit the convergence-round cap (2f/2g) — that record is now stale the moment this
-   # merge succeeds. Match on .pr rather than .issue since that is the field this drain loop
-   # actually has in hand.
-   TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
-   trap 'rm -f "$TMP_STATE"' EXIT
-   jq --argjson pr "$MERGED_PR" \
-     '.issues |= map(if .pr == $pr then .status = "merged" else . end)' \
-     .codegraph/fixer/state.json > "$TMP_STATE" && mv "$TMP_STATE" .codegraph/fixer/state.json
-   trap - EXIT
-   echo "fixer: state.json entry for PR #$MERGED_PR updated parked -> merged"
    ```
 
 **After each pass**, record whether it made progress and decide whether to run another one:
@@ -1022,7 +982,7 @@ All state is under `.codegraph/fixer/`:
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
 | `outcome` | text | `abandoned`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
 | `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
-| `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state (score, a hash of the full Greptile review text, which specific comments are unanswered, branch ancestry, mergeability, failing checks, and the current commit SHA), used to detect a stalled (blocked) PR rather than counting rounds |
+| `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state, used to detect a stalled (blocked) PR rather than counting rounds |
 | `stall-count` | text | consecutive convergence rounds with an unchanged gate signature; park threshold is 3 |
 | `drain-pass`, `drain-stall`, `drain-parked-count` | text | drain-phase pass counter, consecutive no-merge passes, and `parked.txt` length as of the last pass — the same stall-detection pattern applied to draining |
 | `authored-lines.tsv`, `authored-files.txt` | text | I4 integrity-check baseline (tab-separated `file<TAB>count<TAB>line`) |
