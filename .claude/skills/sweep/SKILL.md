@@ -252,12 +252,13 @@ After addressing all comments for a PR:
 
 ### 2g. Re-trigger reviewers
 
-**Hard cap: 3 total Greptile re-triggers per PR, counted from live data, not memory.** Long sessions span multiple turns and resumes — don't rely on remembering how many rounds you've done. Before anything else in this step, count the `@greptileai` comments you've actually posted:
+**Hard cap: 3 total Greptile re-triggers per PR, counted from live data, not memory.** Long sessions span multiple turns and resumes — don't rely on remembering how many rounds you've done. Before anything else in this step, count the `@greptileai` comments **you** have actually posted — scope the query to the authenticated actor, not just "anyone other than Greptile," or pre-existing `@greptileai` comments from the PR author, a maintainer, or another workflow will count against your budget and stop you early:
 
 ```bash
+me=$(gh api user --jq '.login')
 trigger_count=$(gh api repos/optave/codegraph/issues/<number>/comments --paginate \
-  --jq '[.[] | select(.user.login != "greptile-apps[bot]" and (.body | test("^@greptileai\\s*$")))] | length')
-echo "Greptile has been re-triggered $trigger_count time(s) so far."
+  --jq --arg me "$me" '[.[] | select(.user.login == $me and (.body | test("^@greptileai\\s*$")))] | length')
+echo "Greptile has been re-triggered $trigger_count time(s) so far by this sweep."
 ```
 
 If `trigger_count` is already **3 or more**: do NOT trigger again, no matter how many real findings you just fixed. Reply to any outstanding comment (per Step 2e) so nothing is left unacknowledged, then skip straight to Step 2i and report `Status: needs-human-review`, noting in Notes how many rounds occurred and what the last item was. Fixing a real bug on round 4+ does not extend the cap — it's a budget on wall-clock and review noise, not a correctness gate; a human reviews the rest.
