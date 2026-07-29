@@ -261,7 +261,7 @@ trigger_count=$(gh api repos/optave/codegraph/issues/<number>/comments --paginat
 echo "Greptile has been re-triggered $trigger_count time(s) so far by this sweep."
 ```
 
-If `trigger_count` is already **3 or more**: do NOT trigger again, no matter how many real findings you just fixed. Reply to any outstanding comment (per Step 2e) so nothing is left unacknowledged, then skip straight to Step 2i and report `Status: needs-human-review`, noting in Notes how many rounds occurred and what the last item was. Fixing a real bug on round 4+ does not extend the cap — it's a budget on wall-clock and review noise, not a correctness gate; a human reviews the rest.
+If `trigger_count` is already **3 or more**: do NOT trigger again, no matter how many real findings you just fixed. Reply to any outstanding comment (per Step 2e) so nothing is left unacknowledged, then run the mandatory final live re-check (Step 2h.1) — hitting the cap does not exempt you from it, and comments can still have arrived since your last check — reply to anything that check turns up, and only then proceed to Step 2i and report `Status: needs-human-review`, noting in Notes how many rounds occurred and what the last item was. Fixing a real bug on round 4+ does not extend the cap — it's a budget on wall-clock and review noise, not a correctness gate; a human reviews the rest.
 
 If `trigger_count` is under 3, proceed:
 
@@ -327,7 +327,7 @@ After re-triggering:
 1. Poll for new reviews on an interval — see "Before you start: how to wait." Do not end your turn to wait passively, and don't declare a round "done" from a single check taken right after triggering — Greptile can take 15–30 minutes to respond.
 2. Fetch new comments again (repeat Step 2d + 2d.1 — re-mine the summary body too, not just inline comments).
 3. If there are **new** comments from Greptile or Claude, go back to Step 2e and address them, then re-trigger per 2g **only if** the trigger-count cap in 2g hasn't already been hit.
-4. **The 3-trigger cap in Step 2g is the actual stop condition — not a mental "round" count.** If you hit the cap mid-loop, stop re-triggering immediately (you may still reply to outstanding comments) and go to 2i with `Status: needs-human-review`.
+4. **The 3-trigger cap in Step 2g is the actual stop condition — not a mental "round" count.** If you hit the cap mid-loop, stop re-triggering immediately (you may still reply to outstanding comments), run the mandatory Step 2h.1 final live check, and only then go to 2i with `Status: needs-human-review`.
 5. Verify CI is still green after all changes.
 
 ### 2h.1. Final fresh check — do this immediately before reporting, every time
