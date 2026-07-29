@@ -796,13 +796,25 @@ Each pass does three things, in order:
 
 1. **Sweep.** Invoke `/sweep` once. It processes every open PR in parallel: resolves conflicts, fixes CI, mines the Greptile summary as well as inline comments, addresses and replies to all reviewer feedback, and re-triggers reviewers. Do not re-derive that procedure here.
 2. **Resolve.** For any parked PR still reporting `mergeable != MERGEABLE`, invoke `/resolve <pr>` on it individually. `/resolve` reads both sides' intent before choosing, and stops rather than guessing on genuinely ambiguous conflicts.
-3. **Merge the lowest-numbered ready PR first**, then re-evaluate. Merging lowest-first matches the requested order and keeps the catch-up cost predictable. **Immediately remove that PR's number from `parked.txt`** — this is what makes the progress check below meaningful; without it, `parked.txt` never shrinks and every pass looks stalled even when merges are happening:
+3. **Merge the lowest-numbered ready PR first**, then re-evaluate. Merging lowest-first matches the requested order and keeps the catch-up cost predictable. **Immediately remove that PR's number from `parked.txt` AND flip its `state.json` entry from `parked` to `merged`** — the `parked.txt` removal is what makes the progress check below meaningful (without it, the file never shrinks and every pass looks stalled even when merges are happening); the `state.json` update is what keeps Phase 5's final report honest (without it, a PR merged here still reads as `parked` there, undercounting merged issues and reporting completed work as unfinished):
    ```bash
    mkdir -p .codegraph/fixer
    # MERGED_PR is the PR number just merged in this step
    grep -vxF "$MERGED_PR" .codegraph/fixer/parked.txt > .codegraph/fixer/parked.txt.tmp \
      && mv .codegraph/fixer/parked.txt.tmp .codegraph/fixer/parked.txt
    echo "fixer: removed merged PR #$MERGED_PR from parked.txt — $(wc -l < .codegraph/fixer/parked.txt) remaining"
+
+   # Reconcile state.json: the issue tied to this PR was recorded as "parked" back when it
+   # first hit the convergence-round cap (2f/2g) — that record is now stale the moment this
+   # merge succeeds. Match on .pr rather than .issue since that is the field this drain loop
+   # actually has in hand.
+   TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
+   trap 'rm -f "$TMP_STATE"' EXIT
+   jq --argjson pr "$MERGED_PR" \
+     '.issues |= map(if .pr == $pr then .status = "merged" else . end)' \
+     .codegraph/fixer/state.json > "$TMP_STATE" && mv "$TMP_STATE" .codegraph/fixer/state.json
+   trap - EXIT
+   echo "fixer: state.json entry for PR #$MERGED_PR updated parked -> merged"
    ```
 
 **After each pass**, record whether it made progress and decide whether to run another one:
