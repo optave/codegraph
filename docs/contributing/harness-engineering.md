@@ -154,7 +154,7 @@ Types -> Config -> Repo -> Service -> Runtime -> UI
 ```
 
 **Enforcement tools:**
-- `codegraph check --boundaries` — blocks imports that violate layer direction
+- `codegraph check --staged --boundaries` — blocks imports that violate layer direction
 - `codegraph cycles` — detects circular dependencies
 - Custom ESLint rules or `dependency-cruiser` for additional constraints
 - CI gates that fail the build on violations
@@ -259,7 +259,7 @@ Codegraph already implements most of these practices. Here's how they map:
 |---|---|
 | Deterministic guardrails | `codegraph check` pre-commit gates, cycle detection, blast radius thresholds |
 | Remediation-focused errors | `codegraph check` output includes what violated and where |
-| Mechanical architecture | `codegraph check --boundaries`, `codegraph cycles` |
+| Mechanical architecture | `codegraph check --staged --boundaries`, `codegraph cycles` |
 | Silent success / loud failure | Claude Code hooks exit silently on success |
 | AGENTS.md | `CLAUDE.md` with codegraph workflow commands |
 | Progress tracking | Titan Paradigm skills with state files |

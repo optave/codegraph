@@ -115,8 +115,10 @@ Then enforce it:
 # The agent literally cannot create an import that violates layer direction
 codegraph check --staged --boundaries -T
 
-# Detect all existing boundary violations for cleanup
-codegraph check --boundaries -T
+# Detect all existing boundary violations for cleanup (manifesto mode —
+# reads manifesto.boundaries from .codegraphrc.json, checks the whole
+# codebase rather than just a diff)
+codegraph check -T
 ```
 
 The agent doesn't need to "know" the rule. It tries an import, the check fails with a clear message, and it restructures. The harness teaches through failure.
@@ -280,7 +282,7 @@ Start with cycle detection — it catches the most common structural mistake:
 
 ```bash
 # Test it manually first
-codegraph check --cycles -T
+codegraph check --staged --cycles -T
 
 # Then add to pre-commit hook
 echo 'codegraph build && codegraph check --staged --cycles -T' > .husky/pre-commit
