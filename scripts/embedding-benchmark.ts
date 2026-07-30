@@ -7,7 +7,7 @@
  * in the ONNX runtime) only kills the child — the parent survives and collects
  * partial results from whichever models succeeded.
  *
- * Usage: node scripts/embedding-benchmark.js > result.json
+ * Usage: node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/embedding-benchmark.ts > result.json
  */
 
 import fs from 'node:fs';

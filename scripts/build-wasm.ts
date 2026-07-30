@@ -3,7 +3,7 @@
 /**
  * Build WASM grammar files from tree-sitter grammar packages.
  *
- * Usage: node scripts/build-wasm.js
+ * Usage: node scripts/node-ts.js scripts/build-wasm.ts
  *
  * Requires devDependencies: tree-sitter-cli + grammar packages.
  * Outputs .wasm files into grammars/ (committed to repo).

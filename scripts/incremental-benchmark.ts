@@ -7,7 +7,7 @@
  * in the native addon only kills the child — the parent survives and collects
  * partial results from whichever engines succeeded.
  *
- * Usage: node scripts/incremental-benchmark.js > result.json
+ * Usage: node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/incremental-benchmark.ts > result.json
  */
 
 import fs from 'node:fs';

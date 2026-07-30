@@ -7,7 +7,7 @@
  * in the native addon only kills the child — the parent survives and collects
  * partial results from whichever engines succeeded.
  *
- * Usage: node scripts/query-benchmark.js > result.json
+ * Usage: node --experimental-strip-types --import ./scripts/ts-resolve-loader.js scripts/query-benchmark.ts > result.json
  */
 
 import { execFileSync } from 'node:child_process';
