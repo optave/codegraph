@@ -41,7 +41,7 @@ Zero-tolerance enforcement: the agent cannot proceed until all checks pass. No w
 ```bash
 # Example: codegraph pre-commit gate
 codegraph build
-codegraph check --staged --no-new-cycles --max-blast-radius 50 -T
+codegraph check --staged --cycles --blast-radius 50 -T
 ```
 
 ### Layer 2: AI Review
@@ -119,7 +119,7 @@ With codegraph, this is built-in:
 
 ```bash
 # codegraph check provides actionable output
-codegraph check --staged --no-new-cycles --max-blast-radius 50 -T
+codegraph check --staged --cycles --blast-radius 50 -T
 # Output: "Cycle detected: A -> B -> C -> A. Break the cycle by..."
 # Output: "Blast radius 67 exceeds threshold 50. Function X affects..."
 ```
@@ -154,7 +154,7 @@ Types -> Config -> Repo -> Service -> Runtime -> UI
 ```
 
 **Enforcement tools:**
-- `codegraph check --no-boundary-violations` — blocks imports that violate layer direction
+- `codegraph check --boundaries` — blocks imports that violate layer direction
 - `codegraph cycles` — detects circular dependencies
 - Custom ESLint rules or `dependency-cruiser` for additional constraints
 - CI gates that fail the build on violations
@@ -259,7 +259,7 @@ Codegraph already implements most of these practices. Here's how they map:
 |---|---|
 | Deterministic guardrails | `codegraph check` pre-commit gates, cycle detection, blast radius thresholds |
 | Remediation-focused errors | `codegraph check` output includes what violated and where |
-| Mechanical architecture | `codegraph check --no-boundary-violations`, `codegraph cycles` |
+| Mechanical architecture | `codegraph check --boundaries`, `codegraph cycles` |
 | Silent success / loud failure | Claude Code hooks exit silently on success |
 | AGENTS.md | `CLAUDE.md` with codegraph workflow commands |
 | Progress tracking | Titan Paradigm skills with state files |
@@ -274,7 +274,7 @@ To add harness engineering to an existing codegraph project:
 1. **Create `CLAUDE.md`** with build commands and your top 5 failure-driven rules
 2. **Add pre-commit hooks** using codegraph check:
    ```bash
-   codegraph check --staged --no-new-cycles --max-blast-radius 50 -T
+   codegraph check --staged --cycles --blast-radius 50 -T
    ```
 3. **Configure CI gates** with `codegraph check -T` in your pipeline
 4. **Set up Claude Code hooks** — see [Claude Code Hooks Guide](../examples/claude-code-hooks/README.md) for ready-to-use scripts

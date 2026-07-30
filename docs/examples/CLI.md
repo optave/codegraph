@@ -1172,43 +1172,46 @@ Configurable pass/fail gates. Exit code 0 = pass, 1 = fail.
 - `check --staged --rules` — runs both diff predicates AND manifesto rules
 
 ```bash
-codegraph check --staged --no-new-cycles --max-complexity 30
+codegraph check --staged --cycles
 ```
 
 ```
 # Check Results
 
-  ✓ no-new-cycles         — no new cycles introduced
-  ✗ max-complexity (30)   — 3 functions exceed threshold:
-      buildGraph (cognitive=495)  src/builder.js:335
-      extractJavaSymbols (cognitive=208)  src/extractors/java.js
-      extractSymbolsWalk (cognitive=197)  src/extractors/javascript.js
+  Changed files: 4  New files: 1  Deleted files: 0
 
-  Result: FAIL (exit code 1)
+  [PASS] cycles
+
+  1 predicates | 1 passed | 0 failed
 ```
 
 ```bash
-codegraph check --staged --max-blast-radius 50
+codegraph check --staged --blast-radius 50
 ```
 
 ```
 # Check Results
 
-  ✓ max-blast-radius (50) — max blast radius is 1
+  Changed files: 4  New files: 1  Deleted files: 0
 
-  Result: PASS (exit code 0)
+  [FAIL] blast-radius
+         buildGraph (function) at src/builder.js:335 — 67 callers (max: 50)
+
+  1 predicates | 0 passed | 1 failed
 ```
 
 ```bash
-codegraph check --no-boundary-violations -T
+codegraph check --boundaries -T
 ```
 
 ```
 # Check Results
 
-  ✓ no-boundary-violations — no architecture boundary violations
+  Changed files: 4  New files: 1  Deleted files: 0
 
-  Result: PASS (exit code 0)
+  [PASS] boundaries
+
+  1 predicates | 1 passed | 0 failed
 ```
 
 ---

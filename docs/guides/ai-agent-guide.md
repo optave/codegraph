@@ -441,14 +441,14 @@ codegraph batch target1 target2 target3 -T --json
 Configurable pass/fail gates with exit code 0 (pass) or 1 (fail).
 
 ```bash
-codegraph check --staged --no-new-cycles --max-complexity 30
-codegraph check --staged --max-blast-radius 50 --no-boundary-violations
+codegraph check --staged --cycles
+codegraph check --staged --blast-radius 50 --boundaries --signatures
 ```
 
 | | |
 |---|---|
 | **MCP tool** | `check` |
-| **Key flags** | `--staged`, `--no-new-cycles`, `--max-complexity <n>`, `--max-blast-radius <n>`, `--no-boundary-violations`, `-T` (no tests) |
+| **Key flags** | `--staged`, `--cycles`, `--blast-radius <n>`, `--boundaries`, `--signatures`, `-T` (no tests) |
 | **When to use** | CI gates, state machines, rollback triggers — anywhere you need a pass/fail signal |
 | **Output** | Per-predicate pass/fail results; exit code 0 or 1 |
 
@@ -894,7 +894,7 @@ This project uses codegraph for dependency analysis. The graph is at `.codegraph
 - `codegraph diff-impact main -T` — impact of branch vs main
 - `codegraph audit <target> -T` — structural summary + impact + health in one report
 - `codegraph triage -T` — ranked audit priority queue
-- `codegraph check --staged --no-new-cycles` — CI validation predicates (exit 0/1)
+- `codegraph check --staged --cycles` — CI validation predicates (exit 0/1)
 - `codegraph batch t1 t2 t3 -T --json` — batch query multiple targets
 
 ### Overview
@@ -1087,7 +1087,7 @@ fi
 | Get a full risk report for a function | `codegraph audit <name> -T` |
 | Get a ranked list of riskiest functions | `codegraph triage -T --limit 20` |
 | Batch query multiple targets at once | `codegraph batch t1 t2 t3 -T --json` |
-| Validate staged changes pass CI rules | `codegraph check --staged --no-new-cycles` |
+| Validate staged changes pass CI rules | `codegraph check --staged --cycles` |
 | Find who owns a piece of code | `codegraph owners <target>` |
 | Checkpoint the graph before refactoring | `codegraph snapshot save <name>` |
 | Restore graph after failed refactoring | `codegraph snapshot restore <name>` |

@@ -46,7 +46,7 @@ The most impactful harness component. The agent cannot commit until all checks p
 
 ```bash
 # One-call pre-commit gate: cycles + blast radius + boundaries
-codegraph check --staged --no-new-cycles --max-blast-radius 50 --no-boundary-violations -T
+codegraph check --staged --cycles --blast-radius 50 --boundaries -T
 ```
 
 Exit code 0 = pass, 1 = fail. Perfect for hooks and CI gates. The agent doesn't need to know your architectural rules — the harness enforces them mechanically.
@@ -55,13 +55,13 @@ Individual checks for targeted enforcement:
 
 ```bash
 # Did this change introduce a circular dependency?
-codegraph check --staged --no-new-cycles
+codegraph check --staged --cycles
 
 # Is the blast radius acceptable? (N = max callers affected)
-codegraph check --staged --max-blast-radius 30
+codegraph check --staged --blast-radius 30
 
 # Does this change violate module boundary rules?
-codegraph check --staged --no-boundary-violations
+codegraph check --staged --boundaries
 
 # Full code health gate — 9 configurable rules with warn/fail thresholds
 codegraph check -T
@@ -76,7 +76,7 @@ OpenAI's key finding: linter error messages become part of the agent's context. 
 Codegraph's output is designed for this:
 
 ```bash
-codegraph check --staged --no-new-cycles --max-blast-radius 50 -T
+codegraph check --staged --cycles --blast-radius 50 -T
 ```
 
 ```
@@ -113,10 +113,10 @@ Then enforce it:
 
 ```bash
 # The agent literally cannot create an import that violates layer direction
-codegraph check --staged --no-boundary-violations -T
+codegraph check --staged --boundaries -T
 
 # Detect all existing boundary violations for cleanup
-codegraph check --no-boundary-violations -T
+codegraph check --boundaries -T
 ```
 
 The agent doesn't need to "know" the rule. It tries an import, the check fails with a clear message, and it restructures. The harness teaches through failure.
@@ -194,7 +194,7 @@ All of the above works in CI pipelines, not just locally:
   run: npx codegraph check -T
 
 - name: Change validation
-  run: npx codegraph check --staged --no-new-cycles --max-blast-radius 50 --no-boundary-violations -T
+  run: npx codegraph check --staged --cycles --blast-radius 50 --boundaries -T
 
 - name: Impact comment on PR
   run: |
@@ -212,7 +212,7 @@ Here's how codegraph maps to each harness engineering practice:
 |---|---|---|
 | **Deterministic guardrails** | Agent introduces cycles, boundary violations, high blast radius | `codegraph check --staged` with configurable predicates |
 | **Remediation-focused errors** | Agent can't self-correct from opaque error messages | `check` output includes what violated, where, and how to fix |
-| **Mechanical architecture** | Bad patterns compound exponentially without enforcement | `check --no-boundary-violations` + `.codegraphrc.json` boundary rules |
+| **Mechanical architecture** | Bad patterns compound exponentially without enforcement | `check --boundaries` + `.codegraphrc.json` boundary rules |
 | **Silent success / loud failure** | Large output floods context, causes hallucinations | Compact default output; `--json` only when needed |
 | **Blast radius awareness** | Agent edits functions without knowing who depends on them | `fn-impact`, `diff-impact --staged`, `audit --quick` |
 | **Continuous garbage collection** | Technical debt accumulates between cleanup sprints | `triage`, `roles --role dead`, `check`, `cycles` on cadence |
@@ -257,7 +257,7 @@ Building harness systems for AI agents revealed gaps where codegraph could provi
 | ID | Title | Description | Category | Benefit | Backlog candidate |
 |----|-------|-------------|----------|---------|-------------------|
 | — | **Harness health dashboard** | Single command showing the state of all harness layers: which rules are active, which are passing, what's unguarded. Like `codegraph stats` but for the harness itself | Orchestration | Agents and humans see at a glance which guardrails are in place and which areas are unprotected | `codegraph harness-status` |
-| — | **Rule suggestion from failures** | When `check` fails, suggest a `.codegraphrc.json` rule that would have caught it earlier. "This blast radius of 67 would have been caught by `max-blast-radius: 50`" | Intelligence | Accelerates the harness growth loop — every failure produces a concrete rule suggestion | Enhancement to `check` output |
+| — | **Rule suggestion from failures** | When `check` fails, suggest a `.codegraphrc.json` rule that would have caught it earlier. "This blast radius of 67 would have been caught by `check.blastRadius: 50`" | Intelligence | Accelerates the harness growth loop — every failure produces a concrete rule suggestion | Enhancement to `check` output |
 | — | **Remediation templates** | Configurable fix-suggestion templates attached to `check` rules. When boundary violation fires, the message includes a project-specific remediation: "Extract to `src/shared/` per our architecture guide" | Developer Experience | Makes error messages maximally actionable for agents in a specific codebase, not just generic advice | `manifesto.remediationTemplates` config |
 | — | **Duplicate code detection** | Identify semantically similar functions — near-duplicates that agents create when they can't find existing utilities | Analysis | Agents frequently reinvent existing functions. Catching duplicates in `check` prevents code bloat | `codegraph check --no-duplicates` or `codegraph duplicates` |
 | — | **Mutation tracking** | Detect functions that mutate their arguments or external state | Analysis | Agents produce side-effect-heavy code by default. Making mutations visible in `audit` helps both agents and reviewers | Enhancement to `dataflow` |
@@ -280,10 +280,10 @@ Start with cycle detection — it catches the most common structural mistake:
 
 ```bash
 # Test it manually first
-codegraph check --no-new-cycles -T
+codegraph check --cycles -T
 
 # Then add to pre-commit hook
-echo 'codegraph build && codegraph check --staged --no-new-cycles -T' > .husky/pre-commit
+echo 'codegraph build && codegraph check --staged --cycles -T' > .husky/pre-commit
 ```
 
 ### 3. Add blast radius limits
@@ -291,7 +291,7 @@ echo 'codegraph build && codegraph check --staged --no-new-cycles -T' > .husky/p
 Pick a threshold that matches your codebase. Start generous and tighten over time:
 
 ```bash
-codegraph check --staged --max-blast-radius 100 -T
+codegraph check --staged --blast-radius 100 -T
 ```
 
 ### 4. Define architecture boundaries
@@ -311,8 +311,8 @@ codegraph check --staged --max-blast-radius 100 -T
 
 Every time the agent makes a mistake, add a rule:
 
-- Agent introduced a cycle? → `--no-new-cycles` (already there)
-- Agent broke 50 callers? → `--max-blast-radius 30`
+- Agent introduced a cycle? → `--cycles` (already there)
+- Agent broke 50 callers? → `--blast-radius 30`
 - Agent imported db from ui? → Add a boundary rule
 - Agent exceeded complexity? → Set `manifesto.rules.cognitive.fail: 15`
 

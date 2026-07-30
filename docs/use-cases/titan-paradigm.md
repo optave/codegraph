@@ -162,13 +162,13 @@ The State Machine phase needs yes/no answers: "Did this change introduce a cycle
 
 ```bash
 # Exit code 0 = pass, 1 = fail — perfect for CI gates and rollback triggers
-codegraph check --staged --no-new-cycles --max-blast-radius 20 --max-complexity 30
+codegraph check --staged --cycles --blast-radius 20
 
 # Also enforce architecture boundary rules
-codegraph check --staged --no-boundary-violations
+codegraph check --staged --boundaries
 
 # Or combine all predicates in one call
-codegraph check --staged --no-new-cycles --max-blast-radius 20 --no-boundary-violations -T
+codegraph check --staged --cycles --blast-radius 20 --boundaries -T
 ```
 
 For detailed impact analysis, `diff-impact` provides the full picture:
@@ -242,7 +242,7 @@ Several planned features would make codegraph even more powerful for the Titan P
 
 | Feature | Status | How it helps |
 |---------|--------|-------------|
-| **Architecture boundary rules** ([Backlog #13](../../roadmap/BACKLOG.md)) | **Done** | `manifesto.boundaries` config defines allowed/forbidden dependencies between modules. Onion architecture preset available via `manifesto.boundaryPreset: "onion"`. Violations flagged in `check` and enforceable via `check --no-boundary-violations`. PR #228 + #229 |
+| **Architecture boundary rules** ([Backlog #13](../../roadmap/BACKLOG.md)) | **Done** | `manifesto.boundaries` config defines allowed/forbidden dependencies between modules. Onion architecture preset available via `manifesto.boundaryPreset: "onion"`. Violations flagged in `check` and enforceable via `check --boundaries`. PR #228 + #229 |
 | **CODEOWNERS integration** ([Backlog #18](../../roadmap/BACKLOG.md)) | **Done** | `codegraph owners` maps graph nodes to CODEOWNERS entries. Shows who owns each function, surfaces ownership boundaries in `diff-impact`. The GLOBAL SYNC agent can identify which teams need to coordinate. PR #195 |
 | **Refactoring analysis** ([Roadmap Phase 8.5](../../roadmap/ROADMAP.md#85--refactoring-analysis)) | Planned | `split_analysis`, `extraction_candidates`, `boundary_analysis` — LLM-powered structural analysis that identifies exactly where shared abstractions should be created |
 | **Dead code detection** ([Backlog #1](../../roadmap/BACKLOG.md)) | **Done** | `codegraph roles --role dead -T` lists all symbols with zero fan-in that aren't exported. Delivered as part of node classification |
@@ -251,7 +251,7 @@ Several planned features would make codegraph even more powerful for the Titan P
 
 | Feature | Status | How it helps |
 |---------|--------|-------------|
-| **Change validation predicates** ([Backlog #30](../../roadmap/BACKLOG.md)) | **Done** | `codegraph check --staged --no-new-cycles --max-blast-radius N --no-boundary-violations` with exit code 0/1. The STATE MACHINE gets first-class pass/fail signals without parsing JSON. PR #225 + #230 |
+| **Change validation predicates** ([Backlog #30](../../roadmap/BACKLOG.md)) | **Done** | `codegraph check --staged --cycles --blast-radius N --boundaries` with exit code 0/1. The STATE MACHINE gets first-class pass/fail signals without parsing JSON. PR #225 + #230 |
 | **Graph snapshots** ([Backlog #31](../../roadmap/BACKLOG.md)) | **Done** | `codegraph snapshot save/restore` for instant DB backup and rollback. Orchestrators checkpoint before each refactoring pass and restore on failure without rebuilding. PR #192 |
 | **Branch structural diff** ([Backlog #16](../../roadmap/BACKLOG.md)) | **Done** | `codegraph branch-compare main feature-branch` compares code structure between two refs — added/removed/changed symbols with transitive caller impact. PR in v2.5.1 |
 | **Streaming / chunked results** ([Backlog #20](../../roadmap/BACKLOG.md)) | **Done** | Universal pagination on all 30 MCP tools, NDJSON streaming on CLI commands, generator APIs for memory-efficient iteration. PR #207 |

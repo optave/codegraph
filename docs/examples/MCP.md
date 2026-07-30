@@ -946,19 +946,19 @@ Configurable pass/fail gates. Returns structured results with exit status.
 ```json
 {
   "tool": "check",
-  "arguments": { "staged": true, "no_new_cycles": true, "max_complexity": 30 }
+  "arguments": { "staged": true, "cycles": true, "blast_radius": 50 }
 }
 ```
 
 ```json
 {
-  "checks": [
-    { "name": "no-new-cycles", "passed": true, "detail": "no new cycles introduced" },
-    { "name": "max-complexity", "passed": false, "threshold": 30, "violations": [
-      { "name": "buildGraph", "file": "src/builder.js", "line": 335, "cognitive": 495 },
-      { "name": "extractJavaSymbols", "file": "src/extractors/java.js", "cognitive": 208 }
+  "predicates": [
+    { "name": "cycles", "passed": true },
+    { "name": "blast-radius", "passed": false, "threshold": 50, "violations": [
+      { "name": "buildGraph", "kind": "function", "file": "src/builder.js", "line": 335, "transitiveCallers": 67 }
     ]}
   ],
+  "summary": { "changedFiles": 4, "newFiles": 1, "deletedFiles": 0, "total": 2, "passed": 1, "failed": 1 },
   "passed": false
 }
 ```
@@ -966,16 +966,17 @@ Configurable pass/fail gates. Returns structured results with exit status.
 ```json
 {
   "tool": "check",
-  "arguments": { "staged": true, "max_blast_radius": 50, "no_boundary_violations": true }
+  "arguments": { "staged": true, "boundaries": true, "signatures": true }
 }
 ```
 
 ```json
 {
-  "checks": [
-    { "name": "max-blast-radius", "passed": true, "detail": "max blast radius is 1" },
-    { "name": "no-boundary-violations", "passed": true, "detail": "no violations" }
+  "predicates": [
+    { "name": "boundaries", "passed": true },
+    { "name": "signatures", "passed": true }
   ],
+  "summary": { "changedFiles": 4, "newFiles": 1, "deletedFiles": 0, "total": 2, "passed": 2, "failed": 0 },
   "passed": true
 }
 ```

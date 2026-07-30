@@ -350,10 +350,10 @@ codegraph batch --json targets.json   # Batch from a JSON file
 codegraph check                             # Run manifesto rules on whole codebase
 codegraph check --staged                    # Check staged changes (diff predicates)
 codegraph check --staged --rules            # Run both diff predicates AND manifesto rules
-codegraph check --no-new-cycles             # Fail if staged changes introduce cycles
-codegraph check --max-complexity 30         # Fail if any function exceeds complexity threshold
-codegraph check --max-blast-radius 50       # Fail if blast radius exceeds limit
-codegraph check --no-boundary-violations    # Fail on architecture boundary violations
+codegraph check --cycles                    # Fail if staged changes introduce cycles
+codegraph check --blast-radius 50           # Fail if blast radius exceeds limit
+codegraph check --boundaries                # Fail on architecture boundary violations
+codegraph check --signatures                # Fail if an exported declaration's line was modified
 codegraph check main                        # Check current branch vs main
 ```
 
