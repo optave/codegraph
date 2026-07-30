@@ -18,8 +18,18 @@ Before doing anything else, run `/worktree` to get an isolated copy of the repo.
 
 ## Step 1: Discover Open PRs
 
+Detect the repo slug dynamically so this skill works in any fork or renamed org — never hardcode it:
+
 ```bash
-gh pr list --repo optave/codegraph --state open --json number,title,headRefName,baseRefName,mergeable,statusCheckRollup,reviewDecision --limit 50
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null \
+  || git remote get-url origin | sed -E 's|.*github\.com[:/](.+)(\.git)?$|\1|')
+if [ -z "$REPO" ]; then
+  echo "ERROR: could not detect GitHub repo slug — ensure 'gh' is authenticated or 'origin' points to GitHub"
+  exit 1
+fi
+echo "Detected repo: $REPO"
+
+gh pr list --repo "$REPO" --state open --json number,title,headRefName,baseRefName,mergeable,statusCheckRollup,reviewDecision --limit 50
 ```
 
 Record each PR's number, branch, base, merge status, and CI state.
@@ -30,7 +40,7 @@ Record each PR's number, branch, base, merge status, and CI state.
 
 Each PR is independent work — **launch one Agent subagent per PR, all in parallel.** Use `isolation: "worktree"` so each agent gets its own copy of the repo with no cross-PR contamination.
 
-Pass each agent the full PR processing instructions (Steps 2a–2i below) along with the PR number, branch, base, and current state from Step 1. The agent prompt must include **all** the rules from the Rules section at the bottom of this skill — copy them **verbatim**, do not paraphrase or summarize.
+Pass each agent the full PR processing instructions (Steps 2a–2i below) along with the PR number, branch, base, current state from Step 1, and the **`$REPO` slug detected in Step 1**. Every `<repo>` placeholder in the instructions below and in every `gh`/`gh api` command must be substituted with that literal detected value before handing the prompt to the agent — never let a subagent fall back to a hardcoded or guessed repo name. The agent prompt must include **all** the rules from the Rules section at the bottom of this skill — copy them **verbatim**, do not paraphrase or summarize.
 
 ```
 For each PR, launch an Agent with:
@@ -90,7 +100,7 @@ If `CONFLICTING`:
 2. **Do not assume which side to keep.** You must fully understand the context of both sides before resolving. If you don't know why a line was added — what feature it supports, what bug it fixes, what reviewer requested it — you cannot resolve the conflict correctly. Before touching any conflict:
    - Read the PR description and any linked issues (`gh pr view <number>`) to understand the PR's purpose and scope.
    - Check the PR's commit history (`git log --oneline origin/<base-branch>..HEAD -- <file>`) to understand *why* the conflicting line was changed on the PR side. Also check the base branch history (`git log --oneline HEAD..origin/<base-branch> -- <file>`) to understand *why* the base version exists.
-   - Read Greptile and Claude review comments on the PR (`gh api repos/optave/codegraph/pulls/<number>/comments`, `gh api repos/optave/codegraph/pulls/<number>/reviews`, `gh api repos/optave/codegraph/issues/<number>/comments`) — a reviewer may have requested the change that caused the conflict.
+   - Read Greptile and Claude review comments on the PR (`gh api repos/<repo>/pulls/<number>/comments`, `gh api repos/<repo>/pulls/<number>/reviews`, `gh api repos/<repo>/issues/<number>/comments`) — a reviewer may have requested the change that caused the conflict.
    - Check what landed on main that introduced the other side (`git log --oneline HEAD..origin/<base-branch> -- <file>`) and read those PR descriptions too if needed.
    - Compare the PR's diff against its merge base (`git diff $(git merge-base origin/<base-branch> HEAD) HEAD -- <file>`) to see which side introduced an intentional change vs. which side carried stale code.
    - Only then choose the correct resolution. If the PR deliberately changed a line and main still has the old version, keep the PR's version. If main introduced a fix or new feature the PR doesn't have, keep main's version. If both sides made intentional changes, merge them together manually.
@@ -131,13 +141,13 @@ Fetch **all** review comments from both Claude and Greptile. You MUST check all 
 
 ```bash
 # PR review comments (inline code comments — Claude and Greptile both use these)
-gh api repos/optave/codegraph/pulls/<number>/comments --paginate --jq '.[] | {id: .id, user: .user.login, body: .body, path: .path, line: .line, created_at: .created_at}'
+gh api repos/<repo>/pulls/<number>/comments --paginate --jq '.[] | {id: .id, user: .user.login, body: .body, path: .path, line: .line, created_at: .created_at}'
 
 # PR reviews (top-level review bodies — Claude typically posts CHANGES_REQUESTED or COMMENT reviews here)
-gh api repos/optave/codegraph/pulls/<number>/reviews --paginate --jq '.[] | {id: .id, user: .user.login, body: .body, state: .state}'
+gh api repos/<repo>/pulls/<number>/reviews --paginate --jq '.[] | {id: .id, user: .user.login, body: .body, state: .state}'
 
 # Issue-style comments (includes @greptileai trigger responses and general discussion)
-gh api repos/optave/codegraph/issues/<number>/comments --paginate --jq '.[] | {id: .id, user: .user.login, body: .body, created_at: .created_at}'
+gh api repos/<repo>/issues/<number>/comments --paginate --jq '.[] | {id: .id, user: .user.login, body: .body, created_at: .created_at}'
 ```
 
 **Important:** Go through the results from ALL three endpoints. Build a complete list of actionable items from every reviewer before starting fixes. Do not skip any reviewer's comments.
@@ -150,10 +160,10 @@ So treat the summary as a **source of findings, not a single comment to reply to
 
 ```bash
 # Greptile summary as an issue comment (the usual location):
-gh api repos/optave/codegraph/issues/<number>/comments --paginate \
+gh api repos/<repo>/issues/<number>/comments --paginate \
   --jq '.[] | select(.user.login|test("greptile";"i")) | .body'
 # …and as a review body (Greptile sometimes posts the summary here instead):
-gh api repos/optave/codegraph/pulls/<number>/reviews --paginate \
+gh api repos/<repo>/pulls/<number>/reviews --paginate \
   --jq '.[] | select(.user.login|test("greptile";"i")) | .body'
 ```
 
@@ -179,11 +189,11 @@ For **each** review comment — including minor suggestions, nits, style feedbac
 
    ```bash
    # Ensure the follow-up label exists (safe to re-run)
-   gh label create "follow-up" --color "0e8a16" --description "Deferred from PR review" --repo optave/codegraph 2>/dev/null || true
+   gh label create "follow-up" --color "0e8a16" --description "Deferred from PR review" --repo <repo> 2>/dev/null || true
 
    # Create a tracking issue for the deferred item and capture the issue number
    issue_url=$(gh issue create \
-     --repo optave/codegraph \
+     --repo <repo> \
      --title "follow-up: <concise description of what needs to be done>" \
      --body "$(cat <<-'EOF'
 	Deferred from PR #<number> review.
@@ -200,39 +210,39 @@ For **each** review comment — including minor suggestions, nits, style feedbac
    Then reply to the reviewer comment referencing the issue (using `$issue_number` captured above). Use the same reply mechanism as step 6 below — inline PR review comments use `/pulls/<number>/comments/<comment-id>/replies`, top-level review bodies and issue-style comments use `/issues/<number>/comments`:
    ```bash
    # For inline PR review comments:
-   gh api repos/optave/codegraph/pulls/<number>/comments/<comment-id>/replies \
+   gh api repos/<repo>/pulls/<number>/comments/<comment-id>/replies \
      -f body="Out of scope for this PR — tracked in #$issue_number"
    # For top-level review bodies or issue-style comments:
-   gh api repos/optave/codegraph/issues/<number>/comments \
+   gh api repos/<repo>/issues/<number>/comments \
      -f body="Out of scope for this PR — tracked in #$issue_number"
    ```
 6. **Reply to each comment** explaining what you did. The reply mechanism depends on where the comment lives:
 
    **For inline PR review comments** (from Claude, Greptile, or humans — these have a `path` and `line`):
    ```bash
-   gh api repos/optave/codegraph/pulls/<number>/comments/<comment-id>/replies \
+   gh api repos/<repo>/pulls/<number>/comments/<comment-id>/replies \
      -f body="Fixed — <brief description of what was changed>"
    ```
 
    **For top-level PR review bodies** (Claude often leaves a summary review with `CHANGES_REQUESTED` or `COMMENT` state — these come from the `/reviews` endpoint and have no `path`):
    ```bash
    # Reply on the PR conversation thread so the reviewer sees it
-   gh api repos/optave/codegraph/issues/<number>/comments \
+   gh api repos/<repo>/issues/<number>/comments \
      -f body=$'Addressed Claude\'s review feedback:\n- <bullet per item addressed>'
    ```
 
    **For issue-style comments** (includes @greptileai trigger responses):
    ```bash
-   gh api repos/optave/codegraph/issues/<number>/comments \
+   gh api repos/<repo>/issues/<number>/comments \
      -f body="Addressed: <summary of changes made>"
    ```
 
 **Checklist before moving on:** After addressing all comments, verify you haven't missed a reviewer:
 ```bash
 # List all unique reviewers who left comments
-gh api repos/optave/codegraph/pulls/<number>/comments --paginate --jq '[.[].user.login] | unique | .[]'
-gh api repos/optave/codegraph/pulls/<number>/reviews --paginate --jq '[.[].user.login] | unique | .[]'
-gh api repos/optave/codegraph/issues/<number>/comments --paginate --jq '[.[].user.login] | unique | .[]'
+gh api repos/<repo>/pulls/<number>/comments --paginate --jq '[.[].user.login] | unique | .[]'
+gh api repos/<repo>/pulls/<number>/reviews --paginate --jq '[.[].user.login] | unique | .[]'
+gh api repos/<repo>/issues/<number>/comments --paginate --jq '[.[].user.login] | unique | .[]'
 # Confirm you addressed comments from EVERY reviewer listed
 ```
 
@@ -256,7 +266,7 @@ After addressing all comments for a PR:
 
 ```bash
 me=$(gh api user --jq '.login')
-trigger_count=$(gh api repos/optave/codegraph/issues/<number>/comments --paginate \
+trigger_count=$(gh api repos/<repo>/issues/<number>/comments --paginate \
   | jq -s --arg me "$me" '[.[][] | select(.user.login == $me and (.body | test("^@greptileai\\s*$")))] | length')
 echo "Greptile has been re-triggered $trigger_count time(s) so far by this sweep."
 ```
@@ -271,7 +281,7 @@ If `trigger_count` is under 50, proceed:
 
 ```bash
 # Step 0: Verify every Greptile inline comment has at least one reply from us
-all_comments=$(gh api repos/optave/codegraph/pulls/<number>/comments --paginate)
+all_comments=$(gh api repos/<repo>/pulls/<number>/comments --paginate)
 
 greptile_comment_ids=$(echo "$all_comments" \
   | jq -r '[.[] | select(.user.login == "greptile-apps[bot]" and .in_reply_to_id == null)] | .[].id')
@@ -297,24 +307,24 @@ echo "All Greptile comments have replies — safe to re-trigger."
 
 ```bash
 # Step 1: Check if greptileai left a positive reaction on your most recent reply
-last_reply_id=$(gh api repos/optave/codegraph/issues/<number>/comments --paginate \
+last_reply_id=$(gh api repos/<repo>/issues/<number>/comments --paginate \
   --jq '[.[] | select(.user.login != "greptile-apps[bot]")] | last | .id')
 
-positive_count=$(gh api repos/optave/codegraph/issues/comments/$last_reply_id/reactions \
+positive_count=$(gh api repos/<repo>/issues/comments/$last_reply_id/reactions \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]" and (.content == "+1" or .content == "hooray" or .content == "heart" or .content == "rocket"))] | length')
 
 # Step 2: If positive reaction exists → skip. Otherwise → re-trigger.
 if [ "$positive_count" -gt 0 ]; then
   echo "Greptile already reacted positively — skipping re-trigger."
 else
-  gh api repos/optave/codegraph/issues/<number>/comments -f body="@greptileai"
+  gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
 fi
 ```
 
 **Claude (claude-code-review / claude bot):** Only re-trigger if you addressed something Claude specifically suggested. If you did:
 
 ```bash
-gh api repos/optave/codegraph/issues/<number>/comments \
+gh api repos/<repo>/issues/<number>/comments \
   -f body="@claude"
 ```
 
