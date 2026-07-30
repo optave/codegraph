@@ -2421,10 +2421,12 @@ function resolveComputedKeyName(nameNode: TreeSitterNode): string {
 
 /**
  * Resolve the raw method name from a method_definition's name field, unwrapping
- * computed_property_name string literals (e.g. `['foo']() {}` -> 'foo'). Returns ''
- * for non-string computed keys (no resolvable name).
+ * computed_property_name string literals (e.g. `['foo']() {}` -> 'foo') and quoted
+ * plain string keys (e.g. `'foo'() {}` -> 'foo'). Returns '' for non-string computed
+ * keys (no resolvable name).
  */
 function resolveMethodDefinitionName(nameNode: TreeSitterNode): string {
+  if (nameNode.type === 'string') return nameNode.text.replace(/^['"]|['"]$/g, '');
   if (nameNode.type !== 'computed_property_name') return nameNode.text;
   return resolveComputedKeyName(nameNode);
 }

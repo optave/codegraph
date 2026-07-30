@@ -2253,6 +2253,33 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('quoted (non-computed) method/property key extraction (#1944)', () => {
+    it('strips quotes from a plain quoted class method key', () => {
+      const symbols = parseJS(`class A { 'foo'() { return 1; } }`);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'A.foo', kind: 'method' }),
+      );
+      const def = symbols.definitions.find((d) => d.name.includes("'"));
+      expect(def).toBeUndefined();
+    });
+
+    it('strips quotes from a plain quoted object-literal method shorthand key', () => {
+      const symbols = parseJS(`const obj = { 'quoted'() { return 1; } };`);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'obj.quoted', kind: 'function' }),
+      );
+      const def = symbols.definitions.find((d) => d.name.includes("'"));
+      expect(def).toBeUndefined();
+    });
+
+    it('strips double quotes too', () => {
+      const symbols = parseJS(`class B { "bar"() { return 1; } }`);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'B.bar', kind: 'method' }),
+      );
+    });
+  });
+
   describe('computed pair key extraction (#1764)', () => {
     it('extracts a computed string-literal pair key as a plain qualified name', () => {
       // `{ ['foo']: () => {} }` — computed_property_name wrapping a string literal must be

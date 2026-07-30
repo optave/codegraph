@@ -313,6 +313,24 @@ class Derived extends Base {
 }
 `,
   },
+  {
+    // Regression guard for #1944: a plain quoted (non-computed) method key
+    // (`'foo'() {}`) has no query pattern for `method_definition name:
+    // (string)` — before the fix, the query path silently produced ZERO
+    // definitions for the class method (not merely a quote-unstripped name),
+    // since it never matched any of the property_identifier/
+    // private_property_identifier/computed_property_name capture patterns.
+    // The walk path (extractSymbolsWalk) always saw it via
+    // resolveMethodDefinitionName's generic node-type dispatch.
+    name: 'quoted (non-computed) class method key (#1944)',
+    file: 'test.js',
+    code: `
+class A {
+  'foo'() { return 1; }
+  bar() { return this.foo(); }
+}
+`,
+  },
   // TSX
   {
     name: 'TSX component with extends',

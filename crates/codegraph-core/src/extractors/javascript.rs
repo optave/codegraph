@@ -1143,13 +1143,15 @@ fn resolve_computed_key_name(computed_node: &Node, source: &[u8]) -> Option<Stri
 /// For computed property names (`['methodName']`), strips brackets and quotes from
 /// string-literal keys so the stored name matches the plain identifier used at call
 /// sites (`obj.methodName()`). Non-string computed keys like `[Symbol.iterator]`
-/// cannot be resolved at dot-notation call sites — returns `None` for those.
+/// cannot be resolved at dot-notation call sites — returns `None` for those. Plain
+/// quoted keys (`'methodName'() {}`, kind `"string"`) also have their quotes
+/// stripped, mirroring `resolve_pair_key_name`'s handling of the same case.
 fn resolve_method_def_name(node: &Node, source: &[u8]) -> Option<String> {
     let name_node = node.child_by_field_name("name")?;
-    if name_node.kind() == "computed_property_name" {
-        resolve_computed_key_name(&name_node, source)
-    } else {
-        Some(node_text(&name_node, source).to_string())
+    match name_node.kind() {
+        "string" => extract_string_fragment(&name_node, source).map(|s| s.to_string()),
+        "computed_property_name" => resolve_computed_key_name(&name_node, source),
+        _ => Some(node_text(&name_node, source).to_string()),
     }
 }
 
@@ -6696,6 +6698,35 @@ mod tests {
             names
         );
         assert!(names.contains(&"obj.bar"), "expected 'obj.bar'; got: {:?}", names);
+    }
+
+    /// Issue #1944: a plain quoted (non-computed) method key (`'foo'() {}`, kind `"string"`,
+    /// distinct from `computed_property_name`) must have its quotes stripped, not stored as
+    /// the literal `'foo'` — mirrors the computed-key unwrapping `resolve_method_def_name`
+    /// already applies, extended to the plain-string branch.
+    #[test]
+    fn quoted_plain_method_key_resolves_to_plain_name() {
+        let s = parse_js("class A {\n  'foo'() { return 1; }\n}");
+        let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"A.foo"), "expected 'A.foo'; got: {:?}", names);
+        assert!(
+            !names.iter().any(|n| n.contains('\'')),
+            "no definition name should retain the quoted form; got: {:?}",
+            names
+        );
+    }
+
+    /// Issue #1944: same quote-stripping for a plain quoted object-literal method shorthand key.
+    #[test]
+    fn quoted_plain_object_literal_method_key_resolves_to_plain_name() {
+        let s = parse_js("const obj = { 'quoted'() { return 1; } };");
+        let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"obj.quoted"), "expected 'obj.quoted'; got: {:?}", names);
+        assert!(
+            !names.iter().any(|n| n.contains('\'')),
+            "no definition name should retain the quoted form; got: {:?}",
+            names
+        );
     }
 
     /// Issue #1764: the same computed-key unwrapping must apply to `let`/`var` object literals,
