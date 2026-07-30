@@ -44,7 +44,7 @@ if [ -f "$DB_PATH" ]; then
   if command -v codegraph &>/dev/null; then
     codegraph build "$PROJECT_DIR" -d "$DB_PATH" --no-incremental 2>/dev/null && BUILD_OK=1 || true
   else
-    node "${CLAUDE_PROJECT_DIR:-$PROJECT_DIR}/src/cli.js" build "$PROJECT_DIR" -d "$DB_PATH" --no-incremental 2>/dev/null && BUILD_OK=1 || true
+    node "${CLAUDE_PROJECT_DIR:-$PROJECT_DIR}/dist/cli.js" build "$PROJECT_DIR" -d "$DB_PATH" --no-incremental 2>/dev/null && BUILD_OK=1 || true
   fi
   # Update staleness marker only if the full rebuild succeeded
   if [ "$BUILD_OK" -eq 1 ]; then
