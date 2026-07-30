@@ -356,6 +356,12 @@ const MIGRATIONS: &[Migration] = &[
       CREATE INDEX IF NOT EXISTS idx_deleted_export_advisories_file ON deleted_export_advisories(file);
     "#,
     },
+    Migration {
+        version: 22,
+        up: r#"
+      ALTER TABLE deleted_export_advisories ADD COLUMN consumer_kind TEXT;
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────

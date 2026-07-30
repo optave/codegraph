@@ -35,6 +35,7 @@ interface DeletedExportAdvisoryRow {
   consumer_name: string;
   consumer_file: string;
   consumer_line: number;
+  consumer_kind: string | null;
 }
 
 /**
@@ -47,6 +48,22 @@ interface DeletedExportAdvisoryRow {
 function hasAdvisoryTable(db: BetterSqlite3Database): boolean {
   try {
     db.prepare('SELECT 1 FROM deleted_export_advisories LIMIT 1').get();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `consumer_kind` was only added in migration v22 (#1973) — a read-only
+ * `check` invocation can still hit a DB whose `deleted_export_advisories`
+ * table exists (v21) but hasn't run v22 yet, if the last write-mode
+ * `codegraph build` predates this column. Same try/catch probe pattern as
+ * `hasAdvisoryTable` above, for the same reason.
+ */
+function hasConsumerKindColumn(db: BetterSqlite3Database): boolean {
+  try {
+    db.prepare('SELECT consumer_kind FROM deleted_export_advisories LIMIT 1').get();
     return true;
   } catch {
     return false;
@@ -79,8 +96,8 @@ export function recordDeletedExportAdvisories(
   const deleteStmt = db.prepare('DELETE FROM deleted_export_advisories WHERE file = ?');
   const insertStmt = db.prepare(
     `INSERT INTO deleted_export_advisories
-       (file, name, kind, line, consumer_name, consumer_file, consumer_line, deleted_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (file, name, kind, line, consumer_name, consumer_file, consumer_line, consumer_kind, deleted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   const tx = db.transaction(() => {
@@ -103,6 +120,7 @@ export function recordDeletedExportAdvisories(
             consumer.name,
             consumer.file,
             consumer.line,
+            consumer.consumerKind ?? null,
             now,
           );
         }
@@ -151,9 +169,12 @@ export function getDeletedExportAdvisories(
   if (files.length === 0 || !hasAdvisoryTable(db)) return [];
 
   const placeholders = files.map(() => '?').join(',');
+  const consumerKindSelect = hasConsumerKindColumn(db)
+    ? ', consumer_kind'
+    : ', NULL AS consumer_kind';
   const rows = db
     .prepare(
-      `SELECT file, name, kind, line, consumer_name, consumer_file, consumer_line
+      `SELECT file, name, kind, line, consumer_name, consumer_file, consumer_line${consumerKindSelect}
        FROM deleted_export_advisories
        WHERE file IN (${placeholders})
        ORDER BY file, line`,
@@ -173,6 +194,12 @@ export function getDeletedExportAdvisories(
       name: row.consumer_name,
       file: row.consumer_file,
       line: row.consumer_line,
+      // Rows persisted before migration v22 have consumer_kind = NULL — leave
+      // consumerKind undefined for those rather than guessing, same as any
+      // other pre-#1973 advisory row (#1973).
+      ...(row.consumer_kind === 'file' || row.consumer_kind === 'symbol'
+        ? { consumerKind: row.consumer_kind }
+        : {}),
     });
   }
   return [...grouped.values()].filter((e) => e.consumers.length > 0);

@@ -348,6 +348,12 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_deleted_export_advisories_file ON deleted_export_advisories(file);
     `,
   },
+  {
+    version: 22,
+    up: `
+      ALTER TABLE deleted_export_advisories ADD COLUMN consumer_kind TEXT;
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {
