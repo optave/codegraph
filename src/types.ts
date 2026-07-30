@@ -225,11 +225,20 @@ export interface ExportedDefRow {
 /**
  * A cross-file consumer of an exported symbol (from findExternalConsumers),
  * or a persisted deleted-export advisory's consumer row (#1938).
+ *
+ * `consumerKind` discriminates a real caller/constructor symbol (`name`/`line`
+ * are a genuine call-site) from a whole-file reference such as
+ * `import type { X}` (`name` equals `file`, `line` is always `0` because there
+ * is no specific call-site to report) — mirrors the same discriminator on
+ * exports' consumer rows (#1830). Optional because the persisted
+ * deleted-export-advisories snapshot (#1938) doesn't store this discriminator;
+ * only `findExternalConsumers`'s live-DB query populates it (#1973).
  */
 export interface ExternalConsumerRow {
   name: string;
   file: string;
   line: number;
+  consumerKind?: 'file' | 'symbol';
 }
 
 /** Import target/source row. */

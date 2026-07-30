@@ -31,7 +31,7 @@ interface CheckViolation {
   edgeKind?: string;
   /** Set when this violation comes from `checkNoDeletedExportsInUse` (#1806). */
   reason?: string;
-  consumers?: Array<{ name: string; file: string; line: number }>;
+  consumers?: Array<{ name: string; file: string; line: number; consumerKind?: 'file' | 'symbol' }>;
 }
 
 interface CheckPredicate {
@@ -81,9 +81,16 @@ function formatPredicateViolations(pred: CheckPredicate): void {
       return `${v.from} -> ${v.to} (${v.edgeKind})`;
     }
     if (v.reason === 'file-deleted' && v.consumers) {
+      // `consumerKind === 'file'` means this is a type-only-import reference,
+      // not a real call-site — `c.line` is a fabricated `0` in that case, so
+      // rendering it as `file:0` would misleadingly look like a real line
+      // number (#1973). Absent (advisory-derived) consumers keep the
+      // existing file:line rendering unchanged.
       const sample = v.consumers
         .slice(0, 3)
-        .map((c) => `${c.file}:${c.line}`)
+        .map((c) =>
+          c.consumerKind === 'file' ? `${c.file} (type-only import)` : `${c.file}:${c.line}`,
+        )
         .join(', ');
       const more = v.consumers.length > 3 ? `, ... and ${v.consumers.length - 3} more` : '';
       return `${v.name} (${v.kind}) — file ${v.file} deleted but still used by ${v.consumers.length} external consumer(s): ${sample}${more}`;

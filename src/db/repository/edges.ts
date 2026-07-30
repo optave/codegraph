@@ -222,14 +222,24 @@ export function findExternalConsumers(
   nodeId: number,
   file: string,
 ): ExternalConsumerRow[] {
-  return cachedStmt(
+  const rows = cachedStmt(
     _findExternalConsumersStmt,
     db,
-    `SELECT DISTINCT caller.name, caller.file, caller.line
+    `SELECT DISTINCT caller.name, caller.file, caller.line, caller.kind AS sourceKind
      FROM edges e
      JOIN nodes caller ON e.source_id = caller.id
      WHERE e.target_id = ? AND e.kind IN ('calls', 'imports-type') AND caller.file != ?`,
-  ).all(nodeId, file);
+  ).all(nodeId, file) as Array<ExternalConsumerRow & { sourceKind: string }>;
+  // `consumerKind` discriminates a real caller/constructor symbol (source is a
+  // function/method/class node with a genuine call-site line) from a whole-file
+  // reference such as `import type { X }` (source is the importing file node
+  // itself) — mirrors the same discriminator added to exports' consumer rows
+  // for #1830 (see `domain/analysis/exports.ts`). Renderers must not treat
+  // `name`/`line` on a `'file'` entry as a caller symbol/call-site (#1973).
+  return rows.map(({ sourceKind, ...row }) => ({
+    ...row,
+    consumerKind: sourceKind === 'file' ? ('file' as const) : ('symbol' as const),
+  }));
 }
 
 /**

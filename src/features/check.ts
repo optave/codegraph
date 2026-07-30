@@ -564,6 +564,8 @@ interface ConsumerRef {
   name: string;
   file: string;
   line: number;
+  /** See `ExternalConsumerRow.consumerKind` — absent for advisory-derived rows (#1973). */
+  consumerKind?: 'file' | 'symbol';
 }
 
 interface SignatureViolation {
