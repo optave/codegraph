@@ -214,7 +214,7 @@ Here's how codegraph maps to each harness engineering practice:
 |---|---|---|
 | **Deterministic guardrails** | Agent introduces cycles, boundary violations, high blast radius | `codegraph check --staged` with configurable predicates |
 | **Remediation-focused errors** | Agent can't self-correct from opaque error messages | `check` output includes what violated, where, and how to fix |
-| **Mechanical architecture** | Bad patterns compound exponentially without enforcement | `check --boundaries` + `.codegraphrc.json` boundary rules |
+| **Mechanical architecture** | Bad patterns compound exponentially without enforcement | `check --staged --boundaries` + `.codegraphrc.json` boundary rules |
 | **Silent success / loud failure** | Large output floods context, causes hallucinations | Compact default output; `--json` only when needed |
 | **Blast radius awareness** | Agent edits functions without knowing who depends on them | `fn-impact`, `diff-impact --staged`, `audit --quick` |
 | **Continuous garbage collection** | Technical debt accumulates between cleanup sprints | `triage`, `roles --role dead`, `check`, `cycles` on cadence |
