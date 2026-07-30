@@ -84,13 +84,22 @@ function formatPredicateViolations(pred: CheckPredicate): void {
       // `consumerKind === 'file'` means this is a type-only-import reference,
       // not a real call-site — `c.line` is a fabricated `0` in that case, so
       // rendering it as `file:0` would misleadingly look like a real line
-      // number (#1973). Absent (advisory-derived) consumers keep the
-      // existing file:line rendering unchanged.
+      // number (#1973). `consumerKind === undefined` means an advisory row
+      // persisted before this discriminator existed (or before migration
+      // v22 added the column) — its underlying nodes/edges are already
+      // purged by definition (that's why it fell back to the advisory
+      // snapshot at all), so there is no way to retroactively re-derive
+      // which case it was. Render that as explicitly unknown rather than
+      // defaulting to file:line, which would silently re-introduce the same
+      // "confidently wrong" fabricated-line risk for exactly the legacy rows
+      // that can't be verified (Greptile, #1973).
       const sample = v.consumers
         .slice(0, 3)
-        .map((c) =>
-          c.consumerKind === 'file' ? `${c.file} (type-only import)` : `${c.file}:${c.line}`,
-        )
+        .map((c) => {
+          if (c.consumerKind === 'file') return `${c.file} (type-only import)`;
+          if (c.consumerKind === 'symbol') return `${c.file}:${c.line}`;
+          return `${c.file} (kind unknown — pre-existing advisory)`;
+        })
         .join(', ');
       const more = v.consumers.length > 3 ? `, ... and ${v.consumers.length - 3} more` : '';
       return `${v.name} (${v.kind}) — file ${v.file} deleted but still used by ${v.consumers.length} external consumer(s): ${sample}${more}`;
