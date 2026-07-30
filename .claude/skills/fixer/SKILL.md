@@ -516,7 +516,21 @@ PR=$(cat .codegraph/fixer/current-pr)
 gh pr checks "$PR" --repo "$REPO" --watch --interval 30 || echo "fixer: checks not all green — G5 needs work"
 ```
 
-For Greptile's review to arrive, use the `Monitor` tool to poll the comments endpoint until a `Confidence Score` appears (load it with `ToolSearch` if its schema is not present). Do not use foreground `sleep`.
+For Greptile's response to a re-trigger to arrive, use the `Monitor` tool to poll (load it with `ToolSearch` if its schema is not present). Do not use foreground `sleep`. **Do not poll only for a `Confidence Score` to appear** — Greptile typically posts that score once, in its *initial* summary, and it does not necessarily reappear on later reviews, so that condition can already be trivially satisfied from round 1 while giving no signal about whether a re-trigger has converged. The actual terminal signals after posting `@greptileai` are:
+
+- a **new** review or comment from `greptile-apps[bot]` posted after the trigger's timestamp (new findings — go address them and re-trigger again), or
+- a **positive reaction** (`+1`, `hooray`, `heart`, `rocket`) from `greptile-apps[bot]` **on the trigger comment itself**, with no follow-up review — this means Greptile examined the fix and has nothing further to flag. Treat it as convergence for this round, not a reason to keep waiting for a review object that isn't coming.
+
+```bash
+mkdir -p .codegraph/fixer
+REPO=$(cat .codegraph/fixer/repo)
+PR=$(cat .codegraph/fixer/current-pr)
+TRIGGER_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+  '[.[] | select(.body | test("^@greptileai\\s*$"))] | last | .id')
+gh api "repos/$REPO/issues/comments/$TRIGGER_COMMENT_ID/reactions" \
+  --jq '[.[] | select(.user.login == "greptile-apps[bot]" and (.content == "+1" or .content == "hooray" or .content == "heart" or .content == "rocket"))] | length'
+# > 0 with no new review after this comment's timestamp: converged, proceed to the gate evaluation below.
+```
 
 Evaluate the whole gate in one pass:
 
