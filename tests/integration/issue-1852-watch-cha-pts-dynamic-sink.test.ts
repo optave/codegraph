@@ -342,6 +342,16 @@ function runDynamicSinkScenario(engine: EngineMode): void {
         const reference = readCallEdges(path.join(refDir, '.codegraph', 'graph.db'));
         const incremental = readCallEdges(path.join(tmpDir, '.codegraph', 'graph.db'));
         expect(withoutTechnique(incremental)).toEqual(withoutTechnique(reference));
+
+        // #1995: a from-scratch full build must leave the sink edge's technique
+        // NULL, not backfill it to 'ts-native' — the native orchestrator's
+        // blanket technique backfill previously had no dynamic_kind guard, so
+        // it mislabeled this unresolved dynamic call as a resolved direct one.
+        const sinkEdge = reference.find(
+          (e) => e.src === 'runEval' && e.tgt === 'dynamic.js' && e.dynamicKind === 'eval',
+        );
+        expect(sinkEdge, `Reference edges:\n${JSON.stringify(reference, null, 2)}`).toBeDefined();
+        expect(sinkEdge?.technique).toBeNull();
       } finally {
         fs.rmSync(refDir, { recursive: true, force: true });
       }

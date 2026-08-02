@@ -2104,6 +2104,13 @@ function findOneHopReverseDepFiles(db: BetterSqlite3Database, files: readonly st
  * correct.  For incremental builds, only changed-file source nodes — plus
  * their one-hop reverse dependents (#1744) — are updated to avoid overwriting
  * previously-set technique values on unchanged edges.
+ *
+ * `AND dynamic_kind IS NULL` excludes flag-only dynamic-call sink edges
+ * (`eval`, `computed-key`, `reflection`, `unresolved-dynamic` — confidence=0,
+ * `dynamic_kind` set) from the backfill (#1995). Those intentionally keep
+ * `technique = NULL` forever, matching the WASM/JS full-build path's own
+ * sink-edge insertion — without this guard, the blanket UPDATE mislabels an
+ * unresolved dynamic call as a resolved direct one.
  */
 // Chunk-size-keyed statement caches for backfillEdgeTechniquesAfterNativeOrchestrator's
 // incremental-path technique/confidence-floor UPDATEs below, scoped per db like the
@@ -2131,7 +2138,7 @@ function backfillEdgeTechniquesAfterNativeOrchestrator(
   }
   if (isFullBuild || !changedFiles) {
     db.prepare(
-      "UPDATE edges SET technique = 'ts-native' WHERE kind = 'calls' AND technique IS NULL",
+      "UPDATE edges SET technique = 'ts-native' WHERE kind = 'calls' AND technique IS NULL AND dynamic_kind IS NULL",
     ).run();
     // Lift resolved ts-native edges below the confidence floor.
     db.prepare(
@@ -2160,7 +2167,7 @@ function backfillEdgeTechniquesAfterNativeOrchestrator(
         chunkSize,
         (n) =>
           `UPDATE edges SET technique = 'ts-native'
-           WHERE kind = 'calls' AND technique IS NULL
+           WHERE kind = 'calls' AND technique IS NULL AND dynamic_kind IS NULL
            AND source_id IN (
              SELECT id FROM nodes WHERE file IN (${Array.from({ length: n }, () => '?').join(',')})
            )`,
