@@ -13,8 +13,6 @@ interface CheckCliOpts {
   cycles?: string;
   blastRadius?: number;
   depth?: number;
-  maxCyclomatic?: number;
-  maxBlastRadius?: number;
   boundaries?: boolean;
   signatures?: boolean;
   config?: unknown;
