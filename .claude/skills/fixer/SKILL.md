@@ -420,17 +420,29 @@ case "$STATUS" in
       echo "fixer: no usable PR found for issue #$ISSUE — will retry the full 2a-2g dispatch once"
     else
       # Apply the reconciliation directly — the only place besides 2g itself that writes
-      # a terminal state.json record, using the exact same append pattern.
+      # a terminal state.json record, using the exact same append pattern. The queue
+      # shift below must never run if this write failed — otherwise the issue drops out
+      # of queue.json with no state.json record at all, and (for RECONCILE=parked) a PR
+      # would be sitting in parked.txt with no matching state.json entry either.
       TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
       trap 'rm -f "$TMP_STATE"' EXIT
-      jq --argjson issue "$ISSUE" --arg status "$RECONCILE" --argjson pr "$EX_PR" \
+      if ! jq --argjson issue "$ISSUE" --arg status "$RECONCILE" --argjson pr "$EX_PR" \
         '.issues += [{issue: $issue, status: $status, pr: $pr}]' \
-        .codegraph/fixer/state.json > "$TMP_STATE" && mv "$TMP_STATE" .codegraph/fixer/state.json
+        .codegraph/fixer/state.json > "$TMP_STATE"; then
+        echo "ERROR: could not write the reconciled record for issue #$ISSUE — state.json may be malformed."
+        echo "Restore from .codegraph/fixer/state.json.bak, then stop and report to the user. Queue was NOT advanced."
+        exit 1
+      fi
+      mv "$TMP_STATE" .codegraph/fixer/state.json
       trap - EXIT
       [ "$RECONCILE" = "parked" ] && printf '%s\n' "$EX_PR" >> .codegraph/fixer/parked.txt
       TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
       trap 'rm -f "$TMP_QUEUE"' EXIT
-      jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
+      if ! jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE"; then
+        echo "ERROR: could not shift queue.json after recording issue #$ISSUE as $RECONCILE — state.json already has the record, but the queue was NOT advanced. Investigate queue.json before re-running, or this issue will be reprocessed."
+        exit 1
+      fi
+      mv "$TMP_QUEUE" .codegraph/fixer/queue.json
       trap - EXIT
       echo "fixer: reconciled issue #$ISSUE as $RECONCILE without retrying — advancing to the next issue"
     fi
