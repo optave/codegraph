@@ -628,14 +628,17 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("exec failed: {e}")))
     }
 
-    /// Execute a read-only PRAGMA statement and return the first result as a string.
-    /// Returns `null` if the pragma produces no output.
+    /// Execute a read-only PRAGMA statement and return its first result column.
+    /// Returns `null` if the pragma produces no output. Most pragmas return an
+    /// INTEGER (e.g. `busy_timeout`, `page_count`, `user_version`) or TEXT (e.g.
+    /// `journal_mode`) result — the return type mirrors whichever affinity the
+    /// pragma actually produced (see `value_ref_to_json`'s contract doc).
     ///
     /// **Note:** This method is intended for read-only PRAGMAs (e.g. `journal_mode`,
     /// `page_count`). Write-mode PRAGMAs (e.g. `journal_mode = DELETE`) should use
     /// `exec()` instead. No validation is performed — callers are trusted internal code.
     #[napi]
-    pub fn pragma(&self, sql: String) -> napi::Result<Option<String>> {
+    pub fn pragma(&self, sql: String) -> napi::Result<Option<serde_json::Value>> {
         let conn = self.conn()?;
         let query = format!("PRAGMA {sql}");
         let mut stmt = conn
@@ -645,12 +648,7 @@ impl NativeDatabase {
             .query([])
             .map_err(|e| napi::Error::from_reason(format!("pragma query failed: {e}")))?;
         match rows.next() {
-            Ok(Some(row)) => {
-                let val: String = row
-                    .get(0)
-                    .map_err(|e| napi::Error::from_reason(format!("pragma get failed: {e}")))?;
-                Ok(Some(val))
-            }
+            Ok(Some(row)) => Ok(Some(value_ref_to_json(row.get_ref(0)))),
             Ok(None) => Ok(None),
             Err(e) => Err(napi::Error::from_reason(format!("pragma next failed: {e}"))),
         }
@@ -1650,12 +1648,28 @@ fn json_to_rusqlite_params(
         .collect()
 }
 
-/// Convert a rusqlite row to a serde_json::Value object.
+/// Convert a single rusqlite cell read result to a serde_json::Value.
 ///
 /// **Contract**: Only Integer, Real, Text, and Null column types are supported.
 /// BLOB columns are mapped to `null` because the current codegraph schema has no
 /// BLOB columns and the generic query path is not designed for binary data.
-/// Cell-level read errors are also mapped to `null` to avoid partial-row failures.
+/// Cell-level read errors are also mapped to `null` to avoid partial-row/partial-value
+/// failures. Shared by `row_to_json` (per-column) and `pragma` (single scalar result).
+fn value_ref_to_json(value: rusqlite::Result<ValueRef<'_>>) -> serde_json::Value {
+    match value {
+        Ok(ValueRef::Integer(n)) => serde_json::json!(n),
+        Ok(ValueRef::Real(f)) => serde_json::json!(f),
+        Ok(ValueRef::Text(s)) => serde_json::Value::String(String::from_utf8_lossy(s).into_owned()),
+        Ok(ValueRef::Null) => serde_json::Value::Null,
+        // BLOB: no codegraph schema columns use BLOB; map to null (see contract above)
+        Ok(ValueRef::Blob(_)) => serde_json::Value::Null,
+        // Cell read error: map to null to avoid partial-row/partial-value failures
+        Err(_) => serde_json::Value::Null,
+    }
+}
+
+/// Convert a rusqlite row to a serde_json::Value object. See `value_ref_to_json`'s
+/// contract doc for supported column types.
 fn row_to_json(
     row: &rusqlite::Row<'_>,
     col_count: usize,
@@ -1663,19 +1677,7 @@ fn row_to_json(
 ) -> serde_json::Value {
     let mut map = serde_json::Map::with_capacity(col_count);
     for i in 0..col_count {
-        let val = match row.get_ref(i) {
-            Ok(ValueRef::Integer(n)) => serde_json::json!(n),
-            Ok(ValueRef::Real(f)) => serde_json::json!(f),
-            Ok(ValueRef::Text(s)) => {
-                serde_json::Value::String(String::from_utf8_lossy(s).into_owned())
-            }
-            Ok(ValueRef::Null) => serde_json::Value::Null,
-            // BLOB: no codegraph schema columns use BLOB; map to null (see contract above)
-            Ok(ValueRef::Blob(_)) => serde_json::Value::Null,
-            // Cell read error: map to null to avoid partial-row failures
-            Err(_) => serde_json::Value::Null,
-        };
-        map.insert(col_names[i].clone(), val);
+        map.insert(col_names[i].clone(), value_ref_to_json(row.get_ref(i)));
     }
     serde_json::Value::Object(map)
 }
@@ -1822,5 +1824,60 @@ mod tests {
             has_column(conn, "edges", "dynamic_kind"),
             "edges.dynamic_kind was not repaired for a database already stamped past v20"
         );
+    }
+
+    // ── pragma() (#2019) ─────────────────────────────────────────────────
+
+    /// Regression for #2019: `pragma()` hardcoded a `String` read of the
+    /// result column, so any PRAGMA whose result has INTEGER affinity (the
+    /// overwhelming majority — `busy_timeout`, `page_count`, `user_version`,
+    /// `application_id`, `cache_size`, `mmap_size`, `wal_autocheckpoint`,
+    /// etc.) threw "Invalid column type Integer" instead of returning the
+    /// value. Only TEXT-affinity pragmas like `journal_mode` happened to work.
+    #[test]
+    fn pragma_returns_integer_affinity_results_instead_of_throwing() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+
+        let busy_timeout = db
+            .pragma("busy_timeout".to_string())
+            .expect("pragma('busy_timeout') should not throw");
+        // open_read_write applies DEFAULT_BUSY_TIMEOUT_MS (5000) when none is given.
+        assert_eq!(busy_timeout, Some(serde_json::json!(DEFAULT_BUSY_TIMEOUT_MS)));
+
+        let page_count = db
+            .pragma("page_count".to_string())
+            .expect("pragma('page_count') should not throw");
+        assert_eq!(page_count, Some(serde_json::json!(0)));
+
+        let user_version = db
+            .pragma("user_version".to_string())
+            .expect("pragma('user_version') should not throw");
+        assert_eq!(user_version, Some(serde_json::json!(0)));
+    }
+
+    #[test]
+    fn pragma_still_returns_text_affinity_results() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+
+        let journal_mode = db
+            .pragma("journal_mode".to_string())
+            .expect("pragma('journal_mode') should not throw");
+        // In-memory databases report journal_mode as "memory".
+        assert_eq!(journal_mode, Some(serde_json::json!("memory")));
+    }
+
+    #[test]
+    fn pragma_returns_none_when_the_pragma_produces_no_output() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+
+        // wal_checkpoint on a non-WAL (in-memory) database is a valid,
+        // side-effect-only pragma with no result row.
+        let result = db
+            .pragma("optimize".to_string())
+            .expect("pragma('optimize') should not throw");
+        assert_eq!(result, None);
     }
 }

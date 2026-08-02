@@ -2679,7 +2679,8 @@ export interface NativeDatabase {
   getBuildMeta(key: string): string | null;
   setBuildMeta(entries: Array<{ key: string; value: string }>): void;
   exec(sql: string): void;
-  pragma(sql: string): string | null;
+  /** Returns the pragma's first result column — whichever type it actually has (most are number or string). */
+  pragma(sql: string): string | number | null;
   close(): void;
   readonly dbPath: string;
   readonly isOpen: boolean;
