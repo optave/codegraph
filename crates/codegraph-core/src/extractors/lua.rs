@@ -1,54 +1,23 @@
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 
 /// Lua base-library global function names and standard-library module
 /// tables. Mirrors `LUA_BUILTIN_GLOBALS` in `src/extractors/lua.ts` — see
 /// `handle_lua_assignment_statement` (this file) and that file's
 /// `handleLuaAssignmentStatement` for the full rationale (issue #1776).
 const LUA_BUILTIN_GLOBALS: &[&str] = &[
-    "assert",
-    "collectgarbage",
-    "dofile",
-    "error",
-    "getfenv",
-    "getmetatable",
-    "ipairs",
-    "load",
-    "loadfile",
-    "loadstring",
-    "module",
-    "next",
-    "pairs",
-    "pcall",
-    "print",
-    "rawequal",
-    "rawget",
-    "rawlen",
-    "rawset",
-    "require",
-    "select",
-    "setfenv",
-    "setmetatable",
-    "tonumber",
-    "tostring",
-    "type",
-    "unpack",
-    "xpcall",
+    "assert", "collectgarbage", "dofile", "error", "getfenv", "getmetatable",
+    "ipairs", "load", "loadfile", "loadstring", "module", "next", "pairs",
+    "pcall", "print", "rawequal", "rawget", "rawlen", "rawset", "require",
+    "select", "setfenv", "setmetatable", "tonumber", "tostring", "type",
+    "unpack", "xpcall",
     // Standard-library module tables — wholesale replacement (e.g. sandboxing)
     // is the same "escapes local scope" shape as a single builtin function.
-    "string",
-    "table",
-    "math",
-    "io",
-    "os",
-    "coroutine",
-    "debug",
-    "utf8",
-    "bit32",
+    "string", "table", "math", "io", "os", "coroutine", "debug", "utf8", "bit32",
 ];
 
 pub struct LuaExtractor;
@@ -57,12 +26,7 @@ impl SymbolExtractor for LuaExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_lua_node);
-        walk_ast_nodes_with_config(
-            &tree.root_node(),
-            source,
-            &mut symbols.ast_nodes,
-            &LUA_AST_CONFIG,
-        );
+        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &LUA_AST_CONFIG);
         symbols
     }
 }
@@ -160,24 +124,16 @@ fn extract_lua_params(func_node: &Node, source: &[u8]) -> Vec<Definition> {
 /// first), so mixed variable kinds (`t.b, a = f, g`) do not shift the
 /// pairing.
 fn handle_lua_assignment_statement(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(variable_list) = find_child(node, "variable_list") else {
-        return;
-    };
-    let Some(expression_list) = find_child(node, "expression_list") else {
-        return;
-    };
+    let Some(variable_list) = find_child(node, "variable_list") else { return };
+    let Some(expression_list) = find_child(node, "expression_list") else { return };
 
     let pair_count = variable_list
         .named_child_count()
         .min(expression_list.named_child_count());
 
     for i in 0..pair_count {
-        let Some(lhs) = variable_list.named_child(i) else {
-            continue;
-        };
-        let Some(rhs) = expression_list.named_child(i) else {
-            continue;
-        };
+        let Some(lhs) = variable_list.named_child(i) else { continue };
+        let Some(rhs) = expression_list.named_child(i) else { continue };
         if lhs.kind() != "identifier" || rhs.kind() != "identifier" {
             continue;
         }
@@ -267,15 +223,9 @@ fn handle_lua_function_call(node: &Node, source: &[u8], symbols: &mut FileSymbol
             let table_id = table.as_ref().map(|n| n.id());
             let mut key: Option<Node> = None;
             for i in 0..name_node.child_count() {
-                let Some(ch) = name_node.child(i) else {
-                    continue;
-                };
-                if matches!(ch.kind(), "[" | "]") {
-                    continue;
-                }
-                if table_id == Some(ch.id()) {
-                    continue;
-                }
+                let Some(ch) = name_node.child(i) else { continue };
+                if matches!(ch.kind(), "[" | "]") { continue; }
+                if table_id == Some(ch.id()) { continue; }
                 key = Some(ch);
                 break;
             }
@@ -359,46 +309,31 @@ mod tests {
     #[test]
     fn no_value_ref_call_when_lhs_is_not_a_recognized_builtin() {
         let s = parse_lua("local function helper() end\nmyCustomGlobal = helper");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_when_rhs_is_itself_a_builtin() {
         let s = parse_lua("print = tostring");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_for_local_non_builtin_alias() {
         let s = parse_lua("local function helper() end\nlocal orig_helper = helper");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_when_rhs_is_a_call_expression() {
         let s = parse_lua("require = wrapRequire(require)");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_when_rhs_is_a_member_expression() {
         let s = parse_lua("require = mymodule.customRequire");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
@@ -465,9 +400,10 @@ mod tests {
     #[test]
     fn resolves_bracket_index_call_with_string_literal_key_directly() {
         let s = parse_lua("t[\"handler\"]()");
-        assert!(s.calls.iter().any(|c| c.name == "handler"
-            && c.receiver.as_deref() == Some("t")
-            && c.dynamic.is_none()));
+        assert!(s
+            .calls
+            .iter()
+            .any(|c| c.name == "handler" && c.receiver.as_deref() == Some("t") && c.dynamic.is_none()));
     }
 
     #[test]

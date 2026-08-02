@@ -1,9 +1,9 @@
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 
 pub struct ZigExtractor;
 
@@ -11,12 +11,7 @@ impl SymbolExtractor for ZigExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_zig_node);
-        walk_ast_nodes_with_config(
-            &tree.root_node(),
-            source,
-            &mut symbols.ast_nodes,
-            &ZIG_AST_CONFIG,
-        );
+        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &ZIG_AST_CONFIG);
         symbols
     }
 }
@@ -81,9 +76,7 @@ fn extract_zig_params(func_node: &Node, source: &[u8]) -> Vec<Definition> {
 }
 
 fn handle_zig_variable(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = find_child(node, "identifier") else {
-        return;
-    };
+    let Some(name_node) = find_child(node, "identifier") else { return };
     let name = node_text(&name_node, source).to_string();
 
     // Check for struct/enum/union type definition
@@ -112,19 +105,11 @@ fn handle_zig_variable(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     });
 }
 
-fn try_handle_zig_type_def(
-    node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-    name: &str,
-) -> bool {
+fn try_handle_zig_type_def(node: &Node, source: &[u8], symbols: &mut FileSymbols, name: &str) -> bool {
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
         let (kind, children) = match child.kind() {
-            "struct_declaration" => (
-                "struct",
-                opt_children(extract_zig_container_fields(&child, source)),
-            ),
+            "struct_declaration" => ("struct", opt_children(extract_zig_container_fields(&child, source))),
             "enum_declaration" => ("enum", None),
             "union_declaration" => ("struct", None),
             _ => continue,
@@ -146,21 +131,12 @@ fn try_handle_zig_type_def(
     false
 }
 
-fn try_handle_zig_import(
-    node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-    name: String,
-) -> bool {
+fn try_handle_zig_import(node: &Node, source: &[u8], symbols: &mut FileSymbols, name: String) -> bool {
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
-        if child.kind() != "builtin_function" {
-            continue;
-        }
+        if child.kind() != "builtin_function" { continue; }
         if let Some(path) = extract_zig_import_path(&child, source) {
-            symbols
-                .imports
-                .push(Import::new(path, vec![name], start_line(node)));
+            symbols.imports.push(Import::new(path, vec![name], start_line(node)));
             return true;
         }
     }
@@ -169,9 +145,7 @@ fn try_handle_zig_import(
 
 fn extract_zig_import_path(builtin: &Node, source: &[u8]) -> Option<String> {
     let builtin_id = find_child(builtin, "builtin_identifier")?;
-    if node_text(&builtin_id, source) != "@import" {
-        return None;
-    }
+    if node_text(&builtin_id, source) != "@import" { return None; }
     let args = find_child(builtin, "arguments")?;
     for j in 0..args.child_count() {
         let Some(arg) = args.child(j) else { continue };
@@ -188,8 +162,7 @@ fn extract_zig_container_fields(container: &Node, source: &[u8]) -> Vec<Definiti
     for i in 0..container.child_count() {
         if let Some(child) = container.child(i) {
             if child.kind() == "container_field" {
-                let name_node = child
-                    .child_by_field_name("name")
+                let name_node = child.child_by_field_name("name")
                     .or_else(|| find_child(&child, "identifier"));
                 if let Some(n) = name_node {
                     fields.push(child_def(
@@ -205,18 +178,14 @@ fn extract_zig_container_fields(container: &Node, source: &[u8]) -> Vec<Definiti
 }
 
 fn handle_zig_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let func_node = match node
-        .child_by_field_name("function")
-        .or_else(|| node.child(0))
-    {
+    let func_node = match node.child_by_field_name("function").or_else(|| node.child(0)) {
         Some(n) => n,
         None => return,
     };
 
     match func_node.kind() {
         "field_expression" | "field_access" => {
-            let field = func_node
-                .child_by_field_name("field")
+            let field = func_node.child_by_field_name("field")
                 .or_else(|| func_node.child_by_field_name("member"));
             let value = func_node.child(0);
             if let Some(f) = field {

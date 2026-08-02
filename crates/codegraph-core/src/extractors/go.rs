@@ -11,12 +11,7 @@ impl SymbolExtractor for GoExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_go_node);
-        walk_ast_nodes_with_config(
-            &tree.root_node(),
-            source,
-            &mut symbols.ast_nodes,
-            &GO_AST_CONFIG,
-        );
+        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &GO_AST_CONFIG);
         walk_tree(&tree.root_node(), source, &mut symbols, match_go_type_map);
         dedup_type_map(&mut symbols.type_map);
         symbols
@@ -56,9 +51,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else {
-        return;
-    };
+    let Some(name_node) = node.child_by_field_name("name") else { return };
     let receiver_type = extract_go_receiver_type(node, source);
     let name = node_text(&name_node, source);
     let full_name = match &receiver_type {
@@ -86,9 +79,7 @@ fn extract_go_receiver_type(node: &Node, source: &[u8]) -> Option<String> {
         if let Some(param) = receiver.child(i) {
             if let Some(type_node) = param.child_by_field_name("type") {
                 return Some(if type_node.kind() == "pointer_type" {
-                    node_text(&type_node, source)
-                        .trim_start_matches('*')
-                        .to_string()
+                    node_text(&type_node, source).trim_start_matches('*').to_string()
                 } else {
                     node_text(&type_node, source).to_string()
                 });
@@ -101,14 +92,10 @@ fn extract_go_receiver_type(node: &Node, source: &[u8]) -> Option<String> {
 fn handle_type_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for i in 0..node.child_count() {
         let Some(spec) = node.child(i) else { continue };
-        if spec.kind() != "type_spec" {
-            continue;
-        }
+        if spec.kind() != "type_spec" { continue; }
         let name_node = spec.child_by_field_name("name");
         let type_node = spec.child_by_field_name("type");
-        let (Some(name_node), Some(type_node)) = (name_node, type_node) else {
-            continue;
-        };
+        let (Some(name_node), Some(type_node)) = (name_node, type_node) else { continue };
         let name = node_text(&name_node, source).to_string();
         match type_node.kind() {
             "struct_type" => {
@@ -159,19 +146,10 @@ fn handle_type_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     }
 }
 
-fn extract_go_interface_methods(
-    type_node: &Node,
-    iface_name: &str,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
+fn extract_go_interface_methods(type_node: &Node, iface_name: &str, source: &[u8], symbols: &mut FileSymbols) {
     for j in 0..type_node.child_count() {
-        let Some(member) = type_node.child(j) else {
-            continue;
-        };
-        if member.kind() != "method_elem" {
-            continue;
-        }
+        let Some(member) = type_node.child(j) else { continue };
+        if member.kind() != "method_elem" { continue; }
         if let Some(meth_name) = member.child_by_field_name("name") {
             symbols.definitions.push(Definition {
                 name: format!("{}.{}", iface_name, node_text(&meth_name, source)),
@@ -192,9 +170,7 @@ fn extract_go_interface_methods(
 fn handle_const_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for i in 0..node.child_count() {
         let Some(spec) = node.child(i) else { continue };
-        if spec.kind() != "const_spec" {
-            continue;
-        }
+        if spec.kind() != "const_spec" { continue; }
         if let Some(name_node) = spec.child_by_field_name("name") {
             symbols.definitions.push(Definition {
                 name: node_text(&name_node, source).to_string(),
@@ -234,9 +210,7 @@ fn handle_import_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(fn_node) = node.child_by_field_name("function") else {
-        return;
-    };
+    let Some(fn_node) = node.child_by_field_name("function") else { return };
     match fn_node.kind() {
         "identifier" => {
             symbols.calls.push(Call {
@@ -249,7 +223,8 @@ fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         }
         "selector_expression" => {
             if let Some(field) = fn_node.child_by_field_name("field") {
-                let receiver = named_child_text(&fn_node, "operand", source).map(|s| s.to_string());
+                let receiver = named_child_text(&fn_node, "operand", source)
+                    .map(|s| s.to_string());
                 symbols.calls.push(Call {
                     name: node_text(&field, source).to_string(),
                     line: start_line(node),
@@ -267,8 +242,7 @@ fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 
 fn extract_go_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
-    let params_node = node
-        .child_by_field_name("parameters")
+    let params_node = node.child_by_field_name("parameters")
         .or_else(|| find_child(node, "parameter_list"));
     if let Some(params_node) = params_node {
         for i in 0..params_node.child_count() {
@@ -372,12 +346,8 @@ fn match_go_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
 /// Mirrors the JS `inferShortVarType` → `inferCompositeLiteral` / `inferAddressOfComposite`
 /// / `inferFactoryCall` chain in `src/extractors/go.ts`.
 fn infer_short_var_types(node: &Node, source: &[u8], type_map: &mut Vec<TypeMapEntry>) {
-    let Some(left) = node.child_by_field_name("left") else {
-        return;
-    };
-    let Some(right) = node.child_by_field_name("right") else {
-        return;
-    };
+    let Some(left) = node.child_by_field_name("left") else { return };
+    let Some(right) = node.child_by_field_name("right") else { return };
 
     // Collect LHS identifiers (may be an expression_list for multi-assignment).
     let lefts: Vec<Node> = if left.kind() == "expression_list" {
@@ -414,12 +384,8 @@ fn infer_single_short_var(
     source: &[u8],
     type_map: &mut Vec<TypeMapEntry>,
 ) {
-    if infer_composite_literal(var_node, rhs, source, type_map) {
-        return;
-    }
-    if infer_address_of_composite(var_node, rhs, source, type_map) {
-        return;
-    }
+    if infer_composite_literal(var_node, rhs, source, type_map) { return; }
+    if infer_address_of_composite(var_node, rhs, source, type_map) { return; }
     infer_factory_call(var_node, rhs, source, type_map);
 }
 
@@ -430,15 +396,9 @@ fn infer_composite_literal(
     source: &[u8],
     type_map: &mut Vec<TypeMapEntry>,
 ) -> bool {
-    if rhs.kind() != "composite_literal" {
-        return false;
-    }
-    let Some(type_node) = rhs.child_by_field_name("type") else {
-        return false;
-    };
-    let Some(type_name) = extract_go_type_name(&type_node, source) else {
-        return false;
-    };
+    if rhs.kind() != "composite_literal" { return false; }
+    let Some(type_node) = rhs.child_by_field_name("type") else { return false };
+    let Some(type_name) = extract_go_type_name(&type_node, source) else { return false };
     type_map.push(TypeMapEntry {
         name: node_text(var_node, source).to_string(),
         type_name: type_name.to_string(),
@@ -454,30 +414,16 @@ fn infer_address_of_composite(
     source: &[u8],
     type_map: &mut Vec<TypeMapEntry>,
 ) -> bool {
-    if rhs.kind() != "unary_expression" {
-        return false;
-    }
+    if rhs.kind() != "unary_expression" { return false; }
     // Verify the operator is `&` — guards against any other unary operator
     // applied to a composite literal on a raw AST.
-    let Some(op_node) = rhs.child(0) else {
-        return false;
-    };
-    if node_text(&op_node, source) != "&" {
-        return false;
-    }
+    let Some(op_node) = rhs.child(0) else { return false };
+    if node_text(&op_node, source) != "&" { return false; }
     // The operand of `&` is a composite_literal.
-    let Some(operand) = rhs.child_by_field_name("operand") else {
-        return false;
-    };
-    if operand.kind() != "composite_literal" {
-        return false;
-    }
-    let Some(type_node) = operand.child_by_field_name("type") else {
-        return false;
-    };
-    let Some(type_name) = extract_go_type_name(&type_node, source) else {
-        return false;
-    };
+    let Some(operand) = rhs.child_by_field_name("operand") else { return false };
+    if operand.kind() != "composite_literal" { return false; }
+    let Some(type_node) = operand.child_by_field_name("type") else { return false };
+    let Some(type_name) = extract_go_type_name(&type_node, source) else { return false };
     type_map.push(TypeMapEntry {
         name: node_text(var_node, source).to_string(),
         type_name: type_name.to_string(),
@@ -493,26 +439,16 @@ fn infer_factory_call(
     source: &[u8],
     type_map: &mut Vec<TypeMapEntry>,
 ) -> bool {
-    if rhs.kind() != "call_expression" {
-        return false;
-    }
-    let Some(fn_node) = rhs.child_by_field_name("function") else {
-        return false;
-    };
+    if rhs.kind() != "call_expression" { return false; }
+    let Some(fn_node) = rhs.child_by_field_name("function") else { return false };
     match fn_node.kind() {
         "selector_expression" => {
             // pkg.NewFoo(...) — use the field name only.
-            let Some(field) = fn_node.child_by_field_name("field") else {
-                return false;
-            };
+            let Some(field) = fn_node.child_by_field_name("field") else { return false };
             let field_text = node_text(&field, source);
-            if !field_text.starts_with("New") {
-                return false;
-            }
+            if !field_text.starts_with("New") { return false; }
             let type_name = &field_text[3..];
-            if type_name.is_empty() {
-                return false;
-            }
+            if type_name.is_empty() { return false; }
             type_map.push(TypeMapEntry {
                 name: node_text(var_node, source).to_string(),
                 type_name: type_name.to_string(),
@@ -522,13 +458,9 @@ fn infer_factory_call(
         }
         "identifier" => {
             let fn_text = node_text(&fn_node, source);
-            if !fn_text.starts_with("New") {
-                return false;
-            }
+            if !fn_text.starts_with("New") { return false; }
             let type_name = &fn_text[3..];
-            if type_name.is_empty() {
-                return false;
-            }
+            if type_name.is_empty() { return false; }
             type_map.push(TypeMapEntry {
                 name: node_text(var_node, source).to_string(),
                 type_name: type_name.to_string(),
@@ -541,12 +473,8 @@ fn infer_factory_call(
 }
 
 fn collect_go_typed_identifiers(node: &Node, source: &[u8], type_map: &mut Vec<TypeMapEntry>) {
-    let Some(type_node) = node.child_by_field_name("type") else {
-        return;
-    };
-    let Some(type_name) = extract_go_type_name(&type_node, source) else {
-        return;
-    };
+    let Some(type_node) = node.child_by_field_name("type") else { return };
+    let Some(type_name) = extract_go_type_name(&type_node, source) else { return };
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
         if child.kind() == "identifier" {
@@ -589,11 +517,7 @@ mod tests {
         assert!(names.contains(&"Server.Start"));
         // A real receiver method has a body — must not be marked bodyless (#1922:
         // a dotted name alone must never be treated as a signature-only stub).
-        let start = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "Server.Start")
-            .unwrap();
+        let start = s.definitions.iter().find(|d| d.name == "Server.Start").unwrap();
         assert_ne!(start.bodyless, Some(true));
     }
 
@@ -606,11 +530,7 @@ mod tests {
         // An interface method_elem structurally has no body field — must be marked
         // bodyless so the WASM/native "needs complexity" gate correctly skips it
         // instead of forcing an unnecessary fallback (#1922).
-        let read = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "Reader.Read")
-            .unwrap();
+        let read = s.definitions.iter().find(|d| d.name == "Reader.Read").unwrap();
         assert_eq!(read.bodyless, Some(true));
     }
 
@@ -632,11 +552,7 @@ mod tests {
         assert_eq!(methods.len(), 2);
         for m in methods {
             assert_ne!(m.bodyless, Some(true), "{} should not be bodyless", m.name);
-            assert!(
-                m.complexity.is_some(),
-                "{} should have complexity computed",
-                m.name
-            );
+            assert!(m.complexity.is_some(), "{} should have complexity computed", m.name);
         }
     }
 
@@ -675,11 +591,7 @@ mod tests {
     #[test]
     fn extracts_const_declarations() {
         let s = parse_go("package main\nconst MaxRetries = 3");
-        let c = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "MaxRetries")
-            .unwrap();
+        let c = s.definitions.iter().find(|d| d.name == "MaxRetries").unwrap();
         assert_eq!(c.kind, "constant");
     }
 
@@ -688,8 +600,9 @@ mod tests {
     #[test]
     fn infers_factory_call_new_prefix() {
         // svc := NewUserService(repo) → svc : UserService at conf 0.7
-        let s =
-            parse_go("package main\nfunc main() {\n  svc := NewUserService(repo)\n  _ = svc\n}\n");
+        let s = parse_go(
+            "package main\nfunc main() {\n  svc := NewUserService(repo)\n  _ = svc\n}\n",
+        );
         let entry = s.type_map.iter().find(|e| e.name == "svc");
         assert!(entry.is_some(), "expected svc in type_map");
         let entry = entry.unwrap();
@@ -711,12 +624,11 @@ mod tests {
     #[test]
     fn infers_composite_literal() {
         // u := User{Name: "Alice"} → u : User at conf 1.0
-        let s = parse_go("package main\nfunc main() {\n  u := User{Name: \"Alice\"}\n  _ = u\n}\n");
-        let entry = s.type_map.iter().find(|e| e.name == "u");
-        assert!(
-            entry.is_some(),
-            "expected u in type_map for composite literal"
+        let s = parse_go(
+            "package main\nfunc main() {\n  u := User{Name: \"Alice\"}\n  _ = u\n}\n",
         );
+        let entry = s.type_map.iter().find(|e| e.name == "u");
+        assert!(entry.is_some(), "expected u in type_map for composite literal");
         assert_eq!(entry.unwrap().type_name, "User");
         assert!((entry.unwrap().confidence - 1.0).abs() < f64::EPSILON);
     }
@@ -724,19 +636,20 @@ mod tests {
     #[test]
     fn infers_address_of_composite() {
         // u := &User{} → u : User at conf 1.0
-        let s = parse_go("package main\nfunc main() {\n  u := &User{}\n  _ = u\n}\n");
-        let entry = s.type_map.iter().find(|e| e.name == "u");
-        assert!(
-            entry.is_some(),
-            "expected u in type_map for address-of composite literal"
+        let s = parse_go(
+            "package main\nfunc main() {\n  u := &User{}\n  _ = u\n}\n",
         );
+        let entry = s.type_map.iter().find(|e| e.name == "u");
+        assert!(entry.is_some(), "expected u in type_map for address-of composite literal");
         assert_eq!(entry.unwrap().type_name, "User");
     }
 
     #[test]
     fn non_new_prefix_not_inferred() {
         // srv := createServer() — not a New* factory, should not seed typeMap
-        let s = parse_go("package main\nfunc main() {\n  srv := createServer()\n  _ = srv\n}\n");
+        let s = parse_go(
+            "package main\nfunc main() {\n  srv := createServer()\n  _ = srv\n}\n",
+        );
         assert!(
             s.type_map.iter().all(|e| e.name != "srv"),
             "unexpected typeMap entry for non-New factory"

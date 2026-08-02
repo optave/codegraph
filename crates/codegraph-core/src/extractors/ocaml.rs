@@ -1,9 +1,9 @@
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 
 pub struct OcamlExtractor;
 
@@ -11,12 +11,7 @@ impl SymbolExtractor for OcamlExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_ocaml_node);
-        walk_ast_nodes_with_config(
-            &tree.root_node(),
-            source,
-            &mut symbols.ast_nodes,
-            &OCAML_AST_CONFIG,
-        );
+        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &OCAML_AST_CONFIG);
         symbols
     }
 }
@@ -49,10 +44,7 @@ fn handle_ocaml_value_def(node: &Node, source: &[u8], symbols: &mut FileSymbols)
 }
 
 fn handle_ocaml_let_binding(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let pattern = match node
-        .child_by_field_name("pattern")
-        .or_else(|| node.child(0))
-    {
+    let pattern = match node.child_by_field_name("pattern").or_else(|| node.child(0)) {
         Some(p) => p,
         None => return,
     };
@@ -98,9 +90,11 @@ fn extract_ocaml_pattern_name(pattern: &Node, source: &[u8]) -> Option<String> {
     match pattern.kind() {
         "value_name" | "identifier" => Some(node_text(pattern, source).to_string()),
         "parenthesized_operator" => Some(node_text(pattern, source).to_string()),
-        _ => find_child(pattern, "value_name")
-            .or_else(|| find_child(pattern, "identifier"))
-            .map(|n| node_text(&n, source).to_string()),
+        _ => {
+            find_child(pattern, "value_name")
+                .or_else(|| find_child(pattern, "identifier"))
+                .map(|n| node_text(&n, source).to_string())
+        }
     }
 }
 
@@ -121,8 +115,7 @@ fn handle_ocaml_module_def(node: &Node, source: &[u8], symbols: &mut FileSymbols
         None => return,
     };
 
-    let name_node = binding
-        .child_by_field_name("name")
+    let name_node = binding.child_by_field_name("name")
         .or_else(|| find_child(&binding, "module_name"))
         .or_else(|| find_child(&binding, "identifier"));
     if let Some(name) = name_node {
@@ -148,8 +141,7 @@ fn handle_ocaml_type_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
                 continue;
             }
 
-            let name_node = child
-                .child_by_field_name("name")
+            let name_node = child.child_by_field_name("name")
                 .or_else(|| find_child(&child, "type_constructor"))
                 .or_else(|| find_child(&child, "identifier"));
             if let Some(name) = name_node {
@@ -173,11 +165,7 @@ fn handle_ocaml_type_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
     }
 }
 
-fn extract_ocaml_type_constructors(
-    type_binding: &Node,
-    source: &[u8],
-    children: &mut Vec<Definition>,
-) {
+fn extract_ocaml_type_constructors(type_binding: &Node, source: &[u8], children: &mut Vec<Definition>) {
     for i in 0..type_binding.child_count() {
         if let Some(child) = type_binding.child(i) {
             if child.kind() == "constructor_declaration" {
@@ -201,8 +189,7 @@ fn handle_ocaml_class_def(node: &Node, source: &[u8], symbols: &mut FileSymbols)
         None => return,
     };
 
-    let name_node = binding
-        .child_by_field_name("name")
+    let name_node = binding.child_by_field_name("name")
         .or_else(|| find_child(&binding, "identifier"));
     if let Some(name) = name_node {
         symbols.definitions.push(Definition {
@@ -236,20 +223,17 @@ fn handle_ocaml_open(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 
     if let Some(name) = module_name {
         let last = name.split('.').last().unwrap_or(&name).to_string();
-        symbols
-            .imports
-            .push(Import::new(name, vec![last], start_line(node)));
+        symbols.imports.push(Import::new(name, vec![last], start_line(node)));
     }
 }
 
 /// Handle `val name : type` declarations in .mli files.
 fn handle_ocaml_value_spec(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node =
-        find_child(node, "value_name").or_else(|| find_child(node, "parenthesized_operator"));
+    let name_node = find_child(node, "value_name")
+        .or_else(|| find_child(node, "parenthesized_operator"));
     if let Some(name) = name_node {
         // Check if the type signature contains `->` (function type)
-        let has_arrow = node
-            .child_by_field_name("type")
+        let has_arrow = node.child_by_field_name("type")
             .map(|t| has_descendant_kind(&t, "function_type"))
             .unwrap_or(false);
         symbols.definitions.push(Definition {
@@ -269,8 +253,8 @@ fn handle_ocaml_value_spec(node: &Node, source: &[u8], symbols: &mut FileSymbols
 
 /// Handle `external name : type = "c_name"` declarations in .mli files.
 fn handle_ocaml_external(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node =
-        find_child(node, "value_name").or_else(|| find_child(node, "parenthesized_operator"));
+    let name_node = find_child(node, "value_name")
+        .or_else(|| find_child(node, "parenthesized_operator"));
     if let Some(name) = name_node {
         symbols.definitions.push(Definition {
             name: node_text(&name, source).to_string(),
@@ -364,8 +348,7 @@ fn handle_ocaml_application(node: &Node, source: &[u8], symbols: &mut FileSymbol
             });
         }
         "field_get_expression" => {
-            let field = func_node
-                .child_by_field_name("field")
+            let field = func_node.child_by_field_name("field")
                 .or_else(|| find_child(&func_node, "value_name"))
                 .or_else(|| find_child(&func_node, "identifier"));
             let record = func_node.child(0);
@@ -375,11 +358,7 @@ fn handle_ocaml_application(node: &Node, source: &[u8], symbols: &mut FileSymbol
                     line: start_line(node),
                     dynamic: None,
                     receiver: record.and_then(|r| {
-                        if r.id() != f.id() {
-                            Some(node_text(&r, source).to_string())
-                        } else {
-                            None
-                        }
+                        if r.id() != f.id() { Some(node_text(&r, source).to_string()) } else { None }
                     }),
                     ..Default::default()
                 });

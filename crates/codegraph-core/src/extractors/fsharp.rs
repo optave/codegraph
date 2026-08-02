@@ -1,9 +1,9 @@
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 
 pub struct FSharpExtractor;
 
@@ -11,12 +11,7 @@ impl SymbolExtractor for FSharpExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_fsharp_node);
-        walk_ast_nodes_with_config(
-            &tree.root_node(),
-            source,
-            &mut symbols.ast_nodes,
-            &FSHARP_AST_CONFIG,
-        );
+        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &FSHARP_AST_CONFIG);
         symbols
     }
 }
@@ -403,11 +398,7 @@ fn handle_value_definition(node: &Node, source: &[u8], symbols: &mut FileSymbols
         None => return,
     };
 
-    let kind = if has_function_type(node) {
-        "function"
-    } else {
-        "variable"
-    };
+    let kind = if has_function_type(node) { "function" } else { "variable" };
     let module_name = enclosing_module_name(node, source);
     let qualified = match module_name {
         Some(m) => format!("{}.{}", m, name),
@@ -440,9 +431,7 @@ fn has_function_type(node: &Node) -> bool {
     // The grammar wraps every type signature in `curried_spec`. A function type
     // (e.g. `val add : int -> int -> int`) contains one or more `arguments_spec`
     // children; a plain value (e.g. `val pi : float`) wraps a single `simple_type`.
-    let Some(curried) = find_child(node, "curried_spec") else {
-        return false;
-    };
+    let Some(curried) = find_child(node, "curried_spec") else { return false };
     for i in 0..curried.child_count() {
         if let Some(child) = curried.child(i) {
             if child.kind() == "arguments_spec" {
@@ -479,9 +468,7 @@ mod tests {
 
     #[test]
     fn signature_extracts_val_declarations() {
-        let s = parse_signature(
-            "namespace MyApp.Domain\n\nval add : int -> int -> int\nval pi : float\n",
-        );
+        let s = parse_signature("namespace MyApp.Domain\n\nval add : int -> int -> int\nval pi : float\n");
         let add = s
             .definitions
             .iter()
@@ -530,16 +517,12 @@ mod tests {
         // must be qualified with the module path.
         let s = parse_signature("namespace X\n\nmodule Foo =\n  val add : int -> int\n");
         assert!(
-            s.definitions
-                .iter()
-                .any(|d| d.name == "Foo.add" && d.kind == "function"),
+            s.definitions.iter().any(|d| d.name == "Foo.add" && d.kind == "function"),
             "val add nested under `module Foo =` must be indexed as `Foo.add`, got: {:?}",
             s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>(),
         );
         assert!(
-            s.definitions
-                .iter()
-                .any(|d| d.name == "Foo" && d.kind == "module"),
+            s.definitions.iter().any(|d| d.name == "Foo" && d.kind == "module"),
             "module Foo must be indexed as a module definition"
         );
     }
@@ -550,7 +533,9 @@ mod tests {
         // node in the source grammar — NOT a `value_definition` — so our
         // `value_definition`/`val`-first-child handler does not see it.
         // This regression guard makes that empirical fact explicit.
-        let s = parse_source("module M\n\ntype C() =\n    val mutable count: int = 0\n");
+        let s = parse_source(
+            "module M\n\ntype C() =\n    val mutable count: int = 0\n",
+        );
         assert!(
             s.definitions.iter().all(|d| d.name != "count"),
             "val mutable class fields must not be extracted by the signature value_definition handler"

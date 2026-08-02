@@ -1,9 +1,9 @@
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 
 pub struct CppExtractor;
 
@@ -11,12 +11,7 @@ impl SymbolExtractor for CppExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_cpp_node);
-        walk_ast_nodes_with_config(
-            &tree.root_node(),
-            source,
-            &mut symbols.ast_nodes,
-            &CPP_AST_CONFIG,
-        );
+        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &CPP_AST_CONFIG);
         walk_tree(&tree.root_node(), source, &mut symbols, match_cpp_type_map);
         dedup_type_map(&mut symbols.type_map);
         symbols
@@ -35,11 +30,8 @@ fn unwrap_cpp_declarator(node: &Node, source: &[u8]) -> String {
     let mut current = *node;
     loop {
         match current.kind() {
-            "pointer_declarator"
-            | "reference_declarator"
-            | "array_declarator"
-            | "parenthesized_declarator"
-            | "function_declarator" => {
+            "pointer_declarator" | "reference_declarator" | "array_declarator"
+            | "parenthesized_declarator" | "function_declarator" => {
                 // tree-sitter-cpp's `reference_declarator` rule does not expose a
                 // `declarator` field, so `child_by_field_name` returns None and
                 // the full node text (`& name`) leaks out. Fall back to scanning
@@ -115,9 +107,7 @@ fn extract_cpp_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
         if let Some(param_list) = func_decl.child_by_field_name("parameters") {
             for i in 0..param_list.child_count() {
                 if let Some(child) = param_list.child(i) {
-                    if child.kind() == "parameter_declaration"
-                        || child.kind() == "optional_parameter_declaration"
-                    {
+                    if child.kind() == "parameter_declaration" || child.kind() == "optional_parameter_declaration" {
                         if let Some(decl) = child.child_by_field_name("declarator") {
                             let name = unwrap_cpp_declarator(&decl, source);
                             if !name.is_empty() {
@@ -169,21 +159,14 @@ fn extract_cpp_enum_constants(node: &Node, source: &[u8]) -> Vec<Definition> {
     constants
 }
 
-fn extract_cpp_base_classes(
-    node: &Node,
-    source: &[u8],
-    class_name: &str,
-    symbols: &mut FileSymbols,
-) {
+fn extract_cpp_base_classes(node: &Node, source: &[u8], class_name: &str, symbols: &mut FileSymbols) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "base_class_clause" {
                 for j in 0..child.child_count() {
                     if let Some(base) = child.child(j) {
                         match base.kind() {
-                            "type_identifier"
-                            | "qualified_identifier"
-                            | "scoped_type_identifier" => {
+                            "type_identifier" | "qualified_identifier" | "scoped_type_identifier" => {
                                 symbols.classes.push(ClassRelation {
                                     name: class_name.to_string(),
                                     extends: Some(node_text(&base, source).to_string()),
@@ -204,17 +187,12 @@ fn extract_cpp_base_classes(
 
 fn handle_cpp_function_definition(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     if let Some(name) = extract_cpp_function_name(node, source) {
-        let parent_class =
-            find_enclosing_type_name(node, &["class_specifier", "struct_specifier"], source);
+        let parent_class = find_enclosing_type_name(node, &["class_specifier", "struct_specifier"], source);
         let full_name = match &parent_class {
             Some(cls) => format!("{}.{}", cls, name),
             None => name,
         };
-        let kind = if parent_class.is_some() {
-            "method"
-        } else {
-            "function"
-        };
+        let kind = if parent_class.is_some() { "method" } else { "function" };
         let children = extract_cpp_parameters(node, source);
         symbols.definitions.push(Definition {
             name: full_name,
@@ -234,8 +212,7 @@ fn handle_cpp_function_definition(node: &Node, source: &[u8], symbols: &mut File
 fn handle_cpp_class_specifier(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     if let Some(name_node) = node.child_by_field_name("name") {
         let class_name = node_text(&name_node, source).to_string();
-        let children = node
-            .child_by_field_name("body")
+        let children = node.child_by_field_name("body")
             .map(|body| extract_cpp_fields(&body, source))
             .unwrap_or_default();
         symbols.definitions.push(Definition {
@@ -257,8 +234,7 @@ fn handle_cpp_class_specifier(node: &Node, source: &[u8], symbols: &mut FileSymb
 fn handle_cpp_struct_specifier(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     if let Some(name_node) = node.child_by_field_name("name") {
         let struct_name = node_text(&name_node, source).to_string();
-        let children = node
-            .child_by_field_name("body")
+        let children = node.child_by_field_name("body")
             .map(|body| extract_cpp_fields(&body, source))
             .unwrap_or_default();
         symbols.definitions.push(Definition {
@@ -347,19 +323,12 @@ fn handle_cpp_preproc_include(node: &Node, source: &[u8], symbols: &mut FileSymb
         let path = raw.trim_matches(|c| c == '"' || c == '<' || c == '>');
         if !path.is_empty() {
             let last = path.split('/').last().unwrap_or(path);
-            let name = last
-                .strip_suffix(".h")
+            let name = last.strip_suffix(".h")
                 .or_else(|| last.strip_suffix(".hpp"))
                 .unwrap_or(last);
-            push_import(
-                symbols,
-                node,
-                path.to_string(),
-                vec![name.to_string()],
-                |imp| {
-                    imp.c_include = Some(true);
-                },
-            );
+            push_import(symbols, node, path.to_string(), vec![name.to_string()], |imp| {
+                imp.c_include = Some(true);
+            });
         }
     }
 }
@@ -374,8 +343,8 @@ fn handle_cpp_call_expression(node: &Node, source: &[u8], symbols: &mut FileSymb
                 let name = named_child_text(&fn_node, "field", source)
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| node_text(&fn_node, source).to_string());
-                let receiver =
-                    named_child_text(&fn_node, "argument", source).map(|s| s.to_string());
+                let receiver = named_child_text(&fn_node, "argument", source)
+                    .map(|s| s.to_string());
                 push_call(symbols, node, name, receiver, None);
             }
             _ => {
@@ -456,11 +425,7 @@ mod tests {
         // field, so the unwrap helper has to scan children for the underlying
         // identifier — otherwise the parameter name comes back as `& action`.
         let s = parse_cpp("void log_action(const std::string& action) {}");
-        let func = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "log_action")
-            .unwrap();
+        let func = s.definitions.iter().find(|d| d.name == "log_action").unwrap();
         let params = func.children.as_ref().expect("function has children");
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].name, "action");

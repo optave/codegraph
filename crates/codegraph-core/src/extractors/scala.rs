@@ -1,9 +1,9 @@
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 
 pub struct ScalaExtractor;
 
@@ -11,18 +11,8 @@ impl SymbolExtractor for ScalaExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_scala_node);
-        walk_ast_nodes_with_config(
-            &tree.root_node(),
-            source,
-            &mut symbols.ast_nodes,
-            &SCALA_AST_CONFIG,
-        );
-        walk_tree(
-            &tree.root_node(),
-            source,
-            &mut symbols,
-            match_scala_type_map,
-        );
+        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &SCALA_AST_CONFIG);
+        walk_tree(&tree.root_node(), source, &mut symbols, match_scala_type_map);
         dedup_type_map(&mut symbols.type_map);
         symbols
     }
@@ -33,12 +23,10 @@ impl SymbolExtractor for ScalaExtractor {
 fn match_scala_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
     match node.kind() {
         "val_definition" | "var_definition" => {
-            if let Some(type_node) = node
-                .child_by_field_name("type")
+            if let Some(type_node) = node.child_by_field_name("type")
                 .or_else(|| find_child(node, "type_identifier"))
             {
-                if let Some(pat) = node
-                    .child_by_field_name("pattern")
+                if let Some(pat) = node.child_by_field_name("pattern")
                     .or_else(|| find_child(node, "identifier"))
                 {
                     symbols.type_map.push(TypeMapEntry {
@@ -51,8 +39,7 @@ fn match_scala_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _
         }
         "parameter" => {
             if let Some(type_node) = node.child_by_field_name("type") {
-                if let Some(name_node) = node
-                    .child_by_field_name("name")
+                if let Some(name_node) = node.child_by_field_name("name")
                     .or_else(|| find_child(node, "identifier"))
                 {
                     symbols.type_map.push(TypeMapEntry {
@@ -74,8 +61,7 @@ fn find_scala_parent_class<'a>(node: &Node<'a>, source: &[u8]) -> Option<String>
     while let Some(parent) = current {
         match parent.kind() {
             "class_definition" | "object_definition" | "trait_definition" => {
-                return parent
-                    .child_by_field_name("name")
+                return parent.child_by_field_name("name")
                     .or_else(|| find_child(&parent, "identifier"))
                     .map(|n| node_text(&n, source).to_string());
             }
@@ -88,15 +74,13 @@ fn find_scala_parent_class<'a>(node: &Node<'a>, source: &[u8]) -> Option<String>
 
 fn extract_scala_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
-    if let Some(param_list) = node
-        .child_by_field_name("parameters")
+    if let Some(param_list) = node.child_by_field_name("parameters")
         .or_else(|| find_child(node, "parameters"))
     {
         for i in 0..param_list.child_count() {
             if let Some(child) = param_list.child(i) {
                 if child.kind() == "parameter" {
-                    if let Some(name_node) = child
-                        .child_by_field_name("name")
+                    if let Some(name_node) = child.child_by_field_name("name")
                         .or_else(|| find_child(&child, "identifier"))
                     {
                         params.push(child_def(
@@ -119,8 +103,7 @@ fn extract_scala_class_members(node: &Node, source: &[u8]) -> Vec<Definition> {
             if let Some(child) = body.child(i) {
                 match child.kind() {
                     "val_definition" | "var_definition" => {
-                        let name = child
-                            .child_by_field_name("pattern")
+                        let name = child.child_by_field_name("pattern")
                             .or_else(|| find_child(&child, "identifier"))
                             .map(|n| node_text(&n, source).to_string());
                         if let Some(name) = name {
@@ -216,8 +199,7 @@ fn extract_scala_import_path(node: &Node, source: &[u8]) -> String {
 // ── Per-node-kind handlers ──────────────────────────────────────────────────
 
 fn handle_scala_class_definition(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = node
-        .child_by_field_name("name")
+    let name_node = node.child_by_field_name("name")
         .or_else(|| find_child(node, "identifier"));
     if let Some(name_node) = name_node {
         let class_name = node_text(&name_node, source).to_string();
@@ -239,8 +221,7 @@ fn handle_scala_class_definition(node: &Node, source: &[u8], symbols: &mut FileS
 }
 
 fn handle_scala_trait_definition(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = node
-        .child_by_field_name("name")
+    let name_node = node.child_by_field_name("name")
         .or_else(|| find_child(node, "identifier"));
     if let Some(name_node) = name_node {
         let trait_name = node_text(&name_node, source).to_string();
@@ -261,8 +242,7 @@ fn handle_scala_trait_definition(node: &Node, source: &[u8], symbols: &mut FileS
 }
 
 fn handle_scala_object_definition(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = node
-        .child_by_field_name("name")
+    let name_node = node.child_by_field_name("name")
         .or_else(|| find_child(node, "identifier"));
     if let Some(name_node) = name_node {
         let obj_name = node_text(&name_node, source).to_string();
@@ -284,8 +264,7 @@ fn handle_scala_object_definition(node: &Node, source: &[u8], symbols: &mut File
 }
 
 fn handle_scala_function_definition(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = node
-        .child_by_field_name("name")
+    let name_node = node.child_by_field_name("name")
         .or_else(|| find_child(node, "identifier"));
     if let Some(name_node) = name_node {
         let parent_class = find_scala_parent_class(node, source);
@@ -294,11 +273,7 @@ fn handle_scala_function_definition(node: &Node, source: &[u8], symbols: &mut Fi
             Some(cls) => format!("{}.{}", cls, name),
             None => name.to_string(),
         };
-        let kind = if parent_class.is_some() {
-            "method"
-        } else {
-            "function"
-        };
+        let kind = if parent_class.is_some() { "method" } else { "function" };
         let children = extract_scala_parameters(node, source);
         symbols.definitions.push(Definition {
             name: full_name,
@@ -326,8 +301,7 @@ fn handle_scala_import_declaration(node: &Node, source: &[u8], symbols: &mut Fil
 }
 
 fn handle_scala_call_expression(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    if let Some(fn_node) = node
-        .child_by_field_name("function")
+    if let Some(fn_node) = node.child_by_field_name("function")
         .or_else(|| node.child(0))
     {
         match fn_node.kind() {
@@ -341,13 +315,11 @@ fn handle_scala_call_expression(node: &Node, source: &[u8], symbols: &mut FileSy
                 });
             }
             "field_expression" => {
-                let name = fn_node
-                    .child_by_field_name("field")
+                let name = fn_node.child_by_field_name("field")
                     .or_else(|| fn_node.child_by_field_name("member"))
                     .map(|n| node_text(&n, source).to_string())
                     .unwrap_or_else(|| node_text(&fn_node, source).to_string());
-                let receiver = fn_node
-                    .child_by_field_name("value")
+                let receiver = fn_node.child_by_field_name("value")
                     .or_else(|| fn_node.child(0))
                     .map(|n| node_text(&n, source).to_string());
                 let call_line = start_line(node);
@@ -373,8 +345,7 @@ fn handle_scala_call_expression(node: &Node, source: &[u8], symbols: &mut FileSy
                     "getMethod" | "getDeclaredMethod" if receiver.is_some() => {
                         // Extract first string arg from the call_expression (not fn_node)
                         let mut literal: Option<String> = None;
-                        if let Some(args) = node
-                            .child_by_field_name("arguments")
+                        if let Some(args) = node.child_by_field_name("arguments")
                             .or_else(|| find_child(node, "arguments"))
                         {
                             for i in 0..args.child_count() {
@@ -382,10 +353,8 @@ fn handle_scala_call_expression(node: &Node, source: &[u8], symbols: &mut FileSy
                                     match child.kind() {
                                         "(" | ")" | "," => continue,
                                         "string" | "string_literal" => {
-                                            literal = Some(
-                                                node_text(&child, source)
-                                                    .replace(&['"', '\''][..], ""),
-                                            );
+                                            literal = Some(node_text(&child, source)
+                                                .replace(&['"', '\''][..], ""));
                                             break;
                                         }
                                         _ => break,
@@ -480,11 +449,7 @@ mod tests {
     #[test]
     fn extracts_object() {
         let s = parse_scala("object Singleton { val x = 1 }");
-        let obj = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "Singleton")
-            .unwrap();
+        let obj = s.definitions.iter().find(|d| d.name == "Singleton").unwrap();
         assert_eq!(obj.kind, "class");
     }
 

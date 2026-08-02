@@ -225,11 +225,9 @@ fn extract_ns_requires(require_form: &Node, source: &[u8], symbols: &mut FileSym
             if let Some(sym) = find_first_symbol(&child) {
                 let text = node_text(&sym, source);
                 let last = text.rsplit('.').next().unwrap_or(text).to_string();
-                symbols.imports.push(Import::new(
-                    text.to_string(),
-                    vec![last],
-                    start_line(&child),
-                ));
+                symbols
+                    .imports
+                    .push(Import::new(text.to_string(), vec![last], start_line(&child)));
             }
         }
 
@@ -239,11 +237,9 @@ fn extract_ns_requires(require_form: &Node, source: &[u8], symbols: &mut FileSym
             let text = node_text(&child, source);
             if !text.starts_with(':') {
                 let last = text.rsplit('.').next().unwrap_or(text).to_string();
-                symbols.imports.push(Import::new(
-                    text.to_string(),
-                    vec![last],
-                    start_line(&child),
-                ));
+                symbols
+                    .imports
+                    .push(Import::new(text.to_string(), vec![last], start_line(&child)));
             }
         }
     }

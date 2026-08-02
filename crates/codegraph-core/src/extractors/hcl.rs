@@ -113,11 +113,7 @@ fn match_hcl_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth:
             if !name.is_empty() {
                 let children = if block_type == "variable" || block_type == "output" {
                     let attrs = extract_block_attributes(node, source);
-                    if attrs.is_empty() {
-                        None
-                    } else {
-                        Some(attrs)
-                    }
+                    if attrs.is_empty() { None } else { Some(attrs) }
                 } else {
                     None
                 };
