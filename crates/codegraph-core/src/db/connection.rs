@@ -362,6 +362,17 @@ const MIGRATIONS: &[Migration] = &[
       ALTER TABLE deleted_export_advisories ADD COLUMN consumer_kind TEXT;
     "#,
     },
+    Migration {
+        // dataflow.call_edge_id (added in v18, `REFERENCES edges(id)`) was never
+        // given its own index — every DELETE FROM edges pays an O(dataflow-rows)
+        // scan under better-sqlite3, which defaults `PRAGMA foreign_keys = ON`
+        // (this native/rusqlite connection never sets that pragma, so native
+        // never paid this cost — WASM-only exposure, see issue #1948).
+        version: 23,
+        up: r#"
+      CREATE INDEX IF NOT EXISTS idx_dataflow_call_edge ON dataflow(call_edge_id);
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────

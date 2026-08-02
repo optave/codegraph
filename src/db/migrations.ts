@@ -354,6 +354,23 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE deleted_export_advisories ADD COLUMN consumer_kind TEXT;
     `,
   },
+  {
+    // dataflow.call_edge_id (added in v18, `REFERENCES edges(id)`) was never
+    // given its own index — every DELETE FROM edges pays an O(dataflow-rows)
+    // scan under better-sqlite3, which defaults `PRAGMA foreign_keys = ON`
+    // (rusqlite/native never sets this pragma, so native never paid this
+    // cost — this is WASM-only exposure, matching issue #1948's report).
+    // Confirmed via EXPLAIN QUERY PLAN: without this index, deleting a
+    // single file's edges triggers `SCAN dataflow` for both the explicit
+    // `dataflowByCallEdge` cleanup query (build-stmts.ts) and SQLite's own
+    // automatic FK-constraint check; with it, both become an indexed SEARCH.
+    // Measured on this repo's own ~19.8K-node/~41.8K-edge graph: a 1-file
+    // incremental purge dropped from 62ms to 1.47ms (97.6% reduction).
+    version: 23,
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_dataflow_call_edge ON dataflow(call_edge_id);
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {
