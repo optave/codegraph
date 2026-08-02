@@ -12,6 +12,7 @@ import path from 'node:path';
 import { bulkNodeIdsByFile, purgeFileData } from '../../../db/index.js';
 import { PROPAGATION_HOP_PENALTY } from '../../../extractors/javascript.js';
 import { debug, warn } from '../../../infrastructure/logger.js';
+import { getOrCreatePerDbChunkStmt } from '../../../shared/chunked-stmt-cache.js';
 import { normalizePath, TS_NATIVE_CONFIDENCE_FLOOR } from '../../../shared/constants.js';
 import { FLAG_ONLY_DYNAMIC_KINDS, isTypeErasedImportTarget } from '../../../shared/kinds.js';
 import type {
@@ -1184,6 +1185,19 @@ function buildCallEdges(
  * files), not a full-table scan. Chunked to stay within SQLite's
  * SQLITE_LIMIT_VARIABLE_NUMBER (999 on older builds).
  */
+// Chunk-size-keyed statement caches for backfillIncrementalEdgeTechniques'
+// technique/confidence-floor UPDATEs below, scoped per db like the
+// techniqueBackfillStmtCache/confidenceFloorStmtCache pair in
+// stages/build-edges.ts's applyEdgeTechniquesAfterNativeInsert (#1768, #1952).
+const incrementalTechniqueBackfillStmtCache = new WeakMap<
+  BetterSqlite3Database,
+  Map<number, SqliteStatement>
+>();
+const incrementalConfidenceFloorStmtCache = new WeakMap<
+  BetterSqlite3Database,
+  Map<number, SqliteStatement>
+>();
+
 function backfillIncrementalEdgeTechniques(
   db: BetterSqlite3Database,
   touchedFiles: readonly string[],
@@ -1193,20 +1207,30 @@ function backfillIncrementalEdgeTechniques(
   const tx = db.transaction(() => {
     for (let i = 0; i < touchedFiles.length; i += CHUNK_SIZE) {
       const chunk = touchedFiles.slice(i, i + CHUNK_SIZE);
-      const placeholders = chunk.map(() => '?').join(',');
-      db.prepare(
-        `UPDATE edges SET technique = 'ts-native'
-         WHERE kind = 'calls' AND technique IS NULL AND dynamic_kind IS NULL
-           AND source_id IN (SELECT id FROM nodes WHERE file IN (${placeholders}))`,
-      ).run(...chunk);
+      const chunkSize = chunk.length;
+      const techniqueStmt = getOrCreatePerDbChunkStmt(
+        incrementalTechniqueBackfillStmtCache,
+        db,
+        chunkSize,
+        (n) =>
+          `UPDATE edges SET technique = 'ts-native'
+           WHERE kind = 'calls' AND technique IS NULL AND dynamic_kind IS NULL
+             AND source_id IN (SELECT id FROM nodes WHERE file IN (${Array.from({ length: n }, () => '?').join(',')}))`,
+      );
+      techniqueStmt.run(...chunk);
       // Lift resolved ts-native edges below the confidence floor for this
       // chunk, matching the floor lift the full-build native paths apply.
-      db.prepare(
-        `UPDATE edges SET confidence = ?
-         WHERE kind = 'calls' AND technique = 'ts-native'
-           AND confidence > 0 AND confidence < ?
-           AND source_id IN (SELECT id FROM nodes WHERE file IN (${placeholders}))`,
-      ).run(TS_NATIVE_CONFIDENCE_FLOOR, TS_NATIVE_CONFIDENCE_FLOOR, ...chunk);
+      const confidenceStmt = getOrCreatePerDbChunkStmt(
+        incrementalConfidenceFloorStmtCache,
+        db,
+        chunkSize,
+        (n) =>
+          `UPDATE edges SET confidence = ?
+           WHERE kind = 'calls' AND technique = 'ts-native'
+             AND confidence > 0 AND confidence < ?
+             AND source_id IN (SELECT id FROM nodes WHERE file IN (${Array.from({ length: n }, () => '?').join(',')}))`,
+      );
+      confidenceStmt.run(TS_NATIVE_CONFIDENCE_FLOOR, TS_NATIVE_CONFIDENCE_FLOOR, ...chunk);
     }
   });
   tx();
