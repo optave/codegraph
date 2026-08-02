@@ -14,6 +14,7 @@ import { computeConfidence, isSameLanguageFamily } from '../resolve.js';
 import {
   attachConstructorTargets,
   isModuleScopedLanguage,
+  type ResolvedCandidate,
   resolveByGlobal,
   resolveByReceiver,
   unwrapTypeEntry,
@@ -22,11 +23,8 @@ import {
 // ── Public interface ─────────────────────────────────────────────────────
 
 export interface CallNodeLookup {
-  byNameAndFile(
-    name: string,
-    file: string,
-  ): ReadonlyArray<{ id: number; file: string; kind?: string }>;
-  byName(name: string): ReadonlyArray<{ id: number; file: string; kind?: string }>;
+  byNameAndFile(name: string, file: string): ReadonlyArray<ResolvedCandidate>;
+  byName(name: string): ReadonlyArray<ResolvedCandidate>;
   isBarrel(file: string): boolean;
   /**
    * Resolve `symbolName` through `barrelFile`'s re-export chain. `name` in the
@@ -97,7 +95,7 @@ export function resolveSameClassQualifiedMethod(
   callerName: string,
   relPath: string,
   lookup: CallNodeLookup,
-): Array<{ id: number; file: string; kind?: string }> {
+): Array<ResolvedCandidate> {
   const lastDot = callerName.lastIndexOf('.');
   if (lastDot <= 0) return [];
   const prevDot = callerName.lastIndexOf('.', lastDot - 1);
@@ -136,7 +134,7 @@ export function resolveDefinePropertyAccessorTarget(
   typeMap: Map<string, unknown>,
   lookup: CallNodeLookup,
   definePropertyReceivers: ReadonlyMap<string, string>,
-): Array<{ id: number; file: string; kind?: string }> {
+): Array<ResolvedCandidate> {
   const receiverVarName = definePropertyReceivers.get(callerName);
   if (!receiverVarName) return [];
 
@@ -172,7 +170,7 @@ export function resolveKotlinReflectionPreQualified(
   call: ReflectionCall,
   relPath: string,
   lookup: CallNodeLookup,
-): ReadonlyArray<{ id: number; file: string; kind?: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   if (
     call.dynamicKind === 'reflection' &&
     call.receiver &&
@@ -206,7 +204,7 @@ export function resolveReflectionKeyExprFallback(
   relPath: string,
   typeMap: Map<string, unknown>,
   lookup: CallNodeLookup,
-): Array<{ id: number; file: string; kind?: string }> {
+): Array<ResolvedCandidate> {
   if (
     call.dynamicKind !== 'reflection' ||
     !call.keyExpr ||
@@ -357,7 +355,7 @@ export function resolveByMethodOrGlobal(
   typeMap: Map<string, unknown>,
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   if (
     call.receiver &&
     call.receiver !== 'this' &&
@@ -393,7 +391,7 @@ export function resolveCallTargets(
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
 ): {
-  targets: Array<{ id: number; file: string; kind?: string }>;
+  targets: Array<ResolvedCandidate>;
   importedFrom: string | undefined;
 } {
   // Flagged dynamic calls use synthetic names like '<dynamic:eval>'. Short-circuit
@@ -414,7 +412,7 @@ export function resolveCallTargets(
   // must key on that name, not the call site's (possibly barrel-aliased)
   // `targetName`, or it builds a qualified name that doesn't exist (#1892).
   let resolvedClassName = targetName;
-  let targets: ReadonlyArray<{ id: number; file: string; kind?: string }> | undefined;
+  let targets: ReadonlyArray<ResolvedCandidate> | undefined;
 
   if (importedFrom) {
     targets = lookup.byNameAndFile(targetName, importedFrom);
@@ -441,12 +439,26 @@ export function resolveCallTargets(
     // class-kind definition — kind-filtering it would break constructor-call
     // resolution (#1888).
     const bareMatches = lookup.byNameAndFile(call.name, relPath);
-    targets = call.receiver
+    const kindFilteredBare = call.receiver
       ? bareMatches.filter((n) => CALLABLE_SYMBOL_KINDS.has(n.kind ?? ''))
       : bareMatches;
+    targets = kindFilteredBare;
 
-    if (targets.length === 0) {
-      targets = resolveByMethodOrGlobal(
+    const hasConcreteReceiver =
+      !!call.receiver &&
+      call.receiver !== 'this' &&
+      call.receiver !== 'self' &&
+      call.receiver !== 'super';
+
+    // A concrete-receiver call still needs type-aware confirmation even when
+    // the kind-filtered bare lookup already found something: the bare lookup
+    // only rules out non-callable kinds (#1888), not a coincidentally
+    // same-named function/method elsewhere in the file that has no static
+    // relationship to the receiver at all (#2025) — e.g. an unrelated
+    // top-level `function method()` pre-empting `obj.method()` when `obj`'s
+    // type resolves to a class that also declares `method`.
+    if (targets.length === 0 || hasConcreteReceiver) {
+      const viaReceiverOrGlobal = resolveByMethodOrGlobal(
         lookup,
         call,
         relPath,
@@ -454,6 +466,54 @@ export function resolveCallTargets(
         callerName,
         importedOriginalNames,
       );
+      if (targets.length === 0) {
+        targets = viaReceiverOrGlobal;
+      } else if (viaReceiverOrGlobal.length > 0) {
+        // Prefer the type-aware result UNLESS it's simply a different node
+        // representation of the exact declaration the bare match already
+        // found. Same file + line alone is NOT sufficient to prove that: two
+        // wholly unrelated declarations can coincidentally share one
+        // physical source line (e.g. `function method() {} class Widget {
+        // method() {} }` written on one line), and file+line-only comparison
+        // would incorrectly treat the type-aware `Widget.method` match as
+        // "the same declaration" as the unrelated bare `method` and keep the
+        // wrong one (#2025 follow-up caught by review).
+        //
+        // The only *intentional* same-file-and-line double-representation in
+        // the codebase is #1517's computed-key object-literal methods,
+        // extracted by extractObjectLiteralFunctions/extract_object_literal_functions:
+        // a bare node (kind `method`) and a qualified `obj.method` node (kind
+        // `function`) are pushed from the identical AST node, in that exact
+        // kind pairing. Requiring that specific pairing — not just matching
+        // coordinates — distinguishes the deliberate #1517 duplicate from a
+        // coincidental same-line collision between two real, distinct
+        // declarations.
+        //
+        // When every type-aware match does pair up with a bare `method` node
+        // this way, resolve to exactly those paired bare nodes — NOT the
+        // original bare lookup result wholesale. `targets` can contain
+        // additional, wholly unrelated same-named bare matches elsewhere in
+        // the file (a second collision independent of the #1517 pairing);
+        // keeping the whole array would attach a bogus extra `calls` edge to
+        // that unrelated declaration (review finding on #2227).
+        const bareMethodByLocation = new Map<string, ResolvedCandidate>();
+        for (const n of targets) {
+          if (n.kind === 'method') bareMethodByLocation.set(`${n.file}:${n.line}`, n);
+        }
+        const pairedBareTargets: ResolvedCandidate[] = [];
+        const isSameDeclaration = viaReceiverOrGlobal.every((n) => {
+          if (n.kind !== 'function') return false;
+          const paired = bareMethodByLocation.get(`${n.file}:${n.line}`);
+          if (!paired) return false;
+          pairedBareTargets.push(paired);
+          return true;
+        });
+        if (!isSameDeclaration) {
+          targets = viaReceiverOrGlobal;
+        } else {
+          targets = [...new Set(pairedBareTargets)];
+        }
+      }
     }
   }
 
@@ -570,7 +630,7 @@ export function resolveHierarchyTargets(
   importedNames: ReadonlyMap<string, string>,
   targetKinds: ReadonlySet<string>,
   importedOriginalNames?: ReadonlyMap<string, string>,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   const sameFileAll = lookup.byNameAndFile(name, relPath);
   const isLocalDefinition = sameFileAll.length > 0 && !importedNames.has(name);
   if (isLocalDefinition) {

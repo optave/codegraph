@@ -18,17 +18,25 @@ import { computeConfidence } from '../resolve.js';
 // ── Lookup adapter (structural mirror of CallNodeLookup) ──────────────────────
 
 /**
+ * A resolved call-target candidate. `line` (together with `kind`) is needed
+ * so `resolveCallTargets` (call-resolver.ts) can tell whether a type-aware
+ * match here and a same-file bare-name match it already found refer to the
+ * identical physical declaration (e.g. #1517's computed-key object-literal
+ * methods, deliberately emitted as a bare `method`-kind node and a qualified
+ * `function`-kind node at the same line) versus a genuinely different
+ * declaration that merely shares that same line (#2025).
+ */
+export type ResolvedCandidate = { id: number; file: string; kind?: string; line: number };
+
+/**
  * Structural mirror of `CallNodeLookup` from call-resolver.ts.
  * Any `CallNodeLookup` instance satisfies this type without explicit declaration.
  * Defined here to break the circular import that would arise from importing
  * `CallNodeLookup` directly from call-resolver.ts.
  */
 export interface StrategyLookup {
-  byNameAndFile(
-    name: string,
-    file: string,
-  ): ReadonlyArray<{ id: number; file: string; kind?: string }>;
-  byName(name: string): ReadonlyArray<{ id: number; file: string; kind?: string }>;
+  byNameAndFile(name: string, file: string): ReadonlyArray<ResolvedCandidate>;
+  byName(name: string): ReadonlyArray<ResolvedCandidate>;
   isBarrel(file: string): boolean;
   resolveBarrel(barrelFile: string, symbolName: string): { file: string; name: string } | null;
   nodeId(name: string, kind: string, file: string, line: number): { id: number } | undefined;
@@ -121,7 +129,7 @@ function resolveConstructorTarget(
   lookup: StrategyLookup,
   classTarget: { file: string },
   className: string,
-): { id: number; file: string; kind?: string } | null {
+): ResolvedCandidate | null {
   const ctorLocalName = constructorLocalName(classTarget.file, className);
   if (!ctorLocalName) return null;
   const found = lookup
@@ -145,7 +153,7 @@ function resolveConstructorTarget(
  * `ClassName()` construction call never carries a receiver — so callers must
  * gate on `!call.receiver` before invoking this.
  */
-export function attachConstructorTargets<T extends { id: number; file: string; kind?: string }>(
+export function attachConstructorTargets<T extends ResolvedCandidate>(
   lookup: StrategyLookup,
   targets: readonly T[],
   className: string,
@@ -295,7 +303,7 @@ function resolveViaTypedMethod(
   typeName: string,
   call: { name: string },
   relPath: string,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   return lookup
     .byName(`${typeName}.${call.name}`)
     .filter((n) => n.kind === 'method' && computeConfidence(relPath, n.file, null) >= 0.5);
@@ -312,7 +320,7 @@ function resolveViaPrototypeAlias(
   typeName: string,
   call: { name: string },
   relPath: string,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   const protoTarget = unwrapTypeEntry(typeMap.get(`${typeName}.${call.name}`));
   if (!protoTarget) return [];
   return lookup.byName(protoTarget).filter((t) => computeConfidence(relPath, t.file, null) >= 0.5);
@@ -330,7 +338,7 @@ function resolveViaDirectQualifiedMethod(
   effectiveReceiver: string,
   call: { name: string },
   relPath: string,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   const qualifiedName = `${effectiveReceiver}.${call.name}`;
   return lookup
     .byName(qualifiedName)
@@ -351,7 +359,7 @@ function resolveViaCompositePtsKey(
   typeMap: Map<string, unknown>,
   call: { name: string; receiver: string },
   relPath: string,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   const ptsTarget = unwrapTypeEntry(typeMap.get(`${call.receiver}.${call.name}`));
   if (!ptsTarget) return [];
   return lookup.byName(ptsTarget).filter((t) => computeConfidence(relPath, t.file, null) >= 0.5);
@@ -386,7 +394,7 @@ export function resolveByReceiver(
   typeMap: Map<string, unknown>,
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   // Strip "this."/"self." so `this.repo.method()` / `self.repo.method()` resolves via
   // typeMap["repo"] (or the "this.repo" key seeded directly by the TSC property-declaration
   // enricher, or the "StructName.repo" struct-field key seeded by the Rust extractor, #1876).
@@ -437,7 +445,7 @@ function resolveViaAccessorThisDispatch(
   call: { name: string; receiver?: string | null },
   relPath: string,
   callerName?: string | null,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   if (!(call.receiver === 'this' && callerName && !callerName.includes('.'))) return [];
   const objName = unwrapTypeEntry(typeMap.get(`${callerName}:this`));
   if (!objName) return [];
@@ -467,7 +475,7 @@ function resolveViaSameClassSibling(
   call: { name: string; receiver?: string | null },
   relPath: string,
   callerName?: string | null,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   const isBareCall = !call.receiver;
   if (!callerName || (isBareCall && isModuleScopedLanguage(relPath))) return [];
   const dotIdx = callerName.lastIndexOf('.');
@@ -514,7 +522,7 @@ function resolveExactGlobalMatch(
   lookup: StrategyLookup,
   call: { name: string; receiver?: string | null },
   relPath: string,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   const scored = lookup
     .byName(call.name)
     .filter((target) => !call.receiver || CALLABLE_SYMBOL_KINDS.has(target.kind ?? ''))
@@ -545,7 +553,7 @@ export function resolveByGlobal(
   relPath: string,
   typeMap: Map<string, unknown>,
   callerName?: string | null,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   const viaAccessor = resolveViaAccessorThisDispatch(lookup, typeMap, call, relPath, callerName);
   if (viaAccessor.length > 0) return viaAccessor;
 

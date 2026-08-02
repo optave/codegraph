@@ -30,6 +30,7 @@ import {
   type PointsToMap,
   resolveViaPointsTo,
 } from '../resolver/points-to.js';
+import type { ResolvedCandidate } from '../resolver/strategy.js';
 import {
   type CallNodeLookup,
   collectInvokedPropertyNames,
@@ -679,10 +680,8 @@ function insertCallEdgeExt(
 
 function makeIncrementalLookup(db: BetterSqlite3Database, stmts: IncrementalStmts): CallNodeLookup {
   return {
-    byNameAndFile: (name, file) =>
-      stmts.findNodeInFile.all(name, file) as Array<{ id: number; file: string; kind?: string }>,
-    byName: (name) =>
-      stmts.findNodeByName.all(name) as Array<{ id: number; file: string; kind?: string }>,
+    byNameAndFile: (name, file) => stmts.findNodeInFile.all(name, file) as Array<ResolvedCandidate>,
+    byName: (name) => stmts.findNodeByName.all(name) as Array<ResolvedCandidate>,
     isBarrel: (file) => isBarrelFile(db, file),
     resolveBarrel: (barrelFile, symbolName) => resolveBarrelTarget(db, barrelFile, symbolName),
     nodeId: (name, kind, file, line) =>
@@ -777,8 +776,8 @@ function applyCallFallbacks(
   typeMap: Map<string, unknown>,
   lookup: CallNodeLookup,
   definePropertyReceivers: Map<string, string> | undefined,
-  initialTargets: Array<{ id: number; file: string; kind?: string }>,
-): Array<{ id: number; file: string; kind?: string }> {
+  initialTargets: Array<ResolvedCandidate>,
+): Array<ResolvedCandidate> {
   if (initialTargets.length > 0) return initialTargets;
 
   // Strategy 1: same-class `this.method()` fallback.
@@ -825,7 +824,7 @@ function applyCallFallbacks(
 function emitIncrementalCallEdges(
   call: { name: string; receiver?: string | null; dynamic?: boolean },
   caller: { id: number; callerName: string | null },
-  targets: Array<{ id: number; file: string; kind?: string }>,
+  targets: Array<ResolvedCandidate>,
   importedFrom: string | null | undefined,
   relPath: string,
   typeMap: Map<string, unknown>,
@@ -1460,7 +1459,7 @@ function emitChaDispatchForCall(
 ): number {
   if (!call.receiver || BUILTIN_RECEIVERS.has(call.receiver)) return 0;
 
-  let chaTargets: ReadonlyArray<{ id: number; file: string }> = [];
+  let chaTargets: ReadonlyArray<ResolvedCandidate> = [];
   let isTypedReceiverDispatch = false;
 
   if (call.receiver === 'this' || call.receiver === 'self' || call.receiver === 'super') {
