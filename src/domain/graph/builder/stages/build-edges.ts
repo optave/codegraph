@@ -1622,7 +1622,12 @@ function emitChaCallEdgesForCall(
         : computeConfidence(relPath, t.file, null) - CHA_DISPATCH_PENALTY;
       if (conf > 0) {
         seenCallEdges.add(edgeKey);
-        allEdgeRows.push([caller.id, t.id, 'calls', conf, 0, 'cha', null]);
+        // Tag super-dispatch edges distinctly, matching buildChaPostPass and
+        // the native-orchestrator path's own this/super handling (#1996) —
+        // super calls are not virtual dispatch, so grouping them under the
+        // generic 'cha' label previously hid that distinction on this path.
+        const technique = call.receiver === 'super' ? 'super-dispatch' : 'cha';
+        allEdgeRows.push([caller.id, t.id, 'calls', conf, 0, technique, null]);
       }
     }
   }

@@ -39,6 +39,7 @@ interface CallEdgeRow {
   caller_file: string;
   callee_name: string;
   callee_file: string;
+  technique: string | null;
 }
 
 function readCallEdges(dbPath: string): CallEdgeRow[] {
@@ -47,7 +48,7 @@ function readCallEdges(dbPath: string): CallEdgeRow[] {
     return db
       .prepare(
         `SELECT n1.name AS caller_name, n1.file AS caller_file,
-                n2.name AS callee_name, n2.file AS callee_file
+                n2.name AS callee_name, n2.file AS callee_file, e.technique
          FROM edges e
          JOIN nodes n1 ON e.source_id = n1.id
          JOIN nodes n2 ON e.target_id = n2.id
@@ -91,6 +92,13 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
       edge,
       `Expected dispatch → ConcreteWorker.doWork edge (CHA should expand IWorker dispatch).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
     ).toBeDefined();
+    // #1996: the WASM/JS inline path (emitChaCallEdgesForCall) tags typed-
+    // receiver interface dispatch 'cha'. The native orchestrator's separate
+    // expansion pass still tags the same semantic case 'cha-expanded' — a
+    // known, tracked remaining inconsistency (#1996), not fixed by this
+    // assertion; pinned here so a future alignment fix has a failing test
+    // to flip rather than silently landing unverified.
+    expect(edge?.technique).toBe(engine === 'wasm' ? 'cha' : 'cha-expanded');
   });
 
   it('CHA: emits dispatch → MockWorker.doWork (instantiated implementor)', () => {
@@ -104,6 +112,8 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
       edge,
       `Expected dispatch → MockWorker.doWork edge (CHA should expand IWorker dispatch).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
     ).toBeDefined();
+    // #1996: see the matching note on the ConcreteWorker.doWork test above.
+    expect(edge?.technique).toBe(engine === 'wasm' ? 'cha' : 'cha-expanded');
   });
 
   // ── RTA filter ─────────────────────────────────────────────────────────
@@ -146,6 +156,10 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
       edge,
       `Expected Lion.speak → Animal.speak edge (super-dispatch via class hierarchy).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
     ).toBeDefined();
+    // #1996: super-dispatch must be tagged 'super-dispatch', not the generic
+    // 'cha' label typed-receiver interface dispatch uses — both engines
+    // already agree on this label (unlike the CHA-typed-dispatch case above).
+    expect(edge?.technique).toBe('super-dispatch');
   });
 
   it('super-dispatch: does NOT CHA-expand Lion.speak to sibling Tiger.speak', () => {
@@ -174,6 +188,8 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
       edge,
       `Expected Car.constructor → Vehicle.constructor edge (bare super(...) dispatch via class hierarchy).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
     ).toBeDefined();
+    // #1996: see the matching note on the Lion.speak super-dispatch test above.
+    expect(edge?.technique).toBe('super-dispatch');
   });
 
   // ── transitive multi-level CHA (issue #1311) ───────────────────────────
@@ -201,6 +217,9 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
         edge,
         `Expected runJob → PrintJob.run edge (transitive CHA through AbstractJob).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
       ).toBeDefined();
+      // #1996: this branch only runs for engine === 'wasm' (native is
+      // it.todo above), so the technique is unconditionally 'cha'.
+      expect(edge?.technique).toBe('cha');
     });
 
     it('CHA transitive: emits runJob → ScanJob.run (3-level hierarchy)', () => {
@@ -214,6 +233,8 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
         edge,
         `Expected runJob → ScanJob.run edge (transitive CHA through AbstractJob).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
       ).toBeDefined();
+      // #1996: see the matching note on the PrintJob.run test above.
+      expect(edge?.technique).toBe('cha');
     });
   }
 
