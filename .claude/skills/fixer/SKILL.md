@@ -184,7 +184,8 @@ else
         .codegraph/fixer/outcome .codegraph/fixer/round .codegraph/fixer/current-pr .codegraph/fixer/gate-fail \
         .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature \
         .codegraph/fixer/drain-pass .codegraph/fixer/drain-stall .codegraph/fixer/drain-parked-count \
-        .codegraph/fixer/run-complete
+        .codegraph/fixer/run-complete .codegraph/fixer/state.json.bak .codegraph/fixer/dispatching-issue \
+        .codegraph/fixer/dispatch-retry-needed
 fi
 ```
 
@@ -304,6 +305,16 @@ done
 
 Steps 2a–2g below are never executed inline in this session. An issue's full cycle — reading it, building codegraph context, editing, verifying, opening a PR, waiting on CI and Greptile, converging, merging — generates a lot of transcript, and ten issues' worth of that compounding in one session is exactly the kind of unbounded growth this skill should not depend on tolerating for a normal run (as opposed to surviving as an *interruption*, which is what the disk-based state in Pattern 1 exists for). So each issue gets a genuinely clean context: this session only ever dispatches a sub-agent to run 2a–2g and then reads the outcome back off disk — the same disk state a resumed run already reads.
 
+**Capture and persist the issue number before doing anything else.** Every step below — the dispatch prompt, validation, and reconciliation — needs the same `ISSUE` value, but they are separate bash invocations (Pattern 1: bash blocks do not share variables) and, unlike 2a-2g's own steps, cannot simply re-read `queue.json`'s head after dispatch, since 2g may have already shifted it by then. Write it to disk once, here, and every later step in this subsection reads it back from that file rather than assuming a shell variable survived:
+
+```bash
+mkdir -p .codegraph/fixer
+ISSUE=$(jq -r '.[0].issue' .codegraph/fixer/queue.json)
+printf '%s\n' "$ISSUE" > .codegraph/fixer/dispatching-issue
+REPO=$(cat .codegraph/fixer/repo)
+echo "fixer: dispatching issue #$ISSUE"
+```
+
 Snapshot `state.json` immediately before every dispatch, so a corrupted write is recoverable — this mirrors the state backup `/titan-run` takes ahead of its own sub-agent dispatches:
 
 ```bash
@@ -311,7 +322,7 @@ mkdir -p .codegraph/fixer
 cp .codegraph/fixer/state.json .codegraph/fixer/state.json.bak 2>/dev/null || true
 ```
 
-Use the **Agent tool** in the foreground (`run_in_background: false` — I2/I3 require the next issue to wait for this one to fully land) and with **no `isolation` parameter** — this run already has its one dedicated worktree from Phase 0, and spawning another would violate I1's single-worktree-per-run design:
+Use the **Agent tool** in the foreground (`run_in_background: false` — I2/I3 require the next issue to wait for this one to fully land) and with **no `isolation` parameter** — this run already has its one dedicated worktree from Phase 0, and spawning another would violate I1's single-worktree-per-run design. Substitute `<ISSUE>` and `<REPO>` below with the exact values just captured and persisted above:
 
 ```
 Agent({
@@ -335,93 +346,93 @@ Agent({
 })
 ```
 
-After the sub-agent returns, validate before trusting it — a sub-agent's own summary describes what it intended to do, not necessarily what actually landed on disk, the same caution this skill already applies to `/sweep` and `/resolve`. **A validation failure must never `exit` directly** — it must fall through to the GitHub reconciliation check below, since the whole point of that check is to handle exactly the crash this validation is built to detect:
+After the sub-agent returns, validate before trusting it — a sub-agent's own summary describes what it intended to do, not necessarily what actually landed on disk, the same caution this skill already applies to `/sweep` and `/resolve`. If validation fails, check GitHub for what actually happened before retrying — never assume nothing landed. A sub-agent can crash after `gh pr merge` in 2f but before 2g ever writes `state.json` (or after `gh pr create` in 2e but before merging); blindly retrying the full 2a–2g cycle in either case would cut a *second* branch and open a *second* PR for an issue whose original PR already merged, or already exists and is mid-review — silently duplicating or orphaning real work. 2a's branch name is deterministic (`fix/issue-$ISSUE`), so query it directly instead of guessing from `state.json` alone.
+
+**Validation and reconciliation run as a single bash invocation, not several.** Every value below — `ISSUE`, whether reconciliation is even needed, the reconciliation verdict, which PR it found — is produced and consumed within this one continuous decision. Splitting it across separate bash blocks (Pattern 1: bash blocks do not share variables) would silently lose every one of them the moment a later block tried to read what an earlier one computed:
 
 ```bash
 mkdir -p .codegraph/fixer
-# ISSUE must be the number captured from queue.json's head BEFORE dispatch — by the
-# time the sub-agent's 2g has run, queue.json has already shifted (on success), so it
-# can no longer be re-derived by reading queue.json here the way earlier steps do.
+rm -f .codegraph/fixer/dispatch-retry-needed
+# Read back the value captured before dispatch — by now queue.json has already shifted
+# (on success), so ISSUE can no longer be re-derived by reading queue.json here.
+ISSUE=$(cat .codegraph/fixer/dispatching-issue)
+REPO=$(cat .codegraph/fixer/repo)
+
 RECORDED=$(jq --argjson issue "$ISSUE" '[.issues[] | select(.issue == $issue)] | length' .codegraph/fixer/state.json)
 STATUS=""
 if [ "$RECORDED" -eq 1 ]; then
   STATUS=$(jq -r --argjson issue "$ISSUE" '[.issues[] | select(.issue == $issue)][0].status' .codegraph/fixer/state.json)
 fi
+
 case "$STATUS" in
   merged|parked|abandoned)
     echo "fixer: sub-agent recorded issue #$ISSUE as $STATUS"
-    NEEDS_RECONCILE=false
     ;;
   *)
     echo "fixer: issue #$ISSUE has no valid terminal state.json record ($RECORDED record(s), status='${STATUS:-none}') — checking GitHub before deciding what to do, not exiting blind"
-    NEEDS_RECONCILE=true
+
+    # Treat a failed lookup as unknown, never as "no PR exists" — a gh pr list failure
+    # (auth, network, rate limit) must stop the run, not silently fall through to a
+    # retry that could duplicate an already-merged PR.
+    if ! EXISTING=$(gh pr list --repo "$REPO" --head "fix/issue-$ISSUE" --state all --json number,state,url 2>&1); then
+      echo "ERROR: 'gh pr list' failed while reconciling issue #$ISSUE — cannot tell whether a PR already exists: $EXISTING"
+      echo "Do not retry blind. Compare state.json against .codegraph/fixer/state.json.bak, then stop and report to the user."
+      exit 1
+    fi
+    if ! EXISTING_COUNT=$(printf '%s' "$EXISTING" | jq 'length' 2>&1); then
+      echo "ERROR: could not parse 'gh pr list' output while reconciling issue #$ISSUE: $EXISTING_COUNT"
+      exit 1
+    fi
+
+    if [ "$EXISTING_COUNT" -eq 0 ]; then
+      echo "fixer: no PR exists for fix/issue-$ISSUE — the crash happened before 2e ever opened one. Safe to retry the full 2a-2g dispatch."
+      RECONCILE=retry
+    else
+      # Priority MERGED > OPEN > CLOSED, never "most recent by number". A branch name is
+      # reused across attempts (a merged PR deletes its branch via --delete-branch, and a
+      # later retry can recreate the same fix/issue-$ISSUE name), so --state all can
+      # return an OLDER merged PR alongside a NEWER closed-unmerged one. Picking by
+      # recency would find the newer CLOSED PR, decide RECONCILE=retry, and re-dispatch
+      # work the older MERGED PR already completed — merged must win regardless of number.
+      [ "$EXISTING_COUNT" -gt 1 ] && echo "WARN: $EXISTING_COUNT PRs found for fix/issue-$ISSUE — prioritizing any merged result over recency"
+      EX_PR=$(printf '%s' "$EXISTING" | jq -r '[.[] | select(.state=="MERGED")] | .[0].number // empty')
+      if [ -n "$EX_PR" ]; then
+        EX_STATE=MERGED
+      else
+        EX_PR=$(printf '%s' "$EXISTING" | jq -r '[.[] | select(.state=="OPEN")] | .[0].number // empty')
+        [ -n "$EX_PR" ] && EX_STATE=OPEN || EX_STATE=CLOSED
+      fi
+      case "$EX_STATE" in
+        MERGED) echo "fixer: PR #$EX_PR for issue #$ISSUE is already merged — the crash was between 2f's merge and 2g's write. Reconciling state.json directly, no retry."; RECONCILE=merged ;;
+        OPEN) echo "fixer: PR #$EX_PR for issue #$ISSUE is already open — the crash was mid-2f. Recording it as parked so Phase: Drain Parked PRs converges it, rather than opening a duplicate PR."; RECONCILE=parked ;;
+        CLOSED) echo "fixer: every PR for fix/issue-$ISSUE is closed without merging — nothing to reconcile from. Safe to retry the full 2a-2g dispatch."; RECONCILE=retry ;;
+      esac
+    fi
+
+    if [ "$RECONCILE" = "retry" ]; then
+      printf '%s\n' "retry" > .codegraph/fixer/dispatch-retry-needed
+      echo "fixer: no usable PR found for issue #$ISSUE — will retry the full 2a-2g dispatch once"
+    else
+      # Apply the reconciliation directly — the only place besides 2g itself that writes
+      # a terminal state.json record, using the exact same append pattern.
+      TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
+      trap 'rm -f "$TMP_STATE"' EXIT
+      jq --argjson issue "$ISSUE" --arg status "$RECONCILE" --argjson pr "$EX_PR" \
+        '.issues += [{issue: $issue, status: $status, pr: $pr}]' \
+        .codegraph/fixer/state.json > "$TMP_STATE" && mv "$TMP_STATE" .codegraph/fixer/state.json
+      trap - EXIT
+      [ "$RECONCILE" = "parked" ] && printf '%s\n' "$EX_PR" >> .codegraph/fixer/parked.txt
+      TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
+      trap 'rm -f "$TMP_QUEUE"' EXIT
+      jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
+      trap - EXIT
+      echo "fixer: reconciled issue #$ISSUE as $RECONCILE without retrying — advancing to the next issue"
+    fi
     ;;
 esac
 ```
 
-**If `$NEEDS_RECONCILE` is `true`, check GitHub for what actually happened before retrying — never assume nothing landed.** A sub-agent can crash after `gh pr merge` in 2f but before 2g ever writes `state.json` (or after `gh pr create` in 2e but before merging). Blindly retrying the full 2a–2g cycle in either case would cut a *second* branch and open a *second* PR for an issue whose original PR already merged, or already exists and is mid-review — silently duplicating or orphaning real work. 2a's branch name is deterministic (`fix/issue-$ISSUE`), so query it directly instead of guessing from `state.json` alone. **Treat a failed lookup as unknown, never as "no PR exists"** — a `gh pr list` failure (auth, network, rate limit) must stop the run, not silently fall through to a retry that could duplicate an already-merged PR:
-
-```bash
-mkdir -p .codegraph/fixer
-if [ "$NEEDS_RECONCILE" = "true" ]; then
-  REPO=$(cat .codegraph/fixer/repo)
-  if ! EXISTING=$(gh pr list --repo "$REPO" --head "fix/issue-$ISSUE" --state all --json number,state,url 2>&1); then
-    echo "ERROR: 'gh pr list' failed while reconciling issue #$ISSUE — cannot tell whether a PR already exists: $EXISTING"
-    echo "Do not retry blind. Compare state.json against .codegraph/fixer/state.json.bak, then stop and report to the user."
-    exit 1
-  fi
-  if ! EXISTING_COUNT=$(printf '%s' "$EXISTING" | jq 'length' 2>&1); then
-    echo "ERROR: could not parse 'gh pr list' output while reconciling issue #$ISSUE: $EXISTING_COUNT"
-    exit 1
-  fi
-  if [ "$EXISTING_COUNT" -eq 0 ]; then
-    echo "fixer: no PR exists for fix/issue-$ISSUE — the crash happened before 2e ever opened one. Safe to retry the full 2a-2g dispatch."
-    RECONCILE=retry
-  else
-    # Priority MERGED > OPEN > CLOSED, never "most recent by number". A branch name is
-    # reused across attempts (a merged PR deletes its branch via --delete-branch, and a
-    # later retry can recreate the same fix/issue-$ISSUE name), so --state all can return
-    # an OLDER merged PR alongside a NEWER closed-unmerged one. Picking by recency would
-    # find the newer CLOSED PR, decide RECONCILE=retry, and re-dispatch work that the
-    # older MERGED PR already completed — a merged result must win regardless of number.
-    [ "$EXISTING_COUNT" -gt 1 ] && echo "WARN: $EXISTING_COUNT PRs found for fix/issue-$ISSUE — prioritizing any merged result over recency"
-    EX_PR=$(printf '%s' "$EXISTING" | jq -r '[.[] | select(.state=="MERGED")] | .[0].number // empty')
-    if [ -n "$EX_PR" ]; then
-      EX_STATE=MERGED
-    else
-      EX_PR=$(printf '%s' "$EXISTING" | jq -r '[.[] | select(.state=="OPEN")] | .[0].number // empty')
-      [ -n "$EX_PR" ] && EX_STATE=OPEN || EX_STATE=CLOSED
-    fi
-    case "$EX_STATE" in
-      MERGED) echo "fixer: PR #$EX_PR for issue #$ISSUE is already merged — the crash was between 2f's merge and 2g's write. Reconciling state.json directly, no retry."; RECONCILE=merged ;;
-      OPEN) echo "fixer: PR #$EX_PR for issue #$ISSUE is already open — the crash was mid-2f. Recording it as parked so Phase: Drain Parked PRs converges it, rather than opening a duplicate PR."; RECONCILE=parked ;;
-      CLOSED) echo "fixer: every PR for fix/issue-$ISSUE is closed without merging — nothing to reconcile from. Safe to retry the full 2a-2g dispatch."; RECONCILE=retry ;;
-    esac
-  fi
-fi
-```
-
-Apply the reconciliation directly — this is the only place besides 2g itself that writes a terminal `state.json` record, and it uses the exact same append pattern:
-
-```bash
-mkdir -p .codegraph/fixer
-if [ "$NEEDS_RECONCILE" = "true" ] && [ "$RECONCILE" != "retry" ]; then
-  TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
-  trap 'rm -f "$TMP_STATE"' EXIT
-  jq --argjson issue "$ISSUE" --arg status "$RECONCILE" --argjson pr "$EX_PR" \
-    '.issues += [{issue: $issue, status: $status, pr: $pr}]' \
-    .codegraph/fixer/state.json > "$TMP_STATE" && mv "$TMP_STATE" .codegraph/fixer/state.json
-  trap - EXIT
-  [ "$RECONCILE" = "parked" ] && printf '%s\n' "$EX_PR" >> .codegraph/fixer/parked.txt
-  TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
-  trap 'rm -f "$TMP_QUEUE"' EXIT
-  jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
-  trap - EXIT
-  echo "fixer: reconciled issue #$ISSUE as $RECONCILE without retrying — advancing to the next issue"
-fi
-```
-
-Only when `NEEDS_RECONCILE=true` and `RECONCILE=retry` does a second dispatch happen, and only **once** — 2a's own crash-safety (clearing stale `outcome`/`round`/`current-pr`/`gate-fail`/stall/signature scratch files left by an interrupted attempt) and the dedup loop above already make that retry safe. If the retry also fails validation, **stop the run and report to the user** — never guess at the outcome or silently mark the issue as anything.
+Only when `.codegraph/fixer/dispatch-retry-needed` was written does a second dispatch happen — re-invoke the same `Agent()` call above for the same issue (`cat .codegraph/fixer/dispatching-issue`), then re-run this whole validation-and-reconciliation block once more, only **once** — 2a's own crash-safety (clearing stale `outcome`/`round`/`current-pr`/`gate-fail`/stall/signature scratch files left by an interrupted attempt) and the dedup loop above already make that retry safe. If the retry also fails validation, **stop the run and report to the user** — never guess at the outcome or silently mark the issue as anything.
 
 Nothing about 2a–2g's content changes because of this dispatch — every check, gate, and invariant below still applies exactly as written. A sub-agent is simply the thing now applying them, one issue at a time, in a clean context each time.
 
@@ -1267,6 +1278,8 @@ All state is under `.codegraph/fixer/`:
 | `queue.json` | JSON array of `{issue, title}` | current batch's remaining work, ascending; entries are shifted off as they complete. **A present-but-empty `queue.json` means the batch loop fully completed** — Phase 0 uses this, together with `parked.txt` and `run-complete`, to decide fresh-run vs. resume |
 | `state.json` | `{"issues":[{issue, status, pr}]}` | per-issue outcome, accumulated across every batch this run has processed; reset to empty whenever Phase 0 detects a fresh run |
 | `state.json.bak` | JSON | snapshot taken immediately before each issue's sub-agent dispatch (I7); restore from this if a dispatch corrupts `state.json` |
+| `dispatching-issue` | text | the issue number captured before the current dispatch; read back by the validation/reconciliation block and by a retry dispatch, since queue.json's head is no longer reliable once 2g has shifted it |
+| `dispatch-retry-needed` | marker file | written only when reconciliation determines a second 2a-2g dispatch is needed for the same issue; cleared at the top of every validation-and-reconciliation run |
 | `parked.txt` | newline-separated PR numbers | accumulated across every batch; input to Phase: Drain Parked PRs; a merged PR's number is removed from this file the moment it merges. **Only ever emptied, never deleted, by a fully-merged drain** — Phase 0 treats a non-empty `parked.txt` as evidence of a resumable (mid-drain) run only if `run-complete` is absent; once Phase: Final Report has actually run and written it, the remaining entries are a closed, already-reported matter, not a resume signal |
 | `run-complete` | empty marker file | touched by Phase: Final Report as its last action, strictly after the report has been produced — the sole authoritative "this run's outcome was reported" signal Phase 0 checks, deliberately decoupled from `drain-stall`/`drain-pass` (which get written mid-Phase-4 and would otherwise race against the report actually happening); reset (removed) whenever Phase 0 starts a genuinely fresh run |
 | `batches-done` | text | count of batches completed this run; read by Phase 3 and the final report; reset on a fresh run |
