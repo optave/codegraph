@@ -36,6 +36,7 @@ import type {
 import { computeConfidence } from '../../resolve.js';
 import type { PointsToMap } from '../../resolver/points-to.js';
 import { buildPointsToMapForFile, resolveViaPointsTo } from '../../resolver/points-to.js';
+import type { ResolvedCandidate } from '../../resolver/strategy.js';
 import { enrichTypeMapWithTsc } from '../../resolver/ts-resolver.js';
 import {
   type CallNodeLookup,
@@ -831,7 +832,7 @@ function buildChaPostPass(
       if (BUILTIN_RECEIVERS.has(call.receiver)) continue;
 
       const caller = findCaller(lookup, call, symbols.definitions, relPath, fileNodeRow);
-      let chaTargets: ReadonlyArray<{ id: number; file: string }> = [];
+      let chaTargets: ReadonlyArray<ResolvedCandidate> = [];
       let isTypedReceiverDispatch = false;
 
       if (call.receiver === 'this' || call.receiver === 'self' || call.receiver === 'super') {
@@ -1139,7 +1140,7 @@ function resolveSameClassThisFallback(
   callerName: string | null,
   relPath: string,
   lookup: CallNodeLookup,
-): Array<{ id: number; file: string; kind?: string }> {
+): Array<ResolvedCandidate> {
   if (call.receiver !== 'this' || callerName == null) return [];
   return resolveSameClassQualifiedMethod(call.name, callerName, relPath, lookup);
 }
@@ -1156,7 +1157,7 @@ function resolveSameClassBareCallFallback(
   callerName: string | null,
   relPath: string,
   lookup: CallNodeLookup,
-): Array<{ id: number; file: string; kind?: string }> {
+): Array<ResolvedCandidate> {
   if (call.receiver || callerName == null || isModuleScopedLanguage(relPath)) return [];
   return resolveSameClassQualifiedMethod(call.name, callerName, relPath, lookup);
 }
@@ -1182,7 +1183,7 @@ function resolveDefinePropertyAccessorFallback(
   typeMap: Map<string, TypeMapEntry | string>,
   lookup: CallNodeLookup,
   definePropertyReceivers: Map<string, string> | undefined,
-): Array<{ id: number; file: string; kind?: string }> {
+): Array<ResolvedCandidate> {
   if (call.receiver !== 'this' || callerName == null || !definePropertyReceivers) return [];
   return resolveDefinePropertyAccessorTarget(
     call.name,
@@ -1216,7 +1217,7 @@ function resolveFallbackTargets(
   invokedPropertyNames: ReadonlySet<string>,
   importedOriginalNames?: ReadonlyMap<string, string>,
 ): {
-  targets: ReadonlyArray<{ id: number; file: string; kind?: string }>;
+  targets: ReadonlyArray<ResolvedCandidate>;
   importedFrom: string | null | undefined;
 } {
   const preQualifiedTargets = resolveKotlinReflectionPreQualified(call, relPath, lookup);
@@ -1224,7 +1225,7 @@ function resolveFallbackTargets(
   let { targets, importedFrom } =
     preQualifiedTargets.length > 0
       ? {
-          targets: preQualifiedTargets as Array<{ id: number; file: string; kind?: string }>,
+          targets: preQualifiedTargets as Array<ResolvedCandidate>,
           importedFrom: undefined as string | undefined,
         }
       : resolveCallTargets(
@@ -1322,7 +1323,7 @@ function resolveFallbackTargets(
  */
 function emitDirectCallEdgesForCall(
   caller: { id: number },
-  targets: ReadonlyArray<{ id: number; file: string }>,
+  targets: ReadonlyArray<ResolvedCandidate>,
   importedFrom: string | null | undefined,
   isDynamic: number,
   hasDynamicKind: boolean,
@@ -1585,7 +1586,7 @@ function emitChaCallEdgesForCall(
   ptsEdgeRows: Map<string, number>,
   allEdgeRows: EdgeRowTuple[],
 ): void {
-  let chaTargets: ReadonlyArray<{ id: number; file: string }> = [];
+  let chaTargets: ReadonlyArray<ResolvedCandidate> = [];
   let isTypedReceiverDispatch = false;
 
   if (call.receiver === 'this' || call.receiver === 'self' || call.receiver === 'super') {

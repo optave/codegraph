@@ -36,12 +36,15 @@ function prepareWatcherStatements(db: ReturnType<typeof openDb>): IncrementalStm
       'SELECT COUNT(*) as c FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)',
     ),
     findNodeInFile: db.prepare(
-      "SELECT id, kind, file FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant') AND file = ?",
+      "SELECT id, kind, file, line FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant') AND file = ?",
     ),
     findNodeByName: db.prepare(
       // `kind` is included so resolveByMethodOrGlobal can filter to 'method' for
-      // type-aware receiver resolution (mirrors the full-build resolver).
-      "SELECT id, file, kind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
+      // type-aware receiver resolution (mirrors the full-build resolver). `line`
+      // is included so resolveCallTargets can tell whether a type-aware match
+      // and an already-found bare match are the same physical declaration
+      // (#2025).
+      "SELECT id, file, kind, line FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
     ),
     listSymbols: db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? AND kind != 'file'"),
     upsertFileHash: db.prepare(
