@@ -376,18 +376,52 @@ fn rust_module_dir(file: &str) -> String {
     }
 }
 
-/// Find the crate-root .rs file (main.rs or lib.rs) whose directory is an
-/// ancestor of `from_file`, walking up from `from_file`'s directory and
-/// stopping at `root_dir`. Returns the absolute path, or `None` if no crate
-/// root is found among `known_files` — scoping to the nearest ancestor
-/// crate root (rather than a project-wide search) correctly handles a
-/// Cargo workspace with several crates, each resolving `crate::` relative
-/// to its own root.
+/// Cargo directory names whose direct .rs children are each their own,
+/// independent crate root — a separate binary/example/test/bench target,
+/// never sharing a `crate::` module tree with `src/main.rs`/`src/lib.rs` or
+/// with each other. `foo/main.rs` nested one level inside one of these
+/// (a multi-file binary/example) is already handled by the ordinary
+/// main.rs/lib.rs search below and doesn't need this special case.
+const CARGO_STANDALONE_TARGET_DIRS: [&str; 4] = ["bin", "examples", "tests", "benches"];
+
+/// True if `file` is a standalone Cargo target root — a `.rs` file directly
+/// inside `src/bin/`, `examples/`, `tests/`, or `benches/` (not itself
+/// named main.rs/lib.rs, which the ordinary crate-root search already finds).
+fn is_rust_cargo_target_root(file: &str) -> bool {
+    let path = Path::new(file);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if stem == "main" || stem == "lib" || stem == "mod" {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let Some(dir_name) = parent.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    CARGO_STANDALONE_TARGET_DIRS.contains(&dir_name)
+}
+
+/// Find the crate-root .rs file whose directory is an ancestor of
+/// `from_file`, walking up from `from_file`'s directory and stopping at
+/// `root_dir`. Returns the absolute path, or `None` if no crate root is
+/// found among `known_files` — scoping to the nearest ancestor crate root
+/// (rather than a project-wide search) correctly handles a Cargo workspace
+/// with several crates, each resolving `crate::` relative to its own root.
+///
+/// A standalone Cargo target file (`src/bin/foo.rs`, `examples/foo.rs`,
+/// `tests/foo.rs`, `benches/foo.rs`) is its own crate root regardless of
+/// whatever `main.rs`/`lib.rs` exists elsewhere in the ancestor chain —
+/// each such file compiles as an independent crate, so walking further up
+/// would wrongly attribute its `crate::` paths to an unrelated crate.
 fn find_rust_crate_root(
     from_file: &str,
     root_dir: &str,
     known_files: &HashSet<String>,
 ) -> Option<String> {
+    if is_rust_cargo_target_root(from_file) {
+        return Some(from_file.to_string());
+    }
     let mut dir = Path::new(from_file).parent()?.to_path_buf();
     loop {
         for name in ["main.rs", "lib.rs"] {
@@ -408,8 +442,8 @@ fn find_rust_crate_root(
 }
 
 /// The file representing `file`'s parent module (one level up the module
-/// tree), or `None` if `file` is already a crate root or no parent file is
-/// known among `known_files`.
+/// tree), or `None` if `file` is already a crate root (including a
+/// standalone Cargo target) or no parent file is known among `known_files`.
 fn rust_parent_module_file(
     file: &str,
     root_dir: &str,
@@ -417,7 +451,7 @@ fn rust_parent_module_file(
 ) -> Option<String> {
     let path = Path::new(file);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    if stem == "main" || stem == "lib" {
+    if stem == "main" || stem == "lib" || is_rust_cargo_target_root(file) {
         return None;
     }
     let dir = path.parent()?;
@@ -1479,6 +1513,53 @@ mod tests {
             Some(&known),
         );
         assert_eq!(resolved, Some("validator.rs".to_string()));
+    }
+
+    #[test]
+    fn is_rust_cargo_target_root_recognizes_standalone_target_directories() {
+        assert!(is_rust_cargo_target_root("/project/src/bin/tool.rs"));
+        assert!(is_rust_cargo_target_root("/project/examples/demo.rs"));
+        assert!(is_rust_cargo_target_root("/project/tests/integration.rs"));
+        assert!(is_rust_cargo_target_root("/project/benches/bench1.rs"));
+        // main.rs/lib.rs/mod.rs are found by the ordinary search, not this path.
+        assert!(!is_rust_cargo_target_root("/project/src/bin/tool/main.rs"));
+        assert!(!is_rust_cargo_target_root("/project/src/main.rs"));
+        assert!(!is_rust_cargo_target_root("/project/src/lib.rs"));
+        assert!(!is_rust_cargo_target_root("/project/src/foo/mod.rs"));
+        // Not one of the special directory names.
+        assert!(!is_rust_cargo_target_root("/project/src/service.rs"));
+    }
+
+    #[test]
+    fn crate_use_path_resolves_from_a_standalone_bin_target_to_itself() {
+        // src/bin/tool.rs is its own crate root — must NOT walk up and
+        // wrongly attribute crate:: to an unrelated src/main.rs or src/lib.rs
+        // elsewhere in the project.
+        let mut known = HashSet::new();
+        known.insert("src/main.rs".to_string());
+        known.insert("src/bin/tool.rs".to_string());
+        known.insert("src/bin/helper.rs".to_string());
+        let resolved = resolve_rust_use_path(
+            "/project/src/bin/tool.rs",
+            "crate::helper",
+            "/project",
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("src/bin/helper.rs".to_string()));
+    }
+
+    #[test]
+    fn super_use_path_returns_none_from_a_standalone_cargo_target_root() {
+        // A standalone target file has no parent module to walk up to.
+        let mut known = HashSet::new();
+        known.insert("tests/integration.rs".to_string());
+        let resolved = resolve_rust_use_path(
+            "/project/tests/integration.rs",
+            "super::helper",
+            "/project",
+            Some(&known),
+        );
+        assert_eq!(resolved, None);
     }
 
     #[test]

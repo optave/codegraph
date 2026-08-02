@@ -927,4 +927,51 @@ describe('resolveImportPathJS - Rust crate::/self::/super:: paths (#2007)', () =
     );
     expect(result).toBe('crate::service::build_service');
   });
+
+  describe('standalone Cargo targets (src/bin/, examples/, tests/, benches/)', () => {
+    let targetsDir: string;
+    const targetKnownFiles = [
+      'src/main.rs',
+      'src/bin/tool.rs',
+      'src/bin/helper.rs',
+      'tests/integration.rs',
+    ];
+
+    beforeAll(() => {
+      targetsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-rust-targets-'));
+      fs.mkdirSync(path.join(targetsDir, 'src', 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(targetsDir, 'tests'), { recursive: true });
+      for (const rel of targetKnownFiles) {
+        fs.writeFileSync(path.join(targetsDir, rel), '');
+      }
+    });
+
+    afterAll(() => {
+      if (targetsDir) fs.rmSync(targetsDir, { recursive: true, force: true });
+    });
+
+    it('resolves crate:: from a standalone src/bin/ target to a sibling in the same target, not src/main.rs', () => {
+      const fromFile = path.join(targetsDir, 'src', 'bin', 'tool.rs');
+      const result = resolveImportPathJS(
+        fromFile,
+        'crate::helper',
+        targetsDir,
+        null,
+        targetKnownFiles,
+      );
+      expect(result).toBe('src/bin/helper.rs');
+    });
+
+    it('returns the raw specifier for super:: from a standalone target (no parent module to walk up to)', () => {
+      const fromFile = path.join(targetsDir, 'tests', 'integration.rs');
+      const result = resolveImportPathJS(
+        fromFile,
+        'super::helper',
+        targetsDir,
+        null,
+        targetKnownFiles,
+      );
+      expect(result).toBe('super::helper');
+    });
+  });
 });

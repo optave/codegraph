@@ -464,18 +464,46 @@ function rustModuleDir(file: string): string {
 }
 
 /**
- * Find the crate-root .rs file (main.rs or lib.rs) whose directory is an
- * ancestor of `fromFile`, walking up from fromFile's directory and stopping
- * at `rootDir`. Returns the absolute path, or null if none is found among
+ * Cargo directory names whose direct .rs children are each their own,
+ * independent crate root — a separate binary/example/test/bench target,
+ * never sharing a `crate::` module tree with `src/main.rs`/`src/lib.rs` or
+ * with each other. `foo/main.rs` nested one level inside one of these
+ * (a multi-file binary/example) is already handled by the ordinary
+ * main.rs/lib.rs search below and doesn't need this special case.
+ */
+const CARGO_STANDALONE_TARGET_DIRS = new Set(['bin', 'examples', 'tests', 'benches']);
+
+/**
+ * True if `file` is a standalone Cargo target root — a `.rs` file directly
+ * inside `src/bin/`, `examples/`, `tests/`, or `benches/` (not itself named
+ * main.rs/lib.rs, which the ordinary crate-root search already finds).
+ */
+function isRustCargoTargetRoot(file: string): boolean {
+  const base = path.basename(file, '.rs');
+  if (base === 'main' || base === 'lib' || base === 'mod') return false;
+  return CARGO_STANDALONE_TARGET_DIRS.has(path.basename(path.dirname(file)));
+}
+
+/**
+ * Find the crate-root .rs file whose directory is an ancestor of
+ * `fromFile`, walking up from fromFile's directory and stopping at
+ * `rootDir`. Returns the absolute path, or null if none is found among
  * `knownFiles` — scoping to the nearest ancestor crate root (rather than a
  * project-wide search) correctly handles a Cargo workspace with several
  * crates, each resolving `crate::` relative to its own root.
+ *
+ * A standalone Cargo target file (`src/bin/foo.rs`, `examples/foo.rs`,
+ * `tests/foo.rs`, `benches/foo.rs`) is its own crate root regardless of
+ * whatever `main.rs`/`lib.rs` exists elsewhere in the ancestor chain —
+ * each such file compiles as an independent crate, so walking further up
+ * would wrongly attribute its `crate::` paths to an unrelated crate.
  */
 function findRustCrateRoot(
   fromFile: string,
   rootDir: string,
   knownFiles: Set<string>,
 ): string | null {
+  if (isRustCargoTargetRoot(fromFile)) return fromFile;
   let dir = path.dirname(fromFile);
   for (;;) {
     for (const name of ['main.rs', 'lib.rs']) {
@@ -492,8 +520,8 @@ function findRustCrateRoot(
 
 /**
  * The file representing `file`'s parent module (one level up the module
- * tree), or null if `file` is already a crate root or no parent file is
- * known among `knownFiles`.
+ * tree), or null if `file` is already a crate root (including a standalone
+ * Cargo target) or no parent file is known among `knownFiles`.
  */
 function rustParentModuleFile(
   file: string,
@@ -501,7 +529,7 @@ function rustParentModuleFile(
   knownFiles: Set<string>,
 ): string | null {
   const base = path.basename(file, '.rs');
-  if (base === 'main' || base === 'lib') return null;
+  if (base === 'main' || base === 'lib' || isRustCargoTargetRoot(file)) return null;
   const dir = path.dirname(file);
   const searchDir = base === 'mod' ? path.dirname(dir) : dir;
 
