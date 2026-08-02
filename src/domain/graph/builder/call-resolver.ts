@@ -471,15 +471,28 @@ export function resolveCallTargets(
       } else if (viaReceiverOrGlobal.length > 0) {
         // Prefer the type-aware result UNLESS it's simply a different node
         // representation of the exact declaration the bare match already
-        // found (same file + line) — e.g. computed-key object-literal
-        // methods are deliberately double-emitted as both a bare (`method`,
-        // kind method) and a qualified (`obj.method`, kind function) node
-        // for the identical physical declaration (#1517). In that case the
-        // bare match's naming is what downstream consumers already expect,
-        // and there is no real target to disambiguate.
-        const bareLocations = new Set(targets.map((n) => `${n.file}:${n.line}`));
-        const isSameDeclaration = viaReceiverOrGlobal.every((n) =>
-          bareLocations.has(`${n.file}:${n.line}`),
+        // found. Same file + line alone is NOT sufficient to prove that: two
+        // wholly unrelated declarations can coincidentally share one
+        // physical source line (e.g. `function method() {} class Widget {
+        // method() {} }` written on one line), and file+line-only comparison
+        // would incorrectly treat the type-aware `Widget.method` match as
+        // "the same declaration" as the unrelated bare `method` and keep the
+        // wrong one (#2025 follow-up caught by review).
+        //
+        // The only *intentional* same-file-and-line double-representation in
+        // the codebase is #1517's computed-key object-literal methods,
+        // extracted by extractObjectLiteralFunctions/extract_object_literal_functions:
+        // a bare node (kind `method`) and a qualified `obj.method` node (kind
+        // `function`) are pushed from the identical AST node, in that exact
+        // kind pairing. Requiring that specific pairing — not just matching
+        // coordinates — distinguishes the deliberate #1517 duplicate from a
+        // coincidental same-line collision between two real, distinct
+        // declarations.
+        const bareMethodLocations = new Set(
+          targets.filter((n) => n.kind === 'method').map((n) => `${n.file}:${n.line}`),
+        );
+        const isSameDeclaration = viaReceiverOrGlobal.every(
+          (n) => n.kind === 'function' && bareMethodLocations.has(`${n.file}:${n.line}`),
         );
         if (!isSameDeclaration) {
           targets = viaReceiverOrGlobal;

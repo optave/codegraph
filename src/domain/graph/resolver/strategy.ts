@@ -18,12 +18,13 @@ import { computeConfidence } from '../resolve.js';
 // ── Lookup adapter (structural mirror of CallNodeLookup) ──────────────────────
 
 /**
- * A resolved call-target candidate. `line` is the candidate's own declaration
- * line — needed so `resolveCallTargets` (call-resolver.ts) can tell whether a
- * type-aware match here and a same-file bare-name match it already found
- * refer to the identical physical declaration (e.g. #1517's computed-key
- * object-literal methods, deliberately emitted as both a bare and a
- * qualified node at the same line) versus a genuinely different one (#2025).
+ * A resolved call-target candidate. `line` (together with `kind`) is needed
+ * so `resolveCallTargets` (call-resolver.ts) can tell whether a type-aware
+ * match here and a same-file bare-name match it already found refer to the
+ * identical physical declaration (e.g. #1517's computed-key object-literal
+ * methods, deliberately emitted as a bare `method`-kind node and a qualified
+ * `function`-kind node at the same line) versus a genuinely different
+ * declaration that merely shares that same line (#2025).
  */
 export type ResolvedCandidate = { id: number; file: string; kind?: string; line: number };
 

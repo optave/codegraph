@@ -1034,13 +1034,23 @@ fn resolve_exact_global_match<'a>(
 
 /// Reconcile a same-file bare-name match against a type-aware receiver match
 /// (#2025). Prefers the type-aware result UNLESS it's simply a different node
-/// representation of the exact declaration the bare match already found (same
-/// file + line) — e.g. computed-key object-literal methods are deliberately
-/// double-emitted as both a bare (`method`, kind method) and a qualified
-/// (`obj.method`, kind function) node for the identical physical declaration
-/// (#1517). In that case the bare match's naming is what downstream consumers
-/// already expect, and there is no real target to disambiguate. Mirrors the
-/// same reconciliation in `resolveCallTargets` (call-resolver.ts).
+/// representation of the exact declaration the bare match already found.
+/// Same file + line alone is NOT sufficient to prove that: two wholly
+/// unrelated declarations can coincidentally share one physical source line
+/// (e.g. `function method() {} class Widget { method() {} }` written on one
+/// line), and file+line-only comparison would incorrectly treat the
+/// type-aware `Widget.method` match as "the same declaration" as the
+/// unrelated bare `method` and keep the wrong one.
+///
+/// The only *intentional* same-file-and-line double-representation in the
+/// codebase is #1517's computed-key object-literal methods, extracted by
+/// `extract_object_literal_functions`/`extractObjectLiteralFunctions`: a bare
+/// node (kind `method`) and a qualified `obj.method` node (kind `function`)
+/// are pushed from the identical AST node, in that exact kind pairing.
+/// Requiring that specific pairing — not just matching coordinates —
+/// distinguishes the deliberate #1517 duplicate from a coincidental same-line
+/// collision between two real, distinct declarations. Mirrors the same
+/// reconciliation in `resolveCallTargets` (call-resolver.ts).
 fn prefer_type_aware_over_bare<'a>(
     bare: &[&'a NodeInfo],
     type_aware: Vec<&'a NodeInfo>,
@@ -1048,11 +1058,14 @@ fn prefer_type_aware_over_bare<'a>(
     if bare.is_empty() {
         return type_aware;
     }
-    let bare_locations: HashSet<(&str, u32)> =
-        bare.iter().map(|n| (n.file.as_str(), n.line)).collect();
+    let bare_method_locations: HashSet<(&str, u32)> = bare
+        .iter()
+        .filter(|n| n.kind == "method")
+        .map(|n| (n.file.as_str(), n.line))
+        .collect();
     let is_same_declaration = type_aware
         .iter()
-        .all(|n| bare_locations.contains(&(n.file.as_str(), n.line)));
+        .all(|n| n.kind == "function" && bare_method_locations.contains(&(n.file.as_str(), n.line)));
     if is_same_declaration {
         bare.to_vec()
     } else {
