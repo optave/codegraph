@@ -539,7 +539,10 @@ fn walk_rust_module_segments(
 /// the project's directory tree per Rust's module-file conventions (issue
 /// #2007). Returns `None` (falls through to the bare-specifier fallback)
 /// when `known_files` isn't available or no match is found — e.g. `#[path]`
-/// attribute overrides, which this convention-based resolver doesn't model.
+/// attribute overrides, or a Cargo.toml `[[bin]]`/`[[example]]`/`[[test]]`/
+/// `[[bench]]` section declaring a target at a custom, non-conventional
+/// path (issue #2217), neither of which this convention-based,
+/// known-files-only resolver models.
 fn resolve_rust_use_path(
     from_file: &str,
     import_source: &str,

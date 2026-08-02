@@ -596,8 +596,10 @@ function walkRustModuleSegments(
  * item-name case, the module file that item is declared in), by walking the
  * project's directory tree per Rust's module-file conventions (issue
  * #2007). Returns null (falls through to the bare-specifier fallback) when
- * no match is found — e.g. `#[path]` attribute overrides, which this
- * convention-based resolver doesn't model.
+ * no match is found — e.g. `#[path]` attribute overrides, or a Cargo.toml
+ * `[[bin]]`/`[[example]]`/`[[test]]`/`[[bench]]` section declaring a target
+ * at a custom, non-conventional path (issue #2217), neither of which this
+ * convention-based, known-files-only resolver models.
  */
 function resolveRustUsePath(
   fromFile: string,
