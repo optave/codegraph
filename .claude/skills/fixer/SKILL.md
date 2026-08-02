@@ -378,13 +378,24 @@ if [ "$NEEDS_RECONCILE" = "true" ]; then
     echo "fixer: no PR exists for fix/issue-$ISSUE — the crash happened before 2e ever opened one. Safe to retry the full 2a-2g dispatch."
     RECONCILE=retry
   else
-    [ "$EXISTING_COUNT" -gt 1 ] && echo "WARN: $EXISTING_COUNT PRs found for fix/issue-$ISSUE — using the most recent by PR number"
-    EX_STATE=$(printf '%s' "$EXISTING" | jq -r 'sort_by(.number) | last | .state')
-    EX_PR=$(printf '%s' "$EXISTING" | jq -r 'sort_by(.number) | last | .number')
+    # Priority MERGED > OPEN > CLOSED, never "most recent by number". A branch name is
+    # reused across attempts (a merged PR deletes its branch via --delete-branch, and a
+    # later retry can recreate the same fix/issue-$ISSUE name), so --state all can return
+    # an OLDER merged PR alongside a NEWER closed-unmerged one. Picking by recency would
+    # find the newer CLOSED PR, decide RECONCILE=retry, and re-dispatch work that the
+    # older MERGED PR already completed — a merged result must win regardless of number.
+    [ "$EXISTING_COUNT" -gt 1 ] && echo "WARN: $EXISTING_COUNT PRs found for fix/issue-$ISSUE — prioritizing any merged result over recency"
+    EX_PR=$(printf '%s' "$EXISTING" | jq -r '[.[] | select(.state=="MERGED")] | .[0].number // empty')
+    if [ -n "$EX_PR" ]; then
+      EX_STATE=MERGED
+    else
+      EX_PR=$(printf '%s' "$EXISTING" | jq -r '[.[] | select(.state=="OPEN")] | .[0].number // empty')
+      [ -n "$EX_PR" ] && EX_STATE=OPEN || EX_STATE=CLOSED
+    fi
     case "$EX_STATE" in
       MERGED) echo "fixer: PR #$EX_PR for issue #$ISSUE is already merged — the crash was between 2f's merge and 2g's write. Reconciling state.json directly, no retry."; RECONCILE=merged ;;
       OPEN) echo "fixer: PR #$EX_PR for issue #$ISSUE is already open — the crash was mid-2f. Recording it as parked so Phase: Drain Parked PRs converges it, rather than opening a duplicate PR."; RECONCILE=parked ;;
-      CLOSED) echo "fixer: PR #$EX_PR for issue #$ISSUE exists but was closed without merging — nothing to reconcile from it. Safe to retry the full 2a-2g dispatch."; RECONCILE=retry ;;
+      CLOSED) echo "fixer: every PR for fix/issue-$ISSUE is closed without merging — nothing to reconcile from. Safe to retry the full 2a-2g dispatch."; RECONCILE=retry ;;
     esac
   fi
 fi
