@@ -653,8 +653,7 @@ fn pick_reconnect_target(
             let alignment = match alignment_cache.entry(group_key.clone()) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    let new_lines: Vec<i64> =
-                        candidates.iter().map(|(_, line, _)| *line).collect();
+                    let new_lines: Vec<i64> = candidates.iter().map(|(_, line, _)| *line).collect();
                     e.insert(align_sibling_lines(old_lines, &new_lines))
                 }
             };
@@ -1309,13 +1308,11 @@ mod tests {
     /// the saved target) — these tests specifically exercise the
     /// hash-unavailable line-alignment fallback; see `pick_with_hash` for
     /// the #2015 hash-matching behavior.
-    fn pick(
-        candidates: &[(i64, i64)],
-        old_lines: &[i64],
-        tgt_line: i64,
-    ) -> Option<i64> {
-        let with_hash: Vec<(i64, i64, Option<String>)> =
-            candidates.iter().map(|&(id, line)| (id, line, None)).collect();
+    fn pick(candidates: &[(i64, i64)], old_lines: &[i64], tgt_line: i64) -> Option<i64> {
+        let with_hash: Vec<(i64, i64, Option<String>)> = candidates
+            .iter()
+            .map(|&(id, line)| (id, line, None))
+            .collect();
         pick_with_hash(&with_hash, tgt_line, None, old_lines)
     }
 
@@ -1331,7 +1328,9 @@ mod tests {
         let mut groups = HashMap::new();
         groups.insert(key.clone(), old_lines.to_vec());
         let mut cache = HashMap::new();
-        pick_reconnect_target(candidates, tgt_line, tgt_hash, &key, &groups, &mut cache, 200)
+        pick_reconnect_target(
+            candidates, tgt_line, tgt_hash, &key, &groups, &mut cache, 200,
+        )
     }
 
     #[test]
@@ -1767,7 +1766,10 @@ mod tests {
             )
             .map(|c| c > 0)
             .unwrap_or(false);
-        assert!(!e_has_incoming, "no caller should have been reconnected to the new sibling E");
+        assert!(
+            !e_has_incoming,
+            "no caller should have been reconnected to the new sibling E"
+        );
     }
 
     // ── capture_removed_file_neighbors (#1839) ──────────────────────────
