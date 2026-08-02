@@ -91,3 +91,48 @@ describe.each(['wasm', 'native'] as const)(
     );
   },
 );
+
+// ── Same-physical-line collision (review finding on #2227) ─────────────────
+//
+// The unrelated bare declaration and the type-aware target can coincidentally
+// start on the exact same physical source line — comparing candidates by
+// file+line coordinates alone cannot distinguish that from #1517's deliberate
+// same-line double-emission, so the reconciliation must also require the
+// #1517 kind pairing (bare `method` + type-aware `function`) before treating
+// same-file-and-line as proof of identity.
+const SAME_LINE_FIXTURE = `function method() { return 'unrelated'; } class Widget { method() { return 'the real one'; } }
+
+const obj = new Widget();
+obj.method();
+`;
+
+describe.each(['wasm', 'native'] as const)(
+  'concrete-receiver bare-name collision on the SAME physical line still resolves to the type-aware target (#2025 follow-up, %s)',
+  (engine) => {
+    let tmpDir: string;
+
+    beforeAll(async () => {
+      if (engine === 'native' && !isNativeAvailable()) return;
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2025-sameline-${engine}-`));
+      fs.writeFileSync(path.join(tmpDir, 'widget2.js'), SAME_LINE_FIXTURE);
+      await buildGraph(tmpDir, { engine, incremental: false, skipRegistry: true });
+    }, 60_000);
+
+    afterAll(() => {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it.skipIf(engine === 'native' && !isNativeAvailable())(
+      'obj.method() resolves to Widget.method, not the unrelated function sharing its declaration line',
+      () => {
+        const dbPath = path.join(tmpDir, '.codegraph', 'graph.db');
+        const target = readMethodCallTarget(dbPath, 'widget2.js');
+        expect(
+          target,
+          'no calls edge from widget2.js to a method-related target found',
+        ).not.toBeNull();
+        expect(target?.name).toBe('Widget.method');
+      },
+    );
+  },
+);

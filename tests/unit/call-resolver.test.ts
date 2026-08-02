@@ -729,10 +729,17 @@ describe('resolveCallTargets — same-file bare-name lookup kind filter (#1888)'
  * receiver's real, type-aware target. `resolveCallTargets` now tries the
  * type-aware receiver resolution even when a kind-filtered bare match
  * already exists, and prefers it UNLESS it resolves to the exact same
- * declaration (same file + line) as the bare match — e.g. #1517's
- * computed-key object-literal methods, which are deliberately double-emitted
- * as both a bare and a qualified node for the identical physical
- * declaration, and must keep resolving to the bare node.
+ * declaration as the bare match — e.g. #1517's computed-key object-literal
+ * methods, which are deliberately double-emitted as both a bare (`method`)
+ * and a qualified (`function`) node for the identical physical declaration,
+ * and must keep resolving to the bare node.
+ *
+ * Same file + line is NOT sufficient on its own to prove "same declaration":
+ * two wholly unrelated declarations can coincidentally share one physical
+ * source line (see 'prefers the type-aware target when it collides on the
+ * same line as an unrelated bare declaration' below), so the reconciliation
+ * additionally requires the exact #1517 kind pairing (bare `method` +
+ * type-aware `function`) before treating same-file-and-line as identity.
  */
 function makeLineAwareReceiverLookup(
   sameFile: Record<string, Array<{ id: number; file: string; kind: string; line: number }>>,
@@ -815,6 +822,32 @@ describe('resolveCallTargets — concrete-receiver bare match still confirmed vi
       null,
     );
     expect(targets).toEqual([bareFn]);
+  });
+
+  it('prefers the type-aware target when it collides on the same line as an unrelated bare declaration', () => {
+    // Repro (review finding on #2227): distinct declarations can
+    // coincidentally share one physical source line, e.g.
+    // `function method() {} class Widget { method() {} }` written on one
+    // line. Unlike #1517's deliberate bare(`method`)+qualified(`function`)
+    // pair emitted from the SAME AST node, this is two genuinely unrelated
+    // nodes that merely collide on file+line — comparing coordinates alone
+    // must not conflate them, and the type-aware `Widget.method` match must
+    // still win over the coincidentally-same-line, unrelated bare function.
+    const unrelatedFn = { id: 6, file: 'widget2.js', kind: 'function', line: 1 };
+    const widgetMethod = { id: 7, file: 'widget2.js', kind: 'method', line: 1 };
+    const lookup = makeLineAwareReceiverLookup(
+      { 'method:widget2.js': [unrelatedFn] },
+      { 'Widget.method': [widgetMethod] },
+    );
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'method', receiver: 'obj' },
+      'widget2.js',
+      new Map(),
+      new Map([['obj', 'Widget']]),
+      null,
+    );
+    expect(targets).toEqual([widgetMethod]);
   });
 });
 
