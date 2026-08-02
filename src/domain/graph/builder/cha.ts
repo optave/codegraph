@@ -17,6 +17,7 @@
  */
 
 import type { BetterSqlite3Database, ClassRelation, ExtractorOutput } from '../../../types.js';
+import type { ResolvedCandidate } from '../resolver/strategy.js';
 import type { CallNodeLookup } from './call-resolver.js';
 
 // ── CHA context ──────────────────────────────────────────────────────────────
@@ -204,7 +205,7 @@ export function resolveThisDispatch(
   chaCtx: ChaContext,
   lookup: CallNodeLookup,
   callerFile?: string | null,
-): ReadonlyArray<{ id: number; file: string }> {
+): ReadonlyArray<ResolvedCandidate> {
   if (!callerName) return [];
   const dotIdx = callerName.indexOf('.');
   if (dotIdx === -1) return [];
@@ -253,8 +254,8 @@ export function resolveChaTargets(
   methodName: string,
   chaCtx: ChaContext,
   lookup: CallNodeLookup,
-): ReadonlyArray<{ id: number; file: string }> {
-  const results: Array<{ id: number; file: string }> = [];
+): ReadonlyArray<ResolvedCandidate> {
+  const results: Array<ResolvedCandidate> = [];
 
   const queue: string[] = [typeName];
   const visited = new Set<string>();

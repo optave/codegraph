@@ -723,6 +723,102 @@ describe('resolveCallTargets — same-file bare-name lookup kind filter (#1888)'
 });
 
 /**
+ * Regression tests for #2025: #1888 only filtered the same-file bare-name
+ * lookup by kind — it did not stop a coincidentally same-named
+ * function/method elsewhere in the file from pre-empting a concrete
+ * receiver's real, type-aware target. `resolveCallTargets` now tries the
+ * type-aware receiver resolution even when a kind-filtered bare match
+ * already exists, and prefers it UNLESS it resolves to the exact same
+ * declaration (same file + line) as the bare match — e.g. #1517's
+ * computed-key object-literal methods, which are deliberately double-emitted
+ * as both a bare and a qualified node for the identical physical
+ * declaration, and must keep resolving to the bare node.
+ */
+function makeLineAwareReceiverLookup(
+  sameFile: Record<string, Array<{ id: number; file: string; kind: string; line: number }>>,
+  global: Record<string, Array<{ id: number; file: string; kind: string; line: number }>>,
+): CallNodeLookup {
+  return {
+    byNameAndFile(name, file) {
+      return sameFile[`${name}:${file}`] ?? [];
+    },
+    byName(name) {
+      return global[name] ?? [];
+    },
+    isBarrel() {
+      return false;
+    },
+    resolveBarrel() {
+      return null;
+    },
+    nodeId() {
+      return undefined;
+    },
+  };
+}
+
+describe('resolveCallTargets — concrete-receiver bare match still confirmed via type-aware dispatch (#2025)', () => {
+  it('prefers the type-aware target over an unrelated same-file, same-named function', () => {
+    // Repro: `function method() {}` (unrelated) and `class Widget { method() {} }`
+    // share the same file. `obj.method()` where obj: Widget must resolve to
+    // Widget.method, not the coincidentally same-named top-level function.
+    const unrelatedFn = { id: 1, file: 'widget.js', kind: 'function', line: 1 };
+    const widgetMethod = { id: 2, file: 'widget.js', kind: 'method', line: 6 };
+    const lookup = makeLineAwareReceiverLookup(
+      { 'method:widget.js': [unrelatedFn] },
+      { 'Widget.method': [widgetMethod] },
+    );
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'method', receiver: 'obj' },
+      'widget.js',
+      new Map(),
+      new Map([['obj', 'Widget']]),
+      null,
+    );
+    expect(targets).toEqual([widgetMethod]);
+  });
+
+  it('still resolves to the bare match when the type-aware tier finds the identical declaration (#1517)', () => {
+    // Repro: computed-key object-literal methods are double-emitted as a bare
+    // node (kind method) and a qualified node (kind function) at the SAME
+    // line. The type-aware direct-qualified-method tier finds the qualified
+    // node, but since it's the same physical declaration as the bare match,
+    // the bare match's naming must win (matching pre-existing consumer
+    // expectations).
+    const bareMethod = { id: 3, file: 'utils.js', kind: 'method', line: 2 };
+    const qualifiedFn = { id: 4, file: 'utils.js', kind: 'function', line: 2 };
+    const lookup = makeLineAwareReceiverLookup(
+      { 'formatDate:utils.js': [bareMethod] },
+      { 'helpers.formatDate': [qualifiedFn] },
+    );
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'formatDate', receiver: 'helpers' },
+      'utils.js',
+      new Map(),
+      new Map(),
+      null,
+    );
+    expect(targets).toEqual([bareMethod]);
+  });
+
+  it('falls back to the bare match when the type-aware tier finds nothing', () => {
+    const bareFn = { id: 5, file: 'a.js', kind: 'function', line: 3 };
+    const lookup = makeLineAwareReceiverLookup({ 'helper:a.js': [bareFn] }, {});
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'helper', receiver: 'obj' },
+      'a.js',
+      new Map(),
+      new Map(),
+      null,
+    );
+    expect(targets).toEqual([bareFn]);
+  });
+});
+
+/**
  * Regression test for #1892's barrel-rename gap (flagged in PR #2028 review):
  * `attachConstructorTargets` must key its qualified `ClassName.ctorLocalName`
  * lookup on the name truly declared in the target's own file, not the call
