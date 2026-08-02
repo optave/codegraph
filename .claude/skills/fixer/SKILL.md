@@ -335,7 +335,7 @@ Agent({
 })
 ```
 
-After the sub-agent returns, validate before trusting it — a sub-agent's own summary describes what it intended to do, not necessarily what actually landed on disk, the same caution this skill already applies to `/sweep` and `/resolve`:
+After the sub-agent returns, validate before trusting it — a sub-agent's own summary describes what it intended to do, not necessarily what actually landed on disk, the same caution this skill already applies to `/sweep` and `/resolve`. **A validation failure must never `exit` directly** — it must fall through to the GitHub reconciliation check below, since the whole point of that check is to handle exactly the crash this validation is built to detect:
 
 ```bash
 mkdir -p .codegraph/fixer
@@ -343,37 +343,50 @@ mkdir -p .codegraph/fixer
 # time the sub-agent's 2g has run, queue.json has already shifted (on success), so it
 # can no longer be re-derived by reading queue.json here the way earlier steps do.
 RECORDED=$(jq --argjson issue "$ISSUE" '[.issues[] | select(.issue == $issue)] | length' .codegraph/fixer/state.json)
-if [ "$RECORDED" -ne 1 ]; then
-  echo "ERROR: sub-agent for issue #$ISSUE left $RECORDED state.json record(s), expected exactly 1."
-  echo "Compare against .codegraph/fixer/state.json.bak; if state.json is corrupted, restore the backup, then retry issue #$ISSUE once."
-  exit 1
+STATUS=""
+if [ "$RECORDED" -eq 1 ]; then
+  STATUS=$(jq -r --argjson issue "$ISSUE" '[.issues[] | select(.issue == $issue)][0].status' .codegraph/fixer/state.json)
 fi
-STATUS=$(jq -r --argjson issue "$ISSUE" '[.issues[] | select(.issue == $issue)][0].status' .codegraph/fixer/state.json)
 case "$STATUS" in
-  merged|parked|abandoned) echo "fixer: sub-agent recorded issue #$ISSUE as $STATUS" ;;
-  *) echo "ERROR: issue #$ISSUE recorded with invalid status '$STATUS'"; exit 1 ;;
+  merged|parked|abandoned)
+    echo "fixer: sub-agent recorded issue #$ISSUE as $STATUS"
+    NEEDS_RECONCILE=false
+    ;;
+  *)
+    echo "fixer: issue #$ISSUE has no valid terminal state.json record ($RECORDED record(s), status='${STATUS:-none}') — checking GitHub before deciding what to do, not exiting blind"
+    NEEDS_RECONCILE=true
+    ;;
 esac
 ```
 
-**Before retrying, check GitHub for what actually happened — never assume nothing landed.** A sub-agent can crash after `gh pr merge` in 2f but before 2g ever writes `state.json` (or after `gh pr create` in 2e but before merging). Blindly retrying the full 2a–2g cycle in either case would cut a *second* branch and open a *second* PR for an issue whose original PR already merged, or already exists and is mid-review — silently duplicating or orphaning real work. 2a's branch name is deterministic (`fix/issue-$ISSUE`), so query it directly instead of guessing from `state.json` alone:
+**If `$NEEDS_RECONCILE` is `true`, check GitHub for what actually happened before retrying — never assume nothing landed.** A sub-agent can crash after `gh pr merge` in 2f but before 2g ever writes `state.json` (or after `gh pr create` in 2e but before merging). Blindly retrying the full 2a–2g cycle in either case would cut a *second* branch and open a *second* PR for an issue whose original PR already merged, or already exists and is mid-review — silently duplicating or orphaning real work. 2a's branch name is deterministic (`fix/issue-$ISSUE`), so query it directly instead of guessing from `state.json` alone. **Treat a failed lookup as unknown, never as "no PR exists"** — a `gh pr list` failure (auth, network, rate limit) must stop the run, not silently fall through to a retry that could duplicate an already-merged PR:
 
 ```bash
 mkdir -p .codegraph/fixer
-REPO=$(cat .codegraph/fixer/repo)
-# ISSUE is the same number captured before dispatch, per the comment above
-EXISTING=$(gh pr list --repo "$REPO" --head "fix/issue-$ISSUE" --state all --json number,state,url)
-EXISTING_COUNT=$(printf '%s' "$EXISTING" | jq 'length')
-if [ "$EXISTING_COUNT" -eq 0 ]; then
-  echo "fixer: no PR exists for fix/issue-$ISSUE — the crash happened before 2e ever opened one. Safe to retry the full 2a-2g dispatch."
-  RECONCILE=retry
-else
-  EX_STATE=$(printf '%s' "$EXISTING" | jq -r '.[0].state')
-  EX_PR=$(printf '%s' "$EXISTING" | jq -r '.[0].number')
-  case "$EX_STATE" in
-    MERGED) echo "fixer: PR #$EX_PR for issue #$ISSUE is already merged — the crash was between 2f's merge and 2g's write. Reconciling state.json directly, no retry."; RECONCILE=merged ;;
-    OPEN) echo "fixer: PR #$EX_PR for issue #$ISSUE is already open — the crash was mid-2f. Recording it as parked so Phase: Drain Parked PRs converges it, rather than opening a duplicate PR."; RECONCILE=parked ;;
-    CLOSED) echo "fixer: PR #$EX_PR for issue #$ISSUE exists but was closed without merging — nothing to reconcile from it. Safe to retry the full 2a-2g dispatch."; RECONCILE=retry ;;
-  esac
+if [ "$NEEDS_RECONCILE" = "true" ]; then
+  REPO=$(cat .codegraph/fixer/repo)
+  if ! EXISTING=$(gh pr list --repo "$REPO" --head "fix/issue-$ISSUE" --state all --json number,state,url 2>&1); then
+    echo "ERROR: 'gh pr list' failed while reconciling issue #$ISSUE — cannot tell whether a PR already exists: $EXISTING"
+    echo "Do not retry blind. Compare state.json against .codegraph/fixer/state.json.bak, then stop and report to the user."
+    exit 1
+  fi
+  if ! EXISTING_COUNT=$(printf '%s' "$EXISTING" | jq 'length' 2>&1); then
+    echo "ERROR: could not parse 'gh pr list' output while reconciling issue #$ISSUE: $EXISTING_COUNT"
+    exit 1
+  fi
+  if [ "$EXISTING_COUNT" -eq 0 ]; then
+    echo "fixer: no PR exists for fix/issue-$ISSUE — the crash happened before 2e ever opened one. Safe to retry the full 2a-2g dispatch."
+    RECONCILE=retry
+  else
+    [ "$EXISTING_COUNT" -gt 1 ] && echo "WARN: $EXISTING_COUNT PRs found for fix/issue-$ISSUE — using the most recent by PR number"
+    EX_STATE=$(printf '%s' "$EXISTING" | jq -r 'sort_by(.number) | last | .state')
+    EX_PR=$(printf '%s' "$EXISTING" | jq -r 'sort_by(.number) | last | .number')
+    case "$EX_STATE" in
+      MERGED) echo "fixer: PR #$EX_PR for issue #$ISSUE is already merged — the crash was between 2f's merge and 2g's write. Reconciling state.json directly, no retry."; RECONCILE=merged ;;
+      OPEN) echo "fixer: PR #$EX_PR for issue #$ISSUE is already open — the crash was mid-2f. Recording it as parked so Phase: Drain Parked PRs converges it, rather than opening a duplicate PR."; RECONCILE=parked ;;
+      CLOSED) echo "fixer: PR #$EX_PR for issue #$ISSUE exists but was closed without merging — nothing to reconcile from it. Safe to retry the full 2a-2g dispatch."; RECONCILE=retry ;;
+    esac
+  fi
 fi
 ```
 
@@ -381,7 +394,7 @@ Apply the reconciliation directly — this is the only place besides 2g itself t
 
 ```bash
 mkdir -p .codegraph/fixer
-if [ "$RECONCILE" != "retry" ]; then
+if [ "$NEEDS_RECONCILE" = "true" ] && [ "$RECONCILE" != "retry" ]; then
   TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
   trap 'rm -f "$TMP_STATE"' EXIT
   jq --argjson issue "$ISSUE" --arg status "$RECONCILE" --argjson pr "$EX_PR" \
@@ -397,7 +410,7 @@ if [ "$RECONCILE" != "retry" ]; then
 fi
 ```
 
-Only when `RECONCILE=retry` does a second dispatch happen, and only **once** — 2a's own crash-safety (clearing stale `outcome`/`round`/`current-pr`/`gate-fail`/stall/signature scratch files left by an interrupted attempt) and the dedup loop above already make that retry safe. If the retry also fails validation, or the GitHub lookup itself is ambiguous or fails, **stop the run and report to the user** — never guess at the outcome or silently mark the issue as anything.
+Only when `NEEDS_RECONCILE=true` and `RECONCILE=retry` does a second dispatch happen, and only **once** — 2a's own crash-safety (clearing stale `outcome`/`round`/`current-pr`/`gate-fail`/stall/signature scratch files left by an interrupted attempt) and the dedup loop above already make that retry safe. If the retry also fails validation, **stop the run and report to the user** — never guess at the outcome or silently mark the issue as anything.
 
 Nothing about 2a–2g's content changes because of this dispatch — every check, gate, and invariant below still applies exactly as written. A sub-agent is simply the thing now applying them, one issue at a time, in a clean context each time.
 
