@@ -1,12 +1,15 @@
 import { readFileSync } from 'node:fs';
-import { createRequire, register } from 'node:module';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // Register .js → .ts resolve hook so CJS wrapper's import('./index.ts')
-// can resolve the .js import specifiers used throughout the source.
-register(new URL('../../scripts/ts-resolve-hooks.ts', import.meta.url));
+// can resolve the .js import specifiers used throughout the source. Loading
+// the consolidated loader (rather than calling register() directly here)
+// picks up its registerHooks()-with-fallback logic instead of unconditionally
+// using the deprecated module.register() API.
+await import(new URL('../../scripts/ts-resolve-loader.js', import.meta.url).href);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));

@@ -277,7 +277,10 @@ export function fnImpactData(
   } = {},
 ) {
   return withRepo(customDbPath, (repo, dbConfig) => {
-    const { noTests, config } = resolveAnalysisOpts({ ...opts, config: opts.config ?? dbConfig });
+    const { noTests, config } = resolveAnalysisOpts(customDbPath, {
+      ...opts,
+      config: opts.config ?? dbConfig,
+    });
     const maxDepth = opts.depth || config.analysis?.fnImpactDepth || 5;
     const hc = new Map();
 

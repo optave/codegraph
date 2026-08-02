@@ -25,6 +25,7 @@ import {
 import { debug, info, warn } from '../../../../infrastructure/logger.js';
 import { loadNative } from '../../../../infrastructure/native.js';
 import { semverCompare } from '../../../../infrastructure/update-check.js';
+import { getOrCreatePerDbChunkStmt } from '../../../../shared/chunked-stmt-cache.js';
 import { normalizePath, TS_NATIVE_CONFIDENCE_FLOOR } from '../../../../shared/constants.js';
 import { toErrorMessage } from '../../../../shared/errors.js';
 import { CODEGRAPH_VERSION } from '../../../../shared/version.js';
@@ -34,6 +35,7 @@ import type {
   DataflowResult,
   Definition,
   ExtractorOutput,
+  SqliteStatement,
 } from '../../../../types.js';
 import {
   classifyNativeDrops,
@@ -1882,7 +1884,7 @@ function insertBackfilledNodes(
   const exportKeys: unknown[][] = [];
   for (const [relPath, symbols] of wasmResults) {
     // File row — mirrors insertDefinitionsAndExports: qualified_name is null.
-    rows.push([relPath, 'file', relPath, 0, null, null, null, null, null]);
+    rows.push([relPath, 'file', relPath, 0, null, null, null, null, null, null]);
     for (const def of symbols.definitions ?? []) {
       // Populate qualified_name/scope the same way the JS fallback does so
       // downstream queries (cross-file references, "go to definition") find
@@ -1899,13 +1901,14 @@ function insertBackfilledNodes(
         def.name,
         scope,
         def.visibility ?? null,
+        def.contentHash ?? null,
       ]);
     }
     // Exports: insert the row (INSERT OR IGNORE — a matching definition row
     // is a no-op) and queue a key for the second-pass exported=1 update, so
     // queries filtering on exported=1 find backfilled symbols (#970).
     for (const exp of symbols.exports ?? []) {
-      rows.push([exp.name, exp.kind, relPath, exp.line, null, null, exp.name, null, null]);
+      rows.push([exp.name, exp.kind, relPath, exp.line, null, null, exp.name, null, null, null]);
       exportKeys.push([exp.name, exp.kind, relPath, exp.line]);
     }
   }
@@ -2063,20 +2066,29 @@ async function backfillNativeDroppedFiles(
  * Chunked to stay within SQLite's SQLITE_LIMIT_VARIABLE_NUMBER (999 on older
  * builds).
  */
+// Chunk-size-keyed statement cache for findOneHopReverseDepFiles' SELECT below,
+// scoped per db like the technique/confidence-floor caches further down —
+// avoids recompiling the same query on every chunk of a large reverse-dep
+// scan (#1952).
+const oneHopReverseDepStmtCache = new WeakMap<
+  BetterSqlite3Database,
+  Map<number, SqliteStatement<{ file: string }>>
+>();
+
 function findOneHopReverseDepFiles(db: BetterSqlite3Database, files: readonly string[]): string[] {
   const found = new Set<string>();
   const CHUNK_SIZE = 500;
   for (let i = 0; i < files.length; i += CHUNK_SIZE) {
     const chunk = files.slice(i, i + CHUNK_SIZE);
-    const placeholders = chunk.map(() => '?').join(',');
-    const rows = db
-      .prepare(
-        `SELECT DISTINCT n_src.file AS file FROM edges e
+    const chunkSize = chunk.length;
+    const stmt = getOrCreatePerDbChunkStmt(oneHopReverseDepStmtCache, db, chunkSize, (n) => {
+      const placeholders = Array.from({ length: n }, () => '?').join(',');
+      return `SELECT DISTINCT n_src.file AS file FROM edges e
          JOIN nodes n_src ON e.source_id = n_src.id
          JOIN nodes n_tgt ON e.target_id = n_tgt.id
-         WHERE e.kind = 'calls' AND n_tgt.file IN (${placeholders}) AND n_src.kind != 'directory'`,
-      )
-      .all(...chunk) as Array<{ file: string }>;
+         WHERE e.kind = 'calls' AND n_tgt.file IN (${placeholders}) AND n_src.kind != 'directory'`;
+    });
+    const rows = stmt.all(...chunk);
     for (const r of rows) found.add(r.file);
   }
   return [...found];
@@ -2093,7 +2105,27 @@ function findOneHopReverseDepFiles(db: BetterSqlite3Database, files: readonly st
  * correct.  For incremental builds, only changed-file source nodes — plus
  * their one-hop reverse dependents (#1744) — are updated to avoid overwriting
  * previously-set technique values on unchanged edges.
+ *
+ * `AND dynamic_kind IS NULL` excludes flag-only dynamic-call sink edges
+ * (`eval`, `computed-key`, `reflection`, `unresolved-dynamic` — confidence=0,
+ * `dynamic_kind` set) from the backfill (#1995). Those intentionally keep
+ * `technique = NULL` forever, matching the WASM/JS full-build path's own
+ * sink-edge insertion — without this guard, the blanket UPDATE mislabels an
+ * unresolved dynamic call as a resolved direct one.
  */
+// Chunk-size-keyed statement caches for backfillEdgeTechniquesAfterNativeOrchestrator's
+// incremental-path technique/confidence-floor UPDATEs below, scoped per db like the
+// techniqueBackfillStmtCache/confidenceFloorStmtCache pair in
+// stages/build-edges.ts's applyEdgeTechniquesAfterNativeInsert (#1768, #1952).
+const nativeOrchestratorTechniqueBackfillStmtCache = new WeakMap<
+  BetterSqlite3Database,
+  Map<number, SqliteStatement>
+>();
+const nativeOrchestratorConfidenceFloorStmtCache = new WeakMap<
+  BetterSqlite3Database,
+  Map<number, SqliteStatement>
+>();
+
 function backfillEdgeTechniquesAfterNativeOrchestrator(
   db: BetterSqlite3Database,
   isFullBuild: boolean,
@@ -2107,7 +2139,7 @@ function backfillEdgeTechniquesAfterNativeOrchestrator(
   }
   if (isFullBuild || !changedFiles) {
     db.prepare(
-      "UPDATE edges SET technique = 'ts-native' WHERE kind = 'calls' AND technique IS NULL",
+      "UPDATE edges SET technique = 'ts-native' WHERE kind = 'calls' AND technique IS NULL AND dynamic_kind IS NULL",
     ).run();
     // Lift resolved ts-native edges below the confidence floor.
     db.prepare(
@@ -2129,23 +2161,33 @@ function backfillEdgeTechniquesAfterNativeOrchestrator(
   const tx = db.transaction(() => {
     for (let i = 0; i < scopeFiles.length; i += CHUNK_SIZE) {
       const chunk = scopeFiles.slice(i, i + CHUNK_SIZE);
-      const placeholders = chunk.map(() => '?').join(',');
-      db.prepare(
-        `UPDATE edges SET technique = 'ts-native'
-         WHERE kind = 'calls' AND technique IS NULL
-         AND source_id IN (
-           SELECT id FROM nodes WHERE file IN (${placeholders})
-         )`,
-      ).run(...chunk);
-      // Lift resolved ts-native edges below the confidence floor for this chunk.
-      db.prepare(
-        `UPDATE edges SET confidence = ?
-         WHERE kind = 'calls' AND technique = 'ts-native'
-           AND confidence > 0 AND confidence < ?
+      const chunkSize = chunk.length;
+      const techniqueStmt = getOrCreatePerDbChunkStmt(
+        nativeOrchestratorTechniqueBackfillStmtCache,
+        db,
+        chunkSize,
+        (n) =>
+          `UPDATE edges SET technique = 'ts-native'
+           WHERE kind = 'calls' AND technique IS NULL AND dynamic_kind IS NULL
            AND source_id IN (
-             SELECT id FROM nodes WHERE file IN (${placeholders})
+             SELECT id FROM nodes WHERE file IN (${Array.from({ length: n }, () => '?').join(',')})
            )`,
-      ).run(TS_NATIVE_CONFIDENCE_FLOOR, TS_NATIVE_CONFIDENCE_FLOOR, ...chunk);
+      );
+      techniqueStmt.run(...chunk);
+      // Lift resolved ts-native edges below the confidence floor for this chunk.
+      const confidenceStmt = getOrCreatePerDbChunkStmt(
+        nativeOrchestratorConfidenceFloorStmtCache,
+        db,
+        chunkSize,
+        (n) =>
+          `UPDATE edges SET confidence = ?
+           WHERE kind = 'calls' AND technique = 'ts-native'
+             AND confidence > 0 AND confidence < ?
+             AND source_id IN (
+               SELECT id FROM nodes WHERE file IN (${Array.from({ length: n }, () => '?').join(',')})
+             )`,
+      );
+      confidenceStmt.run(TS_NATIVE_CONFIDENCE_FLOOR, TS_NATIVE_CONFIDENCE_FLOOR, ...chunk);
     }
   });
   tx();

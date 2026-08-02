@@ -36,7 +36,6 @@ import type {
 import { computeConfidence } from '../../resolve.js';
 import type { PointsToMap } from '../../resolver/points-to.js';
 import { buildPointsToMapForFile, resolveViaPointsTo } from '../../resolver/points-to.js';
-import { unwrapTypeEntry } from '../../resolver/strategy.js';
 import { enrichTypeMapWithTsc } from '../../resolver/ts-resolver.js';
 import {
   type CallNodeLookup,
@@ -46,7 +45,9 @@ import {
   resolveCallTargets,
   resolveDefinePropertyAccessorTarget,
   resolveHierarchyTargets,
+  resolveKotlinReflectionPreQualified,
   resolveReceiverEdge,
+  resolveReflectionKeyExprFallback,
   resolveSameClassQualifiedMethod,
 } from '../call-resolver.js';
 import type { ChaContext } from '../cha.js';
@@ -1124,33 +1125,6 @@ function makeContextLookup(ctx: PipelineContext, getNodeIdStmt: NodeIdStmt): Cal
 // ── Per-call resolution helpers ─────────────────────────────────────────
 
 /**
- * RES-4: Kotlin member callable reference — `Greeter::greet` emits
- * { name: 'greet', receiver: 'Greeter', dynamicKind: 'reflection' }.
- * The receiver is the class qualifier (not a typeMap variable), so
- * resolveCallTargets would find a same-named top-level function via
- * byNameAndFile('greet', relPath) before the qualified form is tried.
- * Prefer `Greeter.greet` in the same file first; fall through to the
- * normal path only when no qualified match exists.
- */
-function resolveKotlinReflectionPreQualified(
-  call: Call,
-  relPath: string,
-  lookup: CallNodeLookup,
-): ReadonlyArray<{ id: number; file: string; kind?: string }> {
-  if (
-    call.dynamicKind === 'reflection' &&
-    call.receiver &&
-    !call.keyExpr &&
-    !isModuleScopedLanguage(relPath)
-  ) {
-    return lookup
-      .byNameAndFile(`${call.receiver}.${call.name}`, relPath)
-      .filter((n) => n.kind === 'method' || n.kind === 'function');
-  }
-  return [];
-}
-
-/**
  * Same-class `this.method()` fallback: when the call receiver is `this` and
  * resolveCallTargets found nothing, derive the enclosing class name from the
  * caller (e.g. `Logger.info` → class prefix `Logger`) and retry with the
@@ -1185,51 +1159,6 @@ function resolveSameClassBareCallFallback(
 ): Array<{ id: number; file: string; kind?: string }> {
   if (call.receiver || callerName == null || isModuleScopedLanguage(relPath)) return [];
   return resolveSameClassQualifiedMethod(call.name, callerName, relPath, lookup);
-}
-
-/**
- * RES-3: reflection with literal method name — JVM getMethod("name") / invokeMethod("name").
- * Java/Scala/Groovy methods are stored as class-qualified names (e.g. Reflection.greet),
- * so lookup.byNameAndFile('greet', relPath) finds nothing. When dynamicKind='reflection'
- * and keyExpr is set (a string-literal method name was captured), try the qualified form:
- *   1. typeMap[receiver] → resolvedType → lookup `resolvedType.keyExpr` (type-annotated local)
- *   2. callerName class prefix → `CallerClass.keyExpr` (same-class sibling, e.g. Groovy obj)
- * Scoped to non-JS/TS files to avoid interfering with the JS reflection path.
- */
-function resolveReflectionKeyExprFallback(
-  call: Call,
-  callerName: string | null,
-  relPath: string,
-  typeMap: Map<string, TypeMapEntry | string>,
-  lookup: CallNodeLookup,
-): Array<{ id: number; file: string; kind?: string }> {
-  if (
-    call.dynamicKind !== 'reflection' ||
-    !call.keyExpr ||
-    !call.receiver ||
-    isModuleScopedLanguage(relPath)
-  ) {
-    return [];
-  }
-  const resolvedType = unwrapTypeEntry(typeMap.get(call.receiver));
-  if (resolvedType) {
-    const qualified = lookup
-      .byNameAndFile(`${resolvedType}.${call.keyExpr}`, relPath)
-      .filter((n) => n.kind === 'method' || n.kind === 'function');
-    if (qualified.length > 0) return qualified;
-  }
-  if (callerName != null) {
-    const lastDot = callerName.lastIndexOf('.');
-    if (lastDot > 0) {
-      const prevDot = callerName.lastIndexOf('.', lastDot - 1);
-      const callerClass = callerName.slice(prevDot + 1, lastDot);
-      const qualified = lookup
-        .byNameAndFile(`${callerClass}.${call.keyExpr}`, relPath)
-        .filter((n) => n.kind === 'method' || n.kind === 'function');
-      if (qualified.length > 0) return qualified;
-    }
-  }
-  return [];
 }
 
 /**
@@ -1693,7 +1622,12 @@ function emitChaCallEdgesForCall(
         : computeConfidence(relPath, t.file, null) - CHA_DISPATCH_PENALTY;
       if (conf > 0) {
         seenCallEdges.add(edgeKey);
-        allEdgeRows.push([caller.id, t.id, 'calls', conf, 0, 'cha', null]);
+        // Tag super-dispatch edges distinctly, matching buildChaPostPass and
+        // the native-orchestrator path's own this/super handling (#1996) —
+        // super calls are not virtual dispatch, so grouping them under the
+        // generic 'cha' label previously hid that distinction on this path.
+        const technique = call.receiver === 'super' ? 'super-dispatch' : 'cha';
+        allEdgeRows.push([caller.id, t.id, 'calls', conf, 0, technique, null]);
       }
     }
   }
@@ -2112,24 +2046,70 @@ function alignSiblingLines(oldLines: number[], newLines: number[]): Map<number, 
  * Picks the correct reconnect target among same-(name,kind,file) candidates.
  *
  * A single candidate is an unambiguous match. With several candidates (e.g.
- * multiple object-literal `close() {}` methods in one file), the saved
- * sibling-group snapshot from before purge is aligned against the current
- * candidate lines (see `alignSiblingLines`) to find which new line the saved
- * target's old line maps to — correct even when the whole group shifted and
- * its size changed in the same edit. Falls back to nearest-line only when no
- * sibling-group snapshot is available, or the group is too large to align
- * cheaply.
+ * multiple object-literal `close() {}` methods in one file), an exact
+ * `content_hash` match is tried first (see the `tgtHash` param doc) since
+ * it's a true identity signal, not just position — falling back to the
+ * saved sibling-group snapshot from before purge, aligned against the
+ * current candidate lines (see `alignSiblingLines`) to find which new line
+ * the saved target's old line maps to. That line-position fallback is
+ * correct even when the whole group shifted and its size changed in the
+ * same edit, EXCEPT the one compound case a hash catches and line
+ * position provably cannot: a same-named/same-kind sibling both removed
+ * (renamed away) and a different one added in the same edit, leaving the
+ * group's size unchanged (issue #2015). Falls back to nearest-line only
+ * when no sibling-group snapshot is available, or the group is too large
+ * to align cheaply.
  */
 function pickReconnectTarget(
-  candidates: Array<{ id: number; line: number }>,
+  candidates: Array<{ id: number; line: number; contentHash: string | null }>,
   tgtLine: number,
+  /**
+   * The saved edge's target declaration's `content_hash` at save time, or
+   * `null` when unavailable (pre-migration rows). Only trusted when exactly
+   * one candidate in this group shares it — if two or more candidates have
+   * byte-identical bodies (rare but possible), the hash can't disambiguate
+   * between them, so this falls through to line alignment instead of
+   * guessing.
+   */
+  tgtHash: string | null,
   groupKey: string,
   savedSiblingGroups: ReadonlyMap<string, number[]>,
   alignmentCache: Map<string, Map<number, number>>,
   maxAlignGroupSize: number,
 ): number | null {
   if (candidates.length === 0) return null;
+  // A lone candidate is trusted unconditionally, without consulting the
+  // hash: unlike the multi-candidate case, there is no sibling to
+  // corroborate a hash mismatch as "an unrelated declaration," and the
+  // overwhelmingly common cause of a sole candidate's hash differing from
+  // the saved one is simply that its OWN body was edited in the same
+  // change — contentHash is a hash of the declaration's source text, so any
+  // in-place edit changes it. Gating on the hash here would silently drop
+  // the edge for that ordinary case (caught by #1744's regression test),
+  // trading a common, legitimate scenario for a rare rename-away-and-replace
+  // collision that a hash comparison cannot even reliably distinguish from
+  // a body edit when there is only one candidate to compare against.
   if (candidates.length === 1) return candidates[0]!.id;
+
+  if (tgtHash) {
+    // Only trust a hash-based verdict when there's actual hash data among
+    // this group's candidates to compare against — if none carry a hash
+    // (e.g. their endLine was unavailable to compute one), fall through to
+    // line alignment entirely rather than treating a vacuous "0 matches"
+    // as proof the target is gone.
+    const candidatesWithHash = candidates.filter((c) => c.contentHash !== null);
+    if (candidatesWithHash.length > 0) {
+      const hashMatches = candidatesWithHash.filter((c) => c.contentHash === tgtHash);
+      if (hashMatches.length === 1) return hashMatches[0]!.id;
+      // Zero matches means the exact body no longer exists among any
+      // current candidate — a stronger, more direct identity signal than
+      // line position, so this is a confident drop, not a cue to fall
+      // through and guess by rank/line (the exact silent-miswire #2015
+      // describes). More than one match is a rare byte-identical
+      // duplicate — genuinely ambiguous, so THAT case still falls through.
+      if (hashMatches.length === 0) return null;
+    }
+  }
 
   const oldLines = savedSiblingGroups.get(groupKey);
   if (
@@ -2191,7 +2171,7 @@ function pickReconnectTarget(
 function reconnectReverseDepEdges(ctx: PipelineContext): void {
   const { db } = ctx;
   const candidatesStmt = db.prepare(
-    'SELECT id, line FROM nodes WHERE name = ? AND kind = ? AND file = ? ORDER BY line',
+    'SELECT id, line, content_hash AS contentHash FROM nodes WHERE name = ? AND kind = ? AND file = ? ORDER BY line',
   );
   const reconnectedRows: EdgeRowTuple[] = [];
   let dropped = 0;
@@ -2199,7 +2179,10 @@ function reconnectReverseDepEdges(ctx: PipelineContext): void {
   // Cache candidate lists per (name, kind, file) group — many saved edges
   // often share the same target (e.g. several callers of the same
   // function), so this avoids re-querying per edge.
-  const candidatesCache = new Map<string, Array<{ id: number; line: number }>>();
+  const candidatesCache = new Map<
+    string,
+    Array<{ id: number; line: number; contentHash: string | null }>
+  >();
   // Cache the (potentially expensive) alignment result per group too —
   // shared across every saved edge targeting the same sibling group.
   const alignmentCache = new Map<string, Map<number, number>>();
@@ -2212,6 +2195,7 @@ function reconnectReverseDepEdges(ctx: PipelineContext): void {
       candidates = candidatesStmt.all(saved.tgtName, saved.tgtKind, saved.tgtFile) as Array<{
         id: number;
         line: number;
+        contentHash: string | null;
       }>;
       candidatesCache.set(cacheKey, candidates);
     }
@@ -2219,6 +2203,7 @@ function reconnectReverseDepEdges(ctx: PipelineContext): void {
     const newId = pickReconnectTarget(
       candidates,
       saved.tgtLine,
+      saved.tgtHash,
       cacheKey,
       ctx.savedSiblingGroups,
       alignmentCache,

@@ -57,6 +57,7 @@ fn handle_module_attr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -99,6 +100,7 @@ fn handle_record_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -126,6 +128,7 @@ fn handle_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -179,6 +182,7 @@ fn handle_function_clause(node: &Node, source: &[u8], symbols: &mut FileSymbols)
         cfg: None,
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -249,6 +253,7 @@ fn handle_define(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 

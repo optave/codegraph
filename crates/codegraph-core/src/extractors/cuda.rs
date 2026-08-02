@@ -363,6 +363,7 @@ fn handle_cuda_function_definition(node: &Node, source: &[u8], symbols: &mut Fil
             cfg: build_function_cfg(node, "cpp", source),
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -384,6 +385,7 @@ fn handle_cuda_class_specifier(node: &Node, source: &[u8], symbols: &mut FileSym
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
         extract_cuda_base_classes(node, source, &class_name, symbols);
     }
@@ -406,6 +408,7 @@ fn handle_cuda_struct_specifier(node: &Node, source: &[u8], symbols: &mut FileSy
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -423,6 +426,7 @@ fn handle_cuda_enum_specifier(node: &Node, source: &[u8], symbols: &mut FileSymb
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -439,6 +443,7 @@ fn handle_cuda_namespace_definition(node: &Node, source: &[u8], symbols: &mut Fi
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -470,6 +475,7 @@ fn handle_cuda_type_definition(node: &Node, source: &[u8], symbols: &mut FileSym
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }

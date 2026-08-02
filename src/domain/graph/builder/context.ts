@@ -101,6 +101,16 @@ export class PipelineContext {
     dynamic: number;
     technique: string | null;
     dynamicKind: string | null;
+    /**
+     * The target declaration's `content_hash` at save time, or `null` when
+     * unavailable (rows from before the content_hash migration). Lets
+     * `pickReconnectTarget` try an exact-hash match before falling back to
+     * line-position alignment — a true identity signal that line position
+     * alone cannot provide when a sibling group's size stays unchanged
+     * because one member was renamed away and a different one added in the
+     * same edit (issue #2015).
+     */
+    tgtHash: string | null;
   }> = [];
 
   /**

@@ -214,6 +214,7 @@ fn handle_scala_class_definition(node: &Node, source: &[u8], symbols: &mut FileS
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
         extract_scala_extends(node, source, &class_name, symbols);
     }
@@ -234,6 +235,7 @@ fn handle_scala_trait_definition(node: &Node, source: &[u8], symbols: &mut FileS
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
         extract_scala_extends(node, source, &trait_name, symbols);
     }
@@ -255,6 +257,7 @@ fn handle_scala_object_definition(node: &Node, source: &[u8], symbols: &mut File
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
         extract_scala_extends(node, source, &obj_name, symbols);
     }
@@ -282,6 +285,7 @@ fn handle_scala_function_definition(node: &Node, source: &[u8], symbols: &mut Fi
             cfg: build_function_cfg(node, "scala", source),
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }

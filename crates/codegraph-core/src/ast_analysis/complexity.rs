@@ -361,6 +361,12 @@ pub static C_RULES: LangRules = LangRules {
 
 // Mirrors C_RULES: tree-sitter-cpp's if_statement uses the same else_clause
 // wrapper (Pattern A), confirmed by parsing the same if/else-if/else shape.
+//
+// CUDA (see `lang_rules` below) reuses this struct as-is: tree-sitter-cuda is
+// a C++-superset grammar (only adding qualifier keywords and kernel-launch
+// syntax), and parsing sample CUDA control flow confirms identical
+// if_statement/else_clause/for_statement/while_statement/switch_statement/
+// binary_expression node kinds to plain C++.
 pub static CPP_RULES: LangRules = LangRules {
     branch_nodes: &["if_statement", "else_clause", "for_statement", "for_range_loop", "while_statement", "do_statement", "case_statement", "conditional_expression", "catch_clause"],
     case_nodes: &["case_statement"],
@@ -491,7 +497,7 @@ pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
         "ruby" => Some(&RUBY_RULES),
         "php" => Some(&PHP_RULES),
         "c" => Some(&C_RULES),
-        "cpp" => Some(&CPP_RULES),
+        "cpp" | "cuda" => Some(&CPP_RULES),
         "kotlin" => Some(&KOTLIN_RULES),
         "swift" => Some(&SWIFT_RULES),
         "scala" => Some(&SCALA_RULES),
@@ -1115,7 +1121,7 @@ pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
         "ruby" => Some(&RUBY_HALSTEAD),
         "php" => Some(&PHP_HALSTEAD),
         "c" => Some(&C_HALSTEAD),
-        "cpp" => Some(&CPP_HALSTEAD),
+        "cpp" | "cuda" => Some(&CPP_HALSTEAD),
         "kotlin" => Some(&KOTLIN_HALSTEAD),
         "swift" => Some(&SWIFT_HALSTEAD),
         "scala" => Some(&SCALA_HALSTEAD),
@@ -1133,7 +1139,7 @@ pub fn comment_prefixes(lang_id: &str) -> &'static [&'static str] {
         }
         "python" | "ruby" => &["#"],
         "php" => &["//", "#", "/*", "*", "*/"],
-        "c" | "cpp" => &["//", "/*"],
+        "c" | "cpp" | "cuda" => &["//", "/*"],
         "kotlin" => &["//", "/*"],
         "swift" => &["//", "/*"],
         "scala" => &["//", "/*"],
@@ -1875,6 +1881,46 @@ mod tests {
         assert_eq!(m.cognitive, 1);
         assert_eq!(m.cyclomatic, 2);
         assert_eq!(m.max_nesting, 1);
+    }
+
+    // ─── CUDA tests (issue #1923) ────────────────────────────────────────────
+    //
+    // tree-sitter-cuda is a C++-superset grammar (only adding qualifier
+    // keywords like __global__/__device__ and kernel-launch syntax) —
+    // confirmed by parsing sample CUDA control flow that its if_statement/
+    // else_clause/for_statement/while_statement/switch_statement/
+    // binary_expression node kinds are identical to plain C++, so CUDA
+    // reuses CPP_RULES/CPP_HALSTEAD as-is.
+
+    fn compute_cuda(code: &str) -> ComplexityMetrics {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_cuda::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &CPP_RULES).expect("no function found");
+        compute_function_complexity(&func, &CPP_RULES)
+    }
+
+    #[test]
+    fn cuda_global_kernel_if_elseif_else() {
+        // The __global__ qualifier is a leading anonymous token on
+        // function_definition and does not disrupt function-body detection.
+        let m = compute_cuda(
+            "__global__ void classify(int *a) {\n  if (a[0] > 0) {\n    a[0] = 1;\n  } else if (a[0] < 0) {\n    a[0] = -1;\n  } else {\n    a[0] = 0;\n  }\n}",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn cuda_for_loop_with_logical_operator() {
+        let m = compute_cuda(
+            "__global__ void kernel(int *a, int n) {\n  for (int i = 0; i < n && a[i] > 0; i++) {\n    a[i]++;\n  }\n}",
+        );
+        assert_eq!(m.cyclomatic, 3);
     }
 
     // ─── Kotlin tests (issue #1923) ─────────────────────────────────────────

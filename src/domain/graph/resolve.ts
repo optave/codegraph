@@ -430,17 +430,254 @@ function resolveViaAlias(
   return null;
 }
 
+// ── Rust `crate::`/`self::`/`super::` module-path resolution ────────
+
+/**
+ * True if `importSource` is a Rust path-qualified `use` path (`crate::...`,
+ * `self::...`, or `super::...`) — the only import syntax Rust's module
+ * system produces (Rust has no relative-import syntax). No other supported
+ * language emits this exact `::`-delimited keyword-prefixed shape, so this
+ * signal alone is enough to gate Rust-specific resolution without needing a
+ * language/extension parameter threaded through resolveImportPathJS.
+ */
+function isRustQualifiedPath(importSource: string): boolean {
+  return (
+    importSource === 'crate' ||
+    importSource.startsWith('crate::') ||
+    importSource === 'self' ||
+    importSource.startsWith('self::') ||
+    importSource === 'super' ||
+    importSource.startsWith('super::')
+  );
+}
+
+/**
+ * Directory where `file`'s own submodules would live, per Rust convention:
+ * mod.rs/lib.rs/main.rs's submodules live in the same directory as the file
+ * itself; any other foo.rs's submodules live in a sibling foo/ directory.
+ */
+function rustModuleDir(file: string): string {
+  const base = path.basename(file, '.rs');
+  const dir = path.dirname(file);
+  if (base === 'mod' || base === 'lib' || base === 'main') return dir;
+  return path.join(dir, base);
+}
+
+/**
+ * Cargo directory names whose direct .rs children are each their own,
+ * independent crate root — a separate binary/example/test/bench target,
+ * never sharing a `crate::` module tree with `src/main.rs`/`src/lib.rs` or
+ * with each other. `foo/main.rs` nested one level inside one of these
+ * (a multi-file binary/example) is already handled by the ordinary
+ * main.rs/lib.rs search below and doesn't need this special case.
+ */
+const CARGO_STANDALONE_TARGET_DIRS = new Set(['bin', 'examples', 'tests', 'benches']);
+
+/**
+ * True if `file` is a standalone Cargo target root — a `.rs` file directly
+ * inside `src/bin/`, `examples/`, `tests/`, or `benches/` (not itself named
+ * main.rs/lib.rs, which the ordinary crate-root search already finds).
+ */
+function isRustCargoTargetRoot(file: string): boolean {
+  const base = path.basename(file, '.rs');
+  if (base === 'main' || base === 'lib' || base === 'mod') return false;
+  return CARGO_STANDALONE_TARGET_DIRS.has(path.basename(path.dirname(file)));
+}
+
+/**
+ * Find the crate-root .rs file whose directory is an ancestor of
+ * `fromFile`, walking up from fromFile's directory and stopping at
+ * `rootDir`. Returns the absolute path, or null if none is found among
+ * `knownFiles` — scoping to the nearest ancestor crate root (rather than a
+ * project-wide search) correctly handles a Cargo workspace with several
+ * crates, each resolving `crate::` relative to its own root.
+ *
+ * A standalone Cargo target file (`src/bin/foo.rs`, `examples/foo.rs`,
+ * `tests/foo.rs`, `benches/foo.rs`) is its own crate root regardless of
+ * whatever `main.rs`/`lib.rs` exists elsewhere in the ancestor chain —
+ * each such file compiles as an independent crate, so walking further up
+ * would wrongly attribute its `crate::` paths to an unrelated crate.
+ */
+function findRustCrateRoot(
+  fromFile: string,
+  rootDir: string,
+  knownFiles: Set<string>,
+): string | null {
+  if (isRustCargoTargetRoot(fromFile)) return fromFile;
+  let dir = path.dirname(fromFile);
+  for (;;) {
+    for (const name of ['main.rs', 'lib.rs']) {
+      const candidate = path.join(dir, name);
+      const rel = normalizePath(path.relative(rootDir, candidate));
+      if (knownFiles.has(rel)) return candidate;
+    }
+    if (!dir.startsWith(rootDir)) return null;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * The file representing `file`'s parent module (one level up the module
+ * tree), or null if `file` is already a crate root (including a standalone
+ * Cargo target) or no parent file is known among `knownFiles`.
+ */
+function rustParentModuleFile(
+  file: string,
+  rootDir: string,
+  knownFiles: Set<string>,
+): string | null {
+  const base = path.basename(file, '.rs');
+  if (base === 'main' || base === 'lib' || isRustCargoTargetRoot(file)) return null;
+  const dir = path.dirname(file);
+  const searchDir = base === 'mod' ? path.dirname(dir) : dir;
+
+  for (const candidate of [`${searchDir}.rs`, path.join(searchDir, 'mod.rs')]) {
+    const rel = normalizePath(path.relative(rootDir, candidate));
+    if (knownFiles.has(rel)) return candidate;
+  }
+  for (const name of ['main.rs', 'lib.rs']) {
+    const candidate = path.join(searchDir, name);
+    const rel = normalizePath(path.relative(rootDir, candidate));
+    if (knownFiles.has(rel)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Walk `segments` (module-path components after the crate::/self::/super::
+ * prefix) from `startDir`, treating each as a submodule file (`seg.rs` or
+ * `seg/mod.rs`) if one exists among `knownFiles`. The final segment may
+ * instead be a leaf item name (function/type/const) rather than a module —
+ * if it doesn't match a real file, resolution stops one level early and
+ * returns the last successfully resolved module file (mirroring how
+ * `crate::service::build_service` resolves to service.rs even though
+ * build_service itself has no file of its own — the Rust extractor's
+ * single-item `use` shape appends the item name to `source`, while the
+ * braced-list shape doesn't, so this must handle both).
+ */
+function walkRustModuleSegments(
+  startDir: string,
+  startFile: string,
+  segments: string[],
+  rootDir: string,
+  knownFiles: Set<string>,
+): string | null {
+  let currentDir = startDir;
+  let currentFile = startFile;
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]!;
+    const fileCandidate = path.join(currentDir, `${seg}.rs`);
+    const modCandidate = path.join(currentDir, seg, 'mod.rs');
+    const fileRel = normalizePath(path.relative(rootDir, fileCandidate));
+    const modRel = normalizePath(path.relative(rootDir, modCandidate));
+
+    if (knownFiles.has(fileRel)) {
+      currentFile = fileCandidate;
+      currentDir = path.join(currentDir, seg);
+      continue;
+    }
+    if (knownFiles.has(modRel)) {
+      currentFile = modCandidate;
+      currentDir = path.join(currentDir, seg);
+      continue;
+    }
+    if (i === segments.length - 1) break;
+    return null;
+  }
+  return currentFile;
+}
+
+/**
+ * Resolve a Rust `use crate::a::b::c` / `self::a::b` / `super::a` path to
+ * the real file that declares its target module (or, for the trailing
+ * item-name case, the module file that item is declared in), by walking the
+ * project's directory tree per Rust's module-file conventions (issue
+ * #2007). Returns null (falls through to the bare-specifier fallback) when
+ * no match is found — e.g. `#[path]` attribute overrides, or a Cargo.toml
+ * `[[bin]]`/`[[example]]`/`[[test]]`/`[[bench]]` section declaring a target
+ * at a custom, non-conventional path (issue #2217), neither of which this
+ * convention-based, known-files-only resolver models.
+ */
+function resolveRustUsePath(
+  fromFile: string,
+  importSource: string,
+  rootDir: string,
+  knownFiles: Set<string>,
+): string | null {
+  const segments = importSource.split('::');
+  if (segments.length === 0) return null;
+
+  let startDir: string;
+  let startFile: string;
+  let rest: string[];
+
+  if (segments[0] === 'crate') {
+    const rootFile = findRustCrateRoot(fromFile, rootDir, knownFiles);
+    if (!rootFile) return null;
+    startDir = path.dirname(rootFile);
+    startFile = rootFile;
+    rest = segments.slice(1);
+  } else if (segments[0] === 'self') {
+    startDir = rustModuleDir(fromFile);
+    startFile = fromFile;
+    rest = segments.slice(1);
+  } else if (segments[0] === 'super') {
+    let cur = fromFile;
+    let i = 0;
+    while (i < segments.length && segments[i] === 'super') {
+      const parent = rustParentModuleFile(cur, rootDir, knownFiles);
+      if (!parent) return null;
+      cur = parent;
+      i++;
+    }
+    startDir = rustModuleDir(cur);
+    startFile = cur;
+    rest = segments.slice(i);
+  } else {
+    return null;
+  }
+
+  const resolved = walkRustModuleSegments(startDir, startFile, rest, rootDir, knownFiles);
+  return resolved ? normalizePath(path.relative(rootDir, resolved)) : null;
+}
+
+/** Cache: knownFiles array identity → Set, so repeated resolutions against
+ * the same project file list (e.g. every Rust `use` statement in a build)
+ * don't each rebuild the Set from scratch. */
+const _knownFilesSetCache = new WeakMap<readonly string[], Set<string>>();
+
+function toKnownFilesSet(knownFiles: readonly string[] | null | undefined): Set<string> | null {
+  if (!knownFiles) return null;
+  let set = _knownFilesSetCache.get(knownFiles);
+  if (!set) {
+    set = new Set(knownFiles);
+    _knownFilesSetCache.set(knownFiles, set);
+  }
+  return set;
+}
+
 function resolveImportPathJS(
   fromFile: string,
   importSource: string,
   rootDir: string,
   aliases: PathAliases | null,
+  knownFiles?: readonly string[] | null,
 ): string {
   if (!importSource.startsWith('.') && aliases) {
     const aliasResolved = resolveViaAlias(importSource, aliases, rootDir);
     if (aliasResolved) return normalizePath(path.relative(rootDir, aliasResolved));
   }
   if (!importSource.startsWith('.')) {
+    if (isRustQualifiedPath(importSource) && fromFile.endsWith('.rs')) {
+      const knownFilesSet = toKnownFilesSet(knownFiles);
+      if (knownFilesSet) {
+        const rustResolved = resolveRustUsePath(fromFile, importSource, rootDir, knownFilesSet);
+        if (rustResolved) return rustResolved;
+      }
+    }
     // Workspace packages take priority over node_modules
     const wsResolved = resolveViaWorkspace(importSource, rootDir);
     if (wsResolved) {
@@ -654,6 +891,7 @@ export function resolveImportPath(
   importSource: string,
   rootDir: string,
   aliases: PathAliases | null,
+  knownFiles?: readonly string[] | null,
 ): string {
   const native = loadNative();
   if (native) {
@@ -664,6 +902,7 @@ export function resolveImportPath(
         rootDir,
         convertAliasesForNative(aliases),
         getWorkspacesForNative(rootDir),
+        knownFiles || null,
       );
       const normalized = normalizePath(path.normalize(result));
       // The native resolver's .js → .ts remap fails when paths contain
@@ -676,7 +915,7 @@ export function resolveImportPath(
       );
     }
   }
-  return resolveImportPathJS(fromFile, importSource, rootDir, aliases);
+  return resolveImportPathJS(fromFile, importSource, rootDir, aliases, knownFiles);
 }
 
 /**

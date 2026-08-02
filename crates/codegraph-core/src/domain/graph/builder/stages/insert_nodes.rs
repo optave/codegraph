@@ -25,6 +25,8 @@ pub struct InsertNodesChild {
     pub end_line: Option<u32>,
     #[serde(default)]
     pub visibility: Option<String>,
+    #[serde(default, rename = "contentHash")]
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +38,8 @@ pub struct InsertNodesDefinition {
     pub end_line: Option<u32>,
     #[serde(default)]
     pub visibility: Option<String>,
+    #[serde(default, rename = "contentHash")]
+    pub content_hash: Option<String>,
     #[serde(default)]
     pub children: Vec<InsertNodesChild>,
 }
@@ -142,8 +146,8 @@ fn insert_file_nodes(
 ) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare_cached(
         "INSERT OR IGNORE INTO nodes \
-         (name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         (name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility, content_hash) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
 
     for batch in batches {
@@ -157,6 +161,7 @@ fn insert_file_nodes(
             None::<i64>,
             None::<&str>,
             None::<&str>,
+            None::<&str>,
             None::<&str>
         ])?;
 
@@ -166,6 +171,7 @@ fn insert_file_nodes(
             // .as_deref() converts Option<String> → Option<&str> so rusqlite
             // serialises None as SQL NULL unambiguously (#709).
             let vis = def.visibility.as_deref();
+            let content_hash = def.content_hash.as_deref();
             stmt.execute(params![
                 &def.name,
                 &def.kind,
@@ -175,7 +181,8 @@ fn insert_file_nodes(
                 None::<i64>,
                 &def.name,
                 scope,
-                vis
+                vis,
+                content_hash
             ])?;
         }
 
@@ -189,6 +196,7 @@ fn insert_file_nodes(
                 None::<u32>,
                 None::<i64>,
                 &exp.name,
+                None::<&str>,
                 None::<&str>,
                 None::<&str>
             ])?;
@@ -226,8 +234,8 @@ fn insert_symbol_nodes(
             tx.prepare_cached("SELECT id, name, kind, line FROM nodes WHERE file = ?1")?;
         let mut child_stmt = tx.prepare_cached(
             "INSERT OR IGNORE INTO nodes \
-             (name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility, content_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
 
         for batch in batches {
@@ -251,6 +259,7 @@ fn insert_symbol_nodes(
                 for child in &def.children {
                     let qname = format!("{}.{}", def.name, child.name);
                     let child_vis = child.visibility.as_deref();
+                    let child_content_hash = child.content_hash.as_deref();
                     child_stmt.execute(params![
                         &child.name,
                         &child.kind,
@@ -260,7 +269,8 @@ fn insert_symbol_nodes(
                         def_id,
                         &qname,
                         &def.name,
-                        child_vis
+                        child_vis,
+                        child_content_hash
                     ])?;
                 }
             }

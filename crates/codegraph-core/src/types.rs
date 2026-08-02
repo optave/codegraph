@@ -107,6 +107,15 @@ pub struct Definition {
     /// does not imply this: it's the normal qualified name for real bodied
     /// class/struct/impl/module methods across every extractor.
     pub bodyless: Option<bool>,
+    /// SHA-256 hash of this declaration's own source text (`line`..`end_line`),
+    /// computed centrally after extraction (see `compute_declaration_hashes`
+    /// in `domain/parallel.rs`) rather than per-extractor, since every
+    /// extractor already populates `line`/`end_line` uniformly. Gives
+    /// reverse-dep-edge reconnection during incremental rebuilds a true
+    /// identity signal beyond line position (issue #2015). `None` when
+    /// `end_line` is unavailable.
+    #[napi(js_name = "contentHash")]
+    pub content_hash: Option<String>,
 }
 
 #[napi(object)]

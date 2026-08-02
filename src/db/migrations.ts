@@ -354,6 +354,39 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE deleted_export_advisories ADD COLUMN consumer_kind TEXT;
     `,
   },
+  {
+    // dataflow.call_edge_id (added in v18, `REFERENCES edges(id)`) was never
+    // given its own index — every DELETE FROM edges pays an O(dataflow-rows)
+    // scan under better-sqlite3, which defaults `PRAGMA foreign_keys = ON`
+    // (rusqlite/native never sets this pragma, so native never paid this
+    // cost — this is WASM-only exposure, matching issue #1948's report).
+    // Confirmed via EXPLAIN QUERY PLAN: without this index, deleting a
+    // single file's edges triggers `SCAN dataflow` for both the explicit
+    // `dataflowByCallEdge` cleanup query (build-stmts.ts) and SQLite's own
+    // automatic FK-constraint check; with it, both become an indexed SEARCH.
+    // Measured on this repo's own ~19.8K-node/~41.8K-edge graph: a 1-file
+    // incremental purge dropped from 62ms to 1.47ms (97.6% reduction).
+    version: 23,
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_dataflow_call_edge ON dataflow(call_edge_id);
+    `,
+  },
+  {
+    // Per-declaration content hash (issue #2015): reverse-dep-edge
+    // reconnection during incremental rebuilds previously matched siblings
+    // by line position alone, which is provably unsafe when a same-named/
+    // same-kind sibling group has one member renamed away and a different
+    // one added in the same edit — the group's size stays unchanged, so the
+    // line-alignment fast path matches by rank and can silently reconnect a
+    // caller to the wrong declaration. A content hash gives reconnection a
+    // true identity signal to try first, falling back to line alignment
+    // only when a hash is unavailable (e.g. rows from before this
+    // migration).
+    version: 24,
+    up: `
+      ALTER TABLE nodes ADD COLUMN content_hash TEXT;
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {
@@ -445,6 +478,7 @@ function ensureNodeColumns(db: BetterSqlite3Database): void {
   if (missing('qualified_name')) db.exec('ALTER TABLE nodes ADD COLUMN qualified_name TEXT');
   if (missing('scope')) db.exec('ALTER TABLE nodes ADD COLUMN scope TEXT');
   if (missing('visibility')) db.exec('ALTER TABLE nodes ADD COLUMN visibility TEXT');
+  if (missing('content_hash')) db.exec('ALTER TABLE nodes ADD COLUMN content_hash TEXT');
   db.exec('UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_scope ON nodes(scope)');

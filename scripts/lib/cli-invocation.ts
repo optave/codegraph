@@ -21,6 +21,6 @@ import path from 'node:path';
  *   flags required to run TypeScript source directly.
  */
 export function resolveCliNodeArgs(root: string): string[] {
-	const loaderUrl = new URL('../ts-resolve-loader.ts', import.meta.url).href;
+	const loaderUrl = new URL('../ts-resolve-loader.js', import.meta.url).href;
 	return ['--experimental-strip-types', '--import', loaderUrl, path.join(root, 'src', 'cli.ts')];
 }

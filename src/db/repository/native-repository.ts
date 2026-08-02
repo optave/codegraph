@@ -45,6 +45,7 @@ import type {
   TriageNodeRow,
   TriageQueryOpts,
 } from '../../types.js';
+import { resolveBusyTimeoutMs } from '../connection.js';
 import { normalizeFileFilter } from '../query-builder.js';
 import {
   type FnDepsCallerNode,
@@ -238,7 +239,9 @@ export class NativeRepository extends Repository {
     if (this.#fallbackDb) return this.#fallbackDb;
     if (!this.#dbPath) return undefined;
     try {
-      this.#fallbackDb = new Database(this.#dbPath, { readonly: true });
+      const db = new Database(this.#dbPath, { readonly: true });
+      db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(this.#dbPath)}`);
+      this.#fallbackDb = db;
       return this.#fallbackDb;
     } catch {
       return undefined;

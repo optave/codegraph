@@ -65,6 +65,7 @@ Your goal: analyze all commits on the current branch, split them into focused PR
    - `.codegraph/titan/issues.ndjson` — issue tracker from all phases
    - `.codegraph/titan/arch-snapshot.json` — pre-forge architectural snapshot (communities, structure, drift). Use for before/after comparison in the Metrics section. May not exist if capture failed.
    - `.codegraph/titan/drift-report.json` — cumulative drift reports from all phases. May not exist if no drift was detected.
+   - `.codegraph/titan/grind-targets.ndjson` — grind phase adoption targets and outcomes. Each line: `{target, file, phase, classification, reason, consumers, pattern, timestamp}`. May not exist if grind wasn't run.
 
    If `titan-state.json` is missing after the search, stop: "No Titan session found. Run `/titan-recon` first."
 
@@ -146,6 +147,9 @@ Use `sync.json` execution phases as the primary guide if available:
    - Group by domain: `fix: address quality issues in <domain>`
 6. **Warning improvements** — commits addressing warn-level issues
    - Group by domain: `refactor: improve code quality in <domain>`
+7. **Helper adoption** — commits from grind phase adopting dead helpers into callsites
+   - PR title: `refactor: adopt dead helpers in <domain>`
+   - Look for `grind(...)` commit prefixes or commits touching files listed in `grind-targets.ndjson`
 
 ### Fallback grouping (if no sync.json)
 
@@ -164,7 +168,7 @@ Record the grouping plan:
   {
     "pr": 1,
     "title": "...",
-    "concern": "dead_code|abstraction|cycle_break|decomposition|quality_fix|warning",
+    "concern": "dead_code|abstraction|cycle_break|decomposition|quality_fix|warning|adoption",
     "domain": "<domain name>",
     "commits": ["<sha1>", "<sha2>"],
     "files": ["<file1>", "<file2>"],
@@ -202,6 +206,17 @@ codegraph complexity --health --sort mi -T --json --limit 10
 
 If `.codegraph/titan/arch-snapshot.json` was captured before forge, compare its `structure` data against current `codegraph structure --depth 2 --json` output. Report cohesion changes per directory (improved / degraded / unchanged). Include in the "Metrics: Before & After" section of the report.
 
+### Grind metrics (if grind-targets.ndjson exists)
+
+If `.codegraph/titan/grind-targets.ndjson` exists, parse it and cross-reference with `titan-state.json → grind`:
+- **Targets processed:** count entries in `grind.processedTargets` (from titan-state.json)
+- **Targets failed:** count entries in `grind.failedTargets` (from titan-state.json)
+- **False positives identified:** count entries with `classification: "false-positive"` in grind-targets.ndjson (or from `grind.falsePositives` in titan-state.json)
+- **Adopted:** count entries with `classification: "adopt"` in grind-targets.ndjson
+- **Dead symbol delta:** from `grind.deadSymbolDelta` in titan-state.json (or compute from baseline vs final dead symbol counts)
+
+Include these in the Metrics: Before & After section and the Grind Results report section.
+
 ### Compute deltas
 
 Compare final metrics against `titan-state.json` baseline:
@@ -216,7 +231,7 @@ Compare final metrics against `titan-state.json` baseline:
 
 ---
 
-## Step 5 — Compile the issue tracker
+## Step 5 — Compile the issue tracker and open GitHub issues
 
 Read `.codegraph/titan/issues.ndjson`. Each line is a JSON object:
 
@@ -229,6 +244,47 @@ Group issues by category and severity. Summarize:
 - **Tooling issues:** problems with the Titan pipeline or other tools
 - **Process notes:** suggestions for improving the Titan workflow
 - **Codebase observations:** structural concerns beyond what the audit covered
+
+### 5b. Open GitHub issues
+
+**Pre-check:** Verify `gh` is available and authenticated before attempting issue creation:
+```bash
+gh auth status 2>&1 || echo "GH_UNAVAILABLE"
+```
+If `GH_UNAVAILABLE`, skip issue creation entirely and note in the report: "GitHub issues were not created — `gh` CLI is not available or not authenticated. Create them manually from the Issues section below."
+
+For each issue with severity `bug` or `limitation`, create a GitHub issue using `gh`:
+
+```bash
+BODY=$(mktemp)
+cat > "$BODY" <<'ISSUE_BODY'
+## Context
+Discovered during Titan audit (phase: <phase>, date: <timestamp>).
+
+## Description
+<description>
+
+## Additional Context
+<context field, if present>
+
+## Source
+- **Titan phase:** <phase>
+- **Severity:** <severity>
+- **Category:** <category>
+ISSUE_BODY
+gh issue create --title "<category>: <short description>" --body-file "$BODY" --label "titan-audit"
+rm -f "$BODY"
+```
+
+Using `--body-file` with a temp file avoids quoting/expansion issues that can arise when issue descriptions contain backticks, `$()` sequences, or literal `EOF` strings.
+
+**Rules for issue creation:**
+- **Only open issues for `bug` and `limitation` severity.** Suggestions and observations go in the report only — they are not actionable enough for standalone issues.
+- **Check for duplicates first:** Run `gh issue list --search "<short description>" --state open --limit 5` before creating. If a matching open issue exists, skip it and note "existing issue #N" in the report.
+- **Label:** Use `titan-audit` label. If the label doesn't exist, create it: `gh label create titan-audit --description "Issues discovered during Titan audit" --color "d4c5f9" 2>/dev/null || true`
+- **Record each created issue number** for inclusion in the report's Issues section.
+
+For `suggestion` severity entries and entries with `category: "codebase"`, include them in the report's Issues section but do NOT create GitHub issues.
 
 ---
 
@@ -243,6 +299,14 @@ Read `.codegraph/titan/gate-log.ndjson`. Summarize:
 ---
 
 ## Step 7 — Generate the report
+
+### Record CLOSE completion timestamp
+
+Before writing the report, record `phaseTimestamps.close.completedAt` so the Pipeline Timeline has accurate data for the CLOSE row. (titan-run also records this after titan-close returns as a safety backstop, but by then the report is already written.)
+
+```bash
+node -e "const fs=require('fs');const s=JSON.parse(fs.readFileSync('.codegraph/titan/titan-state.json','utf8'));s.phaseTimestamps=s.phaseTimestamps||{};s.phaseTimestamps['close']=s.phaseTimestamps['close']||{};s.phaseTimestamps['close'].completedAt=new Date().toISOString();fs.writeFileSync('.codegraph/titan/titan-state.json',JSON.stringify(s,null,2));"
+```
 
 ### Report path
 
@@ -283,13 +347,22 @@ Write the report as Markdown:
 
 ## Pipeline Timeline
 
-| Phase | Started | Completed | Duration |
-|-------|---------|-----------|----------|
-| RECON | <from state> | <from state> | — |
-| GAUNTLET | — | — | — |
-| SYNC | — | — | — |
-| GATE (runs) | — | — | — |
-| CLOSE | <now> | <now> | — |
+Read `titan-state.json → phaseTimestamps` for real wall-clock data. If `phaseTimestamps` exists, use the recorded ISO 8601 timestamps to compute durations. If it does not exist (older pipeline run), derive timing from git commit timestamps as a fallback — **never invent or guess timestamps.**
+
+**Duration computation:** For each phase with `startedAt` and `completedAt`, compute duration as the difference in minutes/hours. For forge, also note the first and last commit timestamps from `git log`.
+
+| Phase | Duration | Notes |
+|-------|----------|-------|
+| RECON | <computed from phaseTimestamps.recon> | — |
+| GAUNTLET | <computed from phaseTimestamps.gauntlet> | <iterations count if resuming> |
+| SYNC | <computed from phaseTimestamps.sync> | — |
+| FORGE | <computed from phaseTimestamps.forge> | <commit count>, first at <time>, last at <time> |
+| GRIND | <computed from phaseTimestamps.grind> | <targets processed>, <adoptions made> |
+| GATE | across forge/grind | <total runs> inline with forge/grind commits |
+| CLOSE | <computed from phaseTimestamps.close> | — |
+| **Total** | <sum of all phases> | — |
+
+**If `phaseTimestamps` is missing:** Fall back to git log timestamps. Use the earliest and latest commit timestamps from `git log main..HEAD --format="%ai"` to bound the forge phase. For analysis phases (recon, gauntlet, sync), use `titan-state.json → initialized` and `lastUpdated` as rough bounds. Mark the durations as "~approximate" in the table.
 
 ---
 
@@ -333,6 +406,22 @@ Write the report as Markdown:
 ### Most Common Violations
 
 <Top 5 violation types with counts>
+
+---
+
+## Grind Results (if grind ran)
+
+**Targets processed:** <N> | **Adopted:** <N> | **Failed:** <N> | **False positives:** <N>
+
+### Adoption Summary
+
+<Table: target name, dead symbols before, dead symbols after, delta, files modified>
+
+### False Positives Logged
+
+<Table: target name, reason (dynamic import / re-export / closure-local / type noise), logged to issues.ndjson>
+
+> Omit this section entirely if `grind-targets.ndjson` does not exist.
 
 ---
 
@@ -494,6 +583,7 @@ Write `.codegraph/titan/close-summary.json`:
   },
   "audit": { "totalAudited": 0, "pass": 0, "warn": 0, "fail": 0, "decompose": 0 },
   "gate": { "totalRuns": 0, "pass": 0, "warn": 0, "fail": 0, "rollbacks": 0 },
+  "grind": { "targetsProcessed": 0, "adopted": 0, "failed": 0, "falsePositives": 0, "deadSymbolDelta": 0 },
   "issues": { "codegraph": 0, "tooling": 0, "process": 0, "codebase": 0 },
   "prs": [
     { "number": 0, "url": "<url>", "title": "<title>", "concern": "<type>", "domain": "<domain>", "commits": 0 }
@@ -514,7 +604,34 @@ Write `.codegraph/titan/close-summary.json`:
    ```
    Delete any remaining batch snapshots.
 
-3. **Titan reports are committed to the repo** (not gitignored). The `generated/titan/` directory is tracked so reports are preserved in git history.
+3. **Branch cleanup:** Delete all titan working branches now that their content lives in focused PR branches. These branches accumulate indefinitely without this step and leave hundreds of orphaned commits that never reach main.
+
+   List what will be deleted:
+   ```bash
+   git branch --list 'refactor/titan-*' 'docs/titan-*'
+   ```
+
+   Capture the branch names once, before any deletion — querying `git branch --list` again after the local delete would find nothing, silently turning the remote cleanup below into a no-op:
+   ```bash
+   REFACTOR_BRANCHES=$(git branch --list 'refactor/titan-*' | sed 's/^[* ]*//')
+   DOCS_BRANCHES=$(git branch --list 'docs/titan-*' | sed 's/^[* ]*//')
+   ```
+
+   Delete locally (force-delete is safe — all work is in the created PR branches). The current worktree branch cannot be deleted while checked out; it will be cleaned up when the worktree is torn down. Skip it gracefully with `|| true`:
+   ```bash
+   echo "$REFACTOR_BRANCHES" | xargs -r -I{} git branch -D {} || true
+   echo "$DOCS_BRANCHES" | xargs -r -I{} git branch -D {} || true
+   ```
+
+   Delete from remote, reusing the names captured above:
+   ```bash
+   echo "$REFACTOR_BRANCHES" | xargs -r git push origin --delete 2>/dev/null || true
+   echo "$DOCS_BRANCHES" | xargs -r git push origin --delete 2>/dev/null || true
+   ```
+
+   Print count of branches deleted.
+
+4. **Titan reports are committed to the repo** (not gitignored). The `generated/titan/` directory is tracked so reports are preserved in git history.
 
 ---
 

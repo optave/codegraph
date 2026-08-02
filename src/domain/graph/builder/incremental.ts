@@ -12,6 +12,7 @@ import path from 'node:path';
 import { bulkNodeIdsByFile, purgeFileData } from '../../../db/index.js';
 import { PROPAGATION_HOP_PENALTY } from '../../../extractors/javascript.js';
 import { debug, warn } from '../../../infrastructure/logger.js';
+import { getOrCreatePerDbChunkStmt } from '../../../shared/chunked-stmt-cache.js';
 import { normalizePath, TS_NATIVE_CONFIDENCE_FLOOR } from '../../../shared/constants.js';
 import { FLAG_ONLY_DYNAMIC_KINDS, isTypeErasedImportTarget } from '../../../shared/kinds.js';
 import type {
@@ -37,7 +38,9 @@ import {
   resolveCallTargets,
   resolveDefinePropertyAccessorTarget,
   resolveHierarchyTargets,
+  resolveKotlinReflectionPreQualified,
   resolveReceiverEdge,
+  resolveReflectionKeyExprFallback,
   resolveSameClassQualifiedMethod,
 } from './call-resolver.js';
 import {
@@ -753,18 +756,22 @@ function buildIncrementalTypeMap(symbols: ExtractorOutput): Map<string, unknown>
  *   2. Same-class bare-call fallback for non-JS/TS class-scoped languages
  *      (e.g. C# static sibling calls: `IsValidEmail()` inside
  *      `Validators.ValidateUser` resolves to `Validators.IsValidEmail`).
- *   3. Object.defineProperty accessor fallback (this-calls inside getter/setter).
+ *   3. Reflection-keyExpr fallback (JVM `getMethod("name")`/`invokeMethod("name")`).
+ *   4. Object.defineProperty accessor fallback (this-calls inside getter/setter).
  *
- * Mirrors the same-class fallback strategies in `resolveFallbackTargets`
- * (stages/build-edges.ts, full-build path). The Kotlin-reflection
- * pre-qualify and reflection-keyExpr fallbacks are intentionally not
- * mirrored here — that narrower, language-specific gap is tracked
- * separately (#1993), not by this function. The broader points-to/CHA/
- * dynamic-sink gap this comment used to reference is now fixed by
- * `buildCallEdges`/`applyChaDispatchPostPass` below (#1852).
+ * Mirrors `resolveFallbackTargets` (stages/build-edges.ts, full-build path)
+ * in both strategy set and order — including the Kotlin-reflection
+ * pre-qualify fallback, which runs before the primary resolution in
+ * `buildCallEdges` below rather than here, since it must pre-empt (not
+ * follow) resolveCallTargets (#1993).
  */
 function applyCallFallbacks(
-  call: { name: string; receiver?: string | null },
+  call: {
+    name: string;
+    receiver?: string | null;
+    dynamicKind?: string | null;
+    keyExpr?: string | null;
+  },
   callerName: string | null,
   relPath: string,
   typeMap: Map<string, unknown>,
@@ -788,7 +795,12 @@ function applyCallFallbacks(
     if (s2.length > 0) return s2;
   }
 
-  // Strategy 3: Object.defineProperty accessor fallback. Shared with the
+  // Strategy 3: reflection-keyExpr fallback (#1993). Shared with the
+  // full-build path via call-resolver.ts.
+  const s3 = resolveReflectionKeyExprFallback(call, callerName, relPath, typeMap, lookup);
+  if (s3.length > 0) return s3;
+
+  // Strategy 4: Object.defineProperty accessor fallback. Shared with the
   // full-build path (stages/build-edges.ts) via call-resolver.ts so both
   // paths apply the same function/method kind filter (issue #1766).
   if (call.receiver === 'this' && callerName != null && definePropertyReceivers) {
@@ -1055,15 +1067,22 @@ function buildCallEdges(
     if (call.receiver && BUILTIN_RECEIVERS.has(call.receiver)) continue;
 
     const caller = findCaller(lookup, call, symbols.definitions, relPath, fileNodeRow);
-    const { targets: initialTargets, importedFrom } = resolveCallTargets(
-      lookup,
-      call,
-      relPath,
-      importedNames,
-      typeMap,
-      caller.callerName,
-      importedOriginalNames,
-    );
+    // Kotlin-reflection pre-qualify (#1993): must pre-empt resolveCallTargets,
+    // not follow it as a fallback — mirrors resolveFallbackTargets'
+    // preQualifiedTargets check in stages/build-edges.ts.
+    const preQualifiedTargets = resolveKotlinReflectionPreQualified(call, relPath, lookup);
+    const { targets: initialTargets, importedFrom } =
+      preQualifiedTargets.length > 0
+        ? { targets: [...preQualifiedTargets], importedFrom: undefined as string | undefined }
+        : resolveCallTargets(
+            lookup,
+            call,
+            relPath,
+            importedNames,
+            typeMap,
+            caller.callerName,
+            importedOriginalNames,
+          );
 
     let targets = applyCallFallbacks(
       call,
@@ -1184,6 +1203,19 @@ function buildCallEdges(
  * files), not a full-table scan. Chunked to stay within SQLite's
  * SQLITE_LIMIT_VARIABLE_NUMBER (999 on older builds).
  */
+// Chunk-size-keyed statement caches for backfillIncrementalEdgeTechniques'
+// technique/confidence-floor UPDATEs below, scoped per db like the
+// techniqueBackfillStmtCache/confidenceFloorStmtCache pair in
+// stages/build-edges.ts's applyEdgeTechniquesAfterNativeInsert (#1768, #1952).
+const incrementalTechniqueBackfillStmtCache = new WeakMap<
+  BetterSqlite3Database,
+  Map<number, SqliteStatement>
+>();
+const incrementalConfidenceFloorStmtCache = new WeakMap<
+  BetterSqlite3Database,
+  Map<number, SqliteStatement>
+>();
+
 function backfillIncrementalEdgeTechniques(
   db: BetterSqlite3Database,
   touchedFiles: readonly string[],
@@ -1193,20 +1225,30 @@ function backfillIncrementalEdgeTechniques(
   const tx = db.transaction(() => {
     for (let i = 0; i < touchedFiles.length; i += CHUNK_SIZE) {
       const chunk = touchedFiles.slice(i, i + CHUNK_SIZE);
-      const placeholders = chunk.map(() => '?').join(',');
-      db.prepare(
-        `UPDATE edges SET technique = 'ts-native'
-         WHERE kind = 'calls' AND technique IS NULL AND dynamic_kind IS NULL
-           AND source_id IN (SELECT id FROM nodes WHERE file IN (${placeholders}))`,
-      ).run(...chunk);
+      const chunkSize = chunk.length;
+      const techniqueStmt = getOrCreatePerDbChunkStmt(
+        incrementalTechniqueBackfillStmtCache,
+        db,
+        chunkSize,
+        (n) =>
+          `UPDATE edges SET technique = 'ts-native'
+           WHERE kind = 'calls' AND technique IS NULL AND dynamic_kind IS NULL
+             AND source_id IN (SELECT id FROM nodes WHERE file IN (${Array.from({ length: n }, () => '?').join(',')}))`,
+      );
+      techniqueStmt.run(...chunk);
       // Lift resolved ts-native edges below the confidence floor for this
       // chunk, matching the floor lift the full-build native paths apply.
-      db.prepare(
-        `UPDATE edges SET confidence = ?
-         WHERE kind = 'calls' AND technique = 'ts-native'
-           AND confidence > 0 AND confidence < ?
-           AND source_id IN (SELECT id FROM nodes WHERE file IN (${placeholders}))`,
-      ).run(TS_NATIVE_CONFIDENCE_FLOOR, TS_NATIVE_CONFIDENCE_FLOOR, ...chunk);
+      const confidenceStmt = getOrCreatePerDbChunkStmt(
+        incrementalConfidenceFloorStmtCache,
+        db,
+        chunkSize,
+        (n) =>
+          `UPDATE edges SET confidence = ?
+           WHERE kind = 'calls' AND technique = 'ts-native'
+             AND confidence > 0 AND confidence < ?
+             AND source_id IN (SELECT id FROM nodes WHERE file IN (${Array.from({ length: n }, () => '?').join(',')}))`,
+      );
+      confidenceStmt.run(TS_NATIVE_CONFIDENCE_FLOOR, TS_NATIVE_CONFIDENCE_FLOOR, ...chunk);
     }
   });
   tx();

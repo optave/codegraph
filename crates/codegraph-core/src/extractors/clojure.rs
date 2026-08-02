@@ -191,6 +191,7 @@ fn handle_ns_form(node: &Node, source: &[u8], symbols: &mut FileSymbols) -> Opti
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 
     // Scan for nested `(:require ...)`, `(:import ...)`, `(:use ...)` forms.
@@ -271,6 +272,7 @@ fn handle_def_form(
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -305,6 +307,7 @@ fn handle_defn_form(
         cfg: build_function_cfg(node, "clojure", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -355,6 +358,7 @@ fn handle_defprotocol(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -373,6 +377,7 @@ fn handle_defrecord(node: &Node, source: &[u8], symbols: &mut FileSymbols, kind:
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 

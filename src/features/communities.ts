@@ -1,9 +1,8 @@
 import path from 'node:path';
-import { openRepo } from '../db/index.js';
+import { openRepo, resolveDbConfig } from '../db/index.js';
 import { louvainCommunities } from '../graph/algorithms/louvain.js';
 import { buildDependencyGraph } from '../graph/builders/dependency.js';
 import type { CodeGraph } from '../graph/model.js';
-import { loadConfig } from '../infrastructure/config.js';
 import { paginateResult } from '../shared/paginate.js';
 import type { CodegraphConfig, Repository } from '../types.js';
 
@@ -193,7 +192,7 @@ export function communitiesData(
     };
   }
 
-  const config = opts.config || loadConfig();
+  const config = opts.config || resolveDbConfig(customDbPath);
   const resolution = opts.resolution ?? config.community?.resolution ?? 1.0;
   const maxLevels = opts.maxLevels ?? config.community?.maxLevels;
   const maxLocalPasses = opts.maxLocalPasses ?? config.community?.maxLocalPasses;

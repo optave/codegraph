@@ -337,8 +337,13 @@ const MIGRATIONS: &[Migration] = &[
         // dataflow_vertices and dataflow_summary on the next `codegraph build`.
         up: "SELECT 1",
     },
-    // NOTE: TS migration v20 (edges.dynamic_kind) has no Rust counterpart yet — see #2066.
-    // v21 below is independent of it (a standalone new table), so this gap does not block it.
+    Migration {
+        version: 20,
+        up: r#"
+      ALTER TABLE edges ADD COLUMN dynamic_kind TEXT;
+      CREATE INDEX IF NOT EXISTS idx_edges_dynamic_kind ON edges(dynamic_kind) WHERE dynamic_kind IS NOT NULL;
+    "#,
+    },
     Migration {
         version: 21,
         up: r#"
@@ -360,6 +365,33 @@ const MIGRATIONS: &[Migration] = &[
         version: 22,
         up: r#"
       ALTER TABLE deleted_export_advisories ADD COLUMN consumer_kind TEXT;
+    "#,
+    },
+    Migration {
+        // dataflow.call_edge_id (added in v18, `REFERENCES edges(id)`) was never
+        // given its own index — every DELETE FROM edges pays an O(dataflow-rows)
+        // scan under better-sqlite3, which defaults `PRAGMA foreign_keys = ON`
+        // (this native/rusqlite connection never sets that pragma, so native
+        // never paid this cost — WASM-only exposure, see issue #1948).
+        version: 23,
+        up: r#"
+      CREATE INDEX IF NOT EXISTS idx_dataflow_call_edge ON dataflow(call_edge_id);
+    "#,
+    },
+    Migration {
+        // Per-declaration content hash (issue #2015): reverse-dep-edge
+        // reconnection during incremental rebuilds previously matched
+        // siblings by line position alone, which is provably unsafe when a
+        // same-named/same-kind sibling group has one member renamed away
+        // and a different one added in the same edit — the group's size
+        // stays unchanged, so the line-alignment fast path matches by rank
+        // and can silently reconnect a caller to the wrong declaration. A
+        // content hash gives reconnection a true identity signal to try
+        // first, falling back to line alignment only when a hash is
+        // unavailable (e.g. rows from before this migration).
+        version: 24,
+        up: r#"
+      ALTER TABLE nodes ADD COLUMN content_hash TEXT;
     "#,
     },
 ];
@@ -596,14 +628,17 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("exec failed: {e}")))
     }
 
-    /// Execute a read-only PRAGMA statement and return the first result as a string.
-    /// Returns `null` if the pragma produces no output.
+    /// Execute a read-only PRAGMA statement and return its first result column.
+    /// Returns `null` if the pragma produces no output. Most pragmas return an
+    /// INTEGER (e.g. `busy_timeout`, `page_count`, `user_version`) or TEXT (e.g.
+    /// `journal_mode`) result — the return type mirrors whichever affinity the
+    /// pragma actually produced (see `value_ref_to_json`'s contract doc).
     ///
     /// **Note:** This method is intended for read-only PRAGMAs (e.g. `journal_mode`,
     /// `page_count`). Write-mode PRAGMAs (e.g. `journal_mode = DELETE`) should use
     /// `exec()` instead. No validation is performed — callers are trusted internal code.
     #[napi]
-    pub fn pragma(&self, sql: String) -> napi::Result<Option<String>> {
+    pub fn pragma(&self, sql: String) -> napi::Result<Option<serde_json::Value>> {
         let conn = self.conn()?;
         let query = format!("PRAGMA {sql}");
         let mut stmt = conn
@@ -613,12 +648,7 @@ impl NativeDatabase {
             .query([])
             .map_err(|e| napi::Error::from_reason(format!("pragma query failed: {e}")))?;
         match rows.next() {
-            Ok(Some(row)) => {
-                let val: String = row
-                    .get(0)
-                    .map_err(|e| napi::Error::from_reason(format!("pragma get failed: {e}")))?;
-                Ok(Some(val))
-            }
+            Ok(Some(row)) => Ok(Some(value_ref_to_json(row.get_ref(0)))),
             Ok(None) => Ok(None),
             Err(e) => Err(napi::Error::from_reason(format!("pragma next failed: {e}"))),
         }
@@ -710,6 +740,18 @@ impl NativeDatabase {
             if !has_column(conn, "nodes", "visibility") {
                 let _ = conn.execute_batch("ALTER TABLE nodes ADD COLUMN visibility TEXT");
             }
+            // #2015: content_hash is referenced unconditionally by every node
+            // insert (see insert_nodes.rs), unlike the other legacy columns in
+            // this block — propagate failure instead of swallowing it, mirroring
+            // the #2001/#2066 dynamic_kind fix on the edges table below.
+            if !has_column(conn, "nodes", "content_hash") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN content_hash TEXT")
+                    .map_err(|e| {
+                        napi::Error::from_reason(format!(
+                            "legacy repair: add nodes.content_hash failed: {e}"
+                        ))
+                    })?;
+            }
             let _ = conn.execute_batch(
                 "UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL",
             );
@@ -728,6 +770,33 @@ impl NativeDatabase {
                 let _ =
                     conn.execute_batch("ALTER TABLE edges ADD COLUMN dynamic INTEGER DEFAULT 0");
             }
+            // #2001/#2066: version-gated migration v20 alone cannot repair a
+            // native-only database whose schema_version was already advanced
+            // past 20 by the pre-fix MIGRATIONS array (which jumped straight
+            // from v19 to v21, never applying v20) — its stored version being
+            // >= 21 makes the `migration.version > current_version` gate skip
+            // v20 forever on every subsequent init_schema() call. This
+            // unconditional, reality-checked backfill (mirroring the
+            // confidence/dynamic columns just above) repairs those databases
+            // too, not just fresh ones.
+            //
+            // Unlike the other legacy columns in this block, `dynamic_kind` is
+            // referenced unconditionally by every edge insert (see
+            // db/repository/edges.rs). A silently swallowed ALTER failure here
+            // would let init_schema() report success while leaving the column
+            // absent, so every subsequent edge batch would fail with a much
+            // harder-to-diagnose "no such column" error — propagate instead.
+            if !has_column(conn, "edges", "dynamic_kind") {
+                conn.execute_batch("ALTER TABLE edges ADD COLUMN dynamic_kind TEXT")
+                    .map_err(|e| {
+                        napi::Error::from_reason(format!(
+                            "legacy repair: add edges.dynamic_kind failed: {e}"
+                        ))
+                    })?;
+            }
+            let _ = conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_edges_dynamic_kind ON edges(dynamic_kind) WHERE dynamic_kind IS NOT NULL",
+            );
         }
 
         Ok(())
@@ -1579,12 +1648,28 @@ fn json_to_rusqlite_params(
         .collect()
 }
 
-/// Convert a rusqlite row to a serde_json::Value object.
+/// Convert a single rusqlite cell read result to a serde_json::Value.
 ///
 /// **Contract**: Only Integer, Real, Text, and Null column types are supported.
 /// BLOB columns are mapped to `null` because the current codegraph schema has no
 /// BLOB columns and the generic query path is not designed for binary data.
-/// Cell-level read errors are also mapped to `null` to avoid partial-row failures.
+/// Cell-level read errors are also mapped to `null` to avoid partial-row/partial-value
+/// failures. Shared by `row_to_json` (per-column) and `pragma` (single scalar result).
+fn value_ref_to_json(value: rusqlite::Result<ValueRef<'_>>) -> serde_json::Value {
+    match value {
+        Ok(ValueRef::Integer(n)) => serde_json::json!(n),
+        Ok(ValueRef::Real(f)) => serde_json::json!(f),
+        Ok(ValueRef::Text(s)) => serde_json::Value::String(String::from_utf8_lossy(s).into_owned()),
+        Ok(ValueRef::Null) => serde_json::Value::Null,
+        // BLOB: no codegraph schema columns use BLOB; map to null (see contract above)
+        Ok(ValueRef::Blob(_)) => serde_json::Value::Null,
+        // Cell read error: map to null to avoid partial-row/partial-value failures
+        Err(_) => serde_json::Value::Null,
+    }
+}
+
+/// Convert a rusqlite row to a serde_json::Value object. See `value_ref_to_json`'s
+/// contract doc for supported column types.
 fn row_to_json(
     row: &rusqlite::Row<'_>,
     col_count: usize,
@@ -1592,19 +1677,207 @@ fn row_to_json(
 ) -> serde_json::Value {
     let mut map = serde_json::Map::with_capacity(col_count);
     for i in 0..col_count {
-        let val = match row.get_ref(i) {
-            Ok(ValueRef::Integer(n)) => serde_json::json!(n),
-            Ok(ValueRef::Real(f)) => serde_json::json!(f),
-            Ok(ValueRef::Text(s)) => {
-                serde_json::Value::String(String::from_utf8_lossy(s).into_owned())
-            }
-            Ok(ValueRef::Null) => serde_json::Value::Null,
-            // BLOB: no codegraph schema columns use BLOB; map to null (see contract above)
-            Ok(ValueRef::Blob(_)) => serde_json::Value::Null,
-            // Cell read error: map to null to avoid partial-row failures
-            Err(_) => serde_json::Value::Null,
-        };
-        map.insert(col_names[i].clone(), val);
+        map.insert(col_names[i].clone(), value_ref_to_json(row.get_ref(i)));
     }
     serde_json::Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for #2015: a database whose schema was initialized purely
+    /// through the native `init_schema()` must end up with
+    /// `nodes.content_hash` — needed by reverse-dep-edge reconnection to
+    /// disambiguate a same-named/same-kind sibling group where one member
+    /// was renamed away and a different one added in the same edit (a
+    /// net-zero group-size change the prior line-alignment-only heuristic
+    /// cannot distinguish from "same declaration, shifted").
+    #[test]
+    fn init_schema_adds_nodes_content_hash_column() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("init_schema should succeed");
+
+        let conn = db.conn().expect("connection should still be open");
+        let mut stmt = conn.prepare("PRAGMA table_info(nodes)").unwrap();
+        let has_content_hash = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|name| name == "content_hash");
+
+        assert!(
+            has_content_hash,
+            "nodes.content_hash column missing after native-only init_schema()"
+        );
+    }
+
+    /// Regression for #2015, mirroring the #2001/#2066 pattern: a
+    /// native-only database already stamped past v24 (e.g. by a future
+    /// migration added without content_hash ever having been applied) must
+    /// still be repaired by the unconditional legacy-column backfill, not
+    /// just the version-gated migration. Stamps to the current max computed
+    /// from `MIGRATIONS` itself (not a hardcoded literal — see the
+    /// dynamic_kind repair test's doc comment for why a hardcoded version
+    /// number silently goes stale as soon as a later migration is added).
+    #[test]
+    fn init_schema_repairs_nodes_content_hash_on_a_database_already_past_v24() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema()
+            .expect("initial init_schema should succeed");
+
+        let max_version = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        {
+            let conn = db.conn().expect("connection should still be open");
+            conn.execute_batch(&format!(
+                "ALTER TABLE nodes DROP COLUMN content_hash; \
+                 UPDATE schema_version SET version = {max_version};"
+            ))
+            .expect("simulating the pre-fix state should succeed");
+            assert!(
+                !has_column(conn, "nodes", "content_hash"),
+                "test setup failed: content_hash should be absent after the simulated drop"
+            );
+        }
+
+        db.init_schema()
+            .expect("repair init_schema call should succeed");
+        let conn = db.conn().expect("connection should still be open");
+        assert!(
+            has_column(conn, "nodes", "content_hash"),
+            "nodes.content_hash was not repaired for a database already stamped past v24"
+        );
+    }
+
+    /// Regression for #2001/#2066: a database whose schema was initialized
+    /// purely through the native `init_schema()` (never touched by the TS
+    /// `initSchema()` in src/db/migrations.ts) must still end up with
+    /// `edges.dynamic_kind` — migration v20 was missing from Rust's
+    /// `MIGRATIONS` array entirely, so `do_insert_edges`'s unconditional
+    /// `dynamic_kind` column reference would fail with "no such column" on
+    /// any DB that only ever ran the native migration path.
+    #[test]
+    fn init_schema_adds_edges_dynamic_kind_column() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("init_schema should succeed");
+
+        let conn = db.conn().expect("connection should still be open");
+        let mut stmt = conn.prepare("PRAGMA table_info(edges)").unwrap();
+        let has_dynamic_kind = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|name| name == "dynamic_kind");
+
+        assert!(
+            has_dynamic_kind,
+            "edges.dynamic_kind column missing after native-only init_schema()"
+        );
+    }
+
+    /// Regression for the Greptile-flagged gap in #2001's initial fix: a
+    /// native-only database that was ALREADY migrated past v20 by the
+    /// pre-fix `MIGRATIONS` array (which jumped straight from v19 to v21,
+    /// never applying v20) has `schema_version >= 21` stored — so the
+    /// version-gated `migration.version > current_version` check skips v20
+    /// forever on every later `init_schema()` call, even after v20 is added
+    /// to the array. Only the unconditional, reality-checked legacy-column
+    /// backfill (not the version-gated migration itself) can repair an
+    /// already-affected database. Simulates that exact prior-bug state by
+    /// stamping schema_version to the current max (computed from `MIGRATIONS`
+    /// itself, not hardcoded — a hardcoded literal silently drifts stale
+    /// every time a later migration is added, spuriously re-attempting that
+    /// migration and failing on a column that already exists, exactly as
+    /// happened here when v24 was added after this test was written) and
+    /// dropping dynamic_kind back out before re-running init_schema().
+    #[test]
+    fn init_schema_repairs_edges_dynamic_kind_on_a_database_already_past_v20() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("initial init_schema should succeed");
+
+        let max_version = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        {
+            let conn = db.conn().expect("connection should still be open");
+            // Simulate the pre-fix native-only end state: schema stamped past
+            // v20, but the column itself never actually got added.
+            conn.execute_batch(&format!(
+                "DROP INDEX IF EXISTS idx_edges_dynamic_kind; \
+                 ALTER TABLE edges DROP COLUMN dynamic_kind; \
+                 UPDATE schema_version SET version = {max_version};"
+            ))
+            .expect("simulating the pre-fix state should succeed");
+            assert!(
+                !has_column(conn, "edges", "dynamic_kind"),
+                "test setup failed: dynamic_kind should be absent after the simulated drop"
+            );
+        }
+
+        db.init_schema()
+            .expect("repair init_schema call should succeed");
+
+        let conn = db.conn().expect("connection should still be open");
+        assert!(
+            has_column(conn, "edges", "dynamic_kind"),
+            "edges.dynamic_kind was not repaired for a database already stamped past v20"
+        );
+    }
+
+    // ── pragma() (#2019) ─────────────────────────────────────────────────
+
+    /// Regression for #2019: `pragma()` hardcoded a `String` read of the
+    /// result column, so any PRAGMA whose result has INTEGER affinity (the
+    /// overwhelming majority — `busy_timeout`, `page_count`, `user_version`,
+    /// `application_id`, `cache_size`, `mmap_size`, `wal_autocheckpoint`,
+    /// etc.) threw "Invalid column type Integer" instead of returning the
+    /// value. Only TEXT-affinity pragmas like `journal_mode` happened to work.
+    #[test]
+    fn pragma_returns_integer_affinity_results_instead_of_throwing() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+
+        let busy_timeout = db
+            .pragma("busy_timeout".to_string())
+            .expect("pragma('busy_timeout') should not throw");
+        // open_read_write applies DEFAULT_BUSY_TIMEOUT_MS (5000) when none is given.
+        assert_eq!(busy_timeout, Some(serde_json::json!(DEFAULT_BUSY_TIMEOUT_MS)));
+
+        let page_count = db
+            .pragma("page_count".to_string())
+            .expect("pragma('page_count') should not throw");
+        assert_eq!(page_count, Some(serde_json::json!(0)));
+
+        let user_version = db
+            .pragma("user_version".to_string())
+            .expect("pragma('user_version') should not throw");
+        assert_eq!(user_version, Some(serde_json::json!(0)));
+    }
+
+    #[test]
+    fn pragma_still_returns_text_affinity_results() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+
+        let journal_mode = db
+            .pragma("journal_mode".to_string())
+            .expect("pragma('journal_mode') should not throw");
+        // In-memory databases report journal_mode as "memory".
+        assert_eq!(journal_mode, Some(serde_json::json!("memory")));
+    }
+
+    #[test]
+    fn pragma_returns_none_when_the_pragma_produces_no_output() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+
+        // wal_checkpoint on a non-WAL (in-memory) database is a valid,
+        // side-effect-only pragma with no result row.
+        let result = db
+            .pragma("optimize".to_string())
+            .expect("pragma('optimize') should not throw");
+        assert_eq!(result, None);
+    }
 }

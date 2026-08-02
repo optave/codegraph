@@ -476,6 +476,18 @@ export interface Definition {
   complexity?: DefinitionComplexity;
   /** Populated post-analysis by the CFG visitor. */
   cfg?: { blocks: CfgBlock[]; edges: CfgEdge[] } | null;
+  /**
+   * SHA-256 hash of this declaration's own source text (`line`..`endLine`),
+   * computed centrally after extraction (see `computeDeclarationHashes` in
+   * domain/parser.ts) rather than per-extractor, since every extractor
+   * already populates `line`/`endLine` uniformly. Gives reverse-dep-edge
+   * reconnection during incremental rebuilds a true identity signal beyond
+   * line position — needed to disambiguate a same-named/same-kind sibling
+   * group where one member was renamed away and a different one added in
+   * the same edit (a net-zero group-size change; issue #2015). `undefined`
+   * when `endLine` is unavailable (no reliable body range to hash).
+   */
+  contentHash?: string;
 }
 
 /** Sub-declaration (child) within a definition. */
@@ -486,6 +498,8 @@ export interface SubDeclaration {
   endLine?: number;
   visibility?: 'public' | 'private' | 'protected';
   decorators?: string[];
+  /** See `Definition.contentHash` — same signal, same computation, for method/property children. */
+  contentHash?: string;
 }
 
 /** Complexity metrics attached to a definition post-analysis. */
@@ -2376,6 +2390,7 @@ export interface NativeAddon {
     rootDir: string,
     aliases: unknown,
     workspaces?: NativeWorkspacePackage[] | null,
+    knownFiles?: readonly string[] | null,
   ): string;
   resolveImports(
     items: Array<{ fromFile: string; importSource: string }>,
@@ -2664,7 +2679,8 @@ export interface NativeDatabase {
   getBuildMeta(key: string): string | null;
   setBuildMeta(entries: Array<{ key: string; value: string }>): void;
   exec(sql: string): void;
-  pragma(sql: string): string | null;
+  /** Returns the pragma's first result column — whichever type it actually has (most are number or string). */
+  pragma(sql: string): string | number | null;
   close(): void;
   readonly dbPath: string;
   readonly isOpen: boolean;

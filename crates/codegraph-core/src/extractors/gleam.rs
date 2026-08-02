@@ -50,6 +50,7 @@ fn handle_function(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: build_function_cfg(node, "gleam", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -74,6 +75,7 @@ fn handle_external_function(node: &Node, source: &[u8], symbols: &mut FileSymbol
         cfg: None,
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -142,6 +144,7 @@ fn handle_type_definition(node: &Node, source: &[u8], symbols: &mut FileSymbols)
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -164,6 +167,7 @@ fn handle_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -186,6 +190,7 @@ fn handle_constant(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 

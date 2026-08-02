@@ -39,7 +39,7 @@ export function exportsData(
   } = {},
 ) {
   return withReadonlyDb(customDbPath, (db, config) => {
-    const { noTests, displayOpts } = resolveAnalysisOpts({
+    const { noTests, displayOpts } = resolveAnalysisOpts(customDbPath, {
       ...opts,
       config: opts.config ?? config,
     });

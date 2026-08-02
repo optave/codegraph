@@ -1,4 +1,4 @@
-import { findDbPath } from '../../db/index.js';
+import { findDbPath, resolveBusyTimeoutMs } from '../../db/index.js';
 import { effectiveOffset, MCP_DEFAULTS, MCP_MAX_LIMIT } from '../middleware.js';
 import type { McpToolContext } from '../types.js';
 
@@ -14,8 +14,10 @@ interface ExportGraphArgs {
 export async function handler(args: ExportGraphArgs, ctx: McpToolContext): Promise<unknown> {
   const { exportDOT, exportGraphML, exportGraphSON, exportJSON, exportMermaid, exportNeo4jCSV } =
     await import('../../features/export.js');
+  const dbPath = findDbPath(ctx.dbPath);
   const Database = ctx.getDatabase();
-  const db = new Database(findDbPath(ctx.dbPath), { readonly: true });
+  const db = new Database(dbPath, { readonly: true });
+  db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(dbPath)}`);
   const fileLevel = args.file_level !== false;
   const exportLimit = args.limit
     ? Math.min(args.limit, MCP_MAX_LIMIT)

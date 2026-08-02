@@ -1,8 +1,7 @@
 import Database from 'better-sqlite3';
-import { openRepo, type Repository } from '../db/index.js';
+import { openRepo, type Repository, resolveBusyTimeoutMs, resolveDbConfig } from '../db/index.js';
 import { SqliteRepository } from '../db/repository/sqlite-repository.js';
 import { findMatchingNodes } from '../domain/queries.js';
-import { loadConfig } from '../infrastructure/config.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import { paginateResult } from '../shared/paginate.js';
 import type { BetterSqlite3Database, CodegraphConfig, NodeRowWithFanIn } from '../types.js';
@@ -166,7 +165,8 @@ function bfsCallees(
   return { messages, fileSet, idToNode, truncated };
 }
 
-function annotateDataflow(
+/** Exported for direct testing of its own busy_timeout pragma (issue #2020). */
+export function annotateDataflow(
   repo: Repository,
   messages: SequenceMessage[],
   idToNode: Map<number, { id: number; name: string; file: string; kind: string; line: number }>,
@@ -181,6 +181,7 @@ function annotateDataflow(
     db = repo.db;
   } else if (dbPath) {
     db = new Database(dbPath, { readonly: true }) as unknown as BetterSqlite3Database;
+    db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(dbPath)}`);
     ownDb = true;
   } else {
     return;
@@ -336,7 +337,7 @@ export function sequenceData(
 ): SequenceDataResult {
   const { repo, close } = openRepo(dbPath, opts);
   try {
-    const config = opts.config || loadConfig();
+    const config = opts.config || resolveDbConfig(dbPath);
     const maxDepth = opts.depth || config.analysis.sequenceDepth || 10;
     const noTests = opts.noTests || false;
 

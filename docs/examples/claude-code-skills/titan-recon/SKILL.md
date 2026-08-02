@@ -29,6 +29,12 @@ Your goal: map the dependency graph, identify structural hotspots, name logical 
    ```
    If there are merge conflicts, stop and ask the user to resolve them.
 
+3. **Record the main anchor SHA:**
+   ```bash
+   git rev-parse origin/main
+   ```
+   Store this as `mainSHA` in `titan-state.json`. All downstream phases use this to detect codebase drift — if main advances between phases, the drift detection mechanism (Step 0.5 in each phase) compares against this anchor to determine what's stale and what needs reassessment.
+
 ---
 
 ## Step 1 — Build the graph
@@ -48,6 +54,14 @@ codegraph embed -m minilm
 ```
 
 This enables `codegraph search` for duplicate code detection in downstream phases. If it fails (e.g., missing model), note it and continue — DRY checks will be grep-only.
+
+**Verify, don't assume.** `.codegraph/` is gitignored — `graph.db` (and its embeddings) is local filesystem state, per worktree. It is never carried over by `git merge`, a branch switch, or a snapshot restore. Before setting `embeddingsAvailable` in `titan-state.json`, smoke-test the current worktree's DB directly:
+
+```bash
+codegraph search "test query" --json
+```
+
+Only set `embeddingsAvailable: true` if this returns results (or a valid empty match, not an error/`ENGINE_UNAVAILABLE`). Alongside the flag, record `embeddingsWorktreePath` in `titan-state.json` as the output of `git rev-parse --show-toplevel` — this gives downstream phases a deterministic identity to compare against instead of having to re-derive trust from a smoke test alone. If a downstream phase (e.g. GAUNTLET) ends up operating in a **different worktree** than the one RECON ran `codegraph embed` in — including via "merge the other worktree's branch into mine" — its `graph.db` will not have embeddings even though a stale `titan-state.json` from elsewhere claims `embeddingsAvailable: true`; a mismatch between `embeddingsWorktreePath` and that worktree's own `git rev-parse --show-toplevel` is the unambiguous signal for this. Re-run `codegraph embed -m minilm` for the worktree actually being used, update both `embeddingsAvailable` and `embeddingsWorktreePath`, and re-verify with the smoke-test above, whenever the operating worktree changes.
 
 ---
 
@@ -182,7 +196,8 @@ Write `.codegraph/titan/GLOBAL_ARCH.md`:
 
 ## Step 10 — Propose work batches
 
-Decompose the priority queue into **work batches** of ~5-15 files each:
+Decompose the priority queue into **work batches** of **at most 5 files each**:
+- **Hard limit: 5 files per batch.** If a domain has more than 5 files, split it into multiple batches (e.g., "domain-parser-1", "domain-parser-2"). This keeps each gauntlet iteration focused and prevents context overload in sub-agents.
 - Stay within a single domain where possible
 - Group tightly-coupled files together (from communities)
 - Order by priority: highest-risk domains first
@@ -208,6 +223,14 @@ Create `.codegraph/titan/titan-state.json` — the single source of truth for th
 mkdir -p .codegraph/titan
 ```
 
+**Important:** Before writing, check if `titan-state.json` already exists (the orchestrator may have written `phaseTimestamps.recon.startedAt` before dispatching this sub-agent). If it does, read the existing `phaseTimestamps` and merge them into the new state object so the start timestamp is preserved:
+
+```bash
+node -e "const fs=require('fs');const p='.codegraph/titan/titan-state.json';let existing={};try{existing=JSON.parse(fs.readFileSync(p,'utf8'));}catch{}console.log(JSON.stringify(existing.phaseTimestamps||{}));"
+```
+
+Include the preserved `phaseTimestamps` in the state file below.
+
 ```json
 {
   "version": 1,
@@ -215,11 +238,13 @@ mkdir -p .codegraph/titan
   "lastUpdated": "<ISO 8601>",
   "target": "<resolved path>",
   "currentPhase": "recon",
+  "mainSHA": "<git rev-parse origin/main>",
   "snapshots": {
     "baseline": "titan-baseline",
     "lastBatch": null
   },
   "embeddingsAvailable": true,
+  "embeddingsWorktreePath": "<git rev-parse --show-toplevel>",
   "stats": {
     "totalFiles": 0,
     "totalNodes": 0,
@@ -274,6 +299,7 @@ mkdir -p .codegraph/titan
   },
   "hotFiles": ["<top 30>"],
   "tangledDirs": ["<cohesion < 0.3>"],
+  "phaseTimestamps": "<merged from existing file — see above>",
   "fileAudits": {},
   "progress": {
     "totalFiles": 0,
@@ -303,12 +329,31 @@ Print a concise summary:
 
 ---
 
+## Issue Tracking
+
+Throughout this phase, if you encounter any of the following, append a JSON line to `.codegraph/titan/issues.ndjson`:
+
+- **Codegraph bugs:** wrong output, crashes, missing features, unexpected behavior
+- **Tooling issues:** problems with commands, WASM failures, embedding errors
+- **Process suggestions:** ideas for improving the Titan workflow
+- **Codebase observations:** structural concerns beyond what metrics capture
+
+Format (one JSON object per line, append-only):
+
+```json
+{"phase": "recon", "timestamp": "<ISO 8601>", "severity": "bug|limitation|suggestion", "category": "codegraph|tooling|process|codebase", "description": "<what happened>", "context": "<command that triggered it, file involved, or other detail>"}
+```
+
+Log issues as they happen — don't batch them. The `/titan-close` phase compiles these into the final report.
+
+---
+
 ## Rules
 
 - **Always use `--json` and `-T`** on codegraph commands.
 - **Never paste raw JSON** into your response — parse and extract.
 - **Write artifacts before reporting.**
-- If any command fails, note it and continue with partial data.
+- If any command fails, **log it to `issues.ndjson`** and continue with partial data.
 - **Domain naming** uses the codebase's own vocabulary.
 
 ## Self-Improvement

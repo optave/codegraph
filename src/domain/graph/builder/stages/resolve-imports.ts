@@ -56,7 +56,7 @@ function findBarrelCandidates(
   fromRelPaths: readonly string[],
   firstPass: boolean,
 ): Array<{ file: string }> {
-  const { db, fileSymbols, rootDir, aliases } = ctx;
+  const { db, fileSymbols, rootDir, aliases, allFiles } = ctx;
 
   if (fromRelPaths.length <= ctx.config.build.smallFilesThreshold) {
     const allBarrelFiles = new Set(
@@ -83,7 +83,8 @@ function findBarrelCandidates(
           `${normalizePath(path.join(rootDir, relPath))}|${imp.source}`,
         );
         const target =
-          resolved ?? resolveImportPath(path.join(rootDir, relPath), imp.source, rootDir, aliases);
+          resolved ??
+          resolveImportPath(path.join(rootDir, relPath), imp.source, rootDir, aliases, allFiles);
         if (allBarrelFiles.has(target)) barrels.add(target);
       }
     }
@@ -257,7 +258,7 @@ export function getResolved(ctx: PipelineContext, absFile: string, importSource:
     const hit = ctx.batchResolved.get(key);
     if (hit !== undefined) return hit;
   }
-  return resolveImportPath(absFile, importSource, ctx.rootDir, ctx.aliases);
+  return resolveImportPath(absFile, importSource, ctx.rootDir, ctx.aliases, ctx.allFiles);
 }
 
 export function isBarrelFile(ctx: PipelineContext, relPath: string): boolean {

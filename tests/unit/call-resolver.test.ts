@@ -20,7 +20,9 @@ import {
   resolveByMethodOrGlobal,
   resolveCallTargets,
   resolveDefinePropertyAccessorTarget,
+  resolveKotlinReflectionPreQualified,
   resolveReceiverEdge,
+  resolveReflectionKeyExprFallback,
 } from '../../src/domain/graph/builder/call-resolver.js';
 
 function makeLookup(
@@ -793,5 +795,127 @@ describe('resolveCallTargets — constructor attribution through a renaming barr
       null,
     );
     expect(targets).toEqual([classBaz]);
+  });
+});
+
+describe('resolveKotlinReflectionPreQualified — shared between full-build and incremental paths (#1993)', () => {
+  it('prefers the qualified Class.method over a same-named top-level function', () => {
+    const greeterGreet = { id: 1, file: 'Greeter.kt', kind: 'method' };
+    const lookup = makeReceiverLookup({ 'Greeter.greet:Greeter.kt': [greeterGreet] }, {});
+    const targets = resolveKotlinReflectionPreQualified(
+      { name: 'greet', receiver: 'Greeter', dynamicKind: 'reflection' },
+      'Greeter.kt',
+      lookup,
+    );
+    expect(targets).toEqual([greeterGreet]);
+  });
+
+  it('returns [] for JS/TS files (module-scoped guard)', () => {
+    const fn = { id: 2, file: 'a.ts', kind: 'function' };
+    const lookup = makeReceiverLookup({ 'Greeter.greet:a.ts': [fn] }, {});
+    const targets = resolveKotlinReflectionPreQualified(
+      { name: 'greet', receiver: 'Greeter', dynamicKind: 'reflection' },
+      'a.ts',
+      lookup,
+    );
+    expect(targets).toEqual([]);
+  });
+
+  it('returns [] when keyExpr is set (that case belongs to resolveReflectionKeyExprFallback)', () => {
+    const method = { id: 3, file: 'Greeter.kt', kind: 'method' };
+    const lookup = makeReceiverLookup({ 'Greeter.greet:Greeter.kt': [method] }, {});
+    const targets = resolveKotlinReflectionPreQualified(
+      { name: 'greet', receiver: 'Greeter', dynamicKind: 'reflection', keyExpr: 'greet' },
+      'Greeter.kt',
+      lookup,
+    );
+    expect(targets).toEqual([]);
+  });
+
+  it('returns [] when dynamicKind is not reflection', () => {
+    const method = { id: 4, file: 'Greeter.kt', kind: 'method' };
+    const lookup = makeReceiverLookup({ 'Greeter.greet:Greeter.kt': [method] }, {});
+    const targets = resolveKotlinReflectionPreQualified(
+      { name: 'greet', receiver: 'Greeter' },
+      'Greeter.kt',
+      lookup,
+    );
+    expect(targets).toEqual([]);
+  });
+
+  it('returns [] when no qualified match exists, falling through to normal resolution', () => {
+    const lookup = makeReceiverLookup({}, {});
+    const targets = resolveKotlinReflectionPreQualified(
+      { name: 'greet', receiver: 'Greeter', dynamicKind: 'reflection' },
+      'Greeter.kt',
+      lookup,
+    );
+    expect(targets).toEqual([]);
+  });
+});
+
+describe('resolveReflectionKeyExprFallback — shared between full-build and incremental paths (#1993)', () => {
+  it('resolves via typeMap[receiver] to the qualified Type.keyExpr method', () => {
+    const method = { id: 1, file: 'Reflection.java', kind: 'method' };
+    const lookup = makeReceiverLookup({ 'Registry.greet:Reflection.java': [method] }, {});
+    const targets = resolveReflectionKeyExprFallback(
+      { name: 'invokeMethod', receiver: 'obj', dynamicKind: 'reflection', keyExpr: 'greet' },
+      'Reflection.doWork',
+      'Reflection.java',
+      new Map([['obj', 'Registry']]),
+      lookup,
+    );
+    expect(targets).toEqual([method]);
+  });
+
+  it('falls back to the caller class prefix when the receiver has no typeMap entry', () => {
+    const method = { id: 2, file: 'Reflection.java', kind: 'method' };
+    const lookup = makeReceiverLookup({ 'Reflection.greet:Reflection.java': [method] }, {});
+    const targets = resolveReflectionKeyExprFallback(
+      { name: 'invokeMethod', receiver: 'obj', dynamicKind: 'reflection', keyExpr: 'greet' },
+      'Reflection.doWork',
+      'Reflection.java',
+      new Map(), // no typeMap entry for 'obj'
+      lookup,
+    );
+    expect(targets).toEqual([method]);
+  });
+
+  it('returns [] for JS/TS files (module-scoped guard)', () => {
+    const method = { id: 3, file: 'a.ts', kind: 'method' };
+    const lookup = makeReceiverLookup({ 'Registry.greet:a.ts': [method] }, {});
+    const targets = resolveReflectionKeyExprFallback(
+      { name: 'invokeMethod', receiver: 'obj', dynamicKind: 'reflection', keyExpr: 'greet' },
+      'Caller.doWork',
+      'a.ts',
+      new Map([['obj', 'Registry']]),
+      lookup,
+    );
+    expect(targets).toEqual([]);
+  });
+
+  it('returns [] when keyExpr is not set', () => {
+    const method = { id: 4, file: 'Reflection.java', kind: 'method' };
+    const lookup = makeReceiverLookup({ 'Registry.greet:Reflection.java': [method] }, {});
+    const targets = resolveReflectionKeyExprFallback(
+      { name: 'invokeMethod', receiver: 'obj', dynamicKind: 'reflection' },
+      'Reflection.doWork',
+      'Reflection.java',
+      new Map([['obj', 'Registry']]),
+      lookup,
+    );
+    expect(targets).toEqual([]);
+  });
+
+  it('returns [] when neither typeMap nor caller class prefix resolves', () => {
+    const lookup = makeReceiverLookup({}, {});
+    const targets = resolveReflectionKeyExprFallback(
+      { name: 'invokeMethod', receiver: 'obj', dynamicKind: 'reflection', keyExpr: 'greet' },
+      'Reflection.doWork',
+      'Reflection.java',
+      new Map(),
+      lookup,
+    );
+    expect(targets).toEqual([]);
   });
 });

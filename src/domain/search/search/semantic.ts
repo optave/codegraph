@@ -1,4 +1,4 @@
-import { loadConfig } from '../../../infrastructure/config.js';
+import { resolveDbConfig } from '../../../db/index.js';
 import { warn } from '../../../infrastructure/logger.js';
 import type { BetterSqlite3Database, CodegraphConfig } from '../../../types.js';
 import { normalizeSymbol } from '../../queries.js';
@@ -86,7 +86,7 @@ export async function searchData(
   customDbPath: string | undefined,
   opts: SemanticSearchOpts = {},
 ): Promise<SearchDataResult | null> {
-  const config = opts.config || loadConfig();
+  const config = opts.config || resolveDbConfig(customDbPath);
   const searchCfg = config.search || ({} as CodegraphConfig['search']);
   const limit = opts.limit ?? searchCfg.topK ?? 15;
   const minScore = opts.minScore ?? searchCfg.defaultMinScore ?? 0.2;
@@ -215,7 +215,7 @@ export async function multiSearchData(
   customDbPath: string | undefined,
   opts: SemanticSearchOpts = {},
 ): Promise<MultiSearchResult | null> {
-  const config = opts.config || loadConfig();
+  const config = opts.config || resolveDbConfig(customDbPath);
   const searchCfg = config.search || ({} as CodegraphConfig['search']);
   const limit = opts.limit ?? searchCfg.topK ?? 15;
   const minScore = opts.minScore ?? searchCfg.defaultMinScore ?? 0.2;

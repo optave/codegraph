@@ -369,6 +369,14 @@ pub struct SavedReverseDepEdge {
     pub edge_kind: String,
     pub confidence: f64,
     pub dynamic: i64,
+    /// The target declaration's `content_hash` at save time, or `None` when
+    /// unavailable (rows from before the content_hash migration). Lets
+    /// `pick_reconnect_target` try an exact-hash match before falling back
+    /// to line-position alignment — a true identity signal that line
+    /// position alone cannot provide when a sibling group's size stays
+    /// unchanged because one member was renamed away and a different one
+    /// added in the same edit (issue #2015).
+    pub tgt_hash: Option<String>,
 }
 
 /// Key identifying a same-(name, kind) sibling group within one file.
@@ -436,7 +444,7 @@ pub fn save_reverse_dep_edges(
 
     let mut stmt = match conn.prepare(
         "SELECT e.source_id, n_tgt.name, n_tgt.kind, n_tgt.file, n_tgt.line, \
-                e.kind, e.confidence, e.dynamic, n_src.file \
+                e.kind, e.confidence, e.dynamic, n_tgt.content_hash, n_src.file \
          FROM edges e \
          JOIN nodes n_src ON e.source_id = n_src.id \
          JOIN nodes n_tgt ON e.target_id = n_tgt.id \
@@ -461,7 +469,8 @@ pub fn save_reverse_dep_edges(
                 row.get::<_, String>(5)?,
                 row.get::<_, f64>(6)?,
                 row.get::<_, i64>(7)?,
-                row.get::<_, String>(8)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, String>(9)?,
             ))
         }) {
             Ok(r) => r,
@@ -470,7 +479,7 @@ pub fn save_reverse_dep_edges(
         for row in rows.flatten() {
             // Skip edges whose source is itself being purged — buildEdges will
             // re-emit them with correct new IDs.
-            if changed_set.contains(row.8.as_str()) {
+            if changed_set.contains(row.9.as_str()) {
                 continue;
             }
             let group_key: SiblingGroupKey = (row.1.clone(), row.2.clone(), row.3.clone());
@@ -489,6 +498,7 @@ pub fn save_reverse_dep_edges(
                 edge_kind: row.5,
                 confidence: row.6,
                 dynamic: row.7,
+                tgt_hash: row.8,
             });
         }
     }
@@ -572,16 +582,29 @@ fn align_sibling_lines(old_lines: &[i64], new_lines: &[i64]) -> HashMap<i64, i64
 /// candidates.
 ///
 /// A single candidate is an unambiguous match. With several candidates (e.g.
-/// multiple object-literal `close() {}` methods in one file), the saved
-/// sibling-group snapshot from before purge is aligned against the current
-/// candidate lines (see `align_sibling_lines`) to find which new line the
-/// saved target's old line maps to — correct even when the whole group
-/// shifted and its size changed in the same edit. Falls back to
-/// nearest-line only when no sibling-group snapshot is available, or the
-/// group is too large to align cheaply.
+/// multiple object-literal `close() {}` methods in one file), an exact
+/// `content_hash` match is tried first (see the `tgt_hash` param doc) since
+/// it's a true identity signal, not just position — falling back to the
+/// saved sibling-group snapshot from before purge, aligned against the
+/// current candidate lines (see `align_sibling_lines`) to find which new
+/// line the saved target's old line maps to. That line-position fallback is
+/// correct even when the whole group shifted and its size changed in the
+/// same edit, EXCEPT the one compound case a hash catches and line position
+/// provably cannot: a same-named/same-kind sibling both removed (renamed
+/// away) and a different one added in the same edit, leaving the group's
+/// size unchanged (issue #2015). Falls back to nearest-line only when no
+/// sibling-group snapshot is available, or the group is too large to align
+/// cheaply.
 fn pick_reconnect_target(
-    candidates: &[(i64, i64)],
+    candidates: &[(i64, i64, Option<String>)],
     tgt_line: i64,
+    // The saved edge's target declaration's `content_hash` at save time, or
+    // `None` when unavailable (pre-migration rows). Only trusted when
+    // exactly one candidate in this group shares it — if two or more
+    // candidates have byte-identical bodies (rare but possible), the hash
+    // can't disambiguate between them, so this falls through to line
+    // alignment instead of guessing.
+    tgt_hash: Option<&str>,
     group_key: &SiblingGroupKey,
     saved_sibling_groups: &HashMap<SiblingGroupKey, Vec<i64>>,
     alignment_cache: &mut HashMap<SiblingGroupKey, HashMap<i64, i64>>,
@@ -590,8 +613,48 @@ fn pick_reconnect_target(
     if candidates.is_empty() {
         return None;
     }
+    // A lone candidate is trusted unconditionally, without consulting the
+    // hash: unlike the multi-candidate case, there is no sibling to
+    // corroborate a hash mismatch as "an unrelated declaration," and the
+    // overwhelmingly common cause of a sole candidate's hash differing from
+    // the saved one is simply that its OWN body was edited in the same
+    // change — content_hash is a hash of the declaration's source text, so
+    // any in-place edit changes it. Gating on the hash here would silently
+    // drop the edge for that ordinary case (caught by #1744's regression
+    // test), trading a common, legitimate scenario for a rare
+    // rename-away-and-replace collision that a hash comparison cannot even
+    // reliably distinguish from a body edit when there is only one
+    // candidate to compare against.
     if candidates.len() == 1 {
         return Some(candidates[0].0);
+    }
+
+    if let Some(hash) = tgt_hash {
+        // Only trust a hash-based verdict when there's actual hash data
+        // among this group's candidates to compare against — if none carry
+        // a hash (e.g. their end_line was unavailable to compute one),
+        // fall through to line alignment entirely rather than treating a
+        // vacuous "0 matches" as proof the target is gone.
+        let has_any_hash_data = candidates.iter().any(|(_, _, h)| h.is_some());
+        if has_any_hash_data {
+            let matches: Vec<i64> = candidates
+                .iter()
+                .filter(|(_, _, h)| h.as_deref() == Some(hash))
+                .map(|(id, _, _)| *id)
+                .collect();
+            match matches.len() {
+                1 => return Some(matches[0]),
+                // Zero matches means the exact body no longer exists among
+                // any current candidate — a stronger, more direct identity
+                // signal than line position, so this is a confident drop,
+                // not a cue to fall through and guess by rank/line (the
+                // exact silent-miswire #2015 describes). More than one
+                // match is a rare byte-identical duplicate — genuinely
+                // ambiguous, so THAT case still falls through.
+                0 => return None,
+                _ => {}
+            }
+        }
     }
 
     if let Some(old_lines) = saved_sibling_groups.get(group_key) {
@@ -602,15 +665,15 @@ fn pick_reconnect_target(
             let alignment = match alignment_cache.entry(group_key.clone()) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    let new_lines: Vec<i64> = candidates.iter().map(|(_, line)| *line).collect();
+                    let new_lines: Vec<i64> = candidates.iter().map(|(_, line, _)| *line).collect();
                     e.insert(align_sibling_lines(old_lines, &new_lines))
                 }
             };
             return match alignment.get(&tgt_line) {
                 Some(new_line) => candidates
                     .iter()
-                    .find(|(_, line)| line == new_line)
-                    .map(|(id, _)| *id),
+                    .find(|(_, line, _)| line == new_line)
+                    .map(|(id, _, _)| *id),
                 // tgt_line's sibling was legitimately removed in this edit —
                 // the alignment already accounted for the size change, so
                 // falling through to nearest-line here would silently
@@ -626,8 +689,8 @@ fn pick_reconnect_target(
     // alignment size cap — fall back to nearest-line.
     candidates
         .iter()
-        .min_by_key(|(_, line)| (line - tgt_line).abs())
-        .map(|(id, _)| *id)
+        .min_by_key(|(_, line, _)| (line - tgt_line).abs())
+        .map(|(id, _, _)| *id)
 }
 
 /// Reconnect saved reverse-dep edges to the new target node IDs.
@@ -658,7 +721,7 @@ pub fn reconnect_reverse_dep_edges(
     let mut dropped = 0usize;
     {
         let mut candidates_stmt = match tx.prepare(
-            "SELECT id, line FROM nodes WHERE name = ?1 AND kind = ?2 AND file = ?3 ORDER BY line",
+            "SELECT id, line, content_hash FROM nodes WHERE name = ?1 AND kind = ?2 AND file = ?3 ORDER BY line",
         ) {
             Ok(s) => s,
             Err(_) => return (0, 0),
@@ -674,7 +737,8 @@ pub fn reconnect_reverse_dep_edges(
         // Cache candidate lists per (name, kind, file) group — many saved
         // edges often share the same target (e.g. several callers of the
         // same function), so this avoids re-querying per edge.
-        let mut candidates_cache: HashMap<SiblingGroupKey, Vec<(i64, i64)>> = HashMap::new();
+        let mut candidates_cache: HashMap<SiblingGroupKey, Vec<(i64, i64, Option<String>)>> =
+            HashMap::new();
         // Cache the (potentially expensive) alignment result per group too —
         // shared across every saved edge targeting the same sibling group.
         let mut alignment_cache: HashMap<SiblingGroupKey, HashMap<i64, i64>> = HashMap::new();
@@ -684,7 +748,7 @@ pub fn reconnect_reverse_dep_edges(
             let candidates = match candidates_cache.entry(key.clone()) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    let mut rows: Vec<(i64, i64)> = Vec::new();
+                    let mut rows: Vec<(i64, i64, Option<String>)> = Vec::new();
                     if let Ok(mut rows_iter) = candidates_stmt
                         .query(rusqlite::params![&s.tgt_name, &s.tgt_kind, &s.tgt_file])
                     {
@@ -692,7 +756,8 @@ pub fn reconnect_reverse_dep_edges(
                             if let (Ok(id), Ok(line)) =
                                 (row.get::<_, i64>(0), row.get::<_, i64>(1))
                             {
-                                rows.push((id, line));
+                                let hash = row.get::<_, Option<String>>(2).unwrap_or(None);
+                                rows.push((id, line, hash));
                             }
                         }
                     }
@@ -703,6 +768,7 @@ pub fn reconnect_reverse_dep_edges(
             match pick_reconnect_target(
                 candidates,
                 s.tgt_line,
+                s.tgt_hash.as_deref(),
                 &key,
                 saved_sibling_groups,
                 &mut alignment_cache,
@@ -1250,17 +1316,33 @@ mod tests {
     /// Convenience wrapper mirroring the pre-#1865 `pick_reconnect_target`
     /// call shape: builds the single-group map + a fresh alignment cache
     /// internally so each test case reads as a plain (candidates, old_lines,
-    /// tgt_line) -> Option<id> call.
-    fn pick(
-        candidates: &[(i64, i64)],
-        old_lines: &[i64],
+    /// tgt_line) -> Option<id> call. No hash (`None` for every candidate and
+    /// the saved target) — these tests specifically exercise the
+    /// hash-unavailable line-alignment fallback; see `pick_with_hash` for
+    /// the #2015 hash-matching behavior.
+    fn pick(candidates: &[(i64, i64)], old_lines: &[i64], tgt_line: i64) -> Option<i64> {
+        let with_hash: Vec<(i64, i64, Option<String>)> = candidates
+            .iter()
+            .map(|&(id, line)| (id, line, None))
+            .collect();
+        pick_with_hash(&with_hash, tgt_line, None, old_lines)
+    }
+
+    /// Like `pick`, but candidates and the saved target each carry a
+    /// `content_hash` (issue #2015).
+    fn pick_with_hash(
+        candidates: &[(i64, i64, Option<String>)],
         tgt_line: i64,
+        tgt_hash: Option<&str>,
+        old_lines: &[i64],
     ) -> Option<i64> {
         let key: SiblingGroupKey = ("x".to_string(), "method".to_string(), "f.ts".to_string());
         let mut groups = HashMap::new();
         groups.insert(key.clone(), old_lines.to_vec());
         let mut cache = HashMap::new();
-        pick_reconnect_target(candidates, tgt_line, &key, &groups, &mut cache, 200)
+        pick_reconnect_target(
+            candidates, tgt_line, tgt_hash, &key, &groups, &mut cache, 200,
+        )
     }
 
     #[test]
@@ -1318,6 +1400,93 @@ mod tests {
         assert_eq!(pick(&candidates, &old_lines, 400), Some(40));
     }
 
+    // ── Content-hash identity signal (#2015) ────────────────────────────
+
+    #[test]
+    fn pick_reconnect_target_uses_exact_hash_match_over_rank() {
+        // Sibling count unchanged (4 -> 4) — the rank-based fast path would
+        // pair old rank 2 (line 200) to new rank 2 (id 21, line 260), but
+        // the saved hash actually belongs to id 41 (the survivor now at
+        // rank 4) — a case where the group merely reordered relative to
+        // rank, and the hash must win over the position-based guess.
+        let old_lines = vec![100, 200, 300, 400];
+        let candidates = vec![
+            (11, 160, Some("hash-a".to_string())),
+            (21, 260, Some("hash-new".to_string())),
+            (31, 360, Some("hash-c".to_string())),
+            (41, 460, Some("hash-b".to_string())), // the true rank-2 survivor, moved to rank 4
+        ];
+        let picked = pick_with_hash(&candidates, 200, Some("hash-b"), &old_lines);
+        assert_eq!(picked, Some(41));
+    }
+
+    #[test]
+    fn pick_reconnect_target_drops_when_hash_matches_nothing_even_with_unchanged_count() {
+        // The exact compound case #2015 describes: a same-named/same-kind
+        // sibling is renamed away AND a different one is added in the same
+        // edit, so the group's size stays unchanged (4 -> 4) and the
+        // rank-based fast path would silently reattach to the new,
+        // unrelated sibling occupying the old rank. The saved hash for the
+        // renamed-away sibling matches none of the current candidates —
+        // this must drop the edge, not fall through to rank/line alignment.
+        let old_lines = vec![100, 200, 300, 400];
+        let candidates = vec![
+            (11, 160, Some("hash-a".to_string())),
+            (21, 260, Some("hash-new".to_string())), // new sibling, occupies old rank 2
+            (31, 360, Some("hash-c".to_string())),
+            (41, 460, Some("hash-d".to_string())),
+        ];
+        let picked = pick_with_hash(&candidates, 200, Some("hash-b-renamed-away"), &old_lines);
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn pick_reconnect_target_trusts_sole_candidate_even_when_hash_mismatches() {
+        // A sole candidate's hash naturally differs from the saved one
+        // whenever its OWN body was edited in the same change — the single
+        // most common real-world scenario (see #1744's regression test,
+        // which exercises exactly this for a file with one function whose
+        // body changes). Unlike the multi-candidate case, there's no
+        // sibling to corroborate a mismatch as "this is a different,
+        // unrelated declaration," so the sole candidate must still be
+        // trusted rather than dropped.
+        let old_lines = vec![100];
+        let candidates = vec![(21, 130, Some("hash-edited-body".to_string()))];
+        let picked = pick_with_hash(&candidates, 100, Some("hash-original-body"), &old_lines);
+        assert_eq!(picked, Some(21));
+    }
+
+    #[test]
+    fn pick_reconnect_target_falls_back_to_line_alignment_when_no_candidate_has_a_hash() {
+        // Candidates carry no hash at all (e.g. a pre-migration DB, or a
+        // declaration whose end_line was unavailable) — must behave
+        // exactly like the hash-less `pick()` tests above, not treat the
+        // absence of any hash data as a confident drop.
+        let old_lines = vec![433, 461, 500, 580];
+        let candidates = vec![
+            (10, 178, None),
+            (20, 461, None),
+            (30, 580, None),
+            (40, 660, None),
+        ];
+        let picked = pick_with_hash(&candidates, 500, Some("some-hash"), &old_lines);
+        assert_eq!(picked, Some(30));
+    }
+
+    #[test]
+    fn pick_reconnect_target_falls_back_to_line_alignment_on_ambiguous_duplicate_hash() {
+        // Two candidates share the same (rare, byte-identical) body text —
+        // the hash can't disambiguate between them, so this must fall
+        // through to line alignment rather than picking either arbitrarily.
+        let old_lines = vec![100, 200];
+        let candidates = vec![
+            (11, 150, Some("dup".to_string())),
+            (21, 250, Some("dup".to_string())),
+        ];
+        let picked = pick_with_hash(&candidates, 100, Some("dup"), &old_lines);
+        assert_eq!(picked, Some(11)); // rank-based: old rank 1 -> new rank 1
+    }
+
     #[test]
     fn align_sibling_lines_forces_exact_pairing_when_counts_match() {
         let old_lines = vec![433, 461, 500, 580];
@@ -1347,6 +1516,7 @@ mod tests {
                 kind TEXT NOT NULL,
                 file TEXT NOT NULL,
                 line INTEGER,
+                content_hash TEXT,
                 UNIQUE(name, kind, file, line)
             );
             CREATE TABLE edges (
@@ -1366,6 +1536,22 @@ mod tests {
         conn.execute(
             "INSERT INTO nodes (name, kind, file, line) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![name, kind, file, line],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn insert_node_with_hash(
+        conn: &Connection,
+        name: &str,
+        kind: &str,
+        file: &str,
+        line: i64,
+        content_hash: &str,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO nodes (name, kind, file, line, content_hash) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![name, kind, file, line, content_hash],
         )
         .unwrap();
         conn.last_insert_rowid()
@@ -1522,6 +1708,144 @@ mod tests {
         assert_eq!(target_of(caller_b), None);
         assert_eq!(target_of(caller_c), Some(c_new));
         assert_eq!(target_of(caller_d), Some(d_new));
+    }
+
+    #[test]
+    fn reconnect_drops_edge_on_compound_rename_and_add_leaving_group_size_unchanged() {
+        // The exact compound case #2015 describes: B's close is renamed
+        // away AND a new sibling E's close is inserted in the same edit, at
+        // a line position that happens to land it at the same rank B used
+        // to hold — so the sibling count for (close, method) stays 4 -> 4.
+        // Without a content-hash identity signal, the rank-based fast path
+        // (old_lines.len() == new_lines.len()) would silently reconnect B's
+        // caller to E instead of dropping the edge.
+        let conn = test_conn();
+        let file = "src/db/connection.ts";
+
+        let a_old = insert_node_with_hash(&conn, "close", "method", file, 433, "hash-a");
+        let b_old = insert_node_with_hash(&conn, "close", "method", file, 461, "hash-b");
+        let c_old = insert_node_with_hash(&conn, "close", "method", file, 500, "hash-c");
+        let d_old = insert_node_with_hash(&conn, "close", "method", file, 580, "hash-d");
+
+        let caller_a = insert_node(&conn, "useA", "function", "src/features/a.ts", 10);
+        let caller_b = insert_node(&conn, "useB", "function", "src/features/b.ts", 10);
+        let caller_c = insert_node(&conn, "useC", "function", "src/features/c.ts", 10);
+        let caller_d = insert_node(&conn, "useD", "function", "src/features/d.ts", 10);
+        for (caller, target) in [
+            (caller_a, a_old),
+            (caller_b, b_old),
+            (caller_c, c_old),
+            (caller_d, d_old),
+        ] {
+            conn.execute(
+                "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?1, ?2, 'calls', 0.9, 0)",
+                rusqlite::params![caller, target],
+            )
+            .unwrap();
+        }
+
+        let (saved, sibling_groups) = save_reverse_dep_edges(&conn, &[file.to_string()]);
+        assert_eq!(saved.len(), 4);
+
+        conn.execute(
+            "DELETE FROM edges WHERE target_id IN (SELECT id FROM nodes WHERE file = ?1)",
+            [file],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM nodes WHERE file = ?1", [file])
+            .unwrap();
+
+        // Re-insert: A/C/D's close bodies are byte-identical (same hash),
+        // just shifted +147 by unrelated code above them. B's close was
+        // renamed to shutdown (gone). A brand-new sibling E's close is
+        // inserted between A's and C's new lines — landing at the same
+        // rank (2 of 4) B used to hold, so the group's size never changes.
+        let a_new = insert_node_with_hash(&conn, "close", "method", file, 433 + 147, "hash-a");
+        insert_node(&conn, "shutdown", "method", file, 461 + 147); // was B's close
+        let e_new = insert_node_with_hash(&conn, "close", "method", file, 610, "hash-e"); // new sibling, rank 2
+        let c_new = insert_node_with_hash(&conn, "close", "method", file, 500 + 147, "hash-c");
+        let d_new = insert_node_with_hash(&conn, "close", "method", file, 580 + 147, "hash-d");
+
+        let (reconnected, dropped) =
+            reconnect_reverse_dep_edges(&conn, &saved, &sibling_groups, 200);
+        // A, C, D reconnect correctly via hash; B's edge is dropped — NOT
+        // silently reattached to E despite occupying B's old rank.
+        assert_eq!((reconnected, dropped), (3, 1));
+
+        let target_of = |caller: i64| -> Option<i64> {
+            conn.query_row(
+                "SELECT target_id FROM edges WHERE source_id = ?1",
+                [caller],
+                |row| row.get(0),
+            )
+            .ok()
+        };
+        assert_eq!(target_of(caller_a), Some(a_new));
+        assert_eq!(target_of(caller_b), None);
+        assert_eq!(target_of(caller_c), Some(c_new));
+        assert_eq!(target_of(caller_d), Some(d_new));
+        // Nothing at all reconnects to E — it's a genuinely new sibling.
+        let _ = e_new;
+        let e_has_incoming: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_id = ?1",
+                [e_new],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(
+            !e_has_incoming,
+            "no caller should have been reconnected to the new sibling E"
+        );
+    }
+
+    #[test]
+    fn reconnect_reconnects_sole_candidate_whose_own_body_was_edited() {
+        // The end-to-end counterpart of #1744's regression test: a file with
+        // exactly one (name, kind) declaration whose body is edited in place
+        // (its content_hash necessarily changes) must still have its
+        // reverse-dep edge reconnected to it, not dropped. A hash mismatch
+        // is not evidence of "unrelated declaration" when there is no
+        // sibling to corroborate it — it's simply what an ordinary edit
+        // looks like.
+        let conn = test_conn();
+        let file = "src/utils/callee.ts";
+
+        let old_target = insert_node_with_hash(&conn, "callee", "function", file, 1, "hash-v1");
+        let caller = insert_node(&conn, "caller", "function", "src/features/use.ts", 1);
+        conn.execute(
+            "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?1, ?2, 'calls', 0.9, 0)",
+            rusqlite::params![caller, old_target],
+        )
+        .unwrap();
+
+        let (saved, sibling_groups) = save_reverse_dep_edges(&conn, &[file.to_string()]);
+        assert_eq!(saved.len(), 1);
+
+        conn.execute(
+            "DELETE FROM edges WHERE target_id IN (SELECT id FROM nodes WHERE file = ?1)",
+            [file],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM nodes WHERE file = ?1", [file])
+            .unwrap();
+
+        // Same function, same name/kind/file, edited body -> different hash.
+        let new_target = insert_node_with_hash(&conn, "callee", "function", file, 1, "hash-v2");
+
+        let (reconnected, dropped) =
+            reconnect_reverse_dep_edges(&conn, &saved, &sibling_groups, 200);
+        assert_eq!((reconnected, dropped), (1, 0));
+
+        let target_of: Option<i64> = conn
+            .query_row(
+                "SELECT target_id FROM edges WHERE source_id = ?1",
+                [caller],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(target_of, Some(new_target));
     }
 
     // ── capture_removed_file_neighbors (#1839) ──────────────────────────

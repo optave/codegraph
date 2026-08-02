@@ -25,7 +25,7 @@ describe('resolveCliNodeArgs', () => {
 
     expect(args[0]).toBe('--experimental-strip-types');
     expect(args[1]).toBe('--import');
-    expect(args[2]).toMatch(/^file:.*ts-resolve-loader\.ts$/);
+    expect(args[2]).toMatch(/^file:.*ts-resolve-loader\.js$/);
     expect(args[3]).toBe(path.join(repoRoot, 'src', 'cli.ts'));
 
     // Both the loader and the CLI entry point must exist on disk — this is

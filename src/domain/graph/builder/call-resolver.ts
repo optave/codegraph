@@ -150,6 +150,92 @@ export function resolveDefinePropertyAccessorTarget(
     .filter((n) => n.kind === 'function' || n.kind === 'method');
 }
 
+/** Minimal call shape needed by the reflection fallbacks below. */
+type ReflectionCall = {
+  name: string;
+  receiver?: string | null;
+  dynamicKind?: string | null;
+  keyExpr?: string | null;
+};
+
+/**
+ * Shared by both the full-build (build-edges.ts) and incremental
+ * (incremental.ts) paths: RES-4, Kotlin member callable reference —
+ * `Greeter::greet` emits `{ name: 'greet', receiver: 'Greeter', dynamicKind:
+ * 'reflection' }`. The receiver is the class qualifier (not a typeMap
+ * variable), so the primary resolver would find a same-named top-level
+ * function via `byNameAndFile('greet', relPath)` before the qualified form
+ * is tried. Prefer `Greeter.greet` in the same file first; callers fall
+ * through to the normal resolution path only when this returns nothing.
+ */
+export function resolveKotlinReflectionPreQualified(
+  call: ReflectionCall,
+  relPath: string,
+  lookup: CallNodeLookup,
+): ReadonlyArray<{ id: number; file: string; kind?: string }> {
+  if (
+    call.dynamicKind === 'reflection' &&
+    call.receiver &&
+    !call.keyExpr &&
+    !isModuleScopedLanguage(relPath)
+  ) {
+    return lookup
+      .byNameAndFile(`${call.receiver}.${call.name}`, relPath)
+      .filter((n) => n.kind === 'method' || n.kind === 'function');
+  }
+  return [];
+}
+
+/**
+ * Shared by both the full-build (build-edges.ts) and incremental
+ * (incremental.ts) paths: RES-3, reflection with a literal method name —
+ * JVM `getMethod("name")` / `invokeMethod("name")`. Java/Scala/Groovy
+ * methods are stored as class-qualified names (e.g. `Reflection.greet`), so
+ * `lookup.byNameAndFile('greet', relPath)` finds nothing. When
+ * `dynamicKind === 'reflection'` and `keyExpr` is set (a string-literal
+ * method name was captured), try the qualified form:
+ *   1. `typeMap[receiver]` → resolved type → lookup `resolvedType.keyExpr`
+ *      (type-annotated local).
+ *   2. `callerName`'s class prefix → `CallerClass.keyExpr` (same-class
+ *      sibling, e.g. Groovy `obj`).
+ * Scoped to non-JS/TS files to avoid interfering with the JS reflection path.
+ */
+export function resolveReflectionKeyExprFallback(
+  call: ReflectionCall,
+  callerName: string | null,
+  relPath: string,
+  typeMap: Map<string, unknown>,
+  lookup: CallNodeLookup,
+): Array<{ id: number; file: string; kind?: string }> {
+  if (
+    call.dynamicKind !== 'reflection' ||
+    !call.keyExpr ||
+    !call.receiver ||
+    isModuleScopedLanguage(relPath)
+  ) {
+    return [];
+  }
+  const resolvedType = unwrapTypeEntry(typeMap.get(call.receiver));
+  if (resolvedType) {
+    const qualified = lookup
+      .byNameAndFile(`${resolvedType}.${call.keyExpr}`, relPath)
+      .filter((n) => n.kind === 'method' || n.kind === 'function');
+    if (qualified.length > 0) return qualified;
+  }
+  if (callerName != null) {
+    const lastDot = callerName.lastIndexOf('.');
+    if (lastDot > 0) {
+      const prevDot = callerName.lastIndexOf('.', lastDot - 1);
+      const callerClass = callerName.slice(prevDot + 1, lastDot);
+      const qualified = lookup
+        .byNameAndFile(`${callerClass}.${call.keyExpr}`, relPath)
+        .filter((n) => n.kind === 'method' || n.kind === 'function');
+      if (qualified.length > 0) return qualified;
+    }
+  }
+  return [];
+}
+
 // ── Shared resolution functions ──────────────────────────────────────────
 
 /**

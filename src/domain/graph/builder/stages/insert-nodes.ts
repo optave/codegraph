@@ -56,12 +56,14 @@ interface InsertNodesBatch {
     line: number;
     endLine?: number;
     visibility?: string;
+    contentHash?: string;
     children: Array<{
       name: string;
       kind: string;
       line: number;
       endLine?: number;
       visibility?: string;
+      contentHash?: string;
     }>;
   }>;
   exports: Array<{ name: string; kind: string; line: number }>;
@@ -79,12 +81,14 @@ function marshalSymbolBatches(allSymbols: Map<string, ExtractorOutput>): InsertN
         line: def.line,
         endLine: def.endLine ?? undefined,
         visibility: def.visibility ?? undefined,
+        contentHash: def.contentHash ?? undefined,
         children: (def.children ?? []).map((c) => ({
           name: c.name,
           kind: c.kind,
           line: c.line,
           endLine: c.endLine ?? undefined,
           visibility: c.visibility ?? undefined,
+          contentHash: c.contentHash ?? undefined,
         })),
       })),
       exports: symbols.exports.map((exp) => ({
@@ -264,7 +268,7 @@ function insertDefinitionsAndExports(
   const phase1Rows: unknown[][] = [];
   const exportKeys: unknown[][] = [];
   for (const [relPath, symbols] of allSymbols) {
-    phase1Rows.push([relPath, 'file', relPath, 0, null, null, null, null, null]);
+    phase1Rows.push([relPath, 'file', relPath, 0, null, null, null, null, null, null]);
     for (const def of symbols.definitions) {
       const dotIdx = def.name.lastIndexOf('.');
       const scope = dotIdx !== -1 ? def.name.slice(0, dotIdx) : null;
@@ -278,10 +282,22 @@ function insertDefinitionsAndExports(
         def.name,
         scope,
         def.visibility || null,
+        def.contentHash || null,
       ]);
     }
     for (const exp of symbols.exports) {
-      phase1Rows.push([exp.name, exp.kind, relPath, exp.line, null, null, exp.name, null, null]);
+      phase1Rows.push([
+        exp.name,
+        exp.kind,
+        relPath,
+        exp.line,
+        null,
+        null,
+        exp.name,
+        null,
+        null,
+        null,
+      ]);
       exportKeys.push([exp.name, exp.kind, relPath, exp.line]);
     }
   }
@@ -333,6 +349,7 @@ function collectChildRowsAndFileEdges(
           `${def.name}.${child.name}`,
           def.name,
           child.visibility || null,
+          child.contentHash || null,
         ]);
       }
     }

@@ -33,6 +33,10 @@ export const COMPLEXITY_RULES: Map<string, ComplexityRules> = new Map([
   ['php', php.complexity],
   ['c', c.complexity],
   ['cpp', c.complexityCpp],
+  // CUDA is a C++ superset (see AST_TYPE_MAPS/DATAFLOW_RULES above) — its
+  // if/else/for/while/switch/logical-operator node kinds are byte-identical
+  // to C++'s, confirmed by parsing sample CUDA source with tree-sitter-cuda.
+  ['cuda', c.complexityCpp],
   ['kotlin', b2.complexityKotlin],
   ['swift', b2.complexitySwift],
   ['scala', b2.complexityScala],
@@ -55,6 +59,7 @@ export const HALSTEAD_RULES: Map<string, HalsteadRules> = new Map([
   ['php', php.halstead],
   ['c', c.halstead],
   ['cpp', c.halsteadCpp],
+  ['cuda', c.halsteadCpp],
   ['kotlin', b2.halsteadKotlin],
   ['swift', b2.halsteadSwift],
   ['scala', b2.halsteadScala],

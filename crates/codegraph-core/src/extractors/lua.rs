@@ -84,6 +84,7 @@ fn handle_lua_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbol
         cfg: build_function_cfg(node, "lua", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 

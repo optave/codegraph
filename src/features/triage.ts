@@ -1,7 +1,6 @@
-import { openRepo, type Repository } from '../db/index.js';
+import { openRepo, type Repository, resolveDbConfig } from '../db/index.js';
 import type { RiskResult, RiskWeights } from '../graph/classifiers/risk.js';
 import { DEFAULT_WEIGHTS, scoreRisk } from '../graph/classifiers/risk.js';
-import { loadConfig } from '../infrastructure/config.js';
 import { warn } from '../infrastructure/logger.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import { ConfigError } from '../shared/errors.js';
@@ -123,8 +122,11 @@ interface ResolvedRiskConfig {
 }
 
 /** Resolve risk weights and role-weight options from config + opts overrides. */
-function resolveRiskConfig(opts: TriageDataOpts): ResolvedRiskConfig {
-  const config = opts.config || loadConfig();
+function resolveRiskConfig(
+  customDbPath: string | undefined,
+  opts: TriageDataOpts,
+): ResolvedRiskConfig {
+  const config = opts.config || resolveDbConfig(customDbPath);
   const riskConfig = ((config as unknown as Record<string, unknown>).risk || {}) as {
     weights?: Partial<RiskWeights>;
     roleWeights?: Record<string, number>;
@@ -153,7 +155,7 @@ export function triageData(
     const noTests = opts.noTests || false;
     const minScore = opts.minScore != null ? Number(opts.minScore) : null;
     const sort = opts.sort || 'risk';
-    const { weights, riskOpts } = resolveRiskConfig(opts);
+    const { weights, riskOpts } = resolveRiskConfig(customDbPath, opts);
 
     let rows: TriageNodeRow[];
     try {

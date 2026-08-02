@@ -576,6 +576,7 @@ fn extract_object_literal_functions(
                             cfg: build_function_cfg(&val_n, "javascript", source),
                             children: None,
                             bodyless: None,
+                            content_hash: None,
                         });
                         // Store qualified name as value so resolver looks up the qualified def.
                         symbols.type_map.push(TypeMapEntry {
@@ -624,6 +625,7 @@ fn extract_object_literal_functions(
                         cfg: build_function_cfg(&child, "javascript", source),
                         children: opt_children(children),
                         bodyless: None,
+                        content_hash: None,
                     });
                 }
                 let body = child.child_by_field_name("body");
@@ -637,6 +639,7 @@ fn extract_object_literal_functions(
                     cfg: body.and_then(|b| build_function_cfg(&b, "javascript", source)),
                     children: None,
                     bodyless: None,
+                    content_hash: None,
                 });
             }
             _ => {}
@@ -899,6 +902,7 @@ fn handle_js_prototype_assignment(lhs: &Node, rhs: &Node, source: &[u8], symbols
             cfg: build_function_cfg(rhs, "javascript", source),
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -921,6 +925,7 @@ fn emit_js_prototype_method(class_name: &str, method_name: &str, rhs: &Node, sou
                 cfg: build_function_cfg(rhs, "javascript", source),
                 children: opt_children(children),
                 bodyless: None,
+                content_hash: None,
             });
         }
         "identifier" => {
@@ -953,6 +958,7 @@ fn extract_js_prototype_object_literal(class_name: &str, obj_node: &Node, source
                     cfg: build_function_cfg(&child, "javascript", source),
                     children: opt_children(children),
                     bodyless: None,
+                    content_hash: None,
                 });
             }
             "shorthand_property_identifier" => {
@@ -1073,6 +1079,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: build_function_cfg(node, "javascript", source),
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -1091,6 +1098,7 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 
     // Heritage: extends + implements
@@ -1195,6 +1203,7 @@ fn handle_method_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: build_function_cfg(node, "javascript", source),
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -1385,6 +1394,7 @@ fn handle_static_block(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -1424,6 +1434,7 @@ fn handle_field_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -1440,6 +1451,7 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
     // Extract interface methods
     let body = node
@@ -1463,6 +1475,7 @@ fn handle_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -1481,6 +1494,7 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -1518,6 +1532,7 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 cfg: build_function_cfg(&value_n, "javascript", source),
                 children: opt_children(children),
                 bodyless: None,
+                content_hash: None,
             });
         } else if is_const && name_n.kind() == "object_pattern" && !in_function_scope {
             // Parity with TS query path (extractDestructuredBindingsWalk):
@@ -1570,6 +1585,7 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             });
             // Phase 8.3f: extract function/arrow properties from object literals and seed
             // typeMap composite keys so that this.method() inside Object.defineProperty
@@ -2432,6 +2448,7 @@ fn extract_interface_methods(
                         cfg: None,
                         children: None,
                         bodyless: Some(child.child_by_field_name("body").is_none()),
+                        content_hash: None,
                     });
                 }
             }
@@ -3090,6 +3107,7 @@ fn extract_destructured_bindings(
                     cfg: None,
                     children: None,
                     bodyless: None,
+                    content_hash: None,
                 });
             }
             "pair_pattern" | "pair" => {
@@ -3107,6 +3125,7 @@ fn extract_destructured_bindings(
                             cfg: None,
                             children: None,
                             bodyless: None,
+                            content_hash: None,
                         });
                     }
                 }
@@ -3145,6 +3164,7 @@ fn extract_array_pattern_bindings(
                     cfg: None,
                     children: None,
                     bodyless: None,
+                    content_hash: None,
                 });
             }
             "assignment_pattern" => {
@@ -3160,6 +3180,7 @@ fn extract_array_pattern_bindings(
                             cfg: None,
                             children: None,
                             bodyless: None,
+                            content_hash: None,
                         });
                     }
                 }
@@ -3187,6 +3208,7 @@ fn extract_array_pattern_bindings(
                                 cfg: None,
                                 children: None,
                                 bodyless: None,
+                                content_hash: None,
                             });
                             break;
                         }
@@ -3594,6 +3616,7 @@ fn extract_callback_definition(call_node: &Node, source: &[u8]) -> Option<Defini
             cfg: build_function_cfg(&cb, "javascript", source),
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 
@@ -3614,6 +3637,7 @@ fn extract_callback_definition(call_node: &Node, source: &[u8]) -> Option<Defini
             cfg: build_function_cfg(&cb, "javascript", source),
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 
@@ -3631,6 +3655,7 @@ fn extract_callback_definition(call_node: &Node, source: &[u8]) -> Option<Defini
             cfg: build_function_cfg(&cb, "javascript", source),
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 

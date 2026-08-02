@@ -611,16 +611,22 @@ Write `.codegraph/titan/close-summary.json`:
    git branch --list 'refactor/titan-*' 'docs/titan-*'
    ```
 
-   Delete locally (force-delete is safe — all work is in the created PR branches). The current worktree branch cannot be deleted while checked out; it will be cleaned up when the worktree is torn down. Skip it gracefully with `|| true`:
+   Capture the branch names once, before any deletion — querying `git branch --list` again after the local delete would find nothing, silently turning the remote cleanup below into a no-op:
    ```bash
-   git branch --list 'refactor/titan-*' | xargs -r -I{} git branch -D {} || true
-   git branch --list 'docs/titan-*' | xargs -r -I{} git branch -D {} || true
+   REFACTOR_BRANCHES=$(git branch --list 'refactor/titan-*' | sed 's/^[* ]*//')
+   DOCS_BRANCHES=$(git branch --list 'docs/titan-*' | sed 's/^[* ]*//')
    ```
 
-   Delete from remote:
+   Delete locally (force-delete is safe — all work is in the created PR branches). The current worktree branch cannot be deleted while checked out; it will be cleaned up when the worktree is torn down. Skip it gracefully with `|| true`:
    ```bash
-   git branch --list 'refactor/titan-*' | sed 's/^[* ]*//' | xargs -r git push origin --delete 2>/dev/null || true
-   git branch --list 'docs/titan-*' | sed 's/^[* ]*//' | xargs -r git push origin --delete 2>/dev/null || true
+   echo "$REFACTOR_BRANCHES" | xargs -r -I{} git branch -D {} || true
+   echo "$DOCS_BRANCHES" | xargs -r -I{} git branch -D {} || true
+   ```
+
+   Delete from remote, reusing the names captured above:
+   ```bash
+   echo "$REFACTOR_BRANCHES" | xargs -r git push origin --delete 2>/dev/null || true
+   echo "$DOCS_BRANCHES" | xargs -r git push origin --delete 2>/dev/null || true
    ```
 
    Print count of branches deleted.

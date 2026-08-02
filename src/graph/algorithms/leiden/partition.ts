@@ -255,12 +255,10 @@ function applyMoveInternalEdgeWeightDeltaDirected(
   newC: number,
   selfLoopWeight: number,
 ): void {
-  const outToOld: number = fget(s.outEdgeWeightToCommunity, oldC) || 0;
-  const inFromOld: number = fget(s.inEdgeWeightFromCommunity, oldC) || 0;
-  const outToNew: number =
-    newC < s.outEdgeWeightToCommunity.length ? fget(s.outEdgeWeightToCommunity, newC) || 0 : 0;
-  const inFromNew: number =
-    newC < s.inEdgeWeightFromCommunity.length ? fget(s.inEdgeWeightFromCommunity, newC) || 0 : 0;
+  const outToOld: number = fgetOrZero(s.outEdgeWeightToCommunity, oldC);
+  const inFromOld: number = fgetOrZero(s.inEdgeWeightFromCommunity, oldC);
+  const outToNew: number = fgetOrZero(s.outEdgeWeightToCommunity, newC);
+  const inFromNew: number = fgetOrZero(s.inEdgeWeightFromCommunity, newC);
   // outToOld/inFromOld already include the self-loop weight (self-loops are
   // in outEdges/inEdges), so subtract it once to avoid triple-counting.
   s.communityInternalEdgeWeight[oldC] =
@@ -276,8 +274,8 @@ function applyMoveInternalEdgeWeightDeltaUndirected(
   newC: number,
   selfLoopWeight: number,
 ): void {
-  const weightToOld: number = fget(s.neighborEdgeWeightToCommunity, oldC) || 0;
-  const weightToNew: number = fget(s.neighborEdgeWeightToCommunity, newC) || 0;
+  const weightToOld: number = fgetOrZero(s.neighborEdgeWeightToCommunity, oldC);
+  const weightToNew: number = fgetOrZero(s.neighborEdgeWeightToCommunity, newC);
   s.communityInternalEdgeWeight[oldC] =
     fget(s.communityInternalEdgeWeight, oldC) - (2 * weightToOld + selfLoopWeight);
   s.communityInternalEdgeWeight[newC] =

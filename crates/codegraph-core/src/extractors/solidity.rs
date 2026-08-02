@@ -80,6 +80,7 @@ fn handle_contract_decl(
         cfg: None,
         children: opt_children(members),
         bodyless: None,
+        content_hash: None,
     });
 
     extract_inheritance(node, &name, source, symbols);
@@ -130,6 +131,7 @@ fn extract_contract_member(child: &Node, source: &[u8]) -> Option<Definition> {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             })
         }
         "error_declaration" => {
@@ -144,6 +146,7 @@ fn extract_contract_member(child: &Node, source: &[u8]) -> Option<Definition> {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             })
         }
         "modifier_definition" => {
@@ -158,6 +161,7 @@ fn extract_contract_member(child: &Node, source: &[u8]) -> Option<Definition> {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             })
         }
         _ => None,
@@ -236,6 +240,7 @@ fn handle_struct_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(members),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -276,6 +281,7 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(members),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -303,6 +309,7 @@ fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -326,6 +333,7 @@ fn handle_modifier_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -349,6 +357,7 @@ fn handle_event_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -372,6 +381,7 @@ fn handle_error_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -395,6 +405,7 @@ fn handle_state_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 

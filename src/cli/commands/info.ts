@@ -46,19 +46,23 @@ function printEngineInfo(
   console.log();
 }
 
-/** Print the "Build metadata" block read from the graph DB, if one exists. Never throws. */
-async function printBuildMetadata(
+/**
+ * Print the "Build metadata" block read from the graph DB, if one exists. Never throws.
+ * Exported for direct testing of its own busy_timeout pragma (issue #2020).
+ */
+export async function printBuildMetadata(
   ctx: CliContext,
   opts: CommandOpts,
   activeName: string,
 ): Promise<void> {
   try {
-    const { findDbPath, getBuildMeta } = await import('../../db/index.js');
+    const { findDbPath, getBuildMeta, resolveBusyTimeoutMs } = await import('../../db/index.js');
     const Database = (await import('better-sqlite3')).default;
     const dbPath = findDbPath(opts.db as string | undefined);
     const fs = await import('node:fs');
     if (fs.existsSync(dbPath)) {
       const db = new Database(dbPath, { readonly: true });
+      db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(dbPath)}`);
       const buildEngine = getBuildMeta(db, 'engine');
       const buildVersion = getBuildMeta(db, 'codegraph_version');
       const builtAt = getBuildMeta(db, 'built_at');

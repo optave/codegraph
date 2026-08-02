@@ -102,6 +102,7 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 
     // Superclass
@@ -157,6 +158,7 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
@@ -173,6 +175,7 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
                     cfg: build_function_cfg(&child, "java", source),
                     children: None,
                     bodyless: Some(child.child_by_field_name("body").is_none()),
+                    content_hash: None,
                 });
             }
         }
@@ -193,6 +196,7 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -226,6 +230,7 @@ fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: build_function_cfg(node, "java", source),
             children: opt_children(children),
             bodyless: Some(node.child_by_field_name("body").is_none()),
+            content_hash: None,
         });
     }
 }
@@ -249,6 +254,7 @@ fn handle_constructor_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols
             cfg: build_function_cfg(node, "java", source),
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }

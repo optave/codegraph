@@ -45,6 +45,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: build_function_cfg(node, "go", source),
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -68,6 +69,7 @@ fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: build_function_cfg(node, "go", source),
         children: opt_children(children),
         bodyless: Some(node.child_by_field_name("body").is_none()),
+        content_hash: None,
     });
 }
 
@@ -108,6 +110,7 @@ fn handle_type_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     cfg: None,
                     children: opt_children(children),
                     bodyless: None,
+                    content_hash: None,
                 });
             }
             "interface_type" => {
@@ -121,6 +124,7 @@ fn handle_type_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     cfg: None,
                     children: None,
                     bodyless: None,
+                    content_hash: None,
                 });
                 extract_go_interface_methods(&type_node, &name, source, symbols);
             }
@@ -135,6 +139,7 @@ fn handle_type_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     cfg: None,
                     children: None,
                     bodyless: None,
+                    content_hash: None,
                 });
             }
         }
@@ -156,6 +161,7 @@ fn extract_go_interface_methods(type_node: &Node, iface_name: &str, source: &[u8
                 cfg: None,
                 children: None,
                 bodyless: Some(member.child_by_field_name("body").is_none()),
+                content_hash: None,
             });
         }
     }
@@ -176,6 +182,7 @@ fn handle_const_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             });
         }
     }
