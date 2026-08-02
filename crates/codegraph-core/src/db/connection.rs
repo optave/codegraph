@@ -753,8 +753,20 @@ impl NativeDatabase {
             // unconditional, reality-checked backfill (mirroring the
             // confidence/dynamic columns just above) repairs those databases
             // too, not just fresh ones.
+            //
+            // Unlike the other legacy columns in this block, `dynamic_kind` is
+            // referenced unconditionally by every edge insert (see
+            // db/repository/edges.rs). A silently swallowed ALTER failure here
+            // would let init_schema() report success while leaving the column
+            // absent, so every subsequent edge batch would fail with a much
+            // harder-to-diagnose "no such column" error — propagate instead.
             if !has_column(conn, "edges", "dynamic_kind") {
-                let _ = conn.execute_batch("ALTER TABLE edges ADD COLUMN dynamic_kind TEXT");
+                conn.execute_batch("ALTER TABLE edges ADD COLUMN dynamic_kind TEXT")
+                    .map_err(|e| {
+                        napi::Error::from_reason(format!(
+                            "legacy repair: add edges.dynamic_kind failed: {e}"
+                        ))
+                    })?;
             }
             let _ = conn.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_edges_dynamic_kind ON edges(dynamic_kind) WHERE dynamic_kind IS NOT NULL",
