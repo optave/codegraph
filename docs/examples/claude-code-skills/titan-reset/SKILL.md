@@ -68,17 +68,23 @@ This removes:
 
 Delete all local titan working branches. These accumulate across runs and leave orphaned commits that never reach main. The actual PR content lives on focused PR branches created by `/titan-close` — the working branches are safe to remove.
 
+Capture the branch names once, before any deletion — querying `git branch --list` again after the local delete would find nothing, silently turning the remote cleanup below into a no-op:
 ```bash
-git branch --list 'refactor/titan-*' | xargs -r -I{} git branch -D {} || true
-git branch --list 'docs/titan-*' | xargs -r -I{} git branch -D {} || true
+REFACTOR_BRANCHES=$(git branch --list 'refactor/titan-*' | sed 's/^[* ]*//')
+DOCS_BRANCHES=$(git branch --list 'docs/titan-*' | sed 's/^[* ]*//')
+```
+
+```bash
+echo "$REFACTOR_BRANCHES" | xargs -r -I{} git branch -D {} || true
+echo "$DOCS_BRANCHES" | xargs -r -I{} git branch -D {} || true
 ```
 
 > **Note:** `-I{}` ensures each branch is deleted individually so a failure on one (e.g. the currently checked-out worktree branch, which git refuses to delete in-place) is skipped rather than aborting the entire pipeline. The current worktree branch is cleaned up when the worktree itself is torn down.
 
-Delete from remote (best-effort — failures are non-fatal):
+Delete from remote, reusing the names captured above (best-effort — failures are non-fatal):
 ```bash
-git branch --list 'refactor/titan-*' | sed 's/^[* ]*//' | xargs -r git push origin --delete 2>/dev/null || true
-git branch --list 'docs/titan-*' | sed 's/^[* ]*//' | xargs -r git push origin --delete 2>/dev/null || true
+echo "$REFACTOR_BRANCHES" | xargs -r git push origin --delete 2>/dev/null || true
+echo "$DOCS_BRANCHES" | xargs -r git push origin --delete 2>/dev/null || true
 ```
 
 Print how many branches were removed.
