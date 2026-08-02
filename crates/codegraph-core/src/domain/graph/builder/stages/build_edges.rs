@@ -1032,6 +1032,66 @@ fn resolve_exact_global_match<'a>(
     if best.len() == 1 { best } else { Vec::new() }
 }
 
+/// Reconcile a same-file bare-name match against a type-aware receiver match
+/// (#2025). Prefers the type-aware result UNLESS it's simply a different node
+/// representation of the exact declaration the bare match already found.
+/// Same file + line alone is NOT sufficient to prove that: two wholly
+/// unrelated declarations can coincidentally share one physical source line
+/// (e.g. `function method() {} class Widget { method() {} }` written on one
+/// line), and file+line-only comparison would incorrectly treat the
+/// type-aware `Widget.method` match as "the same declaration" as the
+/// unrelated bare `method` and keep the wrong one.
+///
+/// The only *intentional* same-file-and-line double-representation in the
+/// codebase is #1517's computed-key object-literal methods, extracted by
+/// `extract_object_literal_functions`/`extractObjectLiteralFunctions`: a bare
+/// node (kind `method`) and a qualified `obj.method` node (kind `function`)
+/// are pushed from the identical AST node, in that exact kind pairing.
+/// Requiring that specific pairing — not just matching coordinates —
+/// distinguishes the deliberate #1517 duplicate from a coincidental same-line
+/// collision between two real, distinct declarations. Mirrors the same
+/// reconciliation in `resolveCallTargets` (call-resolver.ts).
+///
+/// When every type-aware match does pair up with a bare `method` node this
+/// way, resolves to exactly those paired bare nodes — NOT `bare` wholesale.
+/// `bare` can contain additional, wholly unrelated same-named nodes elsewhere
+/// in the file (a second collision independent of the #1517 pairing);
+/// returning it wholesale would attach a bogus extra `calls` edge to that
+/// unrelated declaration (review finding on #2227).
+fn prefer_type_aware_over_bare<'a>(
+    bare: &[&'a NodeInfo],
+    type_aware: Vec<&'a NodeInfo>,
+) -> Vec<&'a NodeInfo> {
+    if bare.is_empty() {
+        return type_aware;
+    }
+    let bare_methods_by_location: HashMap<(&str, u32), &'a NodeInfo> = bare
+        .iter()
+        .filter(|n| n.kind == "method")
+        .map(|&n| ((n.file.as_str(), n.line), n))
+        .collect();
+    let mut paired_bare: Vec<&'a NodeInfo> = Vec::new();
+    let is_same_declaration = type_aware.iter().all(|n| {
+        if n.kind != "function" {
+            return false;
+        }
+        match bare_methods_by_location.get(&(n.file.as_str(), n.line)) {
+            Some(&paired) => {
+                paired_bare.push(paired);
+                true
+            }
+            None => false,
+        }
+    });
+    if is_same_declaration {
+        paired_bare.sort_by_key(|n| n.id);
+        paired_bare.dedup_by_key(|n| n.id);
+        paired_bare
+    } else {
+        type_aware
+    }
+}
+
 /// Multi-strategy call target resolution: import-aware → same-file → type-aware → scoped.
 /// `caller_name` is the enclosing function/method name (e.g. `"Shape.describe"`) used to scope
 /// `this`/`self`/`super` dispatch to the caller's own class before falling back to a broader scan.
@@ -1133,12 +1193,27 @@ fn resolve_call_targets_core<'a>(
     let bare_matches = ctx.nodes_by_name_and_file
         .get(&(call.name.as_str(), rel_path))
         .cloned().unwrap_or_default();
-    let targets: Vec<&NodeInfo> = if call.receiver.is_some() {
+    let bare_targets: Vec<&NodeInfo> = if call.receiver.is_some() {
         bare_matches.into_iter().filter(|n| is_callable_kind(&n.kind)).collect()
     } else {
         bare_matches
     };
-    if !targets.is_empty() { return targets; }
+    let has_concrete_receiver = call
+        .receiver
+        .as_deref()
+        .is_some_and(|r| r != "this" && r != "self" && r != "super");
+    // A concrete-receiver call still needs type-aware confirmation even when
+    // the kind-filtered bare lookup already found something: the bare lookup
+    // only rules out non-callable kinds (#1888), not a coincidentally
+    // same-named function/method elsewhere in the file that has no static
+    // relationship to the receiver at all (#2025) — e.g. an unrelated
+    // top-level `function method()` pre-empting `obj.method()` when `obj`'s
+    // type resolves to a class that also declares `method`. Fall through to
+    // step 3 (type-aware resolution) instead of returning immediately;
+    // `prefer_type_aware_over_bare` reconciles the two afterward.
+    if !bare_targets.is_empty() && !has_concrete_receiver {
+        return bare_targets;
+    }
 
     // 3. Type-aware resolution via receiver → type map.
     // Strips "this."/"self." prefix so `this.repo.method()` / `self.repo.method()`
@@ -1190,7 +1265,7 @@ fn resolve_call_targets_core<'a>(
                         && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
                     .copied().collect())
                 .unwrap_or_default();
-            if !typed.is_empty() { return typed; }
+            if !typed.is_empty() { return prefer_type_aware_over_bare(&bare_targets, typed); }
             // Prototype alias: `Foo.prototype.bar = identifier` seeds typeMap['Foo.bar'] = identifier.
             // After the direct method lookup misses (no definition emitted for this method),
             // check if the typeMap holds an alias to a standalone function.
@@ -1202,7 +1277,7 @@ fn resolve_call_targets_core<'a>(
                         .filter(|n| resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
                         .copied().collect())
                     .unwrap_or_default();
-                if !resolved.is_empty() { return resolved; }
+                if !resolved.is_empty() { return prefer_type_aware_over_bare(&bare_targets, resolved); }
             }
         }
         // 3.5. Direct qualified method lookup: ClassName.staticMethod() or ClassName.instanceMethod()
@@ -1230,7 +1305,7 @@ fn resolve_call_targets_core<'a>(
                         && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
                     .copied().collect())
                 .unwrap_or_default();
-            if !direct.is_empty() { return direct; }
+            if !direct.is_empty() { return prefer_type_aware_over_bare(&bare_targets, direct); }
         }
 
         // 3.6. Phase 8.3d: composite pts key — `obj.prop = fn` seeds typeMap['obj.prop']
@@ -1242,7 +1317,7 @@ fn resolve_call_targets_core<'a>(
                     .filter(|n| resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
                     .copied().collect())
                 .unwrap_or_default();
-            if !resolved.is_empty() { return resolved; }
+            if !resolved.is_empty() { return prefer_type_aware_over_bare(&bare_targets, resolved); }
         }
     }
 
@@ -1273,7 +1348,7 @@ fn resolve_call_targets_core<'a>(
                         && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
                     .copied().collect())
                 .unwrap_or_default();
-            if !typed.is_empty() { return typed; }
+            if !typed.is_empty() { return prefer_type_aware_over_bare(&bare_targets, typed); }
         }
 
         // RES-3.2: callerName class prefix → CallerClass.keyExpr
@@ -1289,9 +1364,16 @@ fn resolve_call_targets_core<'a>(
                             && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
                         .copied().collect())
                     .unwrap_or_default();
-                if !class_scoped.is_empty() { return class_scoped; }
+                if !class_scoped.is_empty() { return prefer_type_aware_over_bare(&bare_targets, class_scoped); }
             }
         }
+    }
+
+    // Neither the type-aware receiver tiers above nor the RES-3 reflection
+    // tier found anything more specific than the deferred kind-filtered bare
+    // match (#2025) — fall back to it now.
+    if !bare_targets.is_empty() {
+        return bare_targets;
     }
 
     // 4. Scoped fallback (this/self/super or no receiver)

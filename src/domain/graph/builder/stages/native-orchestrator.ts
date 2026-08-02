@@ -46,7 +46,7 @@ import {
   patchDataflowResult,
 } from '../../../parser.js';
 import { computeConfidence, getWorkspacesForNative } from '../../resolve.js';
-import { isConstructorMethodSuffix } from '../../resolver/strategy.js';
+import { isConstructorMethodSuffix, type ResolvedCandidate } from '../../resolver/strategy.js';
 import type { CallNodeLookup } from '../call-resolver.js';
 import { resolveDefinePropertyAccessorTarget } from '../call-resolver.js';
 import type { ChaContext } from '../cha.js';
@@ -1187,13 +1187,11 @@ function prepareCallerByLineStmt(db: BetterSqlite3Database) {
  * `definitions` array) so it is intentionally left unimplemented.
  */
 function makePostNativeCallLookup(db: BetterSqlite3Database): CallNodeLookup {
-  const findByNameStmt = db.prepare(`SELECT id, file, kind FROM nodes WHERE name = ?`);
+  const findByNameStmt = db.prepare(`SELECT id, file, kind, line FROM nodes WHERE name = ?`);
   return {
-    byName: (name) => findByNameStmt.all(name) as Array<{ id: number; file: string; kind: string }>,
+    byName: (name) => findByNameStmt.all(name) as Array<ResolvedCandidate>,
     byNameAndFile: (name, file) =>
-      (findByNameStmt.all(name) as Array<{ id: number; file: string; kind: string }>).filter(
-        (n) => n.file === file,
-      ),
+      (findByNameStmt.all(name) as Array<ResolvedCandidate>).filter((n) => n.file === file),
     isBarrel: () => false,
     resolveBarrel: () => null,
     nodeId: () => undefined,
