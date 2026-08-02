@@ -36,7 +36,6 @@ import type {
 import { computeConfidence } from '../../resolve.js';
 import type { PointsToMap } from '../../resolver/points-to.js';
 import { buildPointsToMapForFile, resolveViaPointsTo } from '../../resolver/points-to.js';
-import { unwrapTypeEntry } from '../../resolver/strategy.js';
 import { enrichTypeMapWithTsc } from '../../resolver/ts-resolver.js';
 import {
   type CallNodeLookup,
@@ -46,7 +45,9 @@ import {
   resolveCallTargets,
   resolveDefinePropertyAccessorTarget,
   resolveHierarchyTargets,
+  resolveKotlinReflectionPreQualified,
   resolveReceiverEdge,
+  resolveReflectionKeyExprFallback,
   resolveSameClassQualifiedMethod,
 } from '../call-resolver.js';
 import type { ChaContext } from '../cha.js';
@@ -1124,33 +1125,6 @@ function makeContextLookup(ctx: PipelineContext, getNodeIdStmt: NodeIdStmt): Cal
 // ── Per-call resolution helpers ─────────────────────────────────────────
 
 /**
- * RES-4: Kotlin member callable reference — `Greeter::greet` emits
- * { name: 'greet', receiver: 'Greeter', dynamicKind: 'reflection' }.
- * The receiver is the class qualifier (not a typeMap variable), so
- * resolveCallTargets would find a same-named top-level function via
- * byNameAndFile('greet', relPath) before the qualified form is tried.
- * Prefer `Greeter.greet` in the same file first; fall through to the
- * normal path only when no qualified match exists.
- */
-function resolveKotlinReflectionPreQualified(
-  call: Call,
-  relPath: string,
-  lookup: CallNodeLookup,
-): ReadonlyArray<{ id: number; file: string; kind?: string }> {
-  if (
-    call.dynamicKind === 'reflection' &&
-    call.receiver &&
-    !call.keyExpr &&
-    !isModuleScopedLanguage(relPath)
-  ) {
-    return lookup
-      .byNameAndFile(`${call.receiver}.${call.name}`, relPath)
-      .filter((n) => n.kind === 'method' || n.kind === 'function');
-  }
-  return [];
-}
-
-/**
  * Same-class `this.method()` fallback: when the call receiver is `this` and
  * resolveCallTargets found nothing, derive the enclosing class name from the
  * caller (e.g. `Logger.info` → class prefix `Logger`) and retry with the
@@ -1185,51 +1159,6 @@ function resolveSameClassBareCallFallback(
 ): Array<{ id: number; file: string; kind?: string }> {
   if (call.receiver || callerName == null || isModuleScopedLanguage(relPath)) return [];
   return resolveSameClassQualifiedMethod(call.name, callerName, relPath, lookup);
-}
-
-/**
- * RES-3: reflection with literal method name — JVM getMethod("name") / invokeMethod("name").
- * Java/Scala/Groovy methods are stored as class-qualified names (e.g. Reflection.greet),
- * so lookup.byNameAndFile('greet', relPath) finds nothing. When dynamicKind='reflection'
- * and keyExpr is set (a string-literal method name was captured), try the qualified form:
- *   1. typeMap[receiver] → resolvedType → lookup `resolvedType.keyExpr` (type-annotated local)
- *   2. callerName class prefix → `CallerClass.keyExpr` (same-class sibling, e.g. Groovy obj)
- * Scoped to non-JS/TS files to avoid interfering with the JS reflection path.
- */
-function resolveReflectionKeyExprFallback(
-  call: Call,
-  callerName: string | null,
-  relPath: string,
-  typeMap: Map<string, TypeMapEntry | string>,
-  lookup: CallNodeLookup,
-): Array<{ id: number; file: string; kind?: string }> {
-  if (
-    call.dynamicKind !== 'reflection' ||
-    !call.keyExpr ||
-    !call.receiver ||
-    isModuleScopedLanguage(relPath)
-  ) {
-    return [];
-  }
-  const resolvedType = unwrapTypeEntry(typeMap.get(call.receiver));
-  if (resolvedType) {
-    const qualified = lookup
-      .byNameAndFile(`${resolvedType}.${call.keyExpr}`, relPath)
-      .filter((n) => n.kind === 'method' || n.kind === 'function');
-    if (qualified.length > 0) return qualified;
-  }
-  if (callerName != null) {
-    const lastDot = callerName.lastIndexOf('.');
-    if (lastDot > 0) {
-      const prevDot = callerName.lastIndexOf('.', lastDot - 1);
-      const callerClass = callerName.slice(prevDot + 1, lastDot);
-      const qualified = lookup
-        .byNameAndFile(`${callerClass}.${call.keyExpr}`, relPath)
-        .filter((n) => n.kind === 'method' || n.kind === 'function');
-      if (qualified.length > 0) return qualified;
-    }
-  }
-  return [];
 }
 
 /**

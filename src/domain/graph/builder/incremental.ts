@@ -38,7 +38,9 @@ import {
   resolveCallTargets,
   resolveDefinePropertyAccessorTarget,
   resolveHierarchyTargets,
+  resolveKotlinReflectionPreQualified,
   resolveReceiverEdge,
+  resolveReflectionKeyExprFallback,
   resolveSameClassQualifiedMethod,
 } from './call-resolver.js';
 import {
@@ -754,18 +756,22 @@ function buildIncrementalTypeMap(symbols: ExtractorOutput): Map<string, unknown>
  *   2. Same-class bare-call fallback for non-JS/TS class-scoped languages
  *      (e.g. C# static sibling calls: `IsValidEmail()` inside
  *      `Validators.ValidateUser` resolves to `Validators.IsValidEmail`).
- *   3. Object.defineProperty accessor fallback (this-calls inside getter/setter).
+ *   3. Reflection-keyExpr fallback (JVM `getMethod("name")`/`invokeMethod("name")`).
+ *   4. Object.defineProperty accessor fallback (this-calls inside getter/setter).
  *
- * Mirrors the same-class fallback strategies in `resolveFallbackTargets`
- * (stages/build-edges.ts, full-build path). The Kotlin-reflection
- * pre-qualify and reflection-keyExpr fallbacks are intentionally not
- * mirrored here — that narrower, language-specific gap is tracked
- * separately (#1993), not by this function. The broader points-to/CHA/
- * dynamic-sink gap this comment used to reference is now fixed by
- * `buildCallEdges`/`applyChaDispatchPostPass` below (#1852).
+ * Mirrors `resolveFallbackTargets` (stages/build-edges.ts, full-build path)
+ * in both strategy set and order — including the Kotlin-reflection
+ * pre-qualify fallback, which runs before the primary resolution in
+ * `buildCallEdges` below rather than here, since it must pre-empt (not
+ * follow) resolveCallTargets (#1993).
  */
 function applyCallFallbacks(
-  call: { name: string; receiver?: string | null },
+  call: {
+    name: string;
+    receiver?: string | null;
+    dynamicKind?: string | null;
+    keyExpr?: string | null;
+  },
   callerName: string | null,
   relPath: string,
   typeMap: Map<string, unknown>,
@@ -789,7 +795,12 @@ function applyCallFallbacks(
     if (s2.length > 0) return s2;
   }
 
-  // Strategy 3: Object.defineProperty accessor fallback. Shared with the
+  // Strategy 3: reflection-keyExpr fallback (#1993). Shared with the
+  // full-build path via call-resolver.ts.
+  const s3 = resolveReflectionKeyExprFallback(call, callerName, relPath, typeMap, lookup);
+  if (s3.length > 0) return s3;
+
+  // Strategy 4: Object.defineProperty accessor fallback. Shared with the
   // full-build path (stages/build-edges.ts) via call-resolver.ts so both
   // paths apply the same function/method kind filter (issue #1766).
   if (call.receiver === 'this' && callerName != null && definePropertyReceivers) {
@@ -1056,15 +1067,22 @@ function buildCallEdges(
     if (call.receiver && BUILTIN_RECEIVERS.has(call.receiver)) continue;
 
     const caller = findCaller(lookup, call, symbols.definitions, relPath, fileNodeRow);
-    const { targets: initialTargets, importedFrom } = resolveCallTargets(
-      lookup,
-      call,
-      relPath,
-      importedNames,
-      typeMap,
-      caller.callerName,
-      importedOriginalNames,
-    );
+    // Kotlin-reflection pre-qualify (#1993): must pre-empt resolveCallTargets,
+    // not follow it as a fallback — mirrors resolveFallbackTargets'
+    // preQualifiedTargets check in stages/build-edges.ts.
+    const preQualifiedTargets = resolveKotlinReflectionPreQualified(call, relPath, lookup);
+    const { targets: initialTargets, importedFrom } =
+      preQualifiedTargets.length > 0
+        ? { targets: [...preQualifiedTargets], importedFrom: undefined as string | undefined }
+        : resolveCallTargets(
+            lookup,
+            call,
+            relPath,
+            importedNames,
+            typeMap,
+            caller.callerName,
+            importedOriginalNames,
+          );
 
     let targets = applyCallFallbacks(
       call,
