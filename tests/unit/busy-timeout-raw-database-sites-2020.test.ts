@@ -131,6 +131,10 @@ describe('configured busyTimeoutMs reaches the remaining raw new Database() call
       repo.getFileHash('src/whatever.ts');
     } finally {
       capture.restore();
+      // The fallback handle is cached on the instance and never closed by
+      // getFileHash() itself — must close it explicitly, or the open file
+      // handle blocks tmpDir cleanup in afterAll() on Windows (EBUSY).
+      repo.closeFallback();
     }
     expect(capture.calls).toContain(`busy_timeout = ${CUSTOM_BUSY_TIMEOUT_MS}`);
   });
