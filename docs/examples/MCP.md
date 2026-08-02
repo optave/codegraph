@@ -903,9 +903,9 @@ Accept a list of targets and return all results in one JSON payload — enables 
 ```json
 {
   "results": [
-    { "target": "buildGraph", "context": { "..." }, "impact": { "..." } },
-    { "target": "openDb", "context": { "..." }, "impact": { "..." } },
-    { "target": "parseFile", "context": { "..." }, "impact": { "..." } }
+    { "target": "buildGraph", "context": "...", "impact": "..." },
+    { "target": "openDb", "context": "...", "impact": "..." },
+    { "target": "parseFile", "context": "...", "impact": "..." }
   ],
   "total": 3,
   "errors": []
