@@ -2376,6 +2376,7 @@ export interface NativeAddon {
     rootDir: string,
     aliases: unknown,
     workspaces?: NativeWorkspacePackage[] | null,
+    knownFiles?: readonly string[] | null,
   ): string;
   resolveImports(
     items: Array<{ fromFile: string; importSource: string }>,

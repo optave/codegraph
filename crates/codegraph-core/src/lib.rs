@@ -97,6 +97,10 @@ pub fn parse_files_full(
 /// packages (see `detectWorkspaces()`/`setWorkspaces()` in
 /// `src/infrastructure/config.ts` — the native engine has no workspace
 /// *detection* of its own, only resolution against a supplied map; issue #1927).
+///
+/// `known_files` enables Rust `crate::`/`self::`/`super::` module-path
+/// resolution (issue #2007); pass the project's known relative file paths
+/// when available.
 #[napi]
 pub fn resolve_import(
     from_file: String,
@@ -104,17 +108,21 @@ pub fn resolve_import(
     root_dir: String,
     aliases: Option<PathAliases>,
     workspaces: Option<Vec<WorkspacePackage>>,
+    known_files: Option<Vec<String>>,
 ) -> String {
     let aliases = aliases.unwrap_or(PathAliases {
         base_url: None,
         paths: vec![],
     });
+    let known_set =
+        known_files.map(|v| v.into_iter().collect::<std::collections::HashSet<String>>());
     let workspace_map = workspaces.map(|w| domain::graph::resolve::workspaces_from_packages(&w));
     domain::graph::resolve::resolve_import_path(
         &from_file,
         &import_source,
         &root_dir,
         &aliases,
+        known_set.as_ref(),
         workspace_map.as_ref(),
     )
 }

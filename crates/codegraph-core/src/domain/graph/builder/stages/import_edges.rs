@@ -67,6 +67,7 @@ impl ImportEdgeContext {
             import_source,
             &self.root_dir,
             &self.aliases,
+            Some(&self.known_files),
             Some(&self.workspaces),
         )
     }
