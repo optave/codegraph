@@ -770,6 +770,7 @@ mod tests {
                     cfg: None,
                     children: None,
                     bodyless: None,
+                    content_hash: None,
                 })
                 .collect(),
             imports,

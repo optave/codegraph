@@ -26,6 +26,7 @@ pub fn child_def(name: String, kind: &str, line: u32) -> Definition {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     }
 }
 

@@ -185,7 +185,9 @@ fn extract_cuda_fields(body: &Node, source: &[u8]) -> Vec<Definition> {
                     // is a `function_declarator` is a method signature in a
                     // header, not a data field. Mirrors the WASM
                     // `isCudaMethodDeclarator` guard so both engines agree.
-                    if is_cuda_method_declarator(&decl) { continue; }
+                    if is_cuda_method_declarator(&decl) {
+                        continue;
+                    }
                     let name = extract_cuda_field_name(&decl, source);
                     if !name.is_empty() {
                         fields.push(child_def(name, "property", start_line(&child)));
@@ -363,6 +365,7 @@ fn handle_cuda_function_definition(node: &Node, source: &[u8], symbols: &mut Fil
             cfg: build_function_cfg(node, "cpp", source),
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -384,6 +387,7 @@ fn handle_cuda_class_specifier(node: &Node, source: &[u8], symbols: &mut FileSym
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
         extract_cuda_base_classes(node, source, &class_name, symbols);
     }
@@ -406,6 +410,7 @@ fn handle_cuda_struct_specifier(node: &Node, source: &[u8], symbols: &mut FileSy
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -423,6 +428,7 @@ fn handle_cuda_enum_specifier(node: &Node, source: &[u8], symbols: &mut FileSymb
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -439,6 +445,7 @@ fn handle_cuda_namespace_definition(node: &Node, source: &[u8], symbols: &mut Fi
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -470,6 +477,7 @@ fn handle_cuda_type_definition(node: &Node, source: &[u8], symbols: &mut FileSym
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -490,9 +498,15 @@ fn handle_cuda_preproc_include(node: &Node, source: &[u8], symbols: &mut FileSym
                 .or_else(|| last.strip_suffix(".hpp"))
                 .or_else(|| last.strip_suffix(".h"))
                 .unwrap_or(last);
-            push_import(symbols, node, path.to_string(), vec![name.to_string()], |imp| {
-                imp.c_include = Some(true);
-            });
+            push_import(
+                symbols,
+                node,
+                path.to_string(),
+                vec![name.to_string()],
+                |imp| {
+                    imp.c_include = Some(true);
+                },
+            );
         }
     }
 }
@@ -615,9 +629,7 @@ mod tests {
 
     #[test]
     fn populates_type_map_from_declarations() {
-        let s = parse_cuda(
-            "void run() { DeviceBuffer buf; buf.copy(src, n); }",
-        );
+        let s = parse_cuda("void run() { DeviceBuffer buf; buf.copy(src, n); }");
         // `DeviceBuffer buf;` should be recorded so receiver-typed call
         // resolution can map `buf.copy` to `DeviceBuffer.copy`.
         let entry = s
@@ -647,9 +659,8 @@ mod tests {
 
     #[test]
     fn extracts_method_call_with_receiver() {
-        let s = parse_cuda(
-            "void run() { UserService svc; svc.createUser(\"1\", \"a\", \"a@b\"); }",
-        );
+        let s =
+            parse_cuda("void run() { UserService svc; svc.createUser(\"1\", \"a\", \"a@b\"); }");
         let call = s
             .calls
             .iter()
@@ -673,7 +684,10 @@ mod tests {
     #[test]
     fn extracts_typedef_alias() {
         let s = parse_cuda("typedef unsigned int uint32_t;");
-        assert!(s.definitions.iter().any(|d| d.name == "uint32_t" && d.kind == "type"));
+        assert!(s
+            .definitions
+            .iter()
+            .any(|d| d.name == "uint32_t" && d.kind == "type"));
     }
 
     #[test]
@@ -714,7 +728,10 @@ mod tests {
         let children = cls.children.as_ref().expect("class has children");
         let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
         // Function-pointer/reference fields preserved with bare identifier names.
-        assert!(names.contains(&"callback"), "callback field kept: {names:?}");
+        assert!(
+            names.contains(&"callback"),
+            "callback field kept: {names:?}"
+        );
         assert!(names.contains(&"arr_cb"), "arr_cb field kept: {names:?}");
         assert!(names.contains(&"ref_cb"), "ref_cb field kept: {names:?}");
         assert!(names.contains(&"counter"), "counter field kept: {names:?}");

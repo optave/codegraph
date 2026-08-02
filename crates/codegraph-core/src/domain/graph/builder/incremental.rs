@@ -5,6 +5,7 @@ use tree_sitter::{Parser, Tree};
 use napi_derive::napi;
 
 use crate::extractors::extract_symbols;
+use crate::domain::parallel::compute_declaration_hashes;
 use crate::domain::parser::LanguageKind;
 use crate::types::FileSymbols;
 
@@ -48,7 +49,10 @@ impl ParseTreeCache {
         let old_tree = self.entries.get(&file_path).map(|e| &e.tree);
         let tree = parser.parse(source_bytes, old_tree)?;
 
-        let symbols = extract_symbols(lang, &tree, source_bytes, &file_path);
+        let mut symbols = extract_symbols(lang, &tree, source_bytes, &file_path);
+        let source_text = String::from_utf8_lossy(source_bytes);
+        let lines: Vec<&str> = source_text.lines().collect();
+        compute_declaration_hashes(&mut symbols.definitions, &lines);
 
         self.entries.insert(file_path, CacheEntry { tree });
 

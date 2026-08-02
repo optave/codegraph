@@ -70,6 +70,7 @@ fn extract_block_attributes(node: &Node, source: &[u8]) -> Vec<Definition> {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             });
         }
     }
@@ -112,7 +113,11 @@ fn match_hcl_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth:
             if !name.is_empty() {
                 let children = if block_type == "variable" || block_type == "output" {
                     let attrs = extract_block_attributes(node, source);
-                    if attrs.is_empty() { None } else { Some(attrs) }
+                    if attrs.is_empty() {
+                        None
+                    } else {
+                        Some(attrs)
+                    }
                 } else {
                     None
                 };
@@ -126,6 +131,7 @@ fn match_hcl_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth:
                     cfg: None,
                     children,
                     bodyless: None,
+                    content_hash: None,
                 });
                 if block_type == "module" {
                     extract_module_source(node, source, symbols);

@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct ElixirExtractor;
 
@@ -11,7 +11,12 @@ impl SymbolExtractor for ElixirExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_elixir_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &ELIXIR_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &ELIXIR_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -33,7 +38,9 @@ fn match_elixir_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
             "def" | "defp" => handle_def_function(node, source, symbols, keyword),
             "defprotocol" => handle_defprotocol(node, source, symbols),
             "defimpl" => handle_defimpl(node, source, symbols),
-            "import" | "use" | "require" | "alias" => handle_elixir_import(node, source, symbols, keyword),
+            "import" | "use" | "require" | "alias" => {
+                handle_elixir_import(node, source, symbols, keyword)
+            }
             "apply" => handle_elixir_apply(node, source, symbols),
             _ => {
                 symbols.calls.push(Call {
@@ -74,6 +81,7 @@ fn handle_defmodule(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -89,7 +97,10 @@ fn collect_module_children(node: &Node, source: &[u8]) -> Vec<Definition> {
             Some(c) if c.kind() == "call" => c,
             _ => continue,
         };
-        let target = match child.child_by_field_name("target").or_else(|| child.child(0)) {
+        let target = match child
+            .child_by_field_name("target")
+            .or_else(|| child.child(0))
+        {
             Some(t) if t.kind() == "identifier" => t,
             _ => continue,
         };
@@ -144,6 +155,7 @@ fn handle_def_function(node: &Node, source: &[u8], symbols: &mut FileSymbols, _k
         cfg: build_function_cfg(node, "elixir", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -151,10 +163,16 @@ fn extract_elixir_params(args: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
     for i in 0..args.child_count() {
         let Some(child) = args.child(i) else { continue };
-        if child.kind() != "call" { continue; }
-        let Some(inner_args) = find_child(&child, "arguments") else { continue };
+        if child.kind() != "call" {
+            continue;
+        }
+        let Some(inner_args) = find_child(&child, "arguments") else {
+            continue;
+        };
         for j in 0..inner_args.child_count() {
-            let Some(param) = inner_args.child(j) else { continue };
+            let Some(param) = inner_args.child(j) else {
+                continue;
+            };
             collect_elixir_param_identifiers(&param, source, &mut params);
         }
     }
@@ -229,7 +247,9 @@ fn push_elixir_sequence_items<'a>(node: &Node<'a>, stack: &mut Vec<Node<'a>>) {
     for i in (0..count).rev() {
         let Some(c) = node.child(i) else { continue };
         let k = c.kind();
-        if PUNCTUATION_TOKENS.contains(&k) { continue; }
+        if PUNCTUATION_TOKENS.contains(&k) {
+            continue;
+        }
         stack.push(c);
     }
 }
@@ -244,17 +264,29 @@ fn push_elixir_map_values<'a>(node: &Node<'a>, stack: &mut Vec<Node<'a>>) {
     // Collect values in source order first, then push in reverse so pop() is l-to-r.
     let mut values: Vec<Node<'a>> = Vec::new();
     for i in 0..node.child_count() {
-        let Some(content) = node.child(i) else { continue };
-        if content.kind() != "map_content" { continue; }
+        let Some(content) = node.child(i) else {
+            continue;
+        };
+        if content.kind() != "map_content" {
+            continue;
+        }
         for j in 0..content.child_count() {
-            let Some(kws) = content.child(j) else { continue };
-            if kws.kind() != "keywords" { continue; }
+            let Some(kws) = content.child(j) else {
+                continue;
+            };
+            if kws.kind() != "keywords" {
+                continue;
+            }
             for k in 0..kws.child_count() {
                 let Some(pair) = kws.child(k) else { continue };
-                if pair.kind() != "pair" { continue; }
+                if pair.kind() != "pair" {
+                    continue;
+                }
                 for p in 0..pair.child_count() {
                     let Some(part) = pair.child(p) else { continue };
-                    if part.kind() == "keyword" { continue; }
+                    if part.kind() == "keyword" {
+                        continue;
+                    }
                     values.push(part);
                 }
             }
@@ -269,7 +301,10 @@ fn extract_elixir_fn_name<'a>(args: &Node<'a>, source: &'a [u8]) -> Option<Strin
     for i in 0..args.child_count() {
         if let Some(child) = args.child(i) {
             if child.kind() == "call" {
-                if let Some(target) = child.child_by_field_name("target").or_else(|| child.child(0)) {
+                if let Some(target) = child
+                    .child_by_field_name("target")
+                    .or_else(|| child.child(0))
+                {
                     if target.kind() == "identifier" {
                         return Some(node_text(&target, source).to_string());
                     }
@@ -298,7 +333,9 @@ fn find_elixir_parent_module<'a>(node: &Node<'a>, source: &[u8]) -> Option<Strin
 
 fn try_extract_defmodule_name(do_block: &Node, source: &[u8]) -> Option<String> {
     let gp = do_block.parent()?;
-    if gp.kind() != "call" { return None; }
+    if gp.kind() != "call" {
+        return None;
+    }
     let target = gp.child_by_field_name("target").or_else(|| gp.child(0))?;
     if target.kind() != "identifier" || node_text(&target, source) != "defmodule" {
         return None;
@@ -328,6 +365,7 @@ fn handle_defprotocol(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -351,6 +389,7 @@ fn handle_defimpl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -392,7 +431,9 @@ fn handle_elixir_apply(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for i in 0..args.child_count() {
         let Some(child) = args.child(i) else { continue };
         let t = child.kind();
-        if matches!(t, "(" | ")" | ",") { continue; }
+        if matches!(t, "(" | ")" | ",") {
+            continue;
+        }
         if arg_idx == 1 {
             second_arg = Some(child);
             break;

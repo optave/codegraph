@@ -1,7 +1,7 @@
-use tree_sitter::{Node, Tree};
-use crate::types::*;
 use super::helpers::*;
 use super::SymbolExtractor;
+use crate::types::*;
+use tree_sitter::{Node, Tree};
 
 /// Verilog/SystemVerilog symbol extractor.
 ///
@@ -32,7 +32,12 @@ impl SymbolExtractor for VerilogExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_verilog_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &VERILOG_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &VERILOG_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -70,6 +75,7 @@ fn handle_module_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(ports),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -88,6 +94,7 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -106,6 +113,7 @@ fn handle_package_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -132,6 +140,7 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 
     if let Some(superclass) = find_class_superclass(node, source) {
@@ -198,6 +207,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -221,6 +231,7 @@ fn handle_task_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -263,11 +274,9 @@ fn handle_package_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
                 // the empty-string fallback is unreachable in practice.
                 let pkg = parts.next().unwrap_or("").to_string();
                 let item = parts.next().unwrap_or("*").to_string();
-                symbols.imports.push(Import::new(
-                    pkg,
-                    vec![item],
-                    start_line(node),
-                ));
+                symbols
+                    .imports
+                    .push(Import::new(pkg, vec![item], start_line(node)));
             }
         }
     }
@@ -278,7 +287,8 @@ fn handle_include_directive(node: &Node, source: &[u8], symbols: &mut FileSymbol
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             let kind = child.kind();
-            if kind == "string_literal" || kind == "quoted_string" || kind == "double_quoted_string" {
+            if kind == "string_literal" || kind == "quoted_string" || kind == "double_quoted_string"
+            {
                 let raw = node_text(&child, source);
                 let source_path = raw
                     .trim_matches(|c: char| c == '"' || c == '\'')
@@ -309,8 +319,8 @@ fn find_module_name(node: &Node, source: &[u8]) -> Option<String> {
         return Some(text.to_string());
     }
     if let Some(header) = find_child(node, "module_header") {
-        let id = find_child(&header, "simple_identifier")
-            .or_else(|| find_child(&header, "identifier"));
+        let id =
+            find_child(&header, "simple_identifier").or_else(|| find_child(&header, "identifier"));
         if let Some(id) = id {
             return Some(node_text(&id, source).to_string());
         }
@@ -504,7 +514,11 @@ mod tests {
              endmodule\n",
         );
         let calls: Vec<&Call> = s.calls.iter().filter(|c| c.name == "sub").collect();
-        assert_eq!(calls.len(), 1, "module instantiation should appear as a call");
+        assert_eq!(
+            calls.len(),
+            1,
+            "module instantiation should appear as a call"
+        );
     }
 
     #[test]
@@ -626,4 +640,3 @@ mod tests {
         assert_eq!(t.kind, "function");
     }
 }
-

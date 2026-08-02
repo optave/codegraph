@@ -378,6 +378,22 @@ const MIGRATIONS: &[Migration] = &[
       CREATE INDEX IF NOT EXISTS idx_dataflow_call_edge ON dataflow(call_edge_id);
     "#,
     },
+    Migration {
+        // Per-declaration content hash (issue #2015): reverse-dep-edge
+        // reconnection during incremental rebuilds previously matched
+        // siblings by line position alone, which is provably unsafe when a
+        // same-named/same-kind sibling group has one member renamed away
+        // and a different one added in the same edit — the group's size
+        // stays unchanged, so the line-alignment fast path matches by rank
+        // and can silently reconnect a caller to the wrong declaration. A
+        // content hash gives reconnection a true identity signal to try
+        // first, falling back to line alignment only when a hash is
+        // unavailable (e.g. rows from before this migration).
+        version: 24,
+        up: r#"
+      ALTER TABLE nodes ADD COLUMN content_hash TEXT;
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────
@@ -726,6 +742,18 @@ impl NativeDatabase {
             if !has_column(conn, "nodes", "visibility") {
                 let _ = conn.execute_batch("ALTER TABLE nodes ADD COLUMN visibility TEXT");
             }
+            // #2015: content_hash is referenced unconditionally by every node
+            // insert (see insert_nodes.rs), unlike the other legacy columns in
+            // this block — propagate failure instead of swallowing it, mirroring
+            // the #2001/#2066 dynamic_kind fix on the edges table below.
+            if !has_column(conn, "nodes", "content_hash") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN content_hash TEXT")
+                    .map_err(|e| {
+                        napi::Error::from_reason(format!(
+                            "legacy repair: add nodes.content_hash failed: {e}"
+                        ))
+                    })?;
+            }
             let _ = conn.execute_batch(
                 "UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL",
             );
@@ -850,8 +878,10 @@ impl NativeDatabase {
     ) -> napi::Result<Vec<serde_json::Value>> {
         let conn = self.conn()?;
         let rusqlite_params = json_to_rusqlite_params(&params)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            rusqlite_params.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = rusqlite_params
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let mut stmt = conn
             .prepare(&sql)
@@ -887,8 +917,10 @@ impl NativeDatabase {
     ) -> napi::Result<Option<serde_json::Value>> {
         let conn = self.conn()?;
         let rusqlite_params = json_to_rusqlite_params(&params)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            rusqlite_params.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = rusqlite_params
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let mut stmt = conn
             .prepare(&sql)
@@ -948,17 +980,18 @@ impl NativeDatabase {
     /// finished rebuilding the affected files' edges (see
     /// `insertNodes.commitFileHashes` on the JS side, or
     /// `insert_nodes::commit_file_hashes` for the all-Rust orchestrator).
-    #[napi(ts_args_type = "batches: Array<{ file: string; definitions: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string; children: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string }> }>; exports: Array<{ name: string; kind: string; line: number }> }>, fileHashes: FileHashEntry[], removedFiles: string[]")]
+    #[napi(
+        ts_args_type = "batches: Array<{ file: string; definitions: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string; children: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string }> }>; exports: Array<{ name: string; kind: string; line: number }> }>, fileHashes: FileHashEntry[], removedFiles: string[]"
+    )]
     pub fn bulk_insert_nodes(
         &self,
         batches: serde_json::Value,
         file_hashes: Vec<FileHashEntry>,
         removed_files: Vec<String>,
     ) -> napi::Result<bool> {
-        let batches: Vec<InsertNodesBatch> = serde_json::from_value(batches)
-            .map_err(|e| {
-                napi::Error::from_reason(format!("bulk_insert_nodes: invalid batches: {e}"))
-            })?;
+        let batches: Vec<InsertNodesBatch> = serde_json::from_value(batches).map_err(|e| {
+            napi::Error::from_reason(format!("bulk_insert_nodes: invalid batches: {e}"))
+        })?;
         let conn = self.conn()?;
         let insert_ok = insert_nodes::do_insert_nodes(conn, &batches, &removed_files)
             .inspect_err(|e| eprintln!("[NativeDatabase] bulk_insert_nodes failed: {e}"))
@@ -967,7 +1000,9 @@ impl NativeDatabase {
             return Ok(false);
         }
         let hashes_ok = insert_nodes::commit_file_hashes(conn, &file_hashes)
-            .inspect_err(|e| eprintln!("[NativeDatabase] bulk_insert_nodes hash commit failed: {e}"))
+            .inspect_err(|e| {
+                eprintln!("[NativeDatabase] bulk_insert_nodes hash commit failed: {e}")
+            })
             .is_ok();
         Ok(hashes_ok)
     }
@@ -1010,8 +1045,9 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("complexity tx failed: {e}")))?;
         let mut total = 0u32;
         {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO function_complexity \
+            let mut stmt = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO function_complexity \
                  (node_id, cognitive, cyclomatic, max_nesting, \
                   loc, sloc, comment_lines, \
                   halstead_n1, halstead_n2, halstead_big_n1, halstead_big_n2, \
@@ -1019,8 +1055,8 @@ impl NativeDatabase {
                   halstead_difficulty, halstead_effort, halstead_bugs, \
                   maintainability_index) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("complexity prepare failed: {e}")))?;
+                )
+                .map_err(|e| napi::Error::from_reason(format!("complexity prepare failed: {e}")))?;
 
             for r in &rows {
                 if stmt
@@ -1071,37 +1107,43 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("cfg tx failed: {e}")))?;
         let mut total = 0u32;
         {
-            let mut block_stmt = tx.prepare(
-                "INSERT INTO cfg_blocks \
+            let mut block_stmt = tx
+                .prepare(
+                    "INSERT INTO cfg_blocks \
                  (function_node_id, block_index, block_type, start_line, end_line, label) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("cfg_blocks prepare failed: {e}")))?;
+                )
+                .map_err(|e| napi::Error::from_reason(format!("cfg_blocks prepare failed: {e}")))?;
 
-            let mut edge_stmt = tx.prepare(
-                "INSERT INTO cfg_edges \
+            let mut edge_stmt = tx
+                .prepare(
+                    "INSERT INTO cfg_edges \
                  (function_node_id, source_block_id, target_block_id, kind) \
                  VALUES (?1, ?2, ?3, ?4)",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("cfg_edges prepare failed: {e}")))?;
+                )
+                .map_err(|e| napi::Error::from_reason(format!("cfg_edges prepare failed: {e}")))?;
 
-            let mut del_edges = tx.prepare(
-                "DELETE FROM cfg_edges WHERE function_node_id = ?1",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("cfg_edges del prepare failed: {e}")))?;
-            let mut del_blocks = tx.prepare(
-                "DELETE FROM cfg_blocks WHERE function_node_id = ?1",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("cfg_blocks del prepare failed: {e}")))?;
+            let mut del_edges = tx
+                .prepare("DELETE FROM cfg_edges WHERE function_node_id = ?1")
+                .map_err(|e| {
+                    napi::Error::from_reason(format!("cfg_edges del prepare failed: {e}"))
+                })?;
+            let mut del_blocks = tx
+                .prepare("DELETE FROM cfg_blocks WHERE function_node_id = ?1")
+                .map_err(|e| {
+                    napi::Error::from_reason(format!("cfg_blocks del prepare failed: {e}"))
+                })?;
 
             for entry in &entries {
                 // Delete existing CFG data for this node so the caller doesn't
                 // need to perform deletes on a separate (JS) connection, which
                 // would cause a WAL conflict with the native connection.
-                del_edges.execute(params![entry.node_id])
-                    .map_err(|e| napi::Error::from_reason(format!("cfg_edges delete failed: {e}")))?;
-                del_blocks.execute(params![entry.node_id])
-                    .map_err(|e| napi::Error::from_reason(format!("cfg_blocks delete failed: {e}")))?;
+                del_edges.execute(params![entry.node_id]).map_err(|e| {
+                    napi::Error::from_reason(format!("cfg_edges delete failed: {e}"))
+                })?;
+                del_blocks.execute(params![entry.node_id]).map_err(|e| {
+                    napi::Error::from_reason(format!("cfg_blocks delete failed: {e}"))
+                })?;
 
                 let mut block_db_ids: std::collections::HashMap<u32, i64> =
                     std::collections::HashMap::new();
@@ -1149,12 +1191,13 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("dataflow tx failed: {e}")))?;
         let mut total = 0u32;
         {
-            let mut stmt = tx.prepare(
-                "INSERT INTO dataflow \
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO dataflow \
                  (source_id, target_id, kind, param_index, expression, line, confidence) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("dataflow prepare failed: {e}")))?;
+                )
+                .map_err(|e| napi::Error::from_reason(format!("dataflow prepare failed: {e}")))?;
 
             for e in &edges {
                 if stmt
@@ -1213,7 +1256,9 @@ impl NativeDatabase {
         }
         let mut stmt = conn
             .prepare_cached("SELECT file, hash, mtime, size FROM file_hashes")
-            .map_err(|e| napi::Error::from_reason(format!("getFileHashData prepare failed: {e}")))?;
+            .map_err(|e| {
+                napi::Error::from_reason(format!("getFileHashData prepare failed: {e}"))
+            })?;
         let mut rows = Vec::new();
         let mut max_mtime: i64 = 0;
         let mapped = stmt
@@ -1252,8 +1297,10 @@ impl NativeDatabase {
     pub fn check_pending_analysis(&self) -> napi::Result<PendingAnalysisCounts> {
         let conn = self.conn()?;
         let cfg_count = if has_table(conn, "cfg_blocks") {
-            conn.query_row("SELECT COUNT(*) FROM cfg_blocks", [], |r| r.get::<_, i64>(0))
-                .unwrap_or(-1)
+            conn.query_row("SELECT COUNT(*) FROM cfg_blocks", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(-1)
         } else {
             -1
         };
@@ -1300,7 +1347,10 @@ impl NativeDatabase {
     /// Find files that have edges pointing to any of the changed files.
     /// Returns deduplicated list of reverse-dependency file paths.
     #[napi]
-    pub fn find_reverse_dependencies(&self, changed_files: Vec<String>) -> napi::Result<Vec<String>> {
+    pub fn find_reverse_dependencies(
+        &self,
+        changed_files: Vec<String>,
+    ) -> napi::Result<Vec<String>> {
         if changed_files.is_empty() {
             return Ok(vec![]);
         }
@@ -1321,9 +1371,7 @@ impl NativeDatabase {
         for file in &changed_files {
             let rows = stmt
                 .query_map(params![file], |row| row.get::<_, String>(0))
-                .map_err(|e| {
-                    napi::Error::from_reason(format!("reverseDeps query failed: {e}"))
-                })?;
+                .map_err(|e| napi::Error::from_reason(format!("reverseDeps query failed: {e}")))?;
             for row in rows {
                 if let Ok(dep_file) = row {
                     if !changed_set.contains(dep_file.as_str()) {
@@ -1422,10 +1470,7 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("collectFiles query failed: {e}")))?;
         let files: Vec<String> = rows.filter_map(|r| r.ok()).collect();
         let count = files.len() as i64;
-        Ok(CollectFilesData {
-            count,
-            files,
-        })
+        Ok(CollectFilesData { count, files })
     }
 
     /// Cascade-delete all graph data for the specified files across all tables.
@@ -1504,12 +1549,11 @@ impl NativeDatabase {
             for file in rev_files {
                 // Optional — column absent in pre-v18 schemas; ignore errors.
                 let _ = tx.execute(dfcall_sql, params![file]);
-                tx.execute(edge_sql, params![file])
-                    .map_err(|e| {
-                        napi::Error::from_reason(format!(
-                            "reverse-dep edge purge failed for \"{file}\": {e}"
-                        ))
-                    })?;
+                tx.execute(edge_sql, params![file]).map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "reverse-dep edge purge failed for \"{file}\": {e}"
+                    ))
+                })?;
             }
         }
 
@@ -1656,6 +1700,71 @@ fn row_to_json(
 mod tests {
     use super::*;
 
+    /// Regression for #2015: a database whose schema was initialized purely
+    /// through the native `init_schema()` must end up with
+    /// `nodes.content_hash` — needed by reverse-dep-edge reconnection to
+    /// disambiguate a same-named/same-kind sibling group where one member
+    /// was renamed away and a different one added in the same edit (a
+    /// net-zero group-size change the prior line-alignment-only heuristic
+    /// cannot distinguish from "same declaration, shifted").
+    #[test]
+    fn init_schema_adds_nodes_content_hash_column() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("init_schema should succeed");
+
+        let conn = db.conn().expect("connection should still be open");
+        let mut stmt = conn.prepare("PRAGMA table_info(nodes)").unwrap();
+        let has_content_hash = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|name| name == "content_hash");
+
+        assert!(
+            has_content_hash,
+            "nodes.content_hash column missing after native-only init_schema()"
+        );
+    }
+
+    /// Regression for #2015, mirroring the #2001/#2066 pattern: a
+    /// native-only database already stamped past v24 (e.g. by a future
+    /// migration added without content_hash ever having been applied) must
+    /// still be repaired by the unconditional legacy-column backfill, not
+    /// just the version-gated migration. Stamps to the current max computed
+    /// from `MIGRATIONS` itself (not a hardcoded literal — see the
+    /// dynamic_kind repair test's doc comment for why a hardcoded version
+    /// number silently goes stale as soon as a later migration is added).
+    #[test]
+    fn init_schema_repairs_nodes_content_hash_on_a_database_already_past_v24() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema()
+            .expect("initial init_schema should succeed");
+
+        let max_version = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        {
+            let conn = db.conn().expect("connection should still be open");
+            conn.execute_batch(&format!(
+                "ALTER TABLE nodes DROP COLUMN content_hash; \
+                 UPDATE schema_version SET version = {max_version};"
+            ))
+            .expect("simulating the pre-fix state should succeed");
+            assert!(
+                !has_column(conn, "nodes", "content_hash"),
+                "test setup failed: content_hash should be absent after the simulated drop"
+            );
+        }
+
+        db.init_schema()
+            .expect("repair init_schema call should succeed");
+        let conn = db.conn().expect("connection should still be open");
+        assert!(
+            has_column(conn, "nodes", "content_hash"),
+            "nodes.content_hash was not repaired for a database already stamped past v24"
+        );
+    }
+
     /// Regression for #2001/#2066: a database whose schema was initialized
     /// purely through the native `init_schema()` (never touched by the TS
     /// `initSchema()` in src/db/migrations.ts) must still end up with
@@ -1692,23 +1801,29 @@ mod tests {
     /// to the array. Only the unconditional, reality-checked legacy-column
     /// backfill (not the version-gated migration itself) can repair an
     /// already-affected database. Simulates that exact prior-bug state by
-    /// stamping schema_version to 23 (the current max) and dropping
-    /// dynamic_kind back out before re-running init_schema().
+    /// stamping schema_version to the current max (computed from `MIGRATIONS`
+    /// itself, not hardcoded — a hardcoded literal silently drifts stale
+    /// every time a later migration is added, spuriously re-attempting that
+    /// migration and failing on a column that already exists, exactly as
+    /// happened here when v24 was added after this test was written) and
+    /// dropping dynamic_kind back out before re-running init_schema().
     #[test]
     fn init_schema_repairs_edges_dynamic_kind_on_a_database_already_past_v20() {
         let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
             .expect("open_read_write should succeed for :memory:");
-        db.init_schema().expect("initial init_schema should succeed");
+        db.init_schema()
+            .expect("initial init_schema should succeed");
 
+        let max_version = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
         {
             let conn = db.conn().expect("connection should still be open");
             // Simulate the pre-fix native-only end state: schema stamped past
             // v20, but the column itself never actually got added.
-            conn.execute_batch(
+            conn.execute_batch(&format!(
                 "DROP INDEX IF EXISTS idx_edges_dynamic_kind; \
                  ALTER TABLE edges DROP COLUMN dynamic_kind; \
-                 UPDATE schema_version SET version = 23;",
-            )
+                 UPDATE schema_version SET version = {max_version};"
+            ))
             .expect("simulating the pre-fix state should succeed");
             assert!(
                 !has_column(conn, "edges", "dynamic_kind"),

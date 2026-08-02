@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 /// R symbol extractor — ports `src/extractors/r.ts` from the JS engine.
 ///
@@ -19,7 +19,12 @@ impl SymbolExtractor for RExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_r_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &R_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &R_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -40,7 +45,10 @@ fn handle_binary_op(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         Some(n) => n,
         None => return,
     };
-    let op = match node.child_by_field_name("operator").or_else(|| node.child(1)) {
+    let op = match node
+        .child_by_field_name("operator")
+        .or_else(|| node.child(1))
+    {
         Some(n) => n,
         None => return,
     };
@@ -71,6 +79,7 @@ fn handle_binary_op(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: build_function_cfg(&rhs, "r", source),
             children: opt_children(params),
             bodyless: None,
+            content_hash: None,
         });
     } else if is_program_level(node) {
         // Only record top-level variable assignments (matches JS extractor).
@@ -84,12 +93,15 @@ fn handle_binary_op(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
 
 fn is_program_level(node: &Node) -> bool {
-    node.parent().map(|p| p.kind() == "program").unwrap_or(false)
+    node.parent()
+        .map(|p| p.kind() == "program")
+        .unwrap_or(false)
 }
 
 fn extract_r_params(func_def: &Node, source: &[u8]) -> Vec<Definition> {
@@ -100,7 +112,9 @@ fn extract_r_params(func_def: &Node, source: &[u8]) -> Vec<Definition> {
     };
 
     for i in 0..params_node.child_count() {
-        let Some(child) = params_node.child(i) else { continue };
+        let Some(child) = params_node.child(i) else {
+            continue;
+        };
         match child.kind() {
             "parameter" => {
                 // parameter has `name` field, e.g. `x` or `y = 10`.
@@ -142,7 +156,10 @@ fn extract_r_params(func_def: &Node, source: &[u8]) -> Vec<Definition> {
 fn handle_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     // call: function field is the callee (identifier or namespace_operator),
     // arguments field is the arguments list.
-    let func_node = match node.child_by_field_name("function").or_else(|| node.child(0)) {
+    let func_node = match node
+        .child_by_field_name("function")
+        .or_else(|| node.child(0))
+    {
         Some(n) => n,
         None => return,
     };
@@ -204,7 +221,9 @@ fn handle_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 /// grammar exposes a `value` field on the `argument` node — we prefer that
 /// over a positional child scan so we extract `dplyr`, not `package`.
 fn first_argument_value(node: &Node, source: &[u8], accept_identifier: bool) -> Option<String> {
-    let args = node.child_by_field_name("arguments").or_else(|| find_child(node, "arguments"))?;
+    let args = node
+        .child_by_field_name("arguments")
+        .or_else(|| find_child(node, "arguments"))?;
     for i in 0..args.child_count() {
         let Some(arg) = args.child(i) else { continue };
         match arg.kind() {
@@ -302,6 +321,7 @@ fn handle_set_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -318,6 +338,7 @@ fn handle_set_generic(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -374,7 +395,11 @@ mod tests {
     #[test]
     fn finds_top_level_variable() {
         let s = parse_r("user_store <- list()\n");
-        let v = s.definitions.iter().find(|d| d.name == "user_store").unwrap();
+        let v = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "user_store")
+            .unwrap();
         assert_eq!(v.kind, "variable");
     }
 
@@ -416,8 +441,10 @@ mod tests {
     #[test]
     fn source_call_is_import_not_call() {
         let s = parse_r("source(\"service.R\")\n");
-        assert!(s.calls.iter().all(|c| c.name != "source"),
-            "source() should be classified as import, not as a generic call");
+        assert!(
+            s.calls.iter().all(|c| c.name != "source"),
+            "source() should be classified as import, not as a generic call"
+        );
     }
 
     #[test]
@@ -467,23 +494,30 @@ setMethod("greet", "Animal", function(x) paste("Hi", x@species))
         // setMethod registers an implementation of the generic. The fix emits
         // a call edge to the generic so the dispatch relationship is visible
         // in the graph.
-        let s = parse_r(
-            "setMethod(\"greet\", \"Person\", function(x) paste(\"Hello\", x@name))\n",
-        );
+        let s = parse_r("setMethod(\"greet\", \"Person\", function(x) paste(\"Hello\", x@name))\n");
         let calls: Vec<&Call> = s.calls.iter().filter(|c| c.name == "greet").collect();
-        assert_eq!(calls.len(), 1, "expected setMethod to emit one call to `greet`");
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected setMethod to emit one call to `greet`"
+        );
     }
 
     #[test]
     fn set_method_body_calls_are_still_captured() {
         // The recursive walk visits the anonymous function passed to
         // setMethod, so calls inside the method body must still appear.
-        let s = parse_r(
-            "setMethod(\"greet\", \"Person\", function(x) { helper(x); validate(x) })\n",
-        );
+        let s =
+            parse_r("setMethod(\"greet\", \"Person\", function(x) { helper(x); validate(x) })\n");
         let names: Vec<&str> = s.calls.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"helper"), "method body call `helper` not captured");
-        assert!(names.contains(&"validate"), "method body call `validate` not captured");
+        assert!(
+            names.contains(&"helper"),
+            "method body call `helper` not captured"
+        );
+        assert!(
+            names.contains(&"validate"),
+            "method body call `validate` not captured"
+        );
     }
 
     #[test]

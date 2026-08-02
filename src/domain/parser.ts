@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,10 +8,12 @@ import { debug, warn } from '../infrastructure/logger.js';
 import { getNative, getNativePackageVersion, loadNative } from '../infrastructure/native.js';
 import { ParseError, toErrorMessage } from '../shared/errors.js';
 import type {
+  Definition,
   EngineMode,
   ExtractorOutput,
   LanguageId,
   LanguageRegistryEntry,
+  SubDeclaration,
   TypeMapEntry,
 } from '../types.js';
 import { disposeWasmWorkerPool, getWasmWorkerPool } from './wasm-worker-pool.js';
@@ -652,6 +655,46 @@ function resolveEngine(opts: ParseEngineOpts = {}): ResolvedEngine {
  *  - Backward compat for older native binaries missing js_name annotations
  *  - dataflow argFlows/mutations bindingType -> binding wrapper
  */
+/**
+ * SHA-256 hash of a declaration's own source text (1-based, inclusive
+ * `startLine`..`endLine`), or `undefined` when `endLine` is unavailable — a
+ * declaration with no reliable body range has nothing meaningful to hash.
+ * Gives reverse-dep-edge reconnection during incremental rebuilds a true
+ * identity signal beyond line position (issue #2015).
+ */
+function computeDeclarationHash(
+  lines: string[],
+  startLine: number,
+  endLine: number | undefined,
+): string | undefined {
+  if (endLine === undefined || startLine < 1 || endLine < startLine) return undefined;
+  const startIdx = startLine - 1;
+  if (startIdx >= lines.length) return undefined;
+  const endIdx = Math.min(endLine - 1, lines.length - 1);
+  const body = lines.slice(startIdx, endIdx + 1).join('\n');
+  return createHash('sha256').update(body).digest('hex');
+}
+
+/**
+ * Recursively populates `contentHash` on every definition (and its direct
+ * `children`) using the already-in-scope raw source — computed once,
+ * centrally, here rather than per-extractor, since every extractor already
+ * populates `line`/`endLine` uniformly. WASM-only: the native engine
+ * computes this itself (crates/codegraph-core/src/domain/parallel.rs)
+ * before results cross the FFI boundary.
+ */
+function computeDeclarationHashes(definitions: Definition[] | undefined, source: string): void {
+  if (!definitions || definitions.length === 0) return;
+  const lines = source.split('\n');
+  const visit = (def: Definition | SubDeclaration): void => {
+    def.contentHash = computeDeclarationHash(lines, def.line, def.endLine);
+  };
+  for (const def of definitions) {
+    visit(def);
+    def.children?.forEach(visit);
+  }
+}
+
 /** Patch definition fields for backward compat with older native binaries. */
 function patchDefinitions(definitions: any[]): void {
   for (const d of definitions) {
@@ -1136,7 +1179,9 @@ export async function parseFileAuto(
 
   // WASM path — dispatch to isolated worker
   const pool = getWasmWorkerPool();
-  return pool.parse(filePath, source, FULL_ANALYSIS);
+  const output = await pool.parse(filePath, source, FULL_ANALYSIS);
+  if (output) computeDeclarationHashes(output.definitions, source);
+  return output;
 }
 
 /** Backfill typeMap via WASM for TS/TSX files parsed by the native engine. */
@@ -1197,6 +1242,7 @@ async function parseFilesWasm(
     }
     const output = await pool.parse(filePath, code, analysis);
     if (output) {
+      computeDeclarationHashes(output.definitions, code);
       const relPath = path.relative(rootDir, filePath).split(path.sep).join('/');
       result.set(relPath, output);
     }
@@ -1277,6 +1323,7 @@ async function parseFilesWasmInline(
       (extracted.tree as any).delete();
     }
     symbols._langId = extracted.langId;
+    computeDeclarationHashes(symbols.definitions, code);
     result.set(relPath, symbols);
   }
   return result;
@@ -1448,3 +1495,7 @@ export async function parseFileIncremental(
   }
   return parseFileAuto(filePath, source, opts);
 }
+
+// ── Exported for testing ────────────────────────────────────────────
+
+export { computeDeclarationHash, computeDeclarationHashes };

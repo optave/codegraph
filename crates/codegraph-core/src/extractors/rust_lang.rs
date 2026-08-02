@@ -11,12 +11,27 @@ impl SymbolExtractor for RustExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_rust_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &RUST_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &RUST_AST_CONFIG,
+        );
         walk_tree(&tree.root_node(), source, &mut symbols, match_rust_type_map);
-        walk_tree(&tree.root_node(), source, &mut symbols, match_rust_return_type_map);
+        walk_tree(
+            &tree.root_node(),
+            source,
+            &mut symbols,
+            match_rust_return_type_map,
+        );
         // Must run after type_map is populated — resolves `receiver.method()` call
         // assignments against locally-typed receivers (mirrors javascript.rs's ordering).
-        walk_tree(&tree.root_node(), source, &mut symbols, match_rust_call_assignments);
+        walk_tree(
+            &tree.root_node(),
+            source,
+            &mut symbols,
+            match_rust_call_assignments,
+        );
         dedup_type_map(&mut symbols.type_map);
         dedup_type_map(&mut symbols.return_type_map);
         symbols
@@ -27,8 +42,7 @@ fn find_current_impl<'a>(node: &Node<'a>, source: &[u8]) -> Option<String> {
     let mut current = node.parent();
     while let Some(parent) = current {
         if parent.kind() == "impl_item" {
-            return named_child_text(&parent, "type", source)
-                .map(|s| s.to_string());
+            return named_child_text(&parent, "type", source).map(|s| s.to_string());
         }
         current = parent.parent();
     }
@@ -54,13 +68,16 @@ fn match_rust_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
 
 fn handle_function_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     // Skip default-impl functions inside traits — already emitted by trait_item handler
-    if node.parent()
+    if node
+        .parent()
         .and_then(|p| p.parent())
         .map_or(false, |gp| gp.kind() == "trait_item")
     {
         return;
     }
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let name = node_text(&name_node, source);
     let impl_type = find_current_impl(node, source);
     let (full_name, kind) = match &impl_type {
@@ -78,6 +95,7 @@ fn handle_function_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: build_function_cfg(node, "rust", source),
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -95,6 +113,7 @@ fn handle_struct_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
         seed_rust_struct_field_types(node, &struct_name, source, symbols);
     }
@@ -104,14 +123,29 @@ fn handle_struct_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 /// so `self.field.method()` inside the struct's own impl methods resolves via
 /// the class-scoped receiver lookup — mirrors JS's `this.field` class-scoped
 /// typing (issues #1323, #1458) and fixes #1876's `self.field` false negatives.
-fn seed_rust_struct_field_types(node: &Node, struct_name: &str, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(body) = node.child_by_field_name("body") else { return };
+fn seed_rust_struct_field_types(
+    node: &Node,
+    struct_name: &str,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+) {
+    let Some(body) = node.child_by_field_name("body") else {
+        return;
+    };
     for i in 0..body.child_count() {
         let Some(field) = body.child(i) else { continue };
-        if field.kind() != "field_declaration" { continue }
-        let Some(field_name) = field.child_by_field_name("name") else { continue };
-        let Some(type_node) = field.child_by_field_name("type") else { continue };
-        let Some(type_name) = extract_rust_type_name(&type_node, source) else { continue };
+        if field.kind() != "field_declaration" {
+            continue;
+        }
+        let Some(field_name) = field.child_by_field_name("name") else {
+            continue;
+        };
+        let Some(type_node) = field.child_by_field_name("type") else {
+            continue;
+        };
+        let Some(type_name) = extract_rust_type_name(&type_node, source) else {
+            continue;
+        };
         push_type_map_entry(
             symbols,
             format!("{}.{}", struct_name, node_text(&field_name, source)),
@@ -133,6 +167,7 @@ fn handle_enum_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -149,12 +184,15 @@ fn handle_const_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
 
 fn handle_trait_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let trait_name = node_text(&name_node, source).to_string();
     symbols.definitions.push(Definition {
         name: trait_name.clone(),
@@ -166,6 +204,7 @@ fn handle_trait_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
@@ -184,6 +223,7 @@ fn handle_trait_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     cfg: build_function_cfg(&child, "rust", source),
                     children: None,
                     bodyless: Some(child.kind() == "function_signature_item"),
+                    content_hash: None,
                 });
             }
         }
@@ -215,7 +255,9 @@ fn handle_use_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(fn_node) = node.child_by_field_name("function") else { return };
+    let Some(fn_node) = node.child_by_field_name("function") else {
+        return;
+    };
     match fn_node.kind() {
         "identifier" => {
             symbols.calls.push(Call {
@@ -228,8 +270,7 @@ fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         }
         "field_expression" => {
             if let Some(field) = fn_node.child_by_field_name("field") {
-                let receiver = named_child_text(&fn_node, "value", source)
-                    .map(|s| s.to_string());
+                let receiver = named_child_text(&fn_node, "value", source).map(|s| s.to_string());
                 symbols.calls.push(Call {
                     name: node_text(&field, source).to_string(),
                     line: start_line(node),
@@ -241,8 +282,7 @@ fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         }
         "scoped_identifier" => {
             if let Some(name) = fn_node.child_by_field_name("name") {
-                let receiver = named_child_text(&fn_node, "path", source)
-                    .map(|s| s.to_string());
+                let receiver = named_child_text(&fn_node, "path", source).map(|s| s.to_string());
                 symbols.calls.push(Call {
                     name: node_text(&name, source).to_string(),
                     line: start_line(node),
@@ -280,7 +320,11 @@ fn extract_rust_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
                     if let Some(pattern) = child.child_by_field_name("pattern") {
                         let name = node_text(&pattern, source);
                         // Skip self parameters
-                        if name == "self" || name == "&self" || name == "&mut self" || name == "mut self" {
+                        if name == "self"
+                            || name == "&self"
+                            || name == "&mut self"
+                            || name == "mut self"
+                        {
                             continue;
                         }
                         params.push(child_def(name.to_string(), "parameter", start_line(&child)));
@@ -297,7 +341,8 @@ fn extract_rust_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
 
 fn extract_rust_struct_fields(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut fields = Vec::new();
-    let body = node.child_by_field_name("body")
+    let body = node
+        .child_by_field_name("body")
         .or_else(|| find_child(node, "field_declaration_list"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
@@ -319,7 +364,8 @@ fn extract_rust_struct_fields(node: &Node, source: &[u8]) -> Vec<Definition> {
 
 fn extract_rust_enum_variants(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut variants = Vec::new();
-    let body = node.child_by_field_name("body")
+    let body = node
+        .child_by_field_name("body")
         .or_else(|| find_child(node, "enum_variant_list"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
@@ -357,7 +403,10 @@ fn extract_rust_use_path(node: &Node, source: &[u8]) -> Vec<(String, Vec<String>
                 .child_by_field_name("alias")
                 .or_else(|| node.child_by_field_name("name"))
                 .map(|n| node_text(&n, source).to_string());
-            vec![(node_text(node, source).to_string(), name.into_iter().collect())]
+            vec![(
+                node_text(node, source).to_string(),
+                name.into_iter().collect(),
+            )]
         }
         "use_wildcard" => {
             let src = named_child_text(&node, "path", source)
@@ -383,7 +432,9 @@ fn extract_scoped_use_list(node: &Node, source: &[u8]) -> Vec<(String, Vec<Strin
     };
     let mut names = Vec::new();
     for i in 0..list_node.child_count() {
-        let Some(child) = list_node.child(i) else { continue };
+        let Some(child) = list_node.child(i) else {
+            continue;
+        };
         match child.kind() {
             "identifier" | "self" => {
                 names.push(node_text(&child, source).to_string());
@@ -405,16 +456,22 @@ fn extract_scoped_use_list(node: &Node, source: &[u8]) -> Vec<(String, Vec<Strin
 
 /// True if `name` matches a struct defined in this file (match_rust_node runs before this).
 fn is_known_unit_struct(name: &str, symbols: &FileSymbols) -> bool {
-    symbols.definitions.iter().any(|d| d.kind == "struct" && d.name == name)
+    symbols
+        .definitions
+        .iter()
+        .any(|d| d.kind == "struct" && d.name == name)
 }
 
 fn extract_rust_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
     match type_node.kind() {
-        "type_identifier" | "identifier" | "scoped_type_identifier" => Some(node_text(type_node, source)),
+        "type_identifier" | "identifier" | "scoped_type_identifier" => {
+            Some(node_text(type_node, source))
+        }
         "reference_type" => {
             for i in 0..type_node.child_count() {
                 if let Some(child) = type_node.child(i) {
-                    if child.kind() == "type_identifier" || child.kind() == "scoped_type_identifier" {
+                    if child.kind() == "type_identifier" || child.kind() == "scoped_type_identifier"
+                    {
                         return Some(node_text(&child, source));
                     }
                 }
@@ -469,7 +526,11 @@ fn match_rust_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _d
             if let Some(pattern) = node.child_by_field_name("pattern") {
                 if pattern.kind() == "identifier" {
                     let name = node_text(&pattern, source);
-                    if name != "self" && name != "&self" && name != "&mut self" && name != "mut self" {
+                    if name != "self"
+                        && name != "&self"
+                        && name != "&mut self"
+                        && name != "mut self"
+                    {
                         if let Some(type_node) = node.child_by_field_name("type") {
                             if let Some(type_name) = extract_rust_type_name(&type_node, source) {
                                 symbols.type_map.push(TypeMapEntry {
@@ -497,16 +558,33 @@ fn match_rust_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _d
 /// feeds — so a local var typed from a cross-file call's return value
 /// (`let service = build_service();`) resolves without any Rust-specific
 /// propagation logic.
-fn match_rust_return_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
-    if node.kind() != "function_item" { return }
-    // Skip default-impl functions inside traits, matching handle_function_item —
-    // their return type is not tied to a concrete implementing type.
-    if node.parent().and_then(|p| p.parent()).map_or(false, |gp| gp.kind() == "trait_item") {
+fn match_rust_return_type_map(
+    node: &Node,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+    _depth: usize,
+) {
+    if node.kind() != "function_item" {
         return;
     }
-    let Some(name_node) = node.child_by_field_name("name") else { return };
-    let Some(return_type_node) = node.child_by_field_name("return_type") else { return };
-    let Some(raw_type) = extract_rust_type_name(&return_type_node, source) else { return };
+    // Skip default-impl functions inside traits, matching handle_function_item —
+    // their return type is not tied to a concrete implementing type.
+    if node
+        .parent()
+        .and_then(|p| p.parent())
+        .map_or(false, |gp| gp.kind() == "trait_item")
+    {
+        return;
+    }
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let Some(return_type_node) = node.child_by_field_name("return_type") else {
+        return;
+    };
+    let Some(raw_type) = extract_rust_type_name(&return_type_node, source) else {
+        return;
+    };
     let impl_type = find_current_impl(node, source);
     // `-> Self` inside an impl block returns the concrete implementing type.
     let type_name = if raw_type == "Self" {
@@ -518,7 +596,9 @@ fn match_rust_return_type_map(node: &Node, source: &[u8], symbols: &mut FileSymb
         Some(t) => format!("{}.{}", t, node_text(&name_node, source)),
         None => node_text(&name_node, source).to_string(),
     };
-    let existing_confidence = symbols.return_type_map.iter()
+    let existing_confidence = symbols
+        .return_type_map
+        .iter()
         .find(|e| e.name == full_name)
         .map(|e| e.confidence);
     if existing_confidence.map_or(true, |c| c < 1.0) {
@@ -538,13 +618,30 @@ fn match_rust_return_type_map(node: &Node, source: &[u8], symbols: &mut FileSymb
 /// `src/extractors/rust.ts` — see that function's doc comment for the three
 /// call shapes handled (bare function call, `Type::assoc_fn()`, and method
 /// call on a locally-typed receiver).
-fn match_rust_call_assignments(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
-    if node.kind() != "let_declaration" { return }
-    let Some(pattern) = node.child_by_field_name("pattern") else { return };
-    if pattern.kind() != "identifier" { return }
-    let Some(value) = node.child_by_field_name("value") else { return };
-    if value.kind() != "call_expression" { return }
-    let Some(fn_node) = value.child_by_field_name("function") else { return };
+fn match_rust_call_assignments(
+    node: &Node,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+    _depth: usize,
+) {
+    if node.kind() != "let_declaration" {
+        return;
+    }
+    let Some(pattern) = node.child_by_field_name("pattern") else {
+        return;
+    };
+    if pattern.kind() != "identifier" {
+        return;
+    }
+    let Some(value) = node.child_by_field_name("value") else {
+        return;
+    };
+    if value.kind() != "call_expression" {
+        return;
+    }
+    let Some(fn_node) = value.child_by_field_name("function") else {
+        return;
+    };
     let var_name = node_text(&pattern, source).to_string();
 
     match fn_node.kind() {
@@ -571,7 +668,9 @@ fn match_rust_call_assignments(node: &Node, source: &[u8], symbols: &mut FileSym
             let receiver = fn_node.child_by_field_name("value");
             if let (Some(field), Some(receiver)) = (field, receiver) {
                 if receiver.kind() == "identifier" {
-                    let receiver_type = symbols.type_map.iter()
+                    let receiver_type = symbols
+                        .type_map
+                        .iter()
                         .find(|e| e.name == node_text(&receiver, source))
                         .map(|e| e.type_name.clone());
                     symbols.call_assignments.push(NativeCallAssignment {
@@ -627,10 +726,18 @@ mod tests {
                }\n\
              }\n",
         );
-        let save = s.definitions.iter().find(|d| d.name == "Repo.save").unwrap();
+        let save = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Repo.save")
+            .unwrap();
         assert_eq!(save.bodyless, Some(true));
 
-        let find = s.definitions.iter().find(|d| d.name == "Repo.find").unwrap();
+        let find = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Repo.find")
+            .unwrap();
         assert_ne!(find.bodyless, Some(true));
     }
 
@@ -678,7 +785,11 @@ mod tests {
     #[test]
     fn seeds_struct_field_type_map() {
         let s = parse_rust("struct UserService { repo: UserRepository }");
-        let entry = s.type_map.iter().find(|e| e.name == "UserService.repo").unwrap();
+        let entry = s
+            .type_map
+            .iter()
+            .find(|e| e.name == "UserService.repo")
+            .unwrap();
         assert_eq!(entry.type_name, "UserRepository");
     }
 
@@ -707,7 +818,11 @@ mod tests {
     #[test]
     fn stores_return_type_for_free_function() {
         let s = parse_rust("fn build_service() -> UserService { todo!() }");
-        let entry = s.return_type_map.iter().find(|e| e.name == "build_service").unwrap();
+        let entry = s
+            .return_type_map
+            .iter()
+            .find(|e| e.name == "build_service")
+            .unwrap();
         assert_eq!(entry.type_name, "UserService");
         assert_eq!(entry.confidence, 1.0);
     }
@@ -715,14 +830,22 @@ mod tests {
     #[test]
     fn resolves_self_return_type_to_impl_type() {
         let s = parse_rust("struct UserRepository;\nimpl UserRepository {\n  fn new() -> Self { UserRepository }\n}");
-        let entry = s.return_type_map.iter().find(|e| e.name == "UserRepository.new").unwrap();
+        let entry = s
+            .return_type_map
+            .iter()
+            .find(|e| e.name == "UserRepository.new")
+            .unwrap();
         assert_eq!(entry.type_name, "UserRepository");
     }
 
     #[test]
     fn records_call_assignment_for_bare_function_call() {
         let s = parse_rust("fn f() { let service = build_service(); }");
-        let ca = s.call_assignments.iter().find(|c| c.var_name == "service").unwrap();
+        let ca = s
+            .call_assignments
+            .iter()
+            .find(|c| c.var_name == "service")
+            .unwrap();
         assert_eq!(ca.callee_name, "build_service");
         assert_eq!(ca.receiver_type_name, None);
     }
@@ -730,7 +853,11 @@ mod tests {
     #[test]
     fn records_call_assignment_for_associated_function_call() {
         let s = parse_rust("fn f() { let repo = UserRepository::new(); }");
-        let ca = s.call_assignments.iter().find(|c| c.var_name == "repo").unwrap();
+        let ca = s
+            .call_assignments
+            .iter()
+            .find(|c| c.var_name == "repo")
+            .unwrap();
         assert_eq!(ca.callee_name, "new");
         assert_eq!(ca.receiver_type_name.as_deref(), Some("UserRepository"));
     }
@@ -740,7 +867,11 @@ mod tests {
         let s = parse_rust(
             "fn f() {\n  let repo: UserRepository = make();\n  let user = repo.find_by_id(1);\n}",
         );
-        let ca = s.call_assignments.iter().find(|c| c.var_name == "user").unwrap();
+        let ca = s
+            .call_assignments
+            .iter()
+            .find(|c| c.var_name == "user")
+            .unwrap();
         assert_eq!(ca.callee_name, "find_by_id");
         assert_eq!(ca.receiver_type_name.as_deref(), Some("UserRepository"));
     }

@@ -2046,17 +2046,32 @@ function alignSiblingLines(oldLines: number[], newLines: number[]): Map<number, 
  * Picks the correct reconnect target among same-(name,kind,file) candidates.
  *
  * A single candidate is an unambiguous match. With several candidates (e.g.
- * multiple object-literal `close() {}` methods in one file), the saved
- * sibling-group snapshot from before purge is aligned against the current
- * candidate lines (see `alignSiblingLines`) to find which new line the saved
- * target's old line maps to — correct even when the whole group shifted and
- * its size changed in the same edit. Falls back to nearest-line only when no
- * sibling-group snapshot is available, or the group is too large to align
- * cheaply.
+ * multiple object-literal `close() {}` methods in one file), an exact
+ * `content_hash` match is tried first (see the `tgtHash` param doc) since
+ * it's a true identity signal, not just position — falling back to the
+ * saved sibling-group snapshot from before purge, aligned against the
+ * current candidate lines (see `alignSiblingLines`) to find which new line
+ * the saved target's old line maps to. That line-position fallback is
+ * correct even when the whole group shifted and its size changed in the
+ * same edit, EXCEPT the one compound case a hash catches and line
+ * position provably cannot: a same-named/same-kind sibling both removed
+ * (renamed away) and a different one added in the same edit, leaving the
+ * group's size unchanged (issue #2015). Falls back to nearest-line only
+ * when no sibling-group snapshot is available, or the group is too large
+ * to align cheaply.
  */
 function pickReconnectTarget(
-  candidates: Array<{ id: number; line: number }>,
+  candidates: Array<{ id: number; line: number; contentHash: string | null }>,
   tgtLine: number,
+  /**
+   * The saved edge's target declaration's `content_hash` at save time, or
+   * `null` when unavailable (pre-migration rows). Only trusted when exactly
+   * one candidate in this group shares it — if two or more candidates have
+   * byte-identical bodies (rare but possible), the hash can't disambiguate
+   * between them, so this falls through to line alignment instead of
+   * guessing.
+   */
+  tgtHash: string | null,
   groupKey: string,
   savedSiblingGroups: ReadonlyMap<string, number[]>,
   alignmentCache: Map<string, Map<number, number>>,
@@ -2064,6 +2079,26 @@ function pickReconnectTarget(
 ): number | null {
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0]!.id;
+
+  if (tgtHash) {
+    // Only trust a hash-based verdict when there's actual hash data among
+    // this group's candidates to compare against — if none carry a hash
+    // (e.g. their endLine was unavailable to compute one), fall through to
+    // line alignment entirely rather than treating a vacuous "0 matches"
+    // as proof the target is gone.
+    const candidatesWithHash = candidates.filter((c) => c.contentHash !== null);
+    if (candidatesWithHash.length > 0) {
+      const hashMatches = candidatesWithHash.filter((c) => c.contentHash === tgtHash);
+      if (hashMatches.length === 1) return hashMatches[0]!.id;
+      // Zero matches means the exact body no longer exists among any
+      // current candidate — a stronger, more direct identity signal than
+      // line position, so this is a confident drop, not a cue to fall
+      // through and guess by rank/line (the exact silent-miswire #2015
+      // describes). More than one match is a rare byte-identical
+      // duplicate — genuinely ambiguous, so THAT case still falls through.
+      if (hashMatches.length === 0) return null;
+    }
+  }
 
   const oldLines = savedSiblingGroups.get(groupKey);
   if (
@@ -2125,7 +2160,7 @@ function pickReconnectTarget(
 function reconnectReverseDepEdges(ctx: PipelineContext): void {
   const { db } = ctx;
   const candidatesStmt = db.prepare(
-    'SELECT id, line FROM nodes WHERE name = ? AND kind = ? AND file = ? ORDER BY line',
+    'SELECT id, line, content_hash AS contentHash FROM nodes WHERE name = ? AND kind = ? AND file = ? ORDER BY line',
   );
   const reconnectedRows: EdgeRowTuple[] = [];
   let dropped = 0;
@@ -2133,7 +2168,10 @@ function reconnectReverseDepEdges(ctx: PipelineContext): void {
   // Cache candidate lists per (name, kind, file) group — many saved edges
   // often share the same target (e.g. several callers of the same
   // function), so this avoids re-querying per edge.
-  const candidatesCache = new Map<string, Array<{ id: number; line: number }>>();
+  const candidatesCache = new Map<
+    string,
+    Array<{ id: number; line: number; contentHash: string | null }>
+  >();
   // Cache the (potentially expensive) alignment result per group too —
   // shared across every saved edge targeting the same sibling group.
   const alignmentCache = new Map<string, Map<number, number>>();
@@ -2146,6 +2184,7 @@ function reconnectReverseDepEdges(ctx: PipelineContext): void {
       candidates = candidatesStmt.all(saved.tgtName, saved.tgtKind, saved.tgtFile) as Array<{
         id: number;
         line: number;
+        contentHash: string | null;
       }>;
       candidatesCache.set(cacheKey, candidates);
     }
@@ -2153,6 +2192,7 @@ function reconnectReverseDepEdges(ctx: PipelineContext): void {
     const newId = pickReconnectTarget(
       candidates,
       saved.tgtLine,
+      saved.tgtHash,
       cacheKey,
       ctx.savedSiblingGroups,
       alignmentCache,

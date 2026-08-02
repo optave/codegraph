@@ -1884,7 +1884,7 @@ function insertBackfilledNodes(
   const exportKeys: unknown[][] = [];
   for (const [relPath, symbols] of wasmResults) {
     // File row — mirrors insertDefinitionsAndExports: qualified_name is null.
-    rows.push([relPath, 'file', relPath, 0, null, null, null, null, null]);
+    rows.push([relPath, 'file', relPath, 0, null, null, null, null, null, null]);
     for (const def of symbols.definitions ?? []) {
       // Populate qualified_name/scope the same way the JS fallback does so
       // downstream queries (cross-file references, "go to definition") find
@@ -1901,13 +1901,14 @@ function insertBackfilledNodes(
         def.name,
         scope,
         def.visibility ?? null,
+        def.contentHash ?? null,
       ]);
     }
     // Exports: insert the row (INSERT OR IGNORE — a matching definition row
     // is a no-op) and queue a key for the second-pass exported=1 update, so
     // queries filtering on exported=1 find backfilled symbols (#970).
     for (const exp of symbols.exports ?? []) {
-      rows.push([exp.name, exp.kind, relPath, exp.line, null, null, exp.name, null, null]);
+      rows.push([exp.name, exp.kind, relPath, exp.line, null, null, exp.name, null, null, null]);
       exportKeys.push([exp.name, exp.kind, relPath, exp.line]);
     }
   }

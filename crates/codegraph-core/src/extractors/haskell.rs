@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct HaskellExtractor;
 
@@ -11,7 +11,12 @@ impl SymbolExtractor for HaskellExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_haskell_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &HASKELL_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &HASKELL_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -49,13 +54,16 @@ fn handle_haskell_function(node: &Node, source: &[u8], symbols: &mut FileSymbols
         cfg: build_function_cfg(node, "haskell", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
 fn extract_haskell_params(func_node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
     for i in 0..func_node.child_count() {
-        let Some(child) = func_node.child(i) else { continue };
+        let Some(child) = func_node.child(i) else {
+            continue;
+        };
         match child.kind() {
             "patterns" | "parameter" => {
                 for j in 0..child.child_count() {
@@ -138,6 +146,7 @@ fn handle_haskell_bind(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -177,6 +186,7 @@ fn handle_haskell_data_type(node: &Node, source: &[u8], symbols: &mut FileSymbol
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -196,6 +206,7 @@ fn handle_haskell_newtype(node: &Node, source: &[u8], symbols: &mut FileSymbols)
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -215,6 +226,7 @@ fn handle_haskell_type_synonym(node: &Node, source: &[u8], symbols: &mut FileSym
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -234,6 +246,7 @@ fn handle_haskell_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -253,6 +266,7 @@ fn handle_haskell_instance(node: &Node, source: &[u8], symbols: &mut FileSymbols
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -283,11 +297,17 @@ fn handle_haskell_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
     }
 
     if names.is_empty() {
-        let last = source_name.split('.').last().unwrap_or(&source_name).to_string();
+        let last = source_name
+            .split('.')
+            .last()
+            .unwrap_or(&source_name)
+            .to_string();
         names.push(last);
     }
 
-    symbols.imports.push(Import::new(source_name, names, start_line(node)));
+    symbols
+        .imports
+        .push(Import::new(source_name, names, start_line(node)));
 }
 
 fn handle_haskell_apply(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
@@ -297,7 +317,11 @@ fn handle_haskell_apply(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     };
 
     match func_node.kind() {
-        "variable" | "constructor" | "identifier" | "qualified_variable" | "qualified_constructor" => {
+        "variable"
+        | "constructor"
+        | "identifier"
+        | "qualified_variable"
+        | "qualified_constructor" => {
             symbols.calls.push(Call {
                 name: node_text(&func_node, source).to_string(),
                 line: start_line(node),

@@ -488,6 +488,7 @@ function addReverseDeps(
     SELECT e.source_id, n_tgt.name AS tgt_name, n_tgt.kind AS tgt_kind,
            n_tgt.file AS tgt_file, n_tgt.line AS tgt_line,
            e.kind AS edge_kind, e.confidence, e.dynamic, e.technique, e.dynamic_kind,
+           n_tgt.content_hash AS tgt_hash,
            n_src.file AS src_file
     FROM edges e
     JOIN nodes n_src ON e.source_id = n_src.id
@@ -510,6 +511,7 @@ function addReverseDeps(
       dynamic: number;
       technique: string | null;
       dynamic_kind: string | null;
+      tgt_hash: string | null;
       src_file: string;
     }>) {
       // Skip edges whose source is also being purged — buildEdges will
@@ -533,6 +535,7 @@ function addReverseDeps(
         dynamic: row.dynamic,
         technique: row.technique,
         dynamicKind: row.dynamic_kind,
+        tgtHash: row.tgt_hash,
       });
     }
   }

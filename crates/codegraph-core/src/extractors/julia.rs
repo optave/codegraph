@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct JuliaExtractor;
 
@@ -11,7 +11,12 @@ impl SymbolExtractor for JuliaExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_julia(&tree.root_node(), source, &mut symbols, None);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &JULIA_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &JULIA_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -21,12 +26,7 @@ impl SymbolExtractor for JuliaExtractor {
 /// definitions inside `module Foo ... end` are prefixed `Foo.bar`. The
 /// generic `walk_tree` helper cannot pass extra state, so we open-code a
 /// recursive walker here.
-fn walk_julia(
-    node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-    current_module: Option<&str>,
-) {
+fn walk_julia(node: &Node, source: &[u8], symbols: &mut FileSymbols, current_module: Option<&str>) {
     let mut next_module = current_module.map(|s| s.to_string());
 
     match node.kind() {
@@ -68,6 +68,7 @@ fn handle_module_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) -> O
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 
     Some(name)
@@ -120,6 +121,7 @@ fn handle_function_def(
                 cfg: build_function_cfg(node, "julia", source),
                 children: opt_children(params),
                 bodyless: None,
+                content_hash: None,
             });
             return;
         }
@@ -148,6 +150,7 @@ fn handle_function_def(
         cfg: build_function_cfg(node, "julia", source),
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -189,6 +192,7 @@ fn handle_assignment(
         cfg: build_function_cfg(node, "julia", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -202,30 +206,29 @@ fn handle_struct_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         None => return,
     };
 
-    let (name_node, supertype): (Node, Option<Node>) = if let Some(bin) =
-        find_child(&type_head, "binary_expression")
-    {
-        // Walk into each side of the binary expression to find the base-name
-        // identifier — handles parameterized forms like `Vec{T} <: AbstractArray{T,1}`.
-        let mut sides: Vec<Node> = Vec::new();
-        for i in 0..bin.child_count() {
-            if let Some(c) = bin.child(i) {
-                if c.kind() != "operator" {
-                    sides.push(c);
+    let (name_node, supertype): (Node, Option<Node>) =
+        if let Some(bin) = find_child(&type_head, "binary_expression") {
+            // Walk into each side of the binary expression to find the base-name
+            // identifier — handles parameterized forms like `Vec{T} <: AbstractArray{T,1}`.
+            let mut sides: Vec<Node> = Vec::new();
+            for i in 0..bin.child_count() {
+                if let Some(c) = bin.child(i) {
+                    if c.kind() != "operator" {
+                        sides.push(c);
+                    }
                 }
             }
-        }
-        let name_id = sides.first().and_then(|n| find_base_name(n));
-        let super_id = sides.get(1).and_then(|n| find_base_name(n));
-        match name_id {
-            Some(n) => (n, super_id),
-            None => return,
-        }
-    } else if let Some(n) = find_base_name(&type_head) {
-        (n, None)
-    } else {
-        return;
-    };
+            let name_id = sides.first().and_then(|n| find_base_name(n));
+            let super_id = sides.get(1).and_then(|n| find_base_name(n));
+            match name_id {
+                Some(n) => (n, super_id),
+                None => return,
+            }
+        } else if let Some(n) = find_base_name(&type_head) {
+            (n, None)
+        } else {
+            return;
+        };
 
     let struct_name = node_text(&name_node, source).to_string();
 
@@ -271,6 +274,7 @@ fn handle_struct_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -304,6 +308,7 @@ fn handle_abstract_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -337,9 +342,7 @@ fn find_base_name<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
         match child.kind() {
-            "binary_expression"
-            | "parametrized_type_expression"
-            | "parameterized_identifier" => {
+            "binary_expression" | "parametrized_type_expression" | "parameterized_identifier" => {
                 if let Some(found) = find_base_name(&child) {
                     return Some(found);
                 }
@@ -383,6 +386,7 @@ fn handle_macro_def(
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -449,7 +453,11 @@ fn handle_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     }
 
     if !source_str.is_empty() {
-        let names = if names.is_empty() { vec![source_str.clone()] } else { names };
+        let names = if names.is_empty() {
+            vec![source_str.clone()]
+        } else {
+            names
+        };
         symbols
             .imports
             .push(Import::new(source_str, names, start_line(node)));
@@ -516,7 +524,9 @@ fn extract_julia_params(call_expr: &Node, source: &[u8]) -> Vec<Definition> {
     };
 
     for i in 0..arg_list.child_count() {
-        let Some(child) = arg_list.child(i) else { continue };
+        let Some(child) = arg_list.child(i) else {
+            continue;
+        };
         match child.kind() {
             "identifier" => {
                 params.push(child_def(
@@ -657,13 +667,16 @@ mod tests {
 
     #[test]
     fn extracts_qualified_calls() {
-        let s = parse_jl("function main()\n    Repository.save(repo, 1)\n    println(\"x\")\nend\n");
+        let s =
+            parse_jl("function main()\n    Repository.save(repo, 1)\n    println(\"x\")\nend\n");
         let calls: Vec<(&str, Option<&str>)> = s
             .calls
             .iter()
             .map(|c| (c.name.as_str(), c.receiver.as_deref()))
             .collect();
-        assert!(calls.iter().any(|(n, r)| *n == "save" && *r == Some("Repository")));
+        assert!(calls
+            .iter()
+            .any(|(n, r)| *n == "save" && *r == Some("Repository")));
         assert!(calls.iter().any(|(n, r)| *n == "println" && r.is_none()));
     }
 
@@ -754,7 +767,9 @@ mod tests {
             s.imports[0].names
         );
         assert!(
-            !s.imports[0].names.contains(&"LinearAlgebra.BLAS".to_string()),
+            !s.imports[0]
+                .names
+                .contains(&"LinearAlgebra.BLAS".to_string()),
             "source module leaked into names: {:?}",
             s.imports[0].names
         );

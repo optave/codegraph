@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct DartExtractor;
 
@@ -11,7 +11,12 @@ impl SymbolExtractor for DartExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_dart_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &DART_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &DART_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -31,7 +36,9 @@ fn match_dart_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
             }
         }
         "library_import" => handle_dart_import(node, source, symbols),
-        "constructor_invocation" | "new_expression" => handle_dart_constructor_call(node, source, symbols),
+        "constructor_invocation" | "new_expression" => {
+            handle_dart_constructor_call(node, source, symbols)
+        }
         "type_alias" => handle_dart_type_alias(node, source, symbols),
         "selector" => handle_dart_selector(node, source, symbols),
         _ => {}
@@ -46,7 +53,10 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let class_name = node_text(&name_node, source).to_string();
 
     // Extract methods
-    if let Some(body) = node.child_by_field_name("body").or_else(|| find_child(node, "class_body")) {
+    if let Some(body) = node
+        .child_by_field_name("body")
+        .or_else(|| find_child(node, "class_body"))
+    {
         extract_dart_class_methods(&body, &class_name, source, symbols);
     }
 
@@ -69,7 +79,8 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 let type_name = if child.kind() == "type_identifier" {
                     Some(child)
                 } else {
-                    find_child(&child, "type_identifier").or_else(|| find_child(&child, "identifier"))
+                    find_child(&child, "type_identifier")
+                        .or_else(|| find_child(&child, "identifier"))
                 };
                 if let Some(tn) = type_name {
                     symbols.classes.push(ClassRelation {
@@ -93,10 +104,16 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
-fn extract_dart_class_methods(body: &Node, class_name: &str, source: &[u8], symbols: &mut FileSymbols) {
+fn extract_dart_class_methods(
+    body: &Node,
+    class_name: &str,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+) {
     for i in 0..body.child_count() {
         if let Some(member) = body.child(i) {
             // Resolve the signature node from the various wrapper layers that
@@ -124,7 +141,8 @@ fn extract_dart_class_methods(body: &Node, class_name: &str, source: &[u8], symb
                     match method_decl {
                         Some(md) => {
                             // method_declaration has field "signature" → method_signature
-                            match md.child_by_field_name("signature")
+                            match md
+                                .child_by_field_name("signature")
                                 .or_else(|| find_dart_signature_child(&md))
                             {
                                 Some(s) => s,
@@ -150,6 +168,7 @@ fn extract_dart_class_methods(body: &Node, class_name: &str, source: &[u8], symb
                             cfg: build_function_cfg(&sig, "dart", source),
                             children: None,
                             bodyless: None,
+                            content_hash: None,
                         });
                     }
                 }
@@ -177,7 +196,10 @@ fn extract_dart_fn_name(node: &Node, source: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
-                "function_signature" | "getter_signature" | "setter_signature" | "constructor_signature" => {
+                "function_signature"
+                | "getter_signature"
+                | "setter_signature"
+                | "constructor_signature" => {
                     if let Some(name) = child.child_by_field_name("name") {
                         return Some(node_text(&name, source).to_string());
                     }
@@ -205,6 +227,7 @@ fn handle_dart_enum(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -224,6 +247,7 @@ fn handle_dart_mixin(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -243,6 +267,7 @@ fn handle_dart_extension(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -262,6 +287,7 @@ fn handle_dart_function_sig(node: &Node, source: &[u8], symbols: &mut FileSymbol
         cfg: build_function_cfg(node, "dart", source),
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -271,16 +297,13 @@ fn handle_dart_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         None => return,
     };
 
-    let uri = find_child(&spec, "configurable_uri")
-        .or_else(|| find_child(&spec, "uri"));
+    let uri = find_child(&spec, "configurable_uri").or_else(|| find_child(&spec, "uri"));
     if let Some(uri) = uri {
         let raw = node_text(&uri, source);
         let source_path = raw.trim_matches(|c| c == '\'' || c == '"').to_string();
-        symbols.imports.push(Import::new(
-            source_path,
-            vec![],
-            start_line(node),
-        ));
+        symbols
+            .imports
+            .push(Import::new(source_path, vec![], start_line(node)));
     }
 }
 
@@ -295,9 +318,11 @@ fn handle_dart_constructor_call(node: &Node, source: &[u8], symbols: &mut FileSy
     let name_node = find_child(node, "type_identifier")
         .or_else(|| find_child(node, "identifier"))
         .or_else(|| {
-            node.child_by_field_name("type").or_else(|| find_child(node, "type")).and_then(|t| {
-                find_child(&t, "type_identifier").or_else(|| find_child(&t, "identifier"))
-            })
+            node.child_by_field_name("type")
+                .or_else(|| find_child(node, "type"))
+                .and_then(|t| {
+                    find_child(&t, "type_identifier").or_else(|| find_child(&t, "identifier"))
+                })
         });
     if let Some(name) = name_node {
         symbols.calls.push(Call {
@@ -311,8 +336,7 @@ fn handle_dart_constructor_call(node: &Node, source: &[u8], symbols: &mut FileSy
 }
 
 fn handle_dart_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = find_child(node, "type_identifier")
-        .or_else(|| find_child(node, "identifier"));
+    let name_node = find_child(node, "type_identifier").or_else(|| find_child(node, "identifier"));
     if let Some(name) = name_node {
         symbols.definitions.push(Definition {
             name: node_text(&name, source).to_string(),
@@ -324,6 +348,7 @@ fn handle_dart_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols)
             cfg: None,
             children: None,
             bodyless: None,
+            content_hash: None,
         });
     }
 }
@@ -372,12 +397,11 @@ fn is_inside_class(node: &Node) -> bool {
         match parent.kind() {
             // Accept both 0.0.4 (`class_definition`) and 0.2 (`class_declaration`)
             // node names to guard function_signature extraction from top-level scope.
-            "class_body" | "class_definition" | "class_declaration"
-            | "enum_body" | "mixin_declaration" => return true,
+            "class_body" | "class_definition" | "class_declaration" | "enum_body"
+            | "mixin_declaration" => return true,
             _ => {}
         }
         current = parent.parent();
     }
     false
 }
-

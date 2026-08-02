@@ -191,6 +191,7 @@ fn handle_ns_form(node: &Node, source: &[u8], symbols: &mut FileSymbols) -> Opti
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 
     // Scan for nested `(:require ...)`, `(:import ...)`, `(:use ...)` forms.
@@ -224,9 +225,11 @@ fn extract_ns_requires(require_form: &Node, source: &[u8], symbols: &mut FileSym
             if let Some(sym) = find_first_symbol(&child) {
                 let text = node_text(&sym, source);
                 let last = text.rsplit('.').next().unwrap_or(text).to_string();
-                symbols
-                    .imports
-                    .push(Import::new(text.to_string(), vec![last], start_line(&child)));
+                symbols.imports.push(Import::new(
+                    text.to_string(),
+                    vec![last],
+                    start_line(&child),
+                ));
             }
         }
 
@@ -236,9 +239,11 @@ fn extract_ns_requires(require_form: &Node, source: &[u8], symbols: &mut FileSym
             let text = node_text(&child, source);
             if !text.starts_with(':') {
                 let last = text.rsplit('.').next().unwrap_or(text).to_string();
-                symbols
-                    .imports
-                    .push(Import::new(text.to_string(), vec![last], start_line(&child)));
+                symbols.imports.push(Import::new(
+                    text.to_string(),
+                    vec![last],
+                    start_line(&child),
+                ));
             }
         }
     }
@@ -271,6 +276,7 @@ fn handle_def_form(
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -305,6 +311,7 @@ fn handle_defn_form(
         cfg: build_function_cfg(node, "clojure", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -355,6 +362,7 @@ fn handle_defprotocol(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -373,6 +381,7 @@ fn handle_defrecord(node: &Node, source: &[u8], symbols: &mut FileSymbols, kind:
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 

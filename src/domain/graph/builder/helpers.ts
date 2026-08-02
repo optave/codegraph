@@ -361,9 +361,9 @@ const edgeStmtCache = new WeakMap<BetterSqlite3Database, Map<number, SqliteState
 
 function getNodeStmt(db: BetterSqlite3Database, chunkSize: number): SqliteStatement {
   return getOrCreatePerDbChunkStmt(nodeStmtCache, db, chunkSize, (n) => {
-    const ph = '(?,?,?,?,?,?,?,?,?)';
+    const ph = '(?,?,?,?,?,?,?,?,?,?)';
     return (
-      'INSERT OR IGNORE INTO nodes (name,kind,file,line,end_line,parent_id,qualified_name,scope,visibility) VALUES ' +
+      'INSERT OR IGNORE INTO nodes (name,kind,file,line,end_line,parent_id,qualified_name,scope,visibility,content_hash) VALUES ' +
       Array.from({ length: n }, () => ph).join(',')
     );
   });
@@ -407,11 +407,11 @@ function runBatchInsert(
 
 /**
  * Batch-insert node rows via multi-value INSERT statements.
- * Each row: [name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility]
+ * Each row: [name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility, content_hash]
  */
 export function batchInsertNodes(db: BetterSqlite3Database, rows: unknown[][]): void {
   runBatchInsert(db, rows, getNodeStmt, (r, vals) => {
-    vals.push(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]);
+    vals.push(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9] ?? null);
   });
 }
 

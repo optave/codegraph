@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct KotlinExtractor;
 
@@ -11,8 +11,18 @@ impl SymbolExtractor for KotlinExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_kotlin_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &KOTLIN_AST_CONFIG);
-        walk_tree(&tree.root_node(), source, &mut symbols, match_kotlin_type_map);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &KOTLIN_AST_CONFIG,
+        );
+        walk_tree(
+            &tree.root_node(),
+            source,
+            &mut symbols,
+            match_kotlin_type_map,
+        );
         dedup_type_map(&mut symbols.type_map);
         symbols
     }
@@ -26,7 +36,8 @@ fn match_kotlin_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, 
             if let Some(type_node) = node.child_by_field_name("type") {
                 let type_name = node_text(&type_node, source);
                 // Name can be in a pattern child or directly via field
-                let name = node.child_by_field_name("name")
+                let name = node
+                    .child_by_field_name("name")
                     .or_else(|| find_child(node, "simple_identifier"))
                     .map(|n| node_text(&n, source).to_string());
                 if let Some(name) = name {
@@ -40,7 +51,8 @@ fn match_kotlin_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, 
         }
         "parameter" => {
             if let Some(type_node) = node.child_by_field_name("type") {
-                if let Some(name_node) = node.child_by_field_name("name")
+                if let Some(name_node) = node
+                    .child_by_field_name("name")
                     .or_else(|| find_child(node, "simple_identifier"))
                 {
                     symbols.type_map.push(TypeMapEntry {
@@ -108,13 +120,15 @@ fn find_kotlin_parent_class<'a>(node: &Node<'a>, source: &[u8]) -> Option<String
 
 fn extract_kotlin_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
-    if let Some(param_list) = node.child_by_field_name("parameters")
+    if let Some(param_list) = node
+        .child_by_field_name("parameters")
         .or_else(|| find_child(node, "function_value_parameters"))
     {
         for i in 0..param_list.child_count() {
             if let Some(child) = param_list.child(i) {
                 if child.kind() == "parameter" {
-                    if let Some(name_node) = child.child_by_field_name("name")
+                    if let Some(name_node) = child
+                        .child_by_field_name("name")
                         .or_else(|| find_child(&child, "simple_identifier"))
                     {
                         params.push(child_def(
@@ -175,7 +189,12 @@ fn extract_kotlin_enum_entries(node: &Node, source: &[u8]) -> Vec<Definition> {
     entries
 }
 
-fn extract_kotlin_delegation_specifiers(node: &Node, source: &[u8], class_name: &str, symbols: &mut FileSymbols) {
+fn extract_kotlin_delegation_specifiers(
+    node: &Node,
+    source: &[u8],
+    class_name: &str,
+    symbols: &mut FileSymbols,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "delegation_specifier" {
@@ -226,6 +245,7 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
                         cfg: None,
                         children: None,
                         bodyless: None,
+                        content_hash: None,
                     });
                 } else if is_kotlin_enum(node) {
                     let children = extract_kotlin_enum_entries(node, source);
@@ -239,6 +259,7 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
                         cfg: None,
                         children: opt_children(children),
                         bodyless: None,
+                        content_hash: None,
                     });
                 } else {
                     let children = extract_kotlin_class_properties(node, source);
@@ -252,6 +273,7 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
                         cfg: None,
                         children: opt_children(children),
                         bodyless: None,
+                        content_hash: None,
                     });
                 }
 
@@ -273,6 +295,7 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
                     cfg: None,
                     children: opt_children(children),
                     bodyless: None,
+                    content_hash: None,
                 });
                 extract_kotlin_delegation_specifiers(node, source, &obj_name, symbols);
             }
@@ -286,7 +309,11 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
                     Some(cls) => format!("{}.{}", cls, name),
                     None => name.to_string(),
                 };
-                let kind = if parent_class.is_some() { "method" } else { "function" };
+                let kind = if parent_class.is_some() {
+                    "method"
+                } else {
+                    "function"
+                };
                 let children = extract_kotlin_parameters(node, source);
                 symbols.definitions.push(Definition {
                     name: full_name,
@@ -298,6 +325,7 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
                     cfg: build_function_cfg(node, "kotlin", source),
                     children: opt_children(children),
                     bodyless: None,
+                    content_hash: None,
                 });
             }
         }
@@ -342,7 +370,8 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
 
         "call_expression" => {
             // function child is the callee
-            if let Some(fn_node) = node.child_by_field_name("function")
+            if let Some(fn_node) = node
+                .child_by_field_name("function")
                 .or_else(|| node.child(0))
             {
                 match fn_node.kind() {
@@ -365,7 +394,11 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
                         // so take the inner identifier — using the suffix's own
                         // text would include the leading dot.
                         let count = fn_node.child_count();
-                        let last = if count > 0 { fn_node.child(count - 1) } else { None };
+                        let last = if count > 0 {
+                            fn_node.child(count - 1)
+                        } else {
+                            None
+                        };
                         let name = fn_node
                             .child_by_field_name("member")
                             .or_else(|| {
@@ -379,8 +412,7 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
                             })
                             .map(|n| node_text(&n, source).to_string())
                             .unwrap_or_else(|| node_text(&fn_node, source).to_string());
-                        let receiver = fn_node.child(0)
-                            .map(|n| node_text(&n, source).to_string());
+                        let receiver = fn_node.child(0).map(|n| node_text(&n, source).to_string());
                         // fn.invoke(args) — callable ref invocation without static type
                         // info; the WASM grammar represents `navigation_expression` with a
                         // `navigation_suffix` child so its `lastChild.type` check misses
@@ -462,7 +494,11 @@ mod tests {
     #[test]
     fn extracts_object() {
         let s = parse_kotlin("object Singleton { val x = 1 }");
-        let obj = s.definitions.iter().find(|d| d.name == "Singleton").unwrap();
+        let obj = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Singleton")
+            .unwrap();
         assert_eq!(obj.kind, "class");
     }
 

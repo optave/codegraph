@@ -34,7 +34,12 @@ impl SymbolExtractor for GroovyExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_groovy_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &GROOVY_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &GROOVY_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -55,11 +60,17 @@ fn find_groovy_parent_class(node: &Node, source: &[u8]) -> Option<String> {
 fn match_groovy_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
     match node.kind() {
         "class_declaration" | "class_definition" => handle_class_decl(node, source, symbols),
-        "interface_declaration" | "interface_definition" => handle_interface_decl(node, source, symbols),
+        "interface_declaration" | "interface_definition" => {
+            handle_interface_decl(node, source, symbols)
+        }
         "enum_declaration" | "enum_definition" => handle_enum_decl(node, source, symbols),
         "method_declaration" | "method_definition" => handle_method_decl(node, source, symbols),
-        "constructor_declaration" | "constructor_definition" => handle_constructor_decl(node, source, symbols),
-        "function_definition" | "function_declaration" => handle_function_decl(node, source, symbols),
+        "constructor_declaration" | "constructor_definition" => {
+            handle_constructor_decl(node, source, symbols)
+        }
+        "function_definition" | "function_declaration" => {
+            handle_function_decl(node, source, symbols)
+        }
         "import_declaration" | "import_statement" => handle_import_decl(node, source, symbols),
         "method_invocation" | "method_call" | "call_expression" | "function_call"
         | "juxt_function_call" => handle_call_expr(node, source, symbols),
@@ -71,7 +82,9 @@ fn match_groovy_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
 // ── Class / interface / enum ────────────────────────────────────────────────
 
 fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let class_name = node_text(&name_node, source).to_string();
     let children = extract_class_fields(node, source);
     symbols.definitions.push(Definition {
@@ -84,6 +97,7 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 
     // Superclass: `superclass` field wraps a `_type` child (type_identifier /
@@ -91,7 +105,9 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     // type-like node.
     if let Some(superclass) = node.child_by_field_name("superclass") {
         for i in 0..superclass.child_count() {
-            let Some(child) = superclass.child(i) else { continue };
+            let Some(child) = superclass.child(i) else {
+                continue;
+            };
             match child.kind() {
                 "type_identifier" | "identifier" | "scoped_type_identifier" => {
                     symbols.classes.push(ClassRelation {
@@ -131,7 +147,9 @@ fn collect_interfaces(
     symbols: &mut FileSymbols,
 ) {
     for i in 0..interfaces.child_count() {
-        let Some(child) = interfaces.child(i) else { continue };
+        let Some(child) = interfaces.child(i) else {
+            continue;
+        };
         match child.kind() {
             "type_identifier" | "identifier" | "scoped_type_identifier" => {
                 symbols.classes.push(ClassRelation {
@@ -158,7 +176,9 @@ fn collect_interfaces(
 }
 
 fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let iface_name = node_text(&name_node, source).to_string();
     symbols.definitions.push(Definition {
         name: iface_name.clone(),
@@ -170,6 +190,7 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 
     // `interface X extends Y, Z` — tree-sitter-groovy 0.1.x exposes parent
@@ -186,11 +207,15 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
 }
 
 fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let enum_name = node_text(&name_node, source).to_string();
 
     let mut members: Vec<Definition> = Vec::new();
-    let body = node.child_by_field_name("body").or_else(|| find_child(node, "enum_body"));
+    let body = node
+        .child_by_field_name("body")
+        .or_else(|| find_child(node, "enum_body"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
             let Some(child) = body.child(i) else { continue };
@@ -215,13 +240,16 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(members),
         bodyless: None,
+        content_hash: None,
     });
 }
 
 // ── Methods / constructors / functions ─────────────────────────────────────
 
 fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let parent_class = find_groovy_parent_class(node, source);
     let name = node_text(&name_node, source);
     let full_name = match &parent_class {
@@ -239,11 +267,14 @@ fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: build_function_cfg(node, "groovy", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
 fn handle_constructor_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let parent_class = find_groovy_parent_class(node, source);
     let name = node_text(&name_node, source);
     let full_name = match &parent_class {
@@ -261,12 +292,15 @@ fn handle_constructor_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols
         cfg: build_function_cfg(node, "groovy", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
 /// Top-level `function_definition` (Groovy script closure-bodied function).
 fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let params = extract_params(node, source);
     symbols.definitions.push(Definition {
         name: node_text(&name_node, source).to_string(),
@@ -278,6 +312,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: build_function_cfg(node, "groovy", source),
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -316,7 +351,8 @@ fn handle_import_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 
 /// Extract first string literal argument from a Groovy call node.
 fn get_first_string_arg_groovy(node: &Node, source: &[u8]) -> Option<String> {
-    let args = node.child_by_field_name("arguments")
+    let args = node
+        .child_by_field_name("arguments")
         .or_else(|| find_child(node, "argument_list"))?;
     for i in 0..args.child_count() {
         let child = args.child(i)?;
@@ -435,9 +471,13 @@ fn handle_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_object_creation(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(type_node) = node.child_by_field_name("type") else { return };
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
     let type_name = if type_node.kind() == "generic_type" {
-        type_node.child(0).map(|n| node_text(&n, source).to_string())
+        type_node
+            .child(0)
+            .map(|n| node_text(&n, source).to_string())
     } else {
         Some(node_text(&type_node, source).to_string())
     };
@@ -459,9 +499,13 @@ fn extract_params(func_node: &Node, source: &[u8]) -> Vec<Definition> {
     let params_node = func_node
         .child_by_field_name("parameters")
         .or_else(|| find_child(func_node, "formal_parameters"));
-    let Some(params_node) = params_node else { return params };
+    let Some(params_node) = params_node else {
+        return params;
+    };
     for i in 0..params_node.child_count() {
-        let Some(child) = params_node.child(i) else { continue };
+        let Some(child) = params_node.child(i) else {
+            continue;
+        };
         if child.kind() == "formal_parameter"
             || child.kind() == "parameter"
             || child.kind() == "spread_parameter"
@@ -490,7 +534,9 @@ fn extract_class_fields(class_node: &Node, source: &[u8]) -> Vec<Definition> {
             continue;
         }
         for j in 0..child.child_count() {
-            let Some(var_decl) = child.child(j) else { continue };
+            let Some(var_decl) = child.child(j) else {
+                continue;
+            };
             if var_decl.kind() == "variable_declarator" {
                 if let Some(name_node) = var_decl.child_by_field_name("name") {
                     fields.push(child_def(
@@ -521,12 +567,20 @@ mod tests {
 
     #[test]
     fn extracts_class_and_methods() {
-        let s = parse_groovy(
-            "class Foo {\n  void bar(String x) { x.length() }\n  int baz() { 1 }\n}",
-        );
-        assert!(s.definitions.iter().any(|d| d.name == "Foo" && d.kind == "class"));
-        assert!(s.definitions.iter().any(|d| d.name == "Foo.bar" && d.kind == "method"));
-        assert!(s.definitions.iter().any(|d| d.name == "Foo.baz" && d.kind == "method"));
+        let s =
+            parse_groovy("class Foo {\n  void bar(String x) { x.length() }\n  int baz() { 1 }\n}");
+        assert!(s
+            .definitions
+            .iter()
+            .any(|d| d.name == "Foo" && d.kind == "class"));
+        assert!(s
+            .definitions
+            .iter()
+            .any(|d| d.name == "Foo.bar" && d.kind == "method"));
+        assert!(s
+            .definitions
+            .iter()
+            .any(|d| d.name == "Foo.baz" && d.kind == "method"));
     }
 
     #[test]
@@ -577,8 +631,15 @@ mod tests {
     #[test]
     fn extracts_interface_and_enum() {
         let s = parse_groovy("interface Worker { void work() }\nenum Color { RED, GREEN }");
-        assert!(s.definitions.iter().any(|d| d.name == "Worker" && d.kind == "interface"));
-        let color = s.definitions.iter().find(|d| d.name == "Color" && d.kind == "enum").unwrap();
+        assert!(s
+            .definitions
+            .iter()
+            .any(|d| d.name == "Worker" && d.kind == "interface"));
+        let color = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Color" && d.kind == "enum")
+            .unwrap();
         let children = color.children.as_ref().unwrap();
         let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"RED"));
@@ -595,9 +656,21 @@ mod tests {
             "apply plugin: 'java'\ntask someTask {\n  doLast {\n    println \"hello\"\n  }\n}",
         );
         let names: Vec<&str> = s.calls.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"apply"), "missing `apply` juxt call: {:?}", names);
-        assert!(names.contains(&"task"), "missing `task` juxt call: {:?}", names);
-        assert!(names.contains(&"println"), "missing `println` juxt call: {:?}", names);
+        assert!(
+            names.contains(&"apply"),
+            "missing `apply` juxt call: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"task"),
+            "missing `task` juxt call: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"println"),
+            "missing `println` juxt call: {:?}",
+            names
+        );
     }
 
     #[test]
@@ -615,14 +688,20 @@ mod tests {
         // via an unnamed `extends_interfaces` child (not a field), distinct
         // from class declarations which use the `interfaces` field.
         let s = parse_groovy("interface Serializable extends Comparable, Cloneable {}");
-        let rels: Vec<_> = s.classes.iter().filter(|c| c.name == "Serializable").collect();
+        let rels: Vec<_> = s
+            .classes
+            .iter()
+            .filter(|c| c.name == "Serializable")
+            .collect();
         assert!(
-            rels.iter().any(|c| c.implements.as_deref() == Some("Comparable")),
+            rels.iter()
+                .any(|c| c.implements.as_deref() == Some("Comparable")),
             "missing implements=Comparable, got: {:?}",
             rels
         );
         assert!(
-            rels.iter().any(|c| c.implements.as_deref() == Some("Cloneable")),
+            rels.iter()
+                .any(|c| c.implements.as_deref() == Some("Cloneable")),
             "missing implements=Cloneable, got: {:?}",
             rels
         );
@@ -635,10 +714,18 @@ mod tests {
         // — `collect_interfaces` re-evaluates `start_line(interfaces)` on every
         // recursive call, and the WASM extractor must match.
         let s = parse_groovy("interface Serializable\n  extends Comparable, Cloneable {}");
-        let rels: Vec<_> = s.classes.iter().filter(|c| c.name == "Serializable").collect();
+        let rels: Vec<_> = s
+            .classes
+            .iter()
+            .filter(|c| c.name == "Serializable")
+            .collect();
         assert!(!rels.is_empty(), "expected at least one ClassRelation");
         for rel in &rels {
-            assert_eq!(rel.line, 2, "line should track the extends clause, got: {:?}", rel);
+            assert_eq!(
+                rel.line, 2,
+                "line should track the extends clause, got: {:?}",
+                rel
+            );
         }
     }
 }

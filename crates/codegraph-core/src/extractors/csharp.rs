@@ -13,16 +13,29 @@ impl SymbolExtractor for CSharpExtractor {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_csharp_node);
         reclassify_csharp_implements(&mut symbols);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &CSHARP_AST_CONFIG);
-        walk_tree(&tree.root_node(), source, &mut symbols, match_csharp_type_map);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &CSHARP_AST_CONFIG,
+        );
+        walk_tree(
+            &tree.root_node(),
+            source,
+            &mut symbols,
+            match_csharp_type_map,
+        );
         dedup_type_map(&mut symbols.type_map);
         symbols
     }
 }
 
 const CSHARP_TYPE_KINDS: &[&str] = &[
-    "class_declaration", "struct_declaration", "interface_declaration",
-    "enum_declaration", "record_declaration",
+    "class_declaration",
+    "struct_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "record_declaration",
 ];
 
 fn find_csharp_parent_type(node: &Node, source: &[u8]) -> Option<String> {
@@ -49,7 +62,9 @@ fn match_csharp_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
 // ── Per-node-kind handlers for walk_node_depth ───────────────────────────────
 
 fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let class_name = node_text(&name_node, source).to_string();
     let children = extract_csharp_class_fields(node, source);
     symbols.definitions.push(Definition {
@@ -62,12 +77,15 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
     extract_csharp_base_types(node, &class_name, source, symbols);
 }
 
 fn handle_struct_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let name = node_text(&name_node, source).to_string();
     symbols.definitions.push(Definition {
         name: name.clone(),
@@ -79,12 +97,15 @@ fn handle_struct_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
     extract_csharp_base_types(node, &name, source, symbols);
 }
 
 fn handle_record_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let name = node_text(&name_node, source).to_string();
     symbols.definitions.push(Definition {
         name: name.clone(),
@@ -96,12 +117,15 @@ fn handle_record_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
     extract_csharp_base_types(node, &name, source, symbols);
 }
 
 fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let iface_name = node_text(&name_node, source).to_string();
     symbols.definitions.push(Definition {
         name: iface_name.clone(),
@@ -113,11 +137,14 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
             let Some(child) = body.child(i) else { continue };
-            if child.kind() != "method_declaration" { continue; }
+            if child.kind() != "method_declaration" {
+                continue;
+            }
             if let Some(meth_name) = child.child_by_field_name("name") {
                 // Interface method declarations have no body — skip CFG and complexity
                 // to mirror the WASM extractor and avoid producing meaningless metrics
@@ -132,6 +159,7 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
                     cfg: None,
                     children: None,
                     bodyless: Some(child.child_by_field_name("body").is_none()),
+                    content_hash: None,
                 });
             }
         }
@@ -152,12 +180,15 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             cfg: None,
             children: opt_children(children),
             bodyless: None,
+            content_hash: None,
         });
     }
 }
 
 fn handle_method_or_ctor(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let parent_type = find_csharp_parent_type(node, source);
     let name = node_text(&name_node, source);
     let full_name = match &parent_type {
@@ -175,6 +206,7 @@ fn handle_method_or_ctor(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: build_function_cfg(node, "csharp", source),
         children: opt_children(children),
         bodyless: Some(node.child_by_field_name("body").is_none()),
+        content_hash: None,
     });
 }
 
@@ -184,7 +216,9 @@ fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     // spurious `contains` edges to parameters of body-less declarations.
     if let Some(parent) = node.parent() {
         if let Some(grand) = parent.parent() {
-            if grand.kind() == "interface_declaration" { return; }
+            if grand.kind() == "interface_declaration" {
+                return;
+            }
         }
     }
     handle_method_or_ctor(node, source, symbols);
@@ -195,7 +229,9 @@ fn handle_constructor_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols
 }
 
 fn handle_property_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let parent_type = find_csharp_parent_type(node, source);
     let name = node_text(&name_node, source);
     let full_name = match &parent_type {
@@ -212,6 +248,7 @@ fn handle_property_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -231,12 +268,15 @@ fn handle_using_directive(node: &Node, source: &[u8], symbols: &mut FileSymbols)
 
 /// Get the first string-literal argument text from a C# invocation node.
 fn get_cs_first_string_arg(node: &Node, source: &[u8]) -> Option<String> {
-    let args = node.child_by_field_name("argument_list")
+    let args = node
+        .child_by_field_name("argument_list")
         .or_else(|| find_child(node, "argument_list"))?;
     for i in 0..args.child_count() {
         let Some(child) = args.child(i) else { continue };
         let t = child.kind();
-        if matches!(t, "(" | ")" | ",") { continue; }
+        if matches!(t, "(" | ")" | ",") {
+            continue;
+        }
         // argument node may wrap the literal
         let target = if t == "argument" {
             child.child(0).unwrap_or(child)
@@ -254,7 +294,9 @@ fn get_cs_first_string_arg(node: &Node, source: &[u8]) -> Option<String> {
 }
 
 fn handle_invocation_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let fn_node = node.child_by_field_name("function").or_else(|| node.child(0));
+    let fn_node = node
+        .child_by_field_name("function")
+        .or_else(|| node.child(0));
     let Some(fn_node) = fn_node else { return };
     let call_line = start_line(node);
     match fn_node.kind() {
@@ -266,10 +308,11 @@ fn handle_invocation_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols)
             });
         }
         "member_access_expression" => {
-            let Some(name) = fn_node.child_by_field_name("name") else { return };
+            let Some(name) = fn_node.child_by_field_name("name") else {
+                return;
+            };
             let method_name = node_text(&name, source);
-            let receiver = named_child_text(&fn_node, "expression", source)
-                .map(|s| s.to_string());
+            let receiver = named_child_text(&fn_node, "expression", source).map(|s| s.to_string());
 
             // method.Invoke(target, args) — runtime reflection; target unknown
             if method_name == "Invoke" {
@@ -285,7 +328,10 @@ fn handle_invocation_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols)
             }
 
             // type.GetMethod("name") / GetRuntimeMethod / GetDeclaredMethod — resolvable if literal
-            if matches!(method_name, "GetMethod" | "GetRuntimeMethod" | "GetDeclaredMethod") {
+            if matches!(
+                method_name,
+                "GetMethod" | "GetRuntimeMethod" | "GetDeclaredMethod"
+            ) {
                 let literal = get_cs_first_string_arg(node, source);
                 if let Some(lit) = literal {
                     symbols.calls.push(Call {
@@ -318,7 +364,9 @@ fn handle_invocation_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols)
             });
         }
         "generic_name" | "member_binding_expression" => {
-            let name = fn_node.child_by_field_name("name").or_else(|| fn_node.child(0));
+            let name = fn_node
+                .child_by_field_name("name")
+                .or_else(|| fn_node.child(0));
             if let Some(name) = name {
                 symbols.calls.push(Call {
                     name: node_text(&name, source).to_string(),
@@ -332,9 +380,13 @@ fn handle_invocation_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols)
 }
 
 fn handle_object_creation(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(type_node) = node.child_by_field_name("type") else { return };
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
     let type_name = if type_node.kind() == "generic_name" {
-        type_node.child_by_field_name("name").or_else(|| type_node.child(0))
+        type_node
+            .child_by_field_name("name")
+            .or_else(|| type_node.child(0))
             .map(|n| node_text(&n, source).to_string())
     } else {
         Some(node_text(&type_node, source).to_string())
@@ -354,7 +406,8 @@ fn handle_object_creation(node: &Node, source: &[u8], symbols: &mut FileSymbols)
 
 fn extract_csharp_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
-    let params_node = node.child_by_field_name("parameters")
+    let params_node = node
+        .child_by_field_name("parameters")
         .or_else(|| find_child(node, "parameter_list"));
     if let Some(params_node) = params_node {
         for i in 0..params_node.child_count() {
@@ -376,7 +429,8 @@ fn extract_csharp_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
 
 fn extract_csharp_class_fields(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut fields = Vec::new();
-    let body = node.child_by_field_name("body")
+    let body = node
+        .child_by_field_name("body")
         .or_else(|| find_child(node, "declaration_list"));
     let Some(body) = body else { return fields };
     for i in 0..body.child_count() {
@@ -391,11 +445,18 @@ fn extract_csharp_class_fields(node: &Node, source: &[u8]) -> Vec<Definition> {
 fn collect_field_declarator_names(field: &Node, source: &[u8], fields: &mut Vec<Definition>) {
     for j in 0..field.child_count() {
         let Some(decl) = field.child(j) else { continue };
-        if decl.kind() != "variable_declaration" { continue; }
+        if decl.kind() != "variable_declaration" {
+            continue;
+        }
         for k in 0..decl.child_count() {
-            let Some(declarator) = decl.child(k) else { continue };
-            if declarator.kind() != "variable_declarator" { continue; }
-            let name_node = declarator.child_by_field_name("name")
+            let Some(declarator) = decl.child(k) else {
+                continue;
+            };
+            if declarator.kind() != "variable_declarator" {
+                continue;
+            }
+            let name_node = declarator
+                .child_by_field_name("name")
                 .or_else(|| declarator.child(0));
             let Some(name_node) = name_node else { continue };
             if name_node.kind() == "identifier" {
@@ -411,14 +472,15 @@ fn collect_field_declarator_names(field: &Node, source: &[u8], fields: &mut Vec<
 
 fn extract_csharp_enum_members(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut members = Vec::new();
-    let body = node.child_by_field_name("body")
+    let body = node
+        .child_by_field_name("body")
         .or_else(|| find_child(node, "enum_member_declaration_list"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
             if let Some(child) = body.child(i) {
                 if child.kind() == "enum_member_declaration" {
-                    if let Some(name_node) = child.child_by_field_name("name")
-                        .or_else(|| child.child(0))
+                    if let Some(name_node) =
+                        child.child_by_field_name("name").or_else(|| child.child(0))
                     {
                         if name_node.kind() == "identifier" {
                             members.push(child_def(
@@ -491,9 +553,7 @@ fn extract_csharp_base_types(
                     });
                 }
                 "generic_name" => {
-                    let name = child
-                        .child_by_field_name("name")
-                        .or_else(|| child.child(0));
+                    let name = child.child_by_field_name("name").or_else(|| child.child(0));
                     if let Some(name) = name {
                         symbols.classes.push(ClassRelation {
                             name: class_name.to_string(),
@@ -516,9 +576,9 @@ fn extract_csharp_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Optio
         "identifier" | "qualified_name" => Some(node_text(type_node, source)),
         "predefined_type" => None, // skip int, string, etc.
         "generic_name" => type_node.child(0).map(|n| node_text(&n, source)),
-        "nullable_type" => {
-            type_node.child(0).and_then(|inner| extract_csharp_type_name(&inner, source))
-        }
+        "nullable_type" => type_node
+            .child(0)
+            .and_then(|inner| extract_csharp_type_name(&inner, source)),
         _ => None,
     }
 }
@@ -533,14 +593,25 @@ fn handle_csharp_var_decl_type_map(node: &Node, source: &[u8], symbols: &mut Fil
     if type_node.kind() == "implicit_type" {
         // var x = new Foo() — infer type from object_creation_expression initializer
         for i in 0..node.child_count() {
-            let Some(declarator) = node.child(i) else { continue };
-            if declarator.kind() != "variable_declarator" { continue; }
-            let name_node = declarator.child_by_field_name("name")
+            let Some(declarator) = node.child(i) else {
+                continue;
+            };
+            if declarator.kind() != "variable_declarator" {
+                continue;
+            }
+            let name_node = declarator
+                .child_by_field_name("name")
                 .or_else(|| declarator.child(0));
             let Some(name_node) = name_node else { continue };
-            if name_node.kind() != "identifier" { continue; }
-            let Some(obj_creation) = find_child(&declarator, "object_creation_expression") else { continue };
-            let Some(ctor_type_node) = obj_creation.child_by_field_name("type") else { continue };
+            if name_node.kind() != "identifier" {
+                continue;
+            }
+            let Some(obj_creation) = find_child(&declarator, "object_creation_expression") else {
+                continue;
+            };
+            let Some(ctor_type_node) = obj_creation.child_by_field_name("type") else {
+                continue;
+            };
             if let Some(ctor_type) = extract_csharp_type_name(&ctor_type_node, source) {
                 symbols.type_map.push(TypeMapEntry {
                     name: node_text(&name_node, source).to_string(),
@@ -554,7 +625,9 @@ fn handle_csharp_var_decl_type_map(node: &Node, source: &[u8], symbols: &mut Fil
         if let Some(type_name) = extract_csharp_type_name(&type_node, source) {
             for i in 0..node.child_count() {
                 let Some(child) = node.child(i) else { continue };
-                if child.kind() != "variable_declarator" { continue; }
+                if child.kind() != "variable_declarator" {
+                    continue;
+                }
                 let name_node = child.child_by_field_name("name").or_else(|| child.child(0));
                 if let Some(name_node) = name_node {
                     if name_node.kind() == "identifier" {
@@ -572,9 +645,15 @@ fn handle_csharp_var_decl_type_map(node: &Node, source: &[u8], symbols: &mut Fil
 
 /// Handle `parameter` nodes: emit a type_map entry for typed method/constructor parameters.
 fn handle_csharp_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(type_node) = node.child_by_field_name("type") else { return };
-    let Some(type_name) = extract_csharp_type_name(&type_node, source) else { return };
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
+    let Some(type_name) = extract_csharp_type_name(&type_node, source) else {
+        return;
+    };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     symbols.type_map.push(TypeMapEntry {
         name: node_text(&name_node, source).to_string(),
         type_name: type_name.to_string(),

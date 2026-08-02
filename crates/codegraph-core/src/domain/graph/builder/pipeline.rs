@@ -1202,6 +1202,7 @@ fn build_insert_batches(
                         line: d.line,
                         end_line: d.end_line,
                         visibility: None,
+                        content_hash: d.content_hash.clone(),
                         children: d
                             .children
                             .as_ref()
@@ -1213,6 +1214,7 @@ fn build_insert_batches(
                                         line: c.line,
                                         end_line: c.end_line,
                                         visibility: None,
+                                        content_hash: c.content_hash.clone(),
                                     })
                                     .collect()
                             })

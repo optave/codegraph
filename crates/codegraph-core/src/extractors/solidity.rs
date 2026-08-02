@@ -51,12 +51,7 @@ fn match_solidity_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _d
 
 // ── Contracts / interfaces / libraries ───────────────────────────────────────
 
-fn handle_contract_decl(
-    node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-    kind: &str,
-) {
+fn handle_contract_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols, kind: &str) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
     };
@@ -80,6 +75,7 @@ fn handle_contract_decl(
         cfg: None,
         children: opt_children(members),
         bodyless: None,
+        content_hash: None,
     });
 
     extract_inheritance(node, &name, source, symbols);
@@ -130,6 +126,7 @@ fn extract_contract_member(child: &Node, source: &[u8]) -> Option<Definition> {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             })
         }
         "error_declaration" => {
@@ -144,6 +141,7 @@ fn extract_contract_member(child: &Node, source: &[u8]) -> Option<Definition> {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             })
         }
         "modifier_definition" => {
@@ -158,6 +156,7 @@ fn extract_contract_member(child: &Node, source: &[u8]) -> Option<Definition> {
                 cfg: None,
                 children: None,
                 bodyless: None,
+                content_hash: None,
             })
         }
         _ => None,
@@ -236,6 +235,7 @@ fn handle_struct_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(members),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -276,6 +276,7 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(members),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -290,7 +291,11 @@ fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         Some(p) => format!("{}.{}", p, node_text(&name_node, source)),
         None => node_text(&name_node, source).to_string(),
     };
-    let kind = if parent.is_some() { "method" } else { "function" };
+    let kind = if parent.is_some() {
+        "method"
+    } else {
+        "function"
+    };
 
     let params = extract_sol_params(node, source);
     symbols.definitions.push(Definition {
@@ -303,6 +308,7 @@ fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(params),
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -326,6 +332,7 @@ fn handle_modifier_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -349,6 +356,7 @@ fn handle_event_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -372,6 +380,7 @@ fn handle_error_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -395,6 +404,7 @@ fn handle_state_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
@@ -432,12 +442,15 @@ fn handle_import_directive(node: &Node, source: &[u8], symbols: &mut FileSymbols
         }
         // source_import / import_clause: `import * as Alias from "path"`
         if child.kind() == "source_import" || child.kind() == "import_clause" {
-            let str_node = find_child(&child, "string").or_else(|| find_child(&child, "string_literal"));
+            let str_node =
+                find_child(&child, "string").or_else(|| find_child(&child, "string_literal"));
             if let Some(str_node) = str_node {
                 let source_path = strip_quotes(node_text(&str_node, source));
-                symbols
-                    .imports
-                    .push(Import::new(source_path, vec!["*".to_string()], start_line(node)));
+                symbols.imports.push(Import::new(
+                    source_path,
+                    vec!["*".to_string()],
+                    start_line(node),
+                ));
                 return;
             }
         }
@@ -463,7 +476,8 @@ fn handle_call_expression(node: &Node, source: &[u8], symbols: &mut FileSymbols)
                 .child_by_field_name("object")
                 .or_else(|| func_node.child_by_field_name("expression"));
             (
-                prop.map(|n| node_text(&n, source).to_string()).unwrap_or_default(),
+                prop.map(|n| node_text(&n, source).to_string())
+                    .unwrap_or_default(),
                 obj.map(|n| node_text(&n, source).to_string()),
             )
         }
@@ -538,7 +552,11 @@ mod tests {
         let s = parse_sol(
             "library Validators { function v(string memory n) internal pure returns (bool) { return true; } }",
         );
-        let d = s.definitions.iter().find(|d| d.name == "Validators").unwrap();
+        let d = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Validators")
+            .unwrap();
         assert_eq!(d.kind, "module");
     }
 
@@ -547,7 +565,11 @@ mod tests {
         let s = parse_sol(
             "contract Token { function transfer(address to, uint256 amount) public returns (bool) { return true; } }",
         );
-        let d = s.definitions.iter().find(|d| d.name == "Token.transfer").unwrap();
+        let d = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Token.transfer")
+            .unwrap();
         assert_eq!(d.kind, "method");
         // NOTE: matches WASM/JS behaviour — neither a `parameters` field nor a
         // `parameter_list` node exists in the Solidity tree-sitter grammar
@@ -559,14 +581,22 @@ mod tests {
     #[test]
     fn extracts_import() {
         let s = parse_sol("import \"./IERC20.sol\";");
-        let imp = s.imports.iter().find(|i| i.source == "./IERC20.sol").unwrap();
+        let imp = s
+            .imports
+            .iter()
+            .find(|i| i.source == "./IERC20.sol")
+            .unwrap();
         assert_eq!(imp.names, vec!["*".to_string()]);
     }
 
     #[test]
     fn extracts_named_import() {
         let s = parse_sol("import { Foo, Bar } from \"./Stuff.sol\";");
-        let imp = s.imports.iter().find(|i| i.source == "./Stuff.sol").unwrap();
+        let imp = s
+            .imports
+            .iter()
+            .find(|i| i.source == "./Stuff.sol")
+            .unwrap();
         assert!(imp.names.contains(&"Foo".to_string()));
         assert!(imp.names.contains(&"Bar".to_string()));
     }

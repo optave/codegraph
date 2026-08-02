@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct BashExtractor;
 
@@ -11,7 +11,12 @@ impl SymbolExtractor for BashExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_bash_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &BASH_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &BASH_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -31,6 +36,7 @@ fn match_bash_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
                     cfg: build_function_cfg(node, "bash", source),
                     children: None,
                     bodyless: None,
+                    content_hash: None,
                 });
             }
         }
@@ -44,13 +50,18 @@ fn match_bash_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
                         // Get the first argument after the command name
                         for i in 0..node.child_count() {
                             if let Some(child) = node.child(i) {
-                                if child.kind() == "word" || child.kind() == "string" || child.kind() == "raw_string" {
+                                if child.kind() == "word"
+                                    || child.kind() == "string"
+                                    || child.kind() == "raw_string"
+                                {
                                     let path = node_text(&child, source)
                                         .trim_matches(|c| c == '"' || c == '\'')
                                         .to_string();
                                     if !path.is_empty() {
-                                        let last = path.split('/').last().unwrap_or(&path).to_string();
-                                        let mut imp = Import::new(path, vec![last], start_line(node));
+                                        let last =
+                                            path.split('/').last().unwrap_or(&path).to_string();
+                                        let mut imp =
+                                            Import::new(path, vec![last], start_line(node));
                                         imp.bash_source = Some(true);
                                         symbols.imports.push(imp);
                                     }

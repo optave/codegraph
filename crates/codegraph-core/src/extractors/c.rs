@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct CExtractor;
 
@@ -11,7 +11,12 @@ impl SymbolExtractor for CExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_c_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &C_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &C_AST_CONFIG,
+        );
         walk_tree(&tree.root_node(), source, &mut symbols, match_c_type_map);
         dedup_type_map(&mut symbols.type_map);
         symbols
@@ -194,6 +199,7 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
                     cfg: build_function_cfg(node, "c", source),
                     children: opt_children(children),
                     bodyless: None,
+                    content_hash: None,
                 });
             }
         }
@@ -201,7 +207,8 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
         "struct_specifier" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let struct_name = node_text(&name_node, source).to_string();
-                let children = node.child_by_field_name("body")
+                let children = node
+                    .child_by_field_name("body")
                     .map(|body| extract_c_fields(&body, source))
                     .unwrap_or_default();
                 symbols.definitions.push(Definition {
@@ -214,13 +221,15 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
                     cfg: None,
                     children: opt_children(children),
                     bodyless: None,
+                    content_hash: None,
                 });
             }
         }
 
         "union_specifier" => {
             if let Some(name_node) = node.child_by_field_name("name") {
-                let children = node.child_by_field_name("body")
+                let children = node
+                    .child_by_field_name("body")
                     .map(|body| extract_c_fields(&body, source))
                     .unwrap_or_default();
                 symbols.definitions.push(Definition {
@@ -233,6 +242,7 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
                     cfg: None,
                     children: opt_children(children),
                     bodyless: None,
+                    content_hash: None,
                 });
             }
         }
@@ -250,6 +260,7 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
                     cfg: None,
                     children: opt_children(children),
                     bodyless: None,
+                    content_hash: None,
                 });
             }
         }
@@ -279,6 +290,7 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
                     cfg: None,
                     children: None,
                     bodyless: None,
+                    content_hash: None,
                 });
             }
         }
@@ -290,7 +302,8 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
                 if !path.is_empty() {
                     let last = path.split('/').last().unwrap_or(path);
                     let name = last.strip_suffix(".h").unwrap_or(last);
-                    let mut imp = Import::new(path.to_string(), vec![name.to_string()], start_line(node));
+                    let mut imp =
+                        Import::new(path.to_string(), vec![name.to_string()], start_line(node));
                     imp.c_include = Some(true);
                     symbols.imports.push(imp);
                 }
@@ -313,8 +326,8 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
                         let name = named_child_text(&fn_node, "field", source)
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| node_text(&fn_node, source).to_string());
-                        let receiver = named_child_text(&fn_node, "argument", source)
-                            .map(|s| s.to_string());
+                        let receiver =
+                            named_child_text(&fn_node, "argument", source).map(|s| s.to_string());
                         symbols.calls.push(Call {
                             name,
                             line: start_line(node),

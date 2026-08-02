@@ -371,6 +371,22 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_dataflow_call_edge ON dataflow(call_edge_id);
     `,
   },
+  {
+    // Per-declaration content hash (issue #2015): reverse-dep-edge
+    // reconnection during incremental rebuilds previously matched siblings
+    // by line position alone, which is provably unsafe when a same-named/
+    // same-kind sibling group has one member renamed away and a different
+    // one added in the same edit — the group's size stays unchanged, so the
+    // line-alignment fast path matches by rank and can silently reconnect a
+    // caller to the wrong declaration. A content hash gives reconnection a
+    // true identity signal to try first, falling back to line alignment
+    // only when a hash is unavailable (e.g. rows from before this
+    // migration).
+    version: 24,
+    up: `
+      ALTER TABLE nodes ADD COLUMN content_hash TEXT;
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {
@@ -462,6 +478,7 @@ function ensureNodeColumns(db: BetterSqlite3Database): void {
   if (missing('qualified_name')) db.exec('ALTER TABLE nodes ADD COLUMN qualified_name TEXT');
   if (missing('scope')) db.exec('ALTER TABLE nodes ADD COLUMN scope TEXT');
   if (missing('visibility')) db.exec('ALTER TABLE nodes ADD COLUMN visibility TEXT');
+  if (missing('content_hash')) db.exec('ALTER TABLE nodes ADD COLUMN content_hash TEXT');
   db.exec('UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_scope ON nodes(scope)');

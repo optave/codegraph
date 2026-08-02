@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct PythonExtractor;
 
@@ -11,8 +11,18 @@ impl SymbolExtractor for PythonExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_python_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &PYTHON_AST_CONFIG);
-        walk_tree(&tree.root_node(), source, &mut symbols, match_python_type_map);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &PYTHON_AST_CONFIG,
+        );
+        walk_tree(
+            &tree.root_node(),
+            source,
+            &mut symbols,
+            match_python_type_map,
+        );
         dedup_type_map(&mut symbols.type_map);
         symbols
     }
@@ -33,7 +43,9 @@ fn match_python_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
 // ── Per-node-kind handlers for walk_node_depth ───────────────────────────────
 
 fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let name_text = node_text(&name_node, source);
     let mut decorators = Vec::new();
     if let Some(prev) = node.prev_sibling() {
@@ -52,16 +64,23 @@ fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         kind,
         line: start_line(node),
         end_line: Some(end_line(node)),
-        decorators: if decorators.is_empty() { None } else { Some(decorators) },
+        decorators: if decorators.is_empty() {
+            None
+        } else {
+            Some(decorators)
+        },
         complexity: compute_all_metrics(node, source, "python"),
         cfg: build_function_cfg(node, "python", source),
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
 }
 
 fn handle_class_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let class_name = node_text(&name_node, source).to_string();
     let children = extract_python_class_properties(node, source);
     symbols.definitions.push(Definition {
@@ -74,6 +93,7 @@ fn handle_class_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: opt_children(children),
         bodyless: None,
+        content_hash: None,
     });
     let superclasses = node
         .child_by_field_name("superclasses")
@@ -95,13 +115,23 @@ fn handle_class_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_expr_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    if !is_module_level(node) { return; }
+    if !is_module_level(node) {
+        return;
+    }
     let Some(expr) = node.child(0) else { return };
-    if expr.kind() != "assignment" { return; }
-    let Some(left) = expr.child_by_field_name("left") else { return };
-    if left.kind() != "identifier" { return; }
+    if expr.kind() != "assignment" {
+        return;
+    }
+    let Some(left) = expr.child_by_field_name("left") else {
+        return;
+    };
+    if left.kind() != "identifier" {
+        return;
+    }
     let name = node_text(&left, source);
-    if !is_upper_snake_case(name) { return; }
+    if !is_upper_snake_case(name) {
+        return;
+    }
     symbols.definitions.push(Definition {
         name: name.to_string(),
         kind: "constant".to_string(),
@@ -112,18 +142,19 @@ fn handle_expr_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         cfg: None,
         children: None,
         bodyless: None,
+        content_hash: None,
     });
 }
 
 fn handle_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(fn_node) = node.child_by_field_name("function") else { return };
+    let Some(fn_node) = node.child_by_field_name("function") else {
+        return;
+    };
     let (call_name, receiver) = match fn_node.kind() {
         "identifier" => (Some(node_text(&fn_node, source).to_string()), None),
         "attribute" => {
-            let name = named_child_text(&fn_node, "attribute", source)
-                .map(|s| s.to_string());
-            let recv = named_child_text(&fn_node, "object", source)
-                .map(|s| s.to_string());
+            let name = named_child_text(&fn_node, "attribute", source).map(|s| s.to_string());
+            let recv = named_child_text(&fn_node, "object", source).map(|s| s.to_string());
             (name, recv)
         }
         _ => (None, None),
@@ -143,7 +174,9 @@ fn handle_import_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let mut names = Vec::new();
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
-        if child.kind() != "dotted_name" && child.kind() != "aliased_import" { continue; }
+        if child.kind() != "dotted_name" && child.kind() != "aliased_import" {
+            continue;
+        }
         let name = if child.kind() == "aliased_import" {
             child
                 .child_by_field_name("alias")
@@ -177,9 +210,7 @@ fn handle_import_from_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols
                 }
             }
             "aliased_import" => {
-                let n = child
-                    .child_by_field_name("name")
-                    .or_else(|| child.child(0));
+                let n = child.child_by_field_name("name").or_else(|| child.child(0));
                 if let Some(n) = n {
                     names.push(node_text(&n, source).to_string());
                 }
@@ -211,18 +242,19 @@ fn extract_python_parameters(node: &Node, source: &[u8], is_method: bool) -> Vec
                         Some(text.to_string())
                     }
                     "default_parameter" | "typed_default_parameter" => {
-                        named_child_text(&child, "name", source)
-                            .map(|s| s.to_string())
+                        named_child_text(&child, "name", source).map(|s| s.to_string())
                     }
                     "typed_parameter" => {
                         // typed_parameter: first child is the identifier
-                        child.child(0)
+                        child
+                            .child(0)
                             .filter(|c| c.kind() == "identifier")
                             .map(|c| node_text(&c, source).to_string())
                     }
                     "list_splat_pattern" | "dictionary_splat_pattern" => {
                         // *args, **kwargs
-                        child.child(0)
+                        child
+                            .child(0)
                             .filter(|c| c.kind() == "identifier")
                             .map(|c| node_text(&c, source).to_string())
                     }
@@ -268,8 +300,10 @@ fn collect_self_assignments(node: &Node, source: &[u8], props: &mut Vec<Definiti
             try_extract_self_assignment(&child, source, props);
         }
         // Recurse into blocks (if/for/etc inside __init__)
-        if child.kind() == "block" || child.kind() == "if_statement"
-            || child.kind() == "for_statement" || child.kind() == "while_statement"
+        if child.kind() == "block"
+            || child.kind() == "if_statement"
+            || child.kind() == "for_statement"
+            || child.kind() == "while_statement"
         {
             collect_self_assignments(&child, source, props);
         }
@@ -278,12 +312,24 @@ fn collect_self_assignments(node: &Node, source: &[u8], props: &mut Vec<Definiti
 
 fn try_extract_self_assignment(stmt: &Node, source: &[u8], props: &mut Vec<Definition>) {
     let Some(expr) = stmt.child(0) else { return };
-    if expr.kind() != "assignment" { return; }
-    let Some(left) = expr.child_by_field_name("left") else { return };
-    if left.kind() != "attribute" { return; }
-    let Some(obj) = left.child_by_field_name("object") else { return };
-    if node_text(&obj, source) != "self" { return; }
-    let Some(attr) = left.child_by_field_name("attribute") else { return };
+    if expr.kind() != "assignment" {
+        return;
+    }
+    let Some(left) = expr.child_by_field_name("left") else {
+        return;
+    };
+    if left.kind() != "attribute" {
+        return;
+    }
+    let Some(obj) = left.child_by_field_name("object") else {
+        return;
+    };
+    if node_text(&obj, source) != "self" {
+        return;
+    }
+    let Some(attr) = left.child_by_field_name("attribute") else {
+        return;
+    };
     let name = node_text(&attr, source);
     if !props.iter().any(|p| p.name == name) {
         props.push(child_def(name.to_string(), "property", start_line(stmt)));
@@ -299,8 +345,12 @@ fn is_module_level(node: &Node) -> bool {
 
 fn is_upper_snake_case(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-        && s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+        && s.chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+        && s.chars()
+            .next()
+            .map(|c| c.is_ascii_uppercase())
+            .unwrap_or(false)
 }
 
 // ── Existing helpers ────────────────────────────────────────────────────────
@@ -378,9 +428,7 @@ fn match_python_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, 
                     let name = node_text(&name_node, source);
                     if name != "self" && name != "cls" {
                         if let Some(type_node) = node.child_by_field_name("type") {
-                            if let Some(type_name) =
-                                extract_python_type_name(&type_node, source)
-                            {
+                            if let Some(type_name) = extract_python_type_name(&type_node, source) {
                                 symbols.type_map.push(TypeMapEntry {
                                     name: name.to_string(),
                                     type_name: type_name.to_string(),
@@ -396,9 +444,7 @@ fn match_python_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, 
             if let Some(name_node) = node.child_by_field_name("name") {
                 if name_node.kind() == "identifier" {
                     if let Some(type_node) = node.child_by_field_name("type") {
-                        if let Some(type_name) =
-                            extract_python_type_name(&type_node, source)
-                        {
+                        if let Some(type_name) = extract_python_type_name(&type_node, source) {
                             symbols.type_map.push(TypeMapEntry {
                                 name: node_text(&name_node, source).to_string(),
                                 type_name: type_name.to_string(),
@@ -421,16 +467,29 @@ fn match_python_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, 
 
 /// Seed typeMap from plain Python assignments where the RHS is a constructor or factory call.
 fn infer_py_assignment_type(node: &Node, source: &[u8], type_map: &mut Vec<TypeMapEntry>) {
-    let Some(left) = node.child_by_field_name("left") else { return };
-    let Some(right) = node.child_by_field_name("right") else { return };
-    if left.kind() != "identifier" || right.kind() != "call" { return; }
+    let Some(left) = node.child_by_field_name("left") else {
+        return;
+    };
+    let Some(right) = node.child_by_field_name("right") else {
+        return;
+    };
+    if left.kind() != "identifier" || right.kind() != "call" {
+        return;
+    }
     let var_name = node_text(&left, source).to_string();
-    let Some(fn_node) = right.child_by_field_name("function") else { return };
+    let Some(fn_node) = right.child_by_field_name("function") else {
+        return;
+    };
     match fn_node.kind() {
         "identifier" => {
             // `order = Order(...)` — uppercase first char → constructor, conf 1.0.
             let name = node_text(&fn_node, source);
-            if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            if name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+            {
                 type_map.push(TypeMapEntry {
                     name: var_name,
                     type_name: name.to_string(),
@@ -443,7 +502,11 @@ fn infer_py_assignment_type(node: &Node, source: &[u8], type_map: &mut Vec<TypeM
             if let Some(obj_node) = fn_node.child_by_field_name("object") {
                 if obj_node.kind() == "identifier" {
                     let obj_name = node_text(&obj_node, source);
-                    if obj_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                    if obj_name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false)
                         && !is_python_builtin(obj_name)
                     {
                         type_map.push(TypeMapEntry {
@@ -538,7 +601,8 @@ mod tests {
 
     #[test]
     fn extracts_class_properties_from_init() {
-        let s = parse_py("class User:\n  def __init__(self, x, y):\n    self.x = x\n    self.y = y\n");
+        let s =
+            parse_py("class User:\n  def __init__(self, x, y):\n    self.x = x\n    self.y = y\n");
         let user = s.definitions.iter().find(|d| d.name == "User").unwrap();
         let children = user.children.as_ref().unwrap();
         let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
@@ -550,7 +614,11 @@ mod tests {
     #[test]
     fn extracts_module_level_constant() {
         let s = parse_py("MAX_RETRIES = 3");
-        let c = s.definitions.iter().find(|d| d.name == "MAX_RETRIES").unwrap();
+        let c = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "MAX_RETRIES")
+            .unwrap();
         assert_eq!(c.kind, "constant");
     }
 
@@ -573,7 +641,10 @@ mod tests {
         // The object name must be uppercase to match the JS heuristic.
         let s = parse_py("def run():\n    svc = Models.UserService(db)\n    svc.create()\n");
         let entry = s.type_map.iter().find(|e| e.name == "svc");
-        assert!(entry.is_some(), "expected svc in type_map for Module.Class(...)");
+        assert!(
+            entry.is_some(),
+            "expected svc in type_map for Module.Class(...)"
+        );
         let entry = entry.unwrap();
         assert_eq!(entry.type_name, "Models");
         assert!((entry.confidence - 0.7).abs() < f64::EPSILON);
