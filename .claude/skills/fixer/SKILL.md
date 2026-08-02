@@ -433,7 +433,11 @@ case "$STATUS" in
         echo "Restore from .codegraph/fixer/state.json.bak, then stop and report to the user. Queue was NOT advanced."
         exit 1
       fi
-      mv "$TMP_STATE" .codegraph/fixer/state.json
+      if ! mv "$TMP_STATE" .codegraph/fixer/state.json; then
+        echo "ERROR: could not replace state.json with the reconciled record for issue #$ISSUE (mv failed)."
+        echo "Restore from .codegraph/fixer/state.json.bak if needed, then stop and report to the user. Queue was NOT advanced."
+        exit 1
+      fi
       trap - EXIT
       [ "$RECONCILE" = "parked" ] && printf '%s\n' "$EX_PR" >> .codegraph/fixer/parked.txt
       TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
@@ -442,7 +446,10 @@ case "$STATUS" in
         echo "ERROR: could not shift queue.json after recording issue #$ISSUE as $RECONCILE — state.json already has the record, but the queue was NOT advanced. Investigate queue.json before re-running, or this issue will be reprocessed."
         exit 1
       fi
-      mv "$TMP_QUEUE" .codegraph/fixer/queue.json
+      if ! mv "$TMP_QUEUE" .codegraph/fixer/queue.json; then
+        echo "ERROR: could not replace queue.json after recording issue #$ISSUE as $RECONCILE (mv failed) — state.json already has the record. Investigate queue.json before re-running, or this issue will be reprocessed."
+        exit 1
+      fi
       trap - EXIT
       echo "fixer: reconciled issue #$ISSUE as $RECONCILE without retrying — advancing to the next issue"
     fi
