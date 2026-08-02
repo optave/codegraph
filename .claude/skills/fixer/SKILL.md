@@ -442,7 +442,13 @@ case "$STATUS" in
         exit 1
       fi
       trap - EXIT
-      [ "$RECONCILE" = "parked" ] && printf '%s\n' "$EX_PR" >> .codegraph/fixer/parked.txt
+      # Guarded like the state.json/queue.json writes around it: if this append fails,
+      # state.json already says "parked" for a PR that parked.txt never learns about,
+      # so Phase: Drain Parked PRs would never see it — stop before the queue advances.
+      if [ "$RECONCILE" = "parked" ] && ! printf '%s\n' "$EX_PR" >> .codegraph/fixer/parked.txt; then
+        echo "ERROR: could not append PR #$EX_PR to parked.txt for issue #$ISSUE — state.json already recorded it as parked. Queue was NOT advanced."
+        exit 1
+      fi
       TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
       trap 'rm -f "$TMP_QUEUE"' EXIT
       if ! jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE"; then
