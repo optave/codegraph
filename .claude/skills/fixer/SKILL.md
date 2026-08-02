@@ -521,15 +521,13 @@ For Greptile's response to a re-trigger to arrive, use the `Monitor` tool to pol
 - a **new** review or comment from `greptile-apps[bot]` posted after the trigger's timestamp (new findings — go address them and re-trigger again), or
 - a **positive reaction** (`+1`, `hooray`, `heart`, `rocket`) from `greptile-apps[bot]` **on the trigger comment itself**, with no follow-up review — this means Greptile examined the fix and has nothing further to flag. Treat it as convergence for this round, not a reason to keep waiting for a review object that isn't coming.
 
+Capture the trigger comment's ID **from the post response itself** when you send it, and reuse that exact ID for the reaction check below. Do not post the trigger separately and then search for "the last `@greptileai` comment" afterward — if another trigger gets posted on the same PR in the meantime (a resumed run, a concurrent session per the Parallel Sessions rules), that search silently drifts to the wrong comment:
+
 ```bash
 mkdir -p .codegraph/fixer
 REPO=$(cat .codegraph/fixer/repo)
 PR=$(cat .codegraph/fixer/current-pr)
-# --paginate with --jq applies the filter per-page, not to the merged result, so 'last'
-# across a multi-page comment list would return one candidate PER PAGE instead of the true
-# global last — fetch raw and slurp instead, matching the pattern used elsewhere in this file.
-TRIGGER_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-  | jq -s '[.[][] | select(.body | test("^@greptileai\\s*$"))] | last | .id')
+TRIGGER_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR/comments" -f body="@greptileai" --jq '.id')
 gh api "repos/$REPO/issues/comments/$TRIGGER_COMMENT_ID/reactions" \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]" and (.content == "+1" or .content == "hooray" or .content == "heart" or .content == "rocket"))] | length'
 # > 0 with no new review after this comment's timestamp: converged, proceed to the gate evaluation below.
