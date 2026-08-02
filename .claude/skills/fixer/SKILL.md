@@ -30,6 +30,7 @@ A previous batch run on this repo collapsed under compounding merge conflicts �
 - **I4 — Never re-solve solved work.** Only parked PRs ever need a catch-up merge. Every such merge must pass the diff-integrity check in Phase: Drain Parked PRs, which mechanically verifies that every line the PR authored still survives.
 - **I5 — Never rebase; always `git merge origin/main`.** The ruleset forbids non-fast-forward pushes to `main` and the repo disables rebase-merge.
 - **I6 — A parked PR never blocks the next issue.** Parking is the escape hatch that keeps the batch moving; Phase: Drain Parked PRs cleans up.
+- **I7 — Every issue's work happens in a freshly dispatched sub-agent, never inline in the orchestrating session.** The orchestrator only reads state back off disk between dispatches, the same disk state a resumed run already relies on. This keeps a multi-batch run's context from growing without bound and gives each issue a genuinely clean slate.
 
 ---
 
@@ -252,7 +253,7 @@ jq -r '.[] | "  #\(.issue)  \(.title)"' .codegraph/fixer/queue.json
 
 ## Phase 2 — Solve and Merge Loop
 
-Process queue entries **strictly in ascending issue order, one at a time**. Do not start the next issue until the current one is either merged or parked — that serialisation is what enforces I2 and I3.
+Process queue entries **strictly in ascending issue order, one at a time**. Do not start the next issue until the current one is either merged or parked — that serialisation is what enforces I2 and I3. **This session never executes 2a–2g itself** — each issue is dispatched to a fresh sub-agent (invariant I7, below) and the result is validated off disk before the next dispatch.
 
 Emit progress at the top of every iteration so a long batch is never silent (Pattern 11):
 
@@ -264,7 +265,7 @@ echo "fixer: progress $DONE/$TOTAL issues resolved"
 jq -r '.[] | "  #\(.issue)  \(.title)"' .codegraph/fixer/queue.json | head -"$TOTAL"
 ```
 
-For each issue `ISSUE` in the queue whose recorded status is not `merged`, `parked`, or `abandoned`, run steps 2a–2g.
+For each issue `ISSUE` in the queue whose recorded status is not `merged`, `parked`, or `abandoned`, **dispatch one fresh sub-agent to run steps 2a–2g for that issue alone**, then validate its result before advancing (see "Dispatching each issue to a sub-agent" below).
 
 `state.json` and `queue.json` are updated by two separate writes in step 2g (Pattern 1 — bash blocks do not share variables, so the outcome is appended in one `jq`/`mv` and the queue is shifted in another). If a run stops between those two writes, `queue.json[0]` is still the issue that `state.json` already recorded as resolved. Filter it out before ever reading the queue head, so a resumed run never re-branches or re-PRs completed work:
 
@@ -298,6 +299,65 @@ while true; do
   trap - EXIT
 done
 ```
+
+### Dispatching each issue to a sub-agent (invariant I7)
+
+Steps 2a–2g below are never executed inline in this session. An issue's full cycle — reading it, building codegraph context, editing, verifying, opening a PR, waiting on CI and Greptile, converging, merging — generates a lot of transcript, and ten issues' worth of that compounding in one session is exactly the kind of unbounded growth this skill should not depend on tolerating for a normal run (as opposed to surviving as an *interruption*, which is what the disk-based state in Pattern 1 exists for). So each issue gets a genuinely clean context: this session only ever dispatches a sub-agent to run 2a–2g and then reads the outcome back off disk — the same disk state a resumed run already reads.
+
+Snapshot `state.json` immediately before every dispatch, so a corrupted write is recoverable — this mirrors the state backup `/titan-run` takes ahead of its own sub-agent dispatches:
+
+```bash
+mkdir -p .codegraph/fixer
+cp .codegraph/fixer/state.json .codegraph/fixer/state.json.bak 2>/dev/null || true
+```
+
+Use the **Agent tool** in the foreground (`run_in_background: false` — I2/I3 require the next issue to wait for this one to fully land) and with **no `isolation` parameter** — this run already has its one dedicated worktree from Phase 0, and spawning another would violate I1's single-worktree-per-run design:
+
+```
+Agent({
+  description: "Solve issue #<ISSUE> end-to-end",
+  run_in_background: false,
+  prompt: |
+    You are executing exactly ONE issue for an in-progress /fixer run in <REPO>.
+    Read .claude/skills/fixer/SKILL.md and follow Phase 2, steps 2a through 2g,
+    EXACTLY and IN FULL, for issue #<ISSUE> only.
+
+    You are already inside the correct worktree, on the correct starting point.
+    Do not run /worktree, do not create a new worktree, do not touch any other
+    queue entry. Arguments (count, author, start-from, once, dry-run) are already
+    parsed and persisted under .codegraph/fixer/ — read them from there, do not
+    reparse $ARGUMENTS.
+
+    Stop as soon as steps 2a-2g reach a terminal outcome for this issue (merged,
+    parked, or abandoned) — do not continue to the next queue entry, that is the
+    orchestrating run's job. Return a short summary: the outcome, the PR number
+    if one was opened, and anything unusual.
+})
+```
+
+After the sub-agent returns, validate before trusting it — a sub-agent's own summary describes what it intended to do, not necessarily what actually landed on disk, the same caution this skill already applies to `/sweep` and `/resolve`:
+
+```bash
+mkdir -p .codegraph/fixer
+# ISSUE must be the number captured from queue.json's head BEFORE dispatch — by the
+# time the sub-agent's 2g has run, queue.json has already shifted (on success), so it
+# can no longer be re-derived by reading queue.json here the way earlier steps do.
+RECORDED=$(jq --argjson issue "$ISSUE" '[.issues[] | select(.issue == $issue)] | length' .codegraph/fixer/state.json)
+if [ "$RECORDED" -ne 1 ]; then
+  echo "ERROR: sub-agent for issue #$ISSUE left $RECORDED state.json record(s), expected exactly 1."
+  echo "Compare against .codegraph/fixer/state.json.bak; if state.json is corrupted, restore the backup, then retry issue #$ISSUE once."
+  exit 1
+fi
+STATUS=$(jq -r --argjson issue "$ISSUE" '[.issues[] | select(.issue == $issue)][0].status' .codegraph/fixer/state.json)
+case "$STATUS" in
+  merged|parked|abandoned) echo "fixer: sub-agent recorded issue #$ISSUE as $STATUS" ;;
+  *) echo "ERROR: issue #$ISSUE recorded with invalid status '$STATUS'"; exit 1 ;;
+esac
+```
+
+If validation fails, retry the dispatch **once** for the same issue — 2a's own crash-safety (clearing stale `outcome`/`round`/`current-pr`/`gate-fail`/stall/signature scratch files left by an interrupted attempt) and the dedup loop above already make a retry safe even if the first sub-agent got partway through. If the retry also fails validation, **stop the run and report to the user** — never guess at the outcome or silently mark the issue as anything.
+
+Nothing about 2a–2g's content changes because of this dispatch — every check, gate, and invariant below still applies exactly as written. A sub-agent is simply the thing now applying them, one issue at a time, in a clean context each time.
 
 ### 2a. Cut a fresh branch from `origin/main` (invariant I1)
 
@@ -802,13 +862,31 @@ echo "fixer: issue #$ISSUE recorded as $STATUS; $(jq 'length' .codegraph/fixer/q
 
 Loop back to step 2a for the next queue entry. **Only after the current PR is merged or parked** — that ordering is I2.
 
-**Exit condition:** Every queue entry has a `state.json` record with status `merged`, `parked`, or `abandoned`; `queue.json` is an empty array. Every merged PR satisfied all five gate conditions. No branch was reused and no branch was stacked on another issue's branch.
+**Exit condition:** Every queue entry has a `state.json` record with status `merged`, `parked`, or `abandoned`; `queue.json` is an empty array. Every merged PR satisfied all five gate conditions. No branch was reused and no branch was stacked on another issue's branch. Every issue's 2a–2g ran inside its own dispatched sub-agent, validated against `state.json` before the next dispatch — never inline in this session.
 
 ---
 
 ## Phase 3 — Continue the Batch Loop, or Proceed to Drain
 
 Phase 1 and Phase 2 together process exactly one batch of up to `COUNT` issues. **The run's objective is the whole qualifying backlog, not one batch** — this phase decides whether more work remains before moving on to drain and report.
+
+### 3a. Housekeep the worktree
+
+Every batch cuts and merges several branches inside the one worktree serving this run (Phase 0), leaving local branch refs behind even though `--delete-branch` already removed them on the remote. Run `/housekeep` once per completed batch — including the last one — rather than letting that cleanup accumulate for a human to notice later:
+
+```bash
+mkdir -p .codegraph/fixer
+DRY_RUN=$(cat .codegraph/fixer/dry-run)
+echo "fixer: batch complete — running housekeeping before deciding on the next step"
+```
+
+Invoke the `housekeep` skill: `/housekeep --dry-run` if `DRY_RUN` is `true` (fixer's own dry-run must not let a nested skill mutate anything either), otherwise plain `/housekeep`.
+
+`/housekeep` asks for confirmation before deleting a stale worktree or a merged branch — it never deletes unattended. Answer those prompts with the same judgment /fixer already exercises unattended for PR merges elsewhere in this skill, never an `AskUserQuestion`, with one hard exception:
+
+- **Never confirm removal of the worktree this run is executing in.** Compare the path housekeep lists against `git rev-parse --show-toplevel`. This run's own worktree can legitimately look stale to housekeep — its currently checked-out branch is whichever issue branch merged most recently, which by definition has no commits ahead of `main` — but removing it out from under this run kills the batch loop mid-run. Decline that one specific removal; everything else housekeep proposes (other sessions' stale worktrees, this run's own already-merged local branch refs, dirt files) is fair game to confirm.
+
+Housekeep's own scope is strictly local (no pushes, no PR activity), so it never conflicts with the merge machinery in Phase 2 or Phase: Drain Parked PRs.
 
 Stop looping and go straight to Phase: Drain Parked PRs if `ONCE` or `DRY_RUN` is `true` — a single batch is the entire run in either case:
 
@@ -870,7 +948,7 @@ fi
 
 If `.codegraph/fixer/loop-decision` is `loop`, go back to Phase 1 and process another batch — do **not** re-run Phase 0 (the repo slug, test/lint commands, and `state.json` are already established for this run, and re-running Phase 0's resume-detection would misread the mid-run `state.json` as a crash to resume from). If it is `stop`, proceed to Phase: Drain Parked PRs.
 
-**Exit condition:** `.codegraph/fixer/loop-decision` is `loop` (with a fresh `start-from` persisted and per-batch scratch state cleared) or `stop`. Every batch processed this run is recorded cumulatively in `state.json` — nothing from an earlier batch is lost or overwritten by a later one.
+**Exit condition:** `/housekeep` has run for this batch (3a). `.codegraph/fixer/loop-decision` is `loop` (with a fresh `start-from` persisted and per-batch scratch state cleared) or `stop`. Every batch processed this run is recorded cumulatively in `state.json` — nothing from an earlier batch is lost or overwritten by a later one.
 
 ---
 
@@ -1120,6 +1198,7 @@ All state is under `.codegraph/fixer/`:
 | `test-cmd`, `lint-cmd` | text | detected package-manager commands |
 | `queue.json` | JSON array of `{issue, title}` | current batch's remaining work, ascending; entries are shifted off as they complete. **A present-but-empty `queue.json` means the batch loop fully completed** — Phase 0 uses this, together with `parked.txt` and `run-complete`, to decide fresh-run vs. resume |
 | `state.json` | `{"issues":[{issue, status, pr}]}` | per-issue outcome, accumulated across every batch this run has processed; reset to empty whenever Phase 0 detects a fresh run |
+| `state.json.bak` | JSON | snapshot taken immediately before each issue's sub-agent dispatch (I7); restore from this if a dispatch corrupts `state.json` |
 | `parked.txt` | newline-separated PR numbers | accumulated across every batch; input to Phase: Drain Parked PRs; a merged PR's number is removed from this file the moment it merges. **Only ever emptied, never deleted, by a fully-merged drain** — Phase 0 treats a non-empty `parked.txt` as evidence of a resumable (mid-drain) run only if `run-complete` is absent; once Phase: Final Report has actually run and written it, the remaining entries are a closed, already-reported matter, not a resume signal |
 | `run-complete` | empty marker file | touched by Phase: Final Report as its last action, strictly after the report has been produced — the sole authoritative "this run's outcome was reported" signal Phase 0 checks, deliberately decoupled from `drain-stall`/`drain-pass` (which get written mid-Phase-4 and would otherwise race against the report actually happening); reset (removed) whenever Phase 0 starts a genuinely fresh run |
 | `batches-done` | text | count of batches completed this run; read by Phase 3 and the final report; reset on a fresh run |
@@ -1150,6 +1229,8 @@ All state is under `.codegraph/fixer/`:
 
 - **One branch per issue, always cut from a freshly fetched `origin/main` (I1).** Never reuse a branch across issues. Never stack a branch on another issue's branch — `deleteBranchOnMerge` is enabled, so merging a base PR closes its stacked PRs.
 - **Merge the current PR before cutting the next branch (I2, I3).** Never open the next issue's PR while the previous one is still open and mergeable. Only a parked PR may remain open.
+- **Every issue's 2a–2g runs in a freshly dispatched sub-agent, never inline (I7).** Snapshot `state.json` before each dispatch, validate the sub-agent's result against `state.json` afterward, and retry once on validation failure before stopping the run.
+- **Run `/housekeep` once per completed batch (Phase 3), including the last one.** Never let it confirm removal of the worktree this run is executing in — check the path first.
 - **Never rebase (I5).** Always `git merge origin/main`. The ruleset forbids non-fast-forward pushes to `main` and the repo disables rebase-merge.
 - **Never push a catch-up merge without a passing I4 integrity check.** Every line the PR authored must still exist, or its absence must be individually documented. A clean merge with no conflict markers is not evidence that nothing was lost.
 - **Never `git stash`.** The stash stack is shared with the main checkout and every other worktree. Use commits.
