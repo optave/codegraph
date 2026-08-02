@@ -355,7 +355,49 @@ case "$STATUS" in
 esac
 ```
 
-If validation fails, retry the dispatch **once** for the same issue — 2a's own crash-safety (clearing stale `outcome`/`round`/`current-pr`/`gate-fail`/stall/signature scratch files left by an interrupted attempt) and the dedup loop above already make a retry safe even if the first sub-agent got partway through. If the retry also fails validation, **stop the run and report to the user** — never guess at the outcome or silently mark the issue as anything.
+**Before retrying, check GitHub for what actually happened — never assume nothing landed.** A sub-agent can crash after `gh pr merge` in 2f but before 2g ever writes `state.json` (or after `gh pr create` in 2e but before merging). Blindly retrying the full 2a–2g cycle in either case would cut a *second* branch and open a *second* PR for an issue whose original PR already merged, or already exists and is mid-review — silently duplicating or orphaning real work. 2a's branch name is deterministic (`fix/issue-$ISSUE`), so query it directly instead of guessing from `state.json` alone:
+
+```bash
+mkdir -p .codegraph/fixer
+REPO=$(cat .codegraph/fixer/repo)
+# ISSUE is the same number captured before dispatch, per the comment above
+EXISTING=$(gh pr list --repo "$REPO" --head "fix/issue-$ISSUE" --state all --json number,state,url)
+EXISTING_COUNT=$(printf '%s' "$EXISTING" | jq 'length')
+if [ "$EXISTING_COUNT" -eq 0 ]; then
+  echo "fixer: no PR exists for fix/issue-$ISSUE — the crash happened before 2e ever opened one. Safe to retry the full 2a-2g dispatch."
+  RECONCILE=retry
+else
+  EX_STATE=$(printf '%s' "$EXISTING" | jq -r '.[0].state')
+  EX_PR=$(printf '%s' "$EXISTING" | jq -r '.[0].number')
+  case "$EX_STATE" in
+    MERGED) echo "fixer: PR #$EX_PR for issue #$ISSUE is already merged — the crash was between 2f's merge and 2g's write. Reconciling state.json directly, no retry."; RECONCILE=merged ;;
+    OPEN) echo "fixer: PR #$EX_PR for issue #$ISSUE is already open — the crash was mid-2f. Recording it as parked so Phase: Drain Parked PRs converges it, rather than opening a duplicate PR."; RECONCILE=parked ;;
+    CLOSED) echo "fixer: PR #$EX_PR for issue #$ISSUE exists but was closed without merging — nothing to reconcile from it. Safe to retry the full 2a-2g dispatch."; RECONCILE=retry ;;
+  esac
+fi
+```
+
+Apply the reconciliation directly — this is the only place besides 2g itself that writes a terminal `state.json` record, and it uses the exact same append pattern:
+
+```bash
+mkdir -p .codegraph/fixer
+if [ "$RECONCILE" != "retry" ]; then
+  TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
+  trap 'rm -f "$TMP_STATE"' EXIT
+  jq --argjson issue "$ISSUE" --arg status "$RECONCILE" --argjson pr "$EX_PR" \
+    '.issues += [{issue: $issue, status: $status, pr: $pr}]' \
+    .codegraph/fixer/state.json > "$TMP_STATE" && mv "$TMP_STATE" .codegraph/fixer/state.json
+  trap - EXIT
+  [ "$RECONCILE" = "parked" ] && printf '%s\n' "$EX_PR" >> .codegraph/fixer/parked.txt
+  TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
+  trap 'rm -f "$TMP_QUEUE"' EXIT
+  jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
+  trap - EXIT
+  echo "fixer: reconciled issue #$ISSUE as $RECONCILE without retrying — advancing to the next issue"
+fi
+```
+
+Only when `RECONCILE=retry` does a second dispatch happen, and only **once** — 2a's own crash-safety (clearing stale `outcome`/`round`/`current-pr`/`gate-fail`/stall/signature scratch files left by an interrupted attempt) and the dedup loop above already make that retry safe. If the retry also fails validation, or the GitHub lookup itself is ambiguous or fails, **stop the run and report to the user** — never guess at the outcome or silently mark the issue as anything.
 
 Nothing about 2a–2g's content changes because of this dispatch — every check, gate, and invariant below still applies exactly as written. A sub-agent is simply the thing now applying them, one issue at a time, in a clean context each time.
 
@@ -882,9 +924,11 @@ echo "fixer: batch complete — running housekeeping before deciding on the next
 
 Invoke the `housekeep` skill: `/housekeep --dry-run` if `DRY_RUN` is `true` (fixer's own dry-run must not let a nested skill mutate anything either), otherwise plain `/housekeep`.
 
-`/housekeep` asks for confirmation before deleting a stale worktree or a merged branch — it never deletes unattended. Answer those prompts with the same judgment /fixer already exercises unattended for PR merges elsewhere in this skill, never an `AskUserQuestion`, with one hard exception:
+`/housekeep` asks for confirmation before deleting a stale worktree or a merged branch — it never deletes unattended, and /fixer must not blanket-approve on its behalf just because it is running unattended. /fixer only has firsthand knowledge of its own work, so its autonomy here is deliberately narrow — never an `AskUserQuestion` either way, but the default is to decline, not confirm:
 
-- **Never confirm removal of the worktree this run is executing in.** Compare the path housekeep lists against `git rev-parse --show-toplevel`. This run's own worktree can legitimately look stale to housekeep — its currently checked-out branch is whichever issue branch merged most recently, which by definition has no commits ahead of `main` — but removing it out from under this run kills the batch loop mid-run. Decline that one specific removal; everything else housekeep proposes (other sessions' stale worktrees, this run's own already-merged local branch refs, dirt files) is fair game to confirm.
+- **Confirm deletion only for local branches this run itself recorded as `merged` in `state.json`.** /fixer knows these are safe because it merged them itself moments ago, and `--delete-branch` (I1) already removed them on the remote — housekeep is only pruning the leftover local ref.
+- **Decline every worktree-removal prompt, with no exception — including this run's own worktree.** Housekeep's stale-worktree criteria (branch merged, no commits ahead of `main`, no uncommitted changes) cannot distinguish "abandoned" from "another session is actively using it between commits," which is exactly why housekeep gates worktree removal behind confirmation in the first place; /fixer has no additional information that would make it safe to override that gate. This run's own worktree is doubly out of bounds — its currently checked-out branch is whichever issue branch merged most recently, which by definition looks stale by every one of those criteria, and removing it out from under this run would kill the batch loop mid-run.
+- **Decline everything else** (branches this run did not itself merge, large untracked files, anything not self-evidently this run's own completed work). Report it in the final summary and move on — the same posture /fixer already takes toward genuinely ambiguous merge conflicts, which it hands to `/resolve` rather than guessing at.
 
 Housekeep's own scope is strictly local (no pushes, no PR activity), so it never conflicts with the merge machinery in Phase 2 or Phase: Drain Parked PRs.
 
@@ -1229,8 +1273,8 @@ All state is under `.codegraph/fixer/`:
 
 - **One branch per issue, always cut from a freshly fetched `origin/main` (I1).** Never reuse a branch across issues. Never stack a branch on another issue's branch — `deleteBranchOnMerge` is enabled, so merging a base PR closes its stacked PRs.
 - **Merge the current PR before cutting the next branch (I2, I3).** Never open the next issue's PR while the previous one is still open and mergeable. Only a parked PR may remain open.
-- **Every issue's 2a–2g runs in a freshly dispatched sub-agent, never inline (I7).** Snapshot `state.json` before each dispatch, validate the sub-agent's result against `state.json` afterward, and retry once on validation failure before stopping the run.
-- **Run `/housekeep` once per completed batch (Phase 3), including the last one.** Never let it confirm removal of the worktree this run is executing in — check the path first.
+- **Every issue's 2a–2g runs in a freshly dispatched sub-agent, never inline (I7).** Snapshot `state.json` before each dispatch and validate the sub-agent's result against `state.json` afterward. On validation failure, check GitHub for an existing `fix/issue-$ISSUE` PR before retrying — reconcile a merged or open PR directly into `state.json`/`parked.txt` instead of re-dispatching, since a blind retry can duplicate already-merged work or orphan an in-flight PR. Only retry the full 2a-2g cycle, once, when no such PR exists or it was closed unmerged.
+- **Run `/housekeep` once per completed batch (Phase 3), including the last one.** /fixer's autonomy to confirm housekeep's deletion prompts is narrow: only local branches this run itself just merged. Decline every worktree-removal prompt unconditionally — including this run's own worktree — since housekeep cannot distinguish "abandoned" from "another session mid-use," and /fixer has no basis to override that.
 - **Never rebase (I5).** Always `git merge origin/main`. The ruleset forbids non-fast-forward pushes to `main` and the repo disables rebase-merge.
 - **Never push a catch-up merge without a passing I4 integrity check.** Every line the PR authored must still exist, or its absence must be individually documented. A clean merge with no conflict markers is not evidence that nothing was lost.
 - **Never `git stash`.** The stash stack is shared with the main checkout and every other worktree. Use commits.
