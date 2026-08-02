@@ -79,11 +79,27 @@ Several steps below require waiting on something external — CI runs, `npm test
 - For a reviewer response (Greptile/Claude), a real review typically posts within minutes but can take 15–30+ minutes. Poll for new comments on an interval rather than checking once and assuming silence means "satisfied."
 - Only stop polling once you have an actual terminal state: a check conclusion, a test exit code, or (for reviews) either a new comment/reaction or enough elapsed real time that you're confident nothing more is coming.
 
-### 2a. Check out the PR branch
+### 2a. Check out the PR head (detached)
+
+A full sweep runs one subagent per PR in parallel, so **never** run a bare `gh pr checkout <number>`: it claims the head branch *name*, and a branch can be checked out in exactly **one** worktree. If a concurrent agent — or a leftover worktree that was never collected — already holds it, the checkout aborts outright:
+
+```text
+fatal: 'fix/some-branch' is already checked out at '.claude/worktrees/wf_40037ee4-070-1'
+```
+
+Check out **detached** instead. A detached HEAD claims no branch name, so it can never collide; push by refspec at the end. Do **not** work around a collision by inventing a local branch name of your own.
 
 ```bash
-gh pr checkout <number>
+head=$(gh pr view <number> --json headRefName -q .headRefName)
+oid=$(gh pr view <number> --json headRefOid -q .headRefOid)
+gh pr checkout <number> --detach
+# Fail closed if HEAD is not the PR head (stale fetch, or the head moved as you started).
+[ "$(git rev-parse HEAD)" = "$oid" ] || { echo "ABORT: HEAD is not PR <number>'s head"; exit 1; }
 ```
+
+Every later `git push origin "HEAD:$head"` in this skill then becomes `git push origin "HEAD:$head"` (and the commitlint-amend exception, `git push --force-with-lease origin "HEAD:$head"`) — a bare `git push` fails from a detached HEAD with *"You are not currently on a branch"*. Re-read `headRefOid` immediately before pushing; on a live PR the sha you captured here may no longer be the head.
+
+> Stale worktrees are the usual reason a name is taken. `bash .claude/scripts/gc-worktrees.sh` collects the finished ones; it never touches a worktree with uncommitted work.
 
 ### 2b. Resolve merge conflicts
 
@@ -257,7 +273,7 @@ After addressing all comments for a PR:
 3. Use descriptive messages per commit: `fix: <what this specific change does> (#<number>)`
 4. Push to the PR branch.
 5. **If the push is rejected** (e.g., by a hook or commitlint), diagnose the error before retrying:
-   - **Commitlint failure** (bad commit message format): This is the ONE case where amend + force-push is allowed. Fix the message with `git commit --amend -m "correct message"` then `git push --force-with-lease`.
+   - **Commitlint failure** (bad commit message format): This is the ONE case where amend + force-push is allowed. Fix the message with `git commit --amend -m "correct message"` then `git push --force-with-lease origin "HEAD:$head"` (by refspec — you are on a detached HEAD from step 2a).
    - **Hook denial** (guard-git.sh blocking staged files not in session edit log): The worktree has no edit log — commit with explicit file paths (`git commit <file1> <file2> -m "msg"`) instead of staging first.
    - **Branch name validation failure**: You are on the wrong branch — check out the correct PR branch before retrying.
    - **Any other failure**: Fix with a new commit. Never amend + force-push for code changes.
@@ -389,7 +405,8 @@ If any subagent failed or returned an error, note it in the Status column as `ag
 ## Rules
 
 - **Never rebase.** Always `git merge <base>` to resolve conflicts.
-- **Never force-push** unless fixing a commit message that fails commitlint. Amend + force-push is the only way to fix a pushed commit title (messages are part of the SHA). This is safe on feature branches. For all other problems, fix with a new commit. **If a push or commit is denied by a hook**, read the denial reason — don't blindly retry or escalate to force-push. Common causes: (1) commitlint rejects the message format → amend + force-push (`git push --force-with-lease`), (2) guard-git blocks staged files not in session edit log → use `git commit <file1> <file2> -m "msg"` with explicit paths, (3) branch name validation fails → you're on the wrong branch.
+- **Push by refspec — you are detached.** Step 2a checks the PR head out with `--detach` so the checkout cannot collide with another worktree holding that branch name. A bare `git push origin "HEAD:$head"` therefore fails with *"You are not currently on a branch"*: every push is `git push origin "HEAD:$head"`.
+- **Never force-push** unless fixing a commit message that fails commitlint. Amend + force-push is the only way to fix a pushed commit title (messages are part of the SHA). This is safe on feature branches. For all other problems, fix with a new commit. **If a push or commit is denied by a hook**, read the denial reason — don't blindly retry or escalate to force-push. Common causes: (1) commitlint rejects the message format → amend + force-push (`git push --force-with-lease origin "HEAD:$head"`), (2) guard-git blocks staged files not in session edit log → use `git commit <file1> <file2> -m "msg"` with explicit paths, (3) branch name validation fails → your detached HEAD is not on the PR's head commit.
 - **Address ALL comments from ALL reviewers** (Claude, Greptile, and humans), even minor/nit/optional ones. Leave zero unaddressed. Do not only respond to one reviewer and skip another.
 - **Always reply to comments** explaining what was done. Don't just fix silently. Every reviewer must see a reply on their feedback.
 - **Mine the Greptile *summary* body, not just inline comments** (Step 2d.1). A `Confidence Score: N/5` with `N < 5` always names at least one gap in prose, and those gaps frequently have **no** inline comment. Extract every finding from the summary and fix it (or file a tracked `follow-up`). Missing a summary-only finding is the #1 way a Greptile concern survives a sweep — reconcile your fixes against the summary before declaring the PR ready.

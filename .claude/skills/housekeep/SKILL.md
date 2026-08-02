@@ -61,12 +61,25 @@ Cross-reference against `.claude/worktrees/*` on disk — directories there that
 
 ### 1c. Identify stale worktrees
 
-A worktree is stale if:
-- Its directory no longer exists on disk, OR it exists on disk but is not in `git worktree list` (orphaned)
-- It has no uncommitted changes AND its branch has been merged to main
-- Its branch has no commits ahead of `origin/main` AND the branch's last commit is more than 7 days old
-  (check: `git log -1 --format=%ci <branch>` — `git worktree list` does not expose creation timestamps)
-- It matches the sub-agent pattern `.claude/worktrees/agent-<hex>` AND has no uncommitted changes AND its branch has no commits ahead of `origin/main` (sub-agent worktrees are typically ephemeral and orphaned after the agent finishes)
+Staleness is decided by `.claude/scripts/gc-worktrees.sh`, which is the single source for this rule. Run it in dry-run to get the triage list:
+
+```bash
+bash .claude/scripts/gc-worktrees.sh --dry-run
+```
+
+It reports a worktree as collectable only when **all** of: its path is under `<repo-root>/.claude/worktrees/` (the scope guard, enforced in code); its branch belongs to a **settled** PR — merged or closed — with no open PR on that branch; its tree has no uncommitted changes; and it is not `git worktree lock`ed. Directories that vanished are handled by `git worktree prune` inside the script.
+
+> **Do not hand-roll this check with `git branch --merged origin/main`.** In a repo that **squash-merges**, a landed branch's tip is never an ancestor of the default branch, so `--merged` lists almost nothing — the check looks right, passes review, and silently reports every finished worktree as still in flight. The script resolves merged-ness from GitHub PR state for exactly this reason, and detects the default branch rather than assuming `main`.
+
+The script also reports an **orphan** bucket separately: worktrees whose branch has no PR at all. It never removes these (the work cannot be proven landed), but it names them, because they pin their branch names indefinitely and are usually the residue of an agent that improvised a local branch name after a checkout collision. Surface that list to the user.
+
+To remove what it found, after confirming with the user:
+
+```bash
+bash .claude/scripts/gc-worktrees.sh --prune-branches
+```
+
+`--prune-branches` also deletes each freed branch with `git branch -d` (safe delete — git refuses an unmerged branch); drop the flag to keep the branches. **If `DRY_RUN`:** stop after the `--dry-run` call above. The script never force-removes a worktree with uncommitted changes — it prints those as "has uncommitted work"; report that list rather than overriding it.
 
 ### 1d. Identify bloated worktrees (NEW)
 

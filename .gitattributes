@@ -6,3 +6,10 @@
 *.node binary
 *.png binary
 *.ico binary
+
+# Shell scripts must be LF on every platform. With core.autocrlf=true a Windows
+# checkout smudges them to CRLF, which breaks the `#!/usr/bin/env bash` shebang when a
+# script is executed directly, and — the quieter failure — embeds a stray CR inside
+# heredocs and here-strings, so gc-worktrees.sh's exact branch-name matching compares
+# "feat/x" against "feat/x\r" and never matches.
+*.sh text eol=lf
