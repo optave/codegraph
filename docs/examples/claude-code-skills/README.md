@@ -114,7 +114,7 @@ If GAUNTLET or FORGE runs out of context, just re-invoke — they resume from wh
 
 ## Artifacts
 
-All artifacts are written to `.codegraph/titan/` (6 files, no redundancy):
+All artifacts are written to `.codegraph/titan/` (11 files, no redundancy), plus the final report committed separately to `generated/titan/`:
 
 | File | Format | Written by | Read by |
 |------|--------|-----------|---------|
@@ -125,6 +125,8 @@ All artifacts are written to `.codegraph/titan/` (6 files, no redundancy):
 | `sync.json` | JSON | SYNC | RUN, FORGE (diff review), GATE |
 | `arch-snapshot.json` | JSON | RUN (pre-forge) | GATE (architectural comparison) |
 | `gate-log.ndjson` | NDJSON | GATE | RUN, CLOSE, Audit trail |
+| `grind-targets.ndjson` | NDJSON | GRIND | CLOSE (adoption metrics + report) |
+| `issues.ndjson` | NDJSON | RECON, GAUNTLET, SYNC, GRIND (any phase logging bugs/anomalies) | CLOSE (issue tracker + report) |
 | `drift-report.json` | JSON | GAUNTLET, SYNC, CLOSE | RUN, CLOSE |
 | `close-summary.json` | JSON | CLOSE | — |
 | `generated/titan/titan-report-*.md` | Markdown | CLOSE | — (committed to repo) |

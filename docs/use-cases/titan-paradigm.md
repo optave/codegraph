@@ -261,7 +261,7 @@ Several planned features would make codegraph even more powerful for the Titan P
 
 ## Claude Code Skills — Ready-Made Titan Pipeline
 
-We've built five Claude Code skills that implement the full Titan Paradigm using codegraph. Each phase writes structured JSON artifacts to `.codegraph/titan/` that the next phase reads — this keeps context usage minimal even on large codebases.
+We've built Claude Code skills that implement the full Titan Paradigm using codegraph. Each phase writes structured JSON artifacts to `.codegraph/titan/` that the next phase reads — this keeps context usage minimal even on large codebases.
 
 ```
 /titan-run (orchestrator — runs everything below end-to-end via sub-agents)
@@ -272,9 +272,13 @@ We've built five Claude Code skills that implement the full Titan Paradigm using
       │
       ├─→ /titan-sync → sync.json (execution plan with logical commits)
       │
-      └─→ /titan-forge → code changes + commits (loops phases)
-              │
-              └─→ /titan-gate (validates each commit)
+      ├─→ /titan-forge → code changes + commits (loops phases)
+      │       │
+      │       └─→ /titan-gate (validates each commit)
+      │
+      ├─→ /titan-grind → adopts dead helpers from forge (Phase 4.5)
+      │
+      └─→ /titan-close → PRs + titan-report.md
 
 /titan-reset (escape hatch: clean up all artifacts and snapshots)
 ```
@@ -287,6 +291,8 @@ We've built five Claude Code skills that implement the full Titan Paradigm using
 | `/titan-sync` | GLOBAL SYNC | Finds dependency clusters among failures using `codegraph path` + `owners` + `branch-compare`. Plans shared abstractions, produces ordered execution plan with logical commit grouping |
 | `/titan-forge` | FORGE | Executes the sync plan — makes code changes, validates with `/titan-gate`, commits, advances state. One phase per invocation, resumable |
 | `/titan-gate` | STATE MACHINE | Validates staged changes: `codegraph check --staged --cycles --blast-radius 30 --boundaries` + project lint/build/test. Auto-rollback with snapshot restore on failure. Append-only audit trail |
+| `/titan-grind` | GRIND | Finds dead symbols left behind by forge, wires them into consumers or replaces duplicated inline patterns with them, gates on dead-symbol delta (Phase 4.5) |
+| `/titan-close` | CLOSE | Splits the branch's commits into focused PRs, compiles the cross-phase issue tracker (optionally opening GitHub issues), generates a final report with before/after metrics (Phase 5) |
 | `/titan-reset` | ESCAPE HATCH | Restores baseline snapshot, deletes all Titan artifacts and snapshots, rebuilds graph clean |
 
 ### Context window management
@@ -305,6 +311,7 @@ Codegraph snapshots provide instant graph database backup/restore at each stage:
 |----------|-----------|------------|-----------|
 | `titan-baseline` | RECON | GATE (on failure) | GATE (on final success) or RESET |
 | `titan-batch-N` | GAUNTLET (per batch) | GATE (on failure) | GAUNTLET (next batch replaces it) or RESET |
+| `titan-grind-baseline` | GRIND (per target) | GRIND (on failure) | GRIND (on success) or RESET |
 
 See [Claude Code Skills Example](../examples/claude-code-skills/) for installation and usage.
 
