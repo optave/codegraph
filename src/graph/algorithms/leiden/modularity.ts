@@ -3,7 +3,7 @@
  * Vendored from ngraph.leiden (MIT) — no external dependencies.
  */
 
-import { fget, iget } from './typed-array-helpers.js';
+import { fget, fgetOrZero, iget } from './typed-array-helpers.js';
 
 /**
  * Minimal view of a partition needed by modularity quality functions.
@@ -46,8 +46,7 @@ export function diffModularity(
   const m2: number = g.totalWeight;
   const k_v_in_new: number = part.getNeighborEdgeWeightToCommunity(c) || 0;
   const k_v_in_old: number = part.getNeighborEdgeWeightToCommunity(oldC) || 0;
-  const wTot_new: number =
-    c < part.communityTotalStrength.length ? fget(part.communityTotalStrength, c) : 0;
+  const wTot_new: number = fgetOrZero(part.communityTotalStrength, c);
   const wTot_old: number = fget(part.communityTotalStrength, oldC);
   const gain_remove: number = -(k_v_in_old / m2 - (gamma * (k_v * wTot_old)) / (m2 * m2));
   const gain_add: number = k_v_in_new / m2 - (gamma * (k_v * wTot_new)) / (m2 * m2);
@@ -70,17 +69,15 @@ export function diffModularityDirected(
   const w_new_out: number = c < g.n ? part.getOutEdgeWeightToCommunity(c) || 0 : 0;
   const w_old_in: number = part.getInEdgeWeightFromCommunity(oldC) || 0;
   const w_old_out: number = part.getOutEdgeWeightToCommunity(oldC) || 0;
-  const T_new: number =
-    c < part.communityTotalInStrength.length ? fget(part.communityTotalInStrength, c) : 0;
-  const F_new: number =
-    c < part.communityTotalOutStrength.length ? fget(part.communityTotalOutStrength, c) : 0;
+  const T_new: number = fgetOrZero(part.communityTotalInStrength, c);
+  const F_new: number = fgetOrZero(part.communityTotalOutStrength, c);
   const T_old: number = fget(part.communityTotalInStrength, oldC);
   const F_old: number = fget(part.communityTotalOutStrength, oldC);
   // Self-loop correction: the self-loop edge (v->v) appears in both
   // outEdgeWeightToCommunity[oldC] and inEdgeWeightFromCommunity[oldC],
   // making w_old include 2x selfLoop. Since the self-loop moves with the
   // node, add it back to match moveNodeToCommunity's directed accounting.
-  const selfW: number = fget(g.selfLoop, v) || 0;
+  const selfW: number = fgetOrZero(g.selfLoop, v);
   const deltaInternal: number = (w_new_in + w_new_out - w_old_in - w_old_out + 2 * selfW) / m;
   // The full delta(F*T) expansion includes a constant 2*k_out*k_in term that
   // doesn't depend on the target community but does affect the move-vs-stay

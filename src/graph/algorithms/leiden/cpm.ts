@@ -3,7 +3,7 @@
  * Vendored from ngraph.leiden (MIT) — no external dependencies.
  */
 
-import { fget, iget } from './typed-array-helpers.js';
+import { fget, fgetOrZero, iget } from './typed-array-helpers.js';
 
 /**
  * Minimal view of a partition needed by CPM quality functions.
@@ -50,21 +50,21 @@ export function diffCPM(
         : 0;
     // Self-loop weight appears in both out and in arrays for oldC,
     // making w_old include 2x selfLoop. Correct to match moveNodeToCommunity.
-    selfCorrection = 2 * (fget(g.selfLoop, v) || 0);
+    selfCorrection = 2 * fgetOrZero(g.selfLoop, v);
   } else {
     w_old = part.getNeighborEdgeWeightToCommunity(oldC) || 0;
     w_new = c < g.n ? part.getNeighborEdgeWeightToCommunity(c) || 0 : 0;
   }
   const s_v: number = fget(g.size, v) || 1;
-  const S_old: number = fget(part.communityTotalSize, oldC) || 0;
-  const S_new: number = c < part.communityTotalSize.length ? fget(part.communityTotalSize, c) : 0;
+  const S_old: number = fgetOrZero(part.communityTotalSize, oldC);
+  const S_new: number = fgetOrZero(part.communityTotalSize, c);
   return w_new - w_old + selfCorrection - gamma * s_v * (S_new - S_old + s_v);
 }
 
 export function qualityCPM(part: PartitionView, _g: GraphView, gamma: number = 1.0): number {
   let sum: number = 0;
   for (let c = 0; c < part.communityCount; c++) {
-    const S: number = fget(part.communityTotalSize, c) || 0;
+    const S: number = fgetOrZero(part.communityTotalSize, c);
     sum += fget(part.communityInternalEdgeWeight, c) - (gamma * (S * (S - 1))) / 2;
   }
   return sum;
