@@ -2078,6 +2078,17 @@ function pickReconnectTarget(
   maxAlignGroupSize: number,
 ): number | null {
   if (candidates.length === 0) return null;
+  // A lone candidate is trusted unconditionally, without consulting the
+  // hash: unlike the multi-candidate case, there is no sibling to
+  // corroborate a hash mismatch as "an unrelated declaration," and the
+  // overwhelmingly common cause of a sole candidate's hash differing from
+  // the saved one is simply that its OWN body was edited in the same
+  // change — contentHash is a hash of the declaration's source text, so any
+  // in-place edit changes it. Gating on the hash here would silently drop
+  // the edge for that ordinary case (caught by #1744's regression test),
+  // trading a common, legitimate scenario for a rare rename-away-and-replace
+  // collision that a hash comparison cannot even reliably distinguish from
+  // a body edit when there is only one candidate to compare against.
   if (candidates.length === 1) return candidates[0]!.id;
 
   if (tgtHash) {

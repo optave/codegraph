@@ -613,6 +613,18 @@ fn pick_reconnect_target(
     if candidates.is_empty() {
         return None;
     }
+    // A lone candidate is trusted unconditionally, without consulting the
+    // hash: unlike the multi-candidate case, there is no sibling to
+    // corroborate a hash mismatch as "an unrelated declaration," and the
+    // overwhelmingly common cause of a sole candidate's hash differing from
+    // the saved one is simply that its OWN body was edited in the same
+    // change — content_hash is a hash of the declaration's source text, so
+    // any in-place edit changes it. Gating on the hash here would silently
+    // drop the edge for that ordinary case (caught by #1744's regression
+    // test), trading a common, legitimate scenario for a rare
+    // rename-away-and-replace collision that a hash comparison cannot even
+    // reliably distinguish from a body edit when there is only one
+    // candidate to compare against.
     if candidates.len() == 1 {
         return Some(candidates[0].0);
     }
@@ -1429,6 +1441,22 @@ mod tests {
     }
 
     #[test]
+    fn pick_reconnect_target_trusts_sole_candidate_even_when_hash_mismatches() {
+        // A sole candidate's hash naturally differs from the saved one
+        // whenever its OWN body was edited in the same change — the single
+        // most common real-world scenario (see #1744's regression test,
+        // which exercises exactly this for a file with one function whose
+        // body changes). Unlike the multi-candidate case, there's no
+        // sibling to corroborate a mismatch as "this is a different,
+        // unrelated declaration," so the sole candidate must still be
+        // trusted rather than dropped.
+        let old_lines = vec![100];
+        let candidates = vec![(21, 130, Some("hash-edited-body".to_string()))];
+        let picked = pick_with_hash(&candidates, 100, Some("hash-original-body"), &old_lines);
+        assert_eq!(picked, Some(21));
+    }
+
+    #[test]
     fn pick_reconnect_target_falls_back_to_line_alignment_when_no_candidate_has_a_hash() {
         // Candidates carry no hash at all (e.g. a pre-migration DB, or a
         // declaration whose end_line was unavailable) — must behave
@@ -1770,6 +1798,54 @@ mod tests {
             !e_has_incoming,
             "no caller should have been reconnected to the new sibling E"
         );
+    }
+
+    #[test]
+    fn reconnect_reconnects_sole_candidate_whose_own_body_was_edited() {
+        // The end-to-end counterpart of #1744's regression test: a file with
+        // exactly one (name, kind) declaration whose body is edited in place
+        // (its content_hash necessarily changes) must still have its
+        // reverse-dep edge reconnected to it, not dropped. A hash mismatch
+        // is not evidence of "unrelated declaration" when there is no
+        // sibling to corroborate it — it's simply what an ordinary edit
+        // looks like.
+        let conn = test_conn();
+        let file = "src/utils/callee.ts";
+
+        let old_target = insert_node_with_hash(&conn, "callee", "function", file, 1, "hash-v1");
+        let caller = insert_node(&conn, "caller", "function", "src/features/use.ts", 1);
+        conn.execute(
+            "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?1, ?2, 'calls', 0.9, 0)",
+            rusqlite::params![caller, old_target],
+        )
+        .unwrap();
+
+        let (saved, sibling_groups) = save_reverse_dep_edges(&conn, &[file.to_string()]);
+        assert_eq!(saved.len(), 1);
+
+        conn.execute(
+            "DELETE FROM edges WHERE target_id IN (SELECT id FROM nodes WHERE file = ?1)",
+            [file],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM nodes WHERE file = ?1", [file])
+            .unwrap();
+
+        // Same function, same name/kind/file, edited body -> different hash.
+        let new_target = insert_node_with_hash(&conn, "callee", "function", file, 1, "hash-v2");
+
+        let (reconnected, dropped) =
+            reconnect_reverse_dep_edges(&conn, &saved, &sibling_groups, 200);
+        assert_eq!((reconnected, dropped), (1, 0));
+
+        let target_of: Option<i64> = conn
+            .query_row(
+                "SELECT target_id FROM edges WHERE source_id = ?1",
+                [caller],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(target_of, Some(new_target));
     }
 
     // ── capture_removed_file_neighbors (#1839) ──────────────────────────
