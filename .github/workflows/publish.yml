@@ -33,7 +33,7 @@ jobs:
       # Only the scheduled path below actually reads repo history (git rev-list);
       # release/workflow_dispatch exit immediately with should_run=true and never
       # touch the checkout, so skip the full-depth clone for those triggers.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         if: github.event_name == 'schedule'
         with:
           fetch-depth: 0
@@ -87,7 +87,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.0.0
         with:
           node-version: "22"
@@ -130,7 +130,7 @@ jobs:
       version: ${{ steps.compute.outputs.version }}
       npm_tag: ${{ steps.compute.outputs.npm_tag }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -211,7 +211,7 @@ jobs:
       CODEGRAPH_FAST_SKIP_DIAG: "1"
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -373,7 +373,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - uses: actions/setup-node@v7.0.0
         with:
@@ -548,7 +548,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           ref: main
