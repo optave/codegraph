@@ -1142,6 +1142,41 @@ describe('C++ complexity', () => {
   });
 });
 
+// ─── CUDA (#1923) ─────────────────────────────────────────────────────────
+//
+// tree-sitter-cuda is a C++-superset grammar (only adding qualifier keywords
+// like __global__/__device__ and kernel-launch syntax) — confirmed by
+// parsing sample CUDA control flow that its if_statement/else_clause/
+// for_statement/while_statement/switch_statement/binary_expression node
+// kinds are identical to plain C++, so CUDA reuses complexityCpp/halsteadCpp
+// as-is rather than a separate rule set.
+
+describe('CUDA complexity', () => {
+  const { analyze, halstead } = makeHelpers('cuda', sharedParsers());
+
+  it('__global__ kernel with if/else-if/else chain', () => {
+    // The __global__ qualifier is a leading anonymous token on
+    // function_definition and does not disrupt function-body detection.
+    const r = analyze(
+      '__global__ void classify(int *a) {\n  if (a[0] > 0) {\n    a[0] = 1;\n  } else if (a[0] < 0) {\n    a[0] = -1;\n  } else {\n    a[0] = 0;\n  }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('for loop with logical operator condition', () => {
+    const r = analyze(
+      '__global__ void kernel(int *a, int n) {\n  for (int i = 0; i < n && a[i] > 0; i++) {\n    a[i]++;\n  }\n}\n',
+    );
+    expect(r.cyclomatic).toBe(3);
+  });
+
+  it('halstead: positive volume', () => {
+    const h = halstead('__device__ int add(int a, int b) {\n  return a + b;\n}\n');
+    expect(h).not.toBeNull();
+    expect(h.volume).toBeGreaterThan(0);
+  });
+});
+
 // ─── Kotlin (#1923) ───────────────────────────────────────────────────────
 
 describe('Kotlin complexity', () => {

@@ -60,7 +60,7 @@ export function computeHalsteadDerived(
 
 const C_STYLE_PREFIXES = ['//', '/*', '*', '*/'];
 
-// c/cpp/kotlin/swift/scala intentionally mirror the native `comment_prefixes()`
+// c/cpp/cuda/kotlin/swift/scala intentionally mirror the native `comment_prefixes()`
 // 2-entry list (`//`, `/*`) rather than the 4-entry C_STYLE_PREFIXES used by
 // javascript/go/rust/java/csharp — see native `comment_prefixes()` in
 // crates/codegraph-core/src/ast_analysis/complexity.rs for the source of truth
@@ -81,6 +81,7 @@ const COMMENT_PREFIXES = new Map<string, string[]>([
   ['php', ['//', '#', '/*', '*', '*/']],
   ['c', C_LIKE_PREFIXES],
   ['cpp', C_LIKE_PREFIXES],
+  ['cuda', C_LIKE_PREFIXES],
   ['kotlin', C_LIKE_PREFIXES],
   ['swift', C_LIKE_PREFIXES],
   ['scala', C_LIKE_PREFIXES],
