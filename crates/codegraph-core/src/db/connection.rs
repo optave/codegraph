@@ -337,8 +337,13 @@ const MIGRATIONS: &[Migration] = &[
         // dataflow_vertices and dataflow_summary on the next `codegraph build`.
         up: "SELECT 1",
     },
-    // NOTE: TS migration v20 (edges.dynamic_kind) has no Rust counterpart yet — see #2066.
-    // v21 below is independent of it (a standalone new table), so this gap does not block it.
+    Migration {
+        version: 20,
+        up: r#"
+      ALTER TABLE edges ADD COLUMN dynamic_kind TEXT;
+      CREATE INDEX IF NOT EXISTS idx_edges_dynamic_kind ON edges(dynamic_kind) WHERE dynamic_kind IS NOT NULL;
+    "#,
+    },
     Migration {
         version: 21,
         up: r#"
@@ -1618,4 +1623,36 @@ fn row_to_json(
         map.insert(col_names[i].clone(), val);
     }
     serde_json::Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for #2001/#2066: a database whose schema was initialized
+    /// purely through the native `init_schema()` (never touched by the TS
+    /// `initSchema()` in src/db/migrations.ts) must still end up with
+    /// `edges.dynamic_kind` — migration v20 was missing from Rust's
+    /// `MIGRATIONS` array entirely, so `do_insert_edges`'s unconditional
+    /// `dynamic_kind` column reference would fail with "no such column" on
+    /// any DB that only ever ran the native migration path.
+    #[test]
+    fn init_schema_adds_edges_dynamic_kind_column() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("init_schema should succeed");
+
+        let conn = db.conn().expect("connection should still be open");
+        let mut stmt = conn.prepare("PRAGMA table_info(edges)").unwrap();
+        let has_dynamic_kind = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|name| name == "dynamic_kind");
+
+        assert!(
+            has_dynamic_kind,
+            "edges.dynamic_kind column missing after native-only init_schema()"
+        );
+    }
 }
