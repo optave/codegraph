@@ -165,7 +165,8 @@ function bfsCallees(
   return { messages, fileSet, idToNode, truncated };
 }
 
-function annotateDataflow(
+/** Exported for direct testing of its own busy_timeout pragma (issue #2020). */
+export function annotateDataflow(
   repo: Repository,
   messages: SequenceMessage[],
   idToNode: Map<number, { id: number; name: string; file: string; kind: string; line: number }>,

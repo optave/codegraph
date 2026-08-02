@@ -46,8 +46,11 @@ function printEngineInfo(
   console.log();
 }
 
-/** Print the "Build metadata" block read from the graph DB, if one exists. Never throws. */
-async function printBuildMetadata(
+/**
+ * Print the "Build metadata" block read from the graph DB, if one exists. Never throws.
+ * Exported for direct testing of its own busy_timeout pragma (issue #2020).
+ */
+export async function printBuildMetadata(
   ctx: CliContext,
   opts: CommandOpts,
   activeName: string,

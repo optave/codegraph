@@ -26,9 +26,12 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { CliContext } from '../../src/cli/types.js';
 import { closeDb, initSchema, openDb } from '../../src/db/index.js';
+import type { Repository } from '../../src/db/repository/base.js';
 import { NativeRepository } from '../../src/db/repository/native-repository.js';
 import { loadCallersFromDb, loadSymbolsFromDb } from '../../src/features/branch-compare.js';
+import { annotateDataflow } from '../../src/features/sequence.js';
 import { snapshotSave } from '../../src/features/snapshot.js';
 import type { McpToolContext, NativeDatabase } from '../../src/types.js';
 
@@ -146,6 +149,32 @@ describe('configured busyTimeoutMs reaches the remaining raw new Database() call
     const capture = captureBusyTimeoutPragmas();
     try {
       loadCallersFromDb(dbPath, [1], 5, false);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.calls).toContain(`busy_timeout = ${CUSTOM_BUSY_TIMEOUT_MS}`);
+  });
+
+  it("sequence.ts's annotateDataflow native-fallback branch applies the configured busy_timeout", () => {
+    // A plain object (not `instanceof SqliteRepository`) with hasDataflowTable()
+    // true forces the native-fallback branch that opens its own better-sqlite3
+    // handle; empty messages/idToNode let it return safely right after.
+    const repo = { hasDataflowTable: () => true } as unknown as Repository;
+    const capture = captureBusyTimeoutPragmas();
+    try {
+      annotateDataflow(repo, [], new Map(), dbPath);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.calls).toContain(`busy_timeout = ${CUSTOM_BUSY_TIMEOUT_MS}`);
+  });
+
+  it('info command printBuildMetadata applies the configured busy_timeout', async () => {
+    const { printBuildMetadata } = await import('../../src/cli/commands/info.js');
+    const ctx = {} as CliContext;
+    const capture = captureBusyTimeoutPragmas();
+    try {
+      await printBuildMetadata(ctx, { db: dbPath }, 'wasm');
     } finally {
       capture.restore();
     }
