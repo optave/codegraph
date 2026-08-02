@@ -433,9 +433,12 @@ case "$STATUS" in
         echo "Restore from .codegraph/fixer/state.json.bak, then stop and report to the user. Queue was NOT advanced."
         exit 1
       fi
+      # mv is checked too, not just the jq that preceded it — a failed rename (e.g. a
+      # cross-device TMPDIR, disk full, or permissions) must stop here exactly like a
+      # failed jq does, otherwise the queue below still shifts past a state.json that
+      # was never actually replaced.
       if ! mv "$TMP_STATE" .codegraph/fixer/state.json; then
-        echo "ERROR: could not replace state.json with the reconciled record for issue #$ISSUE (mv failed)."
-        echo "Restore from .codegraph/fixer/state.json.bak if needed, then stop and report to the user. Queue was NOT advanced."
+        echo "ERROR: could not replace state.json with the reconciled record for issue #$ISSUE. Queue was NOT advanced."
         exit 1
       fi
       trap - EXIT
@@ -447,7 +450,7 @@ case "$STATUS" in
         exit 1
       fi
       if ! mv "$TMP_QUEUE" .codegraph/fixer/queue.json; then
-        echo "ERROR: could not replace queue.json after recording issue #$ISSUE as $RECONCILE (mv failed) — state.json already has the record. Investigate queue.json before re-running, or this issue will be reprocessed."
+        echo "ERROR: could not replace queue.json after recording issue #$ISSUE as $RECONCILE — state.json already has the record, but the queue was NOT advanced. Investigate queue.json before re-running, or this issue will be reprocessed."
         exit 1
       fi
       trap - EXIT
