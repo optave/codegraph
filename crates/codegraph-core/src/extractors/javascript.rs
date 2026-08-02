@@ -10,65 +10,20 @@ use tree_sitter::{Node, Tree};
 /// Mirrors the `BUILTIN_GLOBALS` set in `src/extractors/javascript.ts`
 /// and must be identical to the set tested in `is_js_builtin_global`.
 const JS_BUILTIN_GLOBALS: &[&str] = &[
-    "Math",
-    "JSON",
-    "Promise",
-    "Array",
-    "Object",
-    "Date",
-    "Error",
-    "Symbol",
-    "Map",
-    "Set",
-    "RegExp",
-    "Number",
-    "String",
-    "Boolean",
-    "WeakMap",
-    "WeakSet",
-    "WeakRef",
-    "Proxy",
-    "Reflect",
-    "Intl",
-    "ArrayBuffer",
-    "SharedArrayBuffer",
-    "DataView",
-    "Atomics",
-    "BigInt",
-    "Float32Array",
-    "Float64Array",
-    "Int8Array",
-    "Int16Array",
-    "Int32Array",
-    "Uint8Array",
-    "Uint16Array",
-    "Uint32Array",
-    "Uint8ClampedArray",
-    "URL",
-    "URLSearchParams",
-    "TextEncoder",
-    "TextDecoder",
-    "AbortController",
-    "AbortSignal",
-    "Headers",
-    "Request",
-    "Response",
-    "FormData",
-    "Blob",
-    "File",
-    "ReadableStream",
-    "WritableStream",
+    "Math", "JSON", "Promise", "Array", "Object", "Date", "Error",
+    "Symbol", "Map", "Set", "RegExp", "Number", "String", "Boolean",
+    "WeakMap", "WeakSet", "WeakRef", "Proxy", "Reflect", "Intl",
+    "ArrayBuffer", "SharedArrayBuffer", "DataView", "Atomics", "BigInt",
+    "Float32Array", "Float64Array", "Int8Array", "Int16Array", "Int32Array",
+    "Uint8Array", "Uint16Array", "Uint32Array", "Uint8ClampedArray",
+    "URL", "URLSearchParams", "TextEncoder", "TextDecoder",
+    "AbortController", "AbortSignal", "Headers", "Request", "Response",
+    "FormData", "Blob", "File", "ReadableStream", "WritableStream",
     "TransformStream",
     // Browser/runtime globals — must match is_js_builtin_global below
-    "console",
-    "process",
-    "window",
-    "document",
-    "globalThis",
+    "console", "process", "window", "document", "globalThis",
     // Node.js built-ins
-    "Buffer",
-    "EventEmitter",
-    "Stream",
+    "Buffer", "EventEmitter", "Stream",
 ];
 
 pub struct JsExtractor;
@@ -80,44 +35,19 @@ impl SymbolExtractor for JsExtractor {
         // same-file user-defined higher-order functions can be recognized
         // during the single forward walk below, regardless of declaration order.
         let callback_param_shapes = collect_callback_param_shapes(&tree.root_node(), source);
-        walk_tree(
-            &tree.root_node(),
-            source,
-            &mut symbols,
-            |node, source, symbols, depth| {
-                match_js_node(node, source, symbols, depth, &callback_param_shapes)
-            },
-        );
+        walk_tree(&tree.root_node(), source, &mut symbols, |node, source, symbols, depth| {
+            match_js_node(node, source, symbols, depth, &callback_param_shapes)
+        });
         walk_ast_nodes(&tree.root_node(), source, &mut symbols.ast_nodes);
         walk_tree(&tree.root_node(), source, &mut symbols, match_js_type_map);
-        walk_tree(
-            &tree.root_node(),
-            source,
-            &mut symbols,
-            match_js_return_type_map,
-        );
+        walk_tree(&tree.root_node(), source, &mut symbols, match_js_return_type_map);
         // Pre-ES6 prototype methods: `Foo.prototype.bar = fn` and `Foo.prototype = { bar: fn }`
-        walk_tree(
-            &tree.root_node(),
-            source,
-            &mut symbols,
-            match_js_prototype_methods,
-        );
+        walk_tree(&tree.root_node(), source, &mut symbols, match_js_prototype_methods);
         // call_assignments runs after type_map is populated (needs receiver types)
-        walk_tree(
-            &tree.root_node(),
-            source,
-            &mut symbols,
-            match_js_call_assignments,
-        );
+        walk_tree(&tree.root_node(), source, &mut symbols, match_js_call_assignments);
         // Phase 8.3c–8.3f: points-to bindings (params, this-rebinding, arrays,
         // spread, for-of, object rest/props) for the pts constraint solver.
-        walk_tree(
-            &tree.root_node(),
-            source,
-            &mut symbols,
-            match_js_pts_bindings,
-        );
+        walk_tree(&tree.root_node(), source, &mut symbols, match_js_pts_bindings);
         // Collapse duplicate keys accumulated during the tree walks (O(n)).
         dedup_type_map(&mut symbols.type_map);
         dedup_type_map(&mut symbols.return_type_map);
@@ -134,14 +64,9 @@ impl SymbolExtractor for JsExtractor {
         // via `setTypeMapEntry`, so `.get()` is always already resolved — ordering
         // this walk after dedup keeps both engines reading the same resolved view.
         let local_accessors = collect_local_accessors(&tree.root_node(), source);
-        walk_tree(
-            &tree.root_node(),
-            source,
-            &mut symbols,
-            |node, source, symbols, _depth| {
-                handle_accessor_property_read(node, source, symbols, &local_accessors)
-            },
-        );
+        walk_tree(&tree.root_node(), source, &mut symbols, |node, source, symbols, _depth| {
+            handle_accessor_property_read(node, source, symbols, &local_accessors)
+        });
         symbols
     }
 }
@@ -171,12 +96,12 @@ fn extract_new_expr_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&
     if node.kind() != "new_expression" {
         return None;
     }
-    let ctor = node
-        .child_by_field_name("constructor")
-        .or_else(|| node.child(1))?;
+    let ctor = node.child_by_field_name("constructor").or_else(|| node.child(1))?;
     match ctor.kind() {
         "identifier" => Some(node_text(&ctor, source)),
-        "member_expression" => named_child_text(&ctor, "property", source),
+        "member_expression" => {
+            named_child_text(&ctor, "property", source)
+        }
         _ => None,
     }
 }
@@ -192,9 +117,7 @@ fn enclosing_type_map_class<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a
     while let Some(n) = cur {
         match n.kind() {
             "class_declaration" | "abstract_class_declaration" => {
-                return n
-                    .child_by_field_name("name")
-                    .map(|name| node_text(&name, source));
+                return n.child_by_field_name("name").map(|name| node_text(&name, source));
             }
             "class" => return None,
             _ => {}
@@ -215,9 +138,7 @@ fn match_js_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
         "assignment_expression" => handle_assignment_type_map(node, source, symbols),
         // TypeScript class field declarations.
         // Mirrors handleFieldDefTypeMap in src/extractors/javascript.ts.
-        "public_field_definition" | "field_definition" => {
-            handle_field_def_type_map(node, source, symbols)
-        }
+        "public_field_definition" | "field_definition" => handle_field_def_type_map(node, source, symbols),
         _ => {}
     }
 }
@@ -230,12 +151,8 @@ fn match_js_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
 /// - Object.create({ key: fn }) composite pts keys (Phase 8.3e)
 /// - object-literal declarations at non-function scope (Phase 8.3f parity)
 fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_n) = node.child_by_field_name("name") else {
-        return;
-    };
-    if name_n.kind() != "identifier" {
-        return;
-    }
+    let Some(name_n) = node.child_by_field_name("name") else { return };
+    if name_n.kind() != "identifier" { return; }
     let var_name = node_text(&name_n, source);
     // Type annotation: confidence 0.9
     if let Some(type_anno) = find_child(node, "type_annotation") {
@@ -243,9 +160,7 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
             push_type_map_entry(symbols, var_name.to_string(), type_name.to_string());
         }
     }
-    let Some(value_n) = node.child_by_field_name("value") else {
-        return;
-    };
+    let Some(value_n) = node.child_by_field_name("value") else { return };
     // Constructor: confidence 1.0 (overrides annotation in edge builder)
     if value_n.kind() == "new_expression" {
         if let Some(type_name) = extract_new_expr_type_name(&value_n, source) {
@@ -265,20 +180,10 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
     // Mirrors WASM handleVarDeclaratorTypeMap (no isConst guard there).
     // For `const`, extract_object_literal_functions already seeds these entries;
     // dedup_type_map collapses any duplicates at equal confidence.
-    if value_n.kind() == "object"
-        && find_parent_of_types(
-            node,
-            &[
-                "function_declaration",
-                "arrow_function",
-                "function_expression",
-                "method_definition",
-                "generator_function_declaration",
-                "generator_function",
-            ],
-        )
-        .is_none()
-    {
+    if value_n.kind() == "object" && find_parent_of_types(node, &[
+        "function_declaration", "arrow_function", "function_expression",
+        "method_definition", "generator_function_declaration", "generator_function",
+    ]).is_none() {
         seed_objlit_type_map_entries(var_name, &value_n, source, symbols);
     }
 }
@@ -287,17 +192,12 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
 ///
 /// Seeds a type-map entry when the parameter carries a TypeScript type annotation.
 fn handle_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = node
-        .child_by_field_name("pattern")
+    let name_node = node.child_by_field_name("pattern")
         .or_else(|| node.child_by_field_name("left"))
         .or_else(|| node.child(0));
     let Some(name_node) = name_node else { return };
-    if name_node.kind() != "identifier" {
-        return;
-    };
-    let Some(type_anno) = find_child(node, "type_annotation") else {
-        return;
-    };
+    if name_node.kind() != "identifier" { return };
+    let Some(type_anno) = find_child(node, "type_annotation") else { return };
     if let Some(type_name) = extract_simple_type_name(&type_anno, source) {
         push_type_map_entry(
             symbols,
@@ -317,22 +217,14 @@ fn handle_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
 fn handle_assignment_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let lhs = node.child_by_field_name("left");
     let rhs = node.child_by_field_name("right");
-    let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
-        return;
-    };
-    if lhs.kind() != "member_expression" {
-        return;
-    }
+    let (Some(lhs), Some(rhs)) = (lhs, rhs) else { return };
+    if lhs.kind() != "member_expression" { return; }
     let obj = lhs.child_by_field_name("object");
     let prop = lhs.child_by_field_name("property");
-    let (Some(obj), Some(prop)) = (obj, prop) else {
-        return;
-    };
+    let (Some(obj), Some(prop)) = (obj, prop) else { return };
     // Guard: only static property access, not computed subscripts.
     let prop_kind = prop.kind();
-    if prop_kind != "property_identifier" && prop_kind != "identifier" {
-        return;
-    }
+    if prop_kind != "property_identifier" && prop_kind != "identifier" { return; }
     if obj.kind() == "this" && rhs.kind() == "new_expression" {
         if let Some(ctor_type) = extract_new_expr_type_name(&rhs, source) {
             let key = match enclosing_type_map_class(node, source) {
@@ -369,25 +261,17 @@ fn handle_assignment_type_map(node: &Node, source: &[u8], symbols: &mut FileSymb
 ///
 /// Mirrors `handleFieldDefTypeMap` in `src/extractors/javascript.ts`.
 fn handle_field_def_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = node
-        .child_by_field_name("name")
+    let name_node = node.child_by_field_name("name")
         .or_else(|| node.child_by_field_name("property"))
         .or_else(|| find_child(node, "property_identifier"));
     let Some(name_node) = name_node else { return };
     let kind = name_node.kind();
-    if kind != "property_identifier"
-        && kind != "identifier"
-        && kind != "private_property_identifier"
-    {
+    if kind != "property_identifier" && kind != "identifier" && kind != "private_property_identifier" {
         return;
     }
     let field_name = node_text(&name_node, source).to_string();
-    let Some(type_anno) = find_child(node, "type_annotation") else {
-        return;
-    };
-    let Some(type_name) = extract_simple_type_name(&type_anno, source) else {
-        return;
-    };
+    let Some(type_anno) = find_child(node, "type_annotation") else { return };
+    let Some(type_name) = extract_simple_type_name(&type_anno, source) else { return };
     match enclosing_type_map_class(node, source) {
         Some(class_name) => {
             // Primary: class-scoped key prevents cross-class collision.
@@ -399,23 +283,13 @@ fn handle_field_def_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbo
             );
             // Fallback bare keys at lower confidence.
             set_type_map_entry(symbols, field_name.clone(), type_name.to_string(), 0.6);
-            set_type_map_entry(
-                symbols,
-                format!("this.{}", field_name),
-                type_name.to_string(),
-                0.6,
-            );
+            set_type_map_entry(symbols, format!("this.{}", field_name), type_name.to_string(), 0.6);
         }
         None => {
             // No enclosing class declaration (e.g. class expression)
             // — use bare keys only at full confidence.
             set_type_map_entry(symbols, field_name.clone(), type_name.to_string(), 0.9);
-            set_type_map_entry(
-                symbols,
-                format!("this.{}", field_name),
-                type_name.to_string(),
-                0.9,
-            );
+            set_type_map_entry(symbols, format!("this.{}", field_name), type_name.to_string(), 0.9);
         }
     }
 }
@@ -452,37 +326,22 @@ fn is_js_builtin_global(name: &str) -> bool {
 /// Seed composite pts keys for `Object.defineProperty(obj, "key", { value: fn })`
 /// and `Object.defineProperties(obj, { "key": { value: fn }, ... })`.
 fn seed_define_property_entries(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(callee) = node.child_by_field_name("function") else {
-        return;
-    };
-    if callee.kind() != "member_expression" {
-        return;
-    }
-    let Some(callee_obj) = callee.child_by_field_name("object") else {
-        return;
-    };
-    if node_text(&callee_obj, source) != "Object" {
-        return;
-    }
-    let Some(callee_prop) = callee.child_by_field_name("property") else {
-        return;
-    };
+    let Some(callee) = node.child_by_field_name("function") else { return };
+    if callee.kind() != "member_expression" { return; }
+    let Some(callee_obj) = callee.child_by_field_name("object") else { return };
+    if node_text(&callee_obj, source) != "Object" { return; }
+    let Some(callee_prop) = callee.child_by_field_name("property") else { return };
     let method = node_text(&callee_prop, source);
-    if method != "defineProperty" && method != "defineProperties" {
-        return;
-    }
+    if method != "defineProperty" && method != "defineProperties" { return; }
 
-    let args_node = node
-        .child_by_field_name("arguments")
+    let args_node = node.child_by_field_name("arguments")
         .or_else(|| find_child(node, "arguments"));
     let Some(args_node) = args_node else { return };
 
     // Collect non-punctuation argument nodes in order
     let mut args: Vec<Node> = Vec::new();
     for i in 0..args_node.child_count() {
-        let Some(child) = args_node.child(i) else {
-            continue;
-        };
+        let Some(child) = args_node.child(i) else { continue };
         if !matches!(child.kind(), "(" | ")" | ",") {
             args.push(child);
         }
@@ -490,16 +349,10 @@ fn seed_define_property_entries(node: &Node, source: &[u8], symbols: &mut FileSy
 
     if method == "defineProperty" {
         // Object.defineProperty(obj, "key", { value: fn }) or { get: getter }
-        if args.len() < 3 {
-            return;
-        }
-        if args[0].kind() != "identifier" {
-            return;
-        }
+        if args.len() < 3 { return; }
+        if args[0].kind() != "identifier" { return; }
         let obj_name = node_text(&args[0], source);
-        let Some(key) = extract_string_fragment(&args[1], source) else {
-            return;
-        };
+        let Some(key) = extract_string_fragment(&args[1], source) else { return };
         // Phase 8.3e: { value: fn } → obj.key pts to fn
         if let Some(target) = find_descriptor_value(&args[2], source) {
             symbols.type_map.push(TypeMapEntry {
@@ -518,48 +371,24 @@ fn seed_define_property_entries(node: &Node, source: &[u8], symbols: &mut FileSy
         }
     } else {
         // Object.defineProperties(obj, { "key": { value: fn }, ... })
-        if args.len() < 2 {
-            return;
-        }
-        if args[0].kind() != "identifier" {
-            return;
-        }
+        if args.len() < 2 { return; }
+        if args[0].kind() != "identifier" { return; }
         let obj_name = node_text(&args[0], source).to_string();
-        if args[1].kind() != "object" {
-            return;
-        }
+        if args[1].kind() != "object" { return; }
         seed_descriptor_object(&obj_name, &args[1], source, symbols);
     }
 }
 
 /// Seed composite pts keys from `const obj = Object.create({ f1, f2 })`.
-fn seed_object_create_entries(
-    var_name: &str,
-    call_node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
-    let Some(callee) = call_node.child_by_field_name("function") else {
-        return;
-    };
-    if callee.kind() != "member_expression" {
-        return;
-    }
-    let Some(callee_obj) = callee.child_by_field_name("object") else {
-        return;
-    };
-    if node_text(&callee_obj, source) != "Object" {
-        return;
-    }
-    let Some(callee_prop) = callee.child_by_field_name("property") else {
-        return;
-    };
-    if node_text(&callee_prop, source) != "create" {
-        return;
-    }
+fn seed_object_create_entries(var_name: &str, call_node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(callee) = call_node.child_by_field_name("function") else { return };
+    if callee.kind() != "member_expression" { return; }
+    let Some(callee_obj) = callee.child_by_field_name("object") else { return };
+    if node_text(&callee_obj, source) != "Object" { return; }
+    let Some(callee_prop) = callee.child_by_field_name("property") else { return };
+    if node_text(&callee_prop, source) != "create" { return; }
 
-    let args_node = call_node
-        .child_by_field_name("arguments")
+    let args_node = call_node.child_by_field_name("arguments")
         .or_else(|| find_child(call_node, "arguments"));
     let Some(args_node) = args_node else { return };
 
@@ -568,14 +397,10 @@ fn seed_object_create_entries(
         .filter_map(|i| args_node.child(i))
         .find(|n| !matches!(n.kind(), "(" | ")" | ","));
     let Some(proto) = proto else { return };
-    if proto.kind() != "object" {
-        return;
-    };
+    if proto.kind() != "object" { return };
 
     for i in 0..proto.child_count() {
-        let Some(child) = proto.child(i) else {
-            continue;
-        };
+        let Some(child) = proto.child(i) else { continue };
         match child.kind() {
             "shorthand_property_identifier" => {
                 // { f1 } shorthand — property name equals value name
@@ -587,18 +412,10 @@ fn seed_object_create_entries(
                 });
             }
             "pair" => {
-                let Some(key_n) = child.child_by_field_name("key") else {
-                    continue;
-                };
-                let Some(val_n) = child.child_by_field_name("value") else {
-                    continue;
-                };
-                if val_n.kind() != "identifier" {
-                    continue;
-                }
-                let Some(key) = resolve_pair_key_name(&key_n, source) else {
-                    continue;
-                };
+                let Some(key_n) = child.child_by_field_name("key") else { continue };
+                let Some(val_n) = child.child_by_field_name("value") else { continue };
+                if val_n.kind() != "identifier" { continue; }
+                let Some(key) = resolve_pair_key_name(&key_n, source) else { continue };
                 symbols.type_map.push(TypeMapEntry {
                     name: format!("{}.{}", var_name, key),
                     type_name: node_text(&val_n, source).to_string(),
@@ -611,31 +428,14 @@ fn seed_object_create_entries(
 }
 
 /// Iterate over the properties of a `defineProperties` descriptor object and seed the type_map.
-fn seed_descriptor_object(
-    obj_name: &str,
-    obj_node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
+fn seed_descriptor_object(obj_name: &str, obj_node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for i in 0..obj_node.child_count() {
-        let Some(child) = obj_node.child(i) else {
-            continue;
-        };
-        if child.kind() != "pair" {
-            continue;
-        }
-        let Some(key_n) = child.child_by_field_name("key") else {
-            continue;
-        };
-        let Some(val_n) = child.child_by_field_name("value") else {
-            continue;
-        };
-        let Some(key) = resolve_pair_key_name(&key_n, source) else {
-            continue;
-        };
-        let Some(target) = find_descriptor_value(&val_n, source) else {
-            continue;
-        };
+        let Some(child) = obj_node.child(i) else { continue };
+        if child.kind() != "pair" { continue; }
+        let Some(key_n) = child.child_by_field_name("key") else { continue };
+        let Some(val_n) = child.child_by_field_name("value") else { continue };
+        let Some(key) = resolve_pair_key_name(&key_n, source) else { continue };
+        let Some(target) = find_descriptor_value(&val_n, source) else { continue };
         symbols.type_map.push(TypeMapEntry {
             name: format!("{}.{}", obj_name, key),
             type_name: target.to_string(),
@@ -646,31 +446,19 @@ fn seed_descriptor_object(
 
 /// Extract the text of the `string_fragment` child of a string node, i.e. content without quotes.
 fn extract_string_fragment<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
-    if node.kind() != "string" {
-        return None;
-    }
+    if node.kind() != "string" { return None; }
     find_child(node, "string_fragment").map(|n| node_text(&n, source))
 }
 
 /// Find the `value` identifier in a property descriptor object `{ value: fn }`.
 fn find_descriptor_value<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
-    if node.kind() != "object" {
-        return None;
-    }
+    if node.kind() != "object" { return None; }
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
-        if child.kind() != "pair" {
-            continue;
-        }
-        let Some(key) = child.child_by_field_name("key") else {
-            continue;
-        };
-        if node_text(&key, source) != "value" {
-            continue;
-        }
-        let Some(val) = child.child_by_field_name("value") else {
-            continue;
-        };
+        if child.kind() != "pair" { continue; }
+        let Some(key) = child.child_by_field_name("key") else { continue };
+        if node_text(&key, source) != "value" { continue; }
+        let Some(val) = child.child_by_field_name("value") else { continue };
         if val.kind() == "identifier" {
             return Some(node_text(&val, source));
         }
@@ -682,25 +470,15 @@ fn find_descriptor_value<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a st
 /// descriptor. `{ get: getter, set: setter }` → ["getter", "setter"].
 /// Returns all accessors so that each one gets a `callerName:this = obj` typeMap entry.
 fn find_descriptor_accessors<'a>(node: &Node<'a>, source: &'a [u8]) -> Vec<&'a str> {
-    if node.kind() != "object" {
-        return Vec::new();
-    }
+    if node.kind() != "object" { return Vec::new(); }
     let mut result = Vec::new();
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
-        if child.kind() != "pair" {
-            continue;
-        }
-        let Some(key) = child.child_by_field_name("key") else {
-            continue;
-        };
+        if child.kind() != "pair" { continue; }
+        let Some(key) = child.child_by_field_name("key") else { continue };
         let key_text = node_text(&key, source);
-        if key_text != "get" && key_text != "set" {
-            continue;
-        }
-        let Some(val) = child.child_by_field_name("value") else {
-            continue;
-        };
+        if key_text != "get" && key_text != "set" { continue; }
+        let Some(val) = child.child_by_field_name("value") else { continue };
         if val.kind() == "identifier" {
             result.push(node_text(&val, source));
         }
@@ -711,15 +489,9 @@ fn find_descriptor_accessors<'a>(node: &Node<'a>, source: &'a [u8]) -> Vec<&'a s
 /// True when `declarator` is the shape `extract_object_literal_functions` qualifies: a plain
 /// identifier name, outside any function scope. Mirrors TS `isEligibleObjectLiteralDeclarator`.
 fn is_eligible_object_literal_declarator(declarator: &Node) -> bool {
-    if declarator.kind() != "variable_declarator" {
-        return false;
-    }
-    let Some(name_n) = declarator.child_by_field_name("name") else {
-        return false;
-    };
-    if name_n.kind() != "identifier" {
-        return false;
-    }
+    if declarator.kind() != "variable_declarator" { return false; }
+    let Some(name_n) = declarator.child_by_field_name("name") else { return false };
+    if name_n.kind() != "identifier" { return false; }
     find_parent_of_types(declarator, &VAR_DECL_FN_SCOPE_TYPES).is_none()
 }
 
@@ -737,18 +509,10 @@ fn is_eligible_object_literal_declarator(declarator: &Node) -> bool {
 /// already produces a *class*-qualified entry (`ClassName.method`, via `find_parent_class`)
 /// rather than a bare one; that entry must be left alone, not duplicated by a spurious bare push.
 fn is_object_literal_declarator_method(method_node: &Node, source: &[u8]) -> bool {
-    let Some(obj) = method_node.parent() else {
-        return false;
-    };
-    if obj.kind() != "object" {
-        return false;
-    }
-    let Some(declarator) = obj.parent() else {
-        return false;
-    };
-    if !is_eligible_object_literal_declarator(&declarator) {
-        return false;
-    }
+    let Some(obj) = method_node.parent() else { return false };
+    if obj.kind() != "object" { return false; }
+    let Some(declarator) = obj.parent() else { return false };
+    if !is_eligible_object_literal_declarator(&declarator) { return false; }
     find_parent_class(method_node, source).is_none()
 }
 
@@ -780,9 +544,7 @@ fn extract_object_literal_functions(
     symbols: &mut FileSymbols,
 ) {
     for i in 0..obj_node.child_count() {
-        let Some(child) = obj_node.child(i) else {
-            continue;
-        };
+        let Some(child) = obj_node.child(i) else { continue };
         match child.kind() {
             "shorthand_property_identifier" => {
                 let prop_name = node_text(&child, source);
@@ -793,18 +555,12 @@ fn extract_object_literal_functions(
                 });
             }
             "pair" => {
-                let Some(key_n) = child.child_by_field_name("key") else {
-                    continue;
-                };
-                let Some(val_n) = child.child_by_field_name("value") else {
-                    continue;
-                };
+                let Some(key_n) = child.child_by_field_name("key") else { continue };
+                let Some(val_n) = child.child_by_field_name("value") else { continue };
                 // Use resolve_pair_key_name to strip brackets from computed string keys
                 // (e.g. ['foo'] → "foo") and skip non-string computed keys ([Symbol.iterator]),
                 // mirroring resolve_method_def_name below.
-                let Some(key) = resolve_pair_key_name(&key_n, source) else {
-                    continue;
-                };
+                let Some(key) = resolve_pair_key_name(&key_n, source) else { continue };
                 let qualified = format!("{}.{}", var_name, key);
                 match val_n.kind() {
                     "arrow_function" | "function_expression" | "function" => {
@@ -843,9 +599,7 @@ fn extract_object_literal_functions(
             "method_definition" => {
                 // Use resolve_method_def_name to strip brackets from computed string keys
                 // (e.g. ['foo'] → "foo") and skip non-string computed keys ([Symbol.iterator]).
-                let Some(method_name) = resolve_method_def_name(&child, source) else {
-                    continue;
-                };
+                let Some(method_name) = resolve_method_def_name(&child, source) else { continue };
                 let qualified = format!("{}.{}", var_name, method_name);
                 // typeMap['obj.baz'] = 'baz' — points to the bare-name definition so
                 // the two-step accessor dispatch resolves via the bare node.
@@ -902,16 +656,9 @@ fn extract_object_literal_functions(
 ///
 /// For `const` declarations this produces the same entries as `extract_object_literal_functions`,
 /// but `dedup_type_map` collapses duplicates at equal confidence.
-fn seed_objlit_type_map_entries(
-    var_name: &str,
-    obj_node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
+fn seed_objlit_type_map_entries(var_name: &str, obj_node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for i in 0..obj_node.child_count() {
-        let Some(child) = obj_node.child(i) else {
-            continue;
-        };
+        let Some(child) = obj_node.child(i) else { continue };
         match child.kind() {
             "shorthand_property_identifier" => {
                 let prop_name = node_text(&child, source);
@@ -922,15 +669,9 @@ fn seed_objlit_type_map_entries(
                 });
             }
             "pair" => {
-                let Some(key_n) = child.child_by_field_name("key") else {
-                    continue;
-                };
-                let Some(val_n) = child.child_by_field_name("value") else {
-                    continue;
-                };
-                let Some(key) = resolve_pair_key_name(&key_n, source) else {
-                    continue;
-                };
+                let Some(key_n) = child.child_by_field_name("key") else { continue };
+                let Some(val_n) = child.child_by_field_name("value") else { continue };
+                let Some(key) = resolve_pair_key_name(&key_n, source) else { continue };
                 let qualified = format!("{}.{}", var_name, key);
                 match val_n.kind() {
                     "arrow_function" | "function_expression" | "function" => {
@@ -963,9 +704,7 @@ fn seed_objlit_type_map_entries(
                 // and qualified definitions inline for all declaration kinds (const/let/var) —
                 // see `handle_var_decl`'s two call sites. Using the bare name here keeps
                 // resolution consistent across all declaration kinds.
-                let Some(method_name) = resolve_method_def_name(&child, source) else {
-                    continue;
-                };
+                let Some(method_name) = resolve_method_def_name(&child, source) else { continue };
                 let qualified = format!("{}.{}", var_name, method_name);
                 symbols.type_map.push(TypeMapEntry {
                     name: qualified,
@@ -985,13 +724,9 @@ fn seed_objlit_type_map_entries(
 fn match_js_return_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
     match node.kind() {
         "function_declaration" | "generator_function_declaration" => {
-            let Some(name_n) = node.child_by_field_name("name") else {
-                return;
-            };
+            let Some(name_n) = node.child_by_field_name("name") else { return };
             let fn_name = node_text(&name_n, source);
-            if fn_name == "constructor" {
-                return;
-            }
+            if fn_name == "constructor" { return; }
             // Use the boundary-aware variant: nested function declarations inside
             // method bodies must not inherit the class prefix (matches WASM behaviour).
             let key = match find_parent_class_no_fn_boundary(node, source) {
@@ -1001,13 +736,9 @@ fn match_js_return_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbol
             store_return_type(node, &key, source, symbols);
         }
         "method_definition" => {
-            let Some(name_n) = node.child_by_field_name("name") else {
-                return;
-            };
+            let Some(name_n) = node.child_by_field_name("name") else { return };
             let method_name = node_text(&name_n, source);
-            if method_name == "constructor" {
-                return;
-            }
+            if method_name == "constructor" { return; }
             // method_definition is always a direct child of class_body — plain
             // find_parent_class is correct here.
             let key = match find_parent_class(node, source) {
@@ -1017,21 +748,12 @@ fn match_js_return_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbol
             store_return_type(node, &key, source, symbols);
         }
         "variable_declarator" => {
-            let Some(name_n) = node.child_by_field_name("name") else {
-                return;
-            };
-            if name_n.kind() != "identifier" {
-                return;
-            }
-            let Some(value_n) = node.child_by_field_name("value") else {
-                return;
-            };
+            let Some(name_n) = node.child_by_field_name("name") else { return };
+            if name_n.kind() != "identifier" { return; }
+            let Some(value_n) = node.child_by_field_name("value") else { return };
             // Only arrow_function, function_expression and generator_function match the TS reference;
             // "function" is not a valid tree-sitter value-expression kind here.
-            if !matches!(
-                value_n.kind(),
-                "arrow_function" | "function_expression" | "generator_function"
-            ) {
+            if !matches!(value_n.kind(), "arrow_function" | "function_expression" | "generator_function") {
                 return;
             }
             let var_name = node_text(&name_n, source);
@@ -1069,9 +791,7 @@ fn store_return_type(fn_node: &Node, fn_name: &str, source: &[u8], symbols: &mut
 fn find_return_new_expr_type<'a>(body: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
     for i in 0..body.child_count() {
         let Some(child) = body.child(i) else { continue };
-        if child.kind() != "return_statement" {
-            continue;
-        }
+        if child.kind() != "return_statement" { continue; }
         for j in 0..child.child_count() {
             let Some(expr) = child.child(j) else { continue };
             if expr.kind() == "new_expression" {
@@ -1085,12 +805,7 @@ fn find_return_new_expr_type<'a>(body: &Node<'a>, source: &'a [u8]) -> Option<&'
 /// Append a `(fn_name → type_name)` entry to `return_type_map`.
 /// Deduplication (highest-confidence-wins) is handled in bulk by
 /// [`dedup_type_map`] at the end of `extract()`.
-fn push_return_type_entry(
-    symbols: &mut FileSymbols,
-    fn_name: &str,
-    type_name: &str,
-    confidence: f64,
-) {
+fn push_return_type_entry(symbols: &mut FileSymbols, fn_name: &str, type_name: &str, confidence: f64) {
     symbols.return_type_map.push(TypeMapEntry {
         name: fn_name.to_string(),
         type_name: type_name.to_string(),
@@ -1108,19 +823,10 @@ fn push_return_type_entry(
 ///   1. `Foo.prototype.bar = function(){}`  → emits `Foo.bar` as a method definition
 ///   2. `Foo.prototype.bar = identifier`    → seeds `typeMap['Foo.bar'] = identifier`
 ///   3. `Foo.prototype = { bar: fn, ... }`  → same rules applied per property
-fn match_js_prototype_methods(
-    node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-    _depth: usize,
-) {
-    if node.kind() != "expression_statement" {
-        return;
-    }
+fn match_js_prototype_methods(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
+    if node.kind() != "expression_statement" { return; }
     let Some(expr) = node.child(0) else { return };
-    if expr.kind() != "assignment_expression" {
-        return;
-    }
+    if expr.kind() != "assignment_expression" { return; }
     let lhs = expr.child_by_field_name("left");
     let rhs = expr.child_by_field_name("right");
     if let (Some(lhs), Some(rhs)) = (lhs, rhs) {
@@ -1128,21 +834,10 @@ fn match_js_prototype_methods(
     }
 }
 
-fn handle_js_prototype_assignment(
-    lhs: &Node,
-    rhs: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
-    if lhs.kind() != "member_expression" {
-        return;
-    }
-    let Some(lhs_obj) = lhs.child_by_field_name("object") else {
-        return;
-    };
-    let Some(lhs_prop) = lhs.child_by_field_name("property") else {
-        return;
-    };
+fn handle_js_prototype_assignment(lhs: &Node, rhs: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if lhs.kind() != "member_expression" { return; }
+    let Some(lhs_obj) = lhs.child_by_field_name("object") else { return };
+    let Some(lhs_prop) = lhs.child_by_field_name("property") else { return };
 
     // Pattern 1: `Foo.prototype.bar = rhs`
     // lhs.object is `Foo.prototype` (member_expression), lhs.property is `bar`
@@ -1215,13 +910,7 @@ fn handle_js_prototype_assignment(
 /// Emit one prototype method definition or typeMap alias for `ClassName.methodName = rhs`.
 ///
 /// Mirrors `emitPrototypeMethod` in `src/extractors/javascript.ts`.
-fn emit_js_prototype_method(
-    class_name: &str,
-    method_name: &str,
-    rhs: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
+fn emit_js_prototype_method(class_name: &str, method_name: &str, rhs: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let full_name = format!("{}.{}", class_name, method_name);
     match rhs.kind() {
         "function_expression" | "arrow_function" => {
@@ -1252,21 +941,12 @@ fn emit_js_prototype_method(
 /// Iterate over an object literal assigned to `Foo.prototype` and emit definitions/aliases.
 ///
 /// Mirrors `extractPrototypeObjectLiteral` in `src/extractors/javascript.ts`.
-fn extract_js_prototype_object_literal(
-    class_name: &str,
-    obj_node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
+fn extract_js_prototype_object_literal(class_name: &str, obj_node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for i in 0..obj_node.child_count() {
-        let Some(child) = obj_node.child(i) else {
-            continue;
-        };
+        let Some(child) = obj_node.child(i) else { continue };
         match child.kind() {
             "method_definition" => {
-                let Some(method_name) = resolve_method_def_name(&child, source) else {
-                    continue;
-                };
+                let Some(method_name) = resolve_method_def_name(&child, source) else { continue };
                 let children = extract_js_parameters(&child, source);
                 symbols.definitions.push(Definition {
                     name: format!("{}.{}", class_name, method_name),
@@ -1295,19 +975,9 @@ fn extract_js_prototype_object_literal(
                 let key_node = child.child_by_field_name("key");
                 let value_node = child.child_by_field_name("value");
                 if let (Some(key_node), Some(value_node)) = (key_node, value_node) {
-                    let Some(method_name) = resolve_pair_key_name(&key_node, source) else {
-                        continue;
-                    };
-                    if method_name.is_empty() {
-                        continue;
-                    }
-                    emit_js_prototype_method(
-                        class_name,
-                        &method_name,
-                        &value_node,
-                        source,
-                        symbols,
-                    );
+                    let Some(method_name) = resolve_pair_key_name(&key_node, source) else { continue };
+                    if method_name.is_empty() { continue; }
+                    emit_js_prototype_method(class_name, &method_name, &value_node, source, symbols);
                 }
             }
             _ => {}
@@ -1321,26 +991,14 @@ fn extract_js_prototype_object_literal(
 /// `symbols.call_assignments` for cross-file return-type propagation.
 /// Mirrors `recordCallAssignment` in src/extractors/javascript.ts.
 fn match_js_call_assignments(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
-    if node.kind() != "variable_declarator" {
-        return;
-    }
-    let Some(name_n) = node.child_by_field_name("name") else {
-        return;
-    };
-    if name_n.kind() != "identifier" {
-        return;
-    }
-    let Some(value_n) = node.child_by_field_name("value") else {
-        return;
-    };
-    if value_n.kind() != "call_expression" {
-        return;
-    }
+    if node.kind() != "variable_declarator" { return; }
+    let Some(name_n) = node.child_by_field_name("name") else { return };
+    if name_n.kind() != "identifier" { return; }
+    let Some(value_n) = node.child_by_field_name("value") else { return };
+    if value_n.kind() != "call_expression" { return; }
 
     let var_name = node_text(&name_n, source).to_string();
-    let Some(fn_node) = value_n.child_by_field_name("function") else {
-        return;
-    };
+    let Some(fn_node) = value_n.child_by_field_name("function") else { return };
 
     match fn_node.kind() {
         "identifier" => {
@@ -1351,18 +1009,10 @@ fn match_js_call_assignments(node: &Node, source: &[u8], symbols: &mut FileSymbo
             });
         }
         "member_expression" => {
-            let Some(obj) = fn_node.child_by_field_name("object") else {
-                return;
-            };
-            let Some(prop) = fn_node.child_by_field_name("property") else {
-                return;
-            };
-            if obj.kind() != "identifier" {
-                return;
-            }
-            let receiver_type = symbols
-                .type_map
-                .iter()
+            let Some(obj) = fn_node.child_by_field_name("object") else { return };
+            let Some(prop) = fn_node.child_by_field_name("property") else { return };
+            if obj.kind() != "identifier" { return; }
+            let receiver_type = symbols.type_map.iter()
                 .find(|e| e.name == node_text(&obj, source))
                 .map(|e| e.type_name.clone());
             symbols.call_assignments.push(NativeCallAssignment {
@@ -1435,9 +1085,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else {
-        return;
-    };
+    let Some(name_node) = node.child_by_field_name("name") else { return };
     let class_name = node_text(&name_node, source).to_string();
     let children = extract_js_class_properties(node, source);
     symbols.definitions.push(Definition {
@@ -1486,16 +1134,12 @@ fn resolve_computed_key_name(computed_node: &Node, source: &[u8]) -> Option<Stri
     match inner.kind() {
         "string" => {
             let s = extract_string_fragment(&inner, source).unwrap_or("");
-            if s.is_empty() {
-                return None;
-            }
+            if s.is_empty() { return None; }
             Some(s.to_string())
         }
         "string_fragment" => {
             let s = node_text(&inner, source);
-            if s.is_empty() {
-                return None;
-            }
+            if s.is_empty() { return None; }
             Some(s.to_string())
         }
         _ => None, // non-string computed key — skip
@@ -1596,9 +1240,7 @@ type LocalAccessorRegistry = HashMap<String, LocalAccessorInfo>;
 fn get_method_accessor_kind(meth_node: &Node) -> Option<&'static str> {
     let name_node = meth_node.child_by_field_name("name");
     for i in 0..meth_node.child_count() {
-        let Some(child) = meth_node.child(i) else {
-            continue;
-        };
+        let Some(child) = meth_node.child(i) else { continue };
         if Some(child.id()) == name_node.map(|n| n.id()) {
             break;
         }
@@ -1625,10 +1267,9 @@ fn collect_local_accessors(root: &Node, source: &[u8]) -> LocalAccessorRegistry 
         }
         if node.kind() == "method_definition" {
             if let Some(kind) = get_method_accessor_kind(node) {
-                if let (Some(class_name), Some(prop_name)) = (
-                    find_parent_class(node, source),
-                    resolve_method_def_name(node, source),
-                ) {
+                if let (Some(class_name), Some(prop_name)) =
+                    (find_parent_class(node, source), resolve_method_def_name(node, source))
+                {
                     let key = format!("{}.{}", class_name, prop_name);
                     let entry = registry.entry(key).or_default();
                     if kind == "get" {
@@ -1682,12 +1323,8 @@ fn handle_accessor_property_read(
         }
     }
 
-    let Some(obj) = node.child_by_field_name("object") else {
-        return;
-    };
-    let Some(prop_node) = node.child_by_field_name("property") else {
-        return;
-    };
+    let Some(obj) = node.child_by_field_name("object") else { return };
+    let Some(prop_node) = node.child_by_field_name("property") else { return };
     if prop_node.kind() != "property_identifier" {
         return;
     }
@@ -1709,9 +1346,7 @@ fn handle_accessor_property_read(
     let Some(class_name) = class_name else { return };
 
     let key = format!("{}.{}", class_name, prop_name);
-    let Some(accessor_info) = local_accessors.get(&key) else {
-        return;
-    };
+    let Some(accessor_info) = local_accessors.get(&key) else { return };
     if accessor_info.get && accessor_info.set {
         return;
     }
@@ -1746,9 +1381,7 @@ fn handle_accessor_property_read(
 /// class has multiple `static { }` blocks (each has a distinct start position even
 /// if on the same line).
 fn handle_static_block(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(class_name) = find_parent_class(node, source) else {
-        return;
-    };
+    let Some(class_name) = find_parent_class(node, source) else { return };
     let line = start_line(node);
     let col = node.start_position().column;
     symbols.definitions.push(Definition {
@@ -1770,8 +1403,7 @@ fn handle_static_block(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 /// `handleFieldDef` guard.  The synthetic definition has `kind = "method"` so that the SQL
 /// call-edge filter (`kind IN ('function','method')`) accepts edges rooted here.
 fn handle_field_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = node
-        .child_by_field_name("name")
+    let name_node = node.child_by_field_name("name")
         .or_else(|| node.child_by_field_name("property"))
         .or_else(|| find_child(node, "property_identifier"));
     let Some(name_node) = name_node else { return };
@@ -1779,31 +1411,19 @@ fn handle_field_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     // Allow property_identifier (regular names), identifier, private_property_identifier (#foo),
     // and string (e.g. `"method" = () => {}`) to match the TypeScript path which only denies
     // computed_property_name.
-    if !matches!(
-        name_node.kind(),
-        "property_identifier" | "identifier" | "private_property_identifier" | "string"
-    ) {
+    if !matches!(name_node.kind(), "property_identifier" | "identifier" | "private_property_identifier" | "string") {
         return;
     }
     // Skip uninitialised fields (`class C { x; }`) — must have a value node.
-    let Some(value_node) = node.child_by_field_name("value") else {
-        return;
-    };
+    let Some(value_node) = node.child_by_field_name("value") else { return };
     // Only emit a callable definition when the initializer is a function/arrow expression.
     // Scalar fields like `static x = 42` should not appear as method-kind nodes.
-    if !matches!(
-        value_node.kind(),
-        "arrow_function" | "function_expression" | "generator_function"
-    ) {
+    if !matches!(value_node.kind(), "arrow_function" | "function_expression" | "generator_function") {
         return;
     }
     let field_name = node_text(&name_node, source);
-    if field_name.is_empty() {
-        return;
-    }
-    let Some(class_name) = find_parent_class(node, source) else {
-        return;
-    };
+    if field_name.is_empty() { return; }
+    let Some(class_name) = find_parent_class(node, source) else { return };
     symbols.definitions.push(Definition {
         name: format!("{}.{}", class_name, field_name),
         kind: "method".to_string(),
@@ -1819,9 +1439,7 @@ fn handle_field_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else {
-        return;
-    };
+    let Some(name_node) = node.child_by_field_name("name") else { return };
     let iface_name = node_text(&name_node, source).to_string();
     symbols.definitions.push(Definition {
         name: iface_name.clone(),
@@ -1884,39 +1502,25 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 /// Node types marking a function-body scope; declarations inside these are skipped by
 /// the top-level-constant/destructuring branches below (parity with TS `FUNCTION_SCOPE_TYPES`).
 const VAR_DECL_FN_SCOPE_TYPES: [&str; 6] = [
-    "function_declaration",
-    "arrow_function",
-    "function_expression",
-    "method_definition",
-    "generator_function_declaration",
-    "generator_function",
+    "function_declaration", "arrow_function",
+    "function_expression", "method_definition",
+    "generator_function_declaration", "generator_function",
 ];
 
 fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let is_const = node
-        .child(0)
+    let is_const = node.child(0)
         .map(|c| node_text(&c, source) == "const")
         .unwrap_or(false);
     let in_function_scope = find_parent_of_types(node, &VAR_DECL_FN_SCOPE_TYPES).is_some();
     for i in 0..node.child_count() {
-        let Some(declarator) = node.child(i) else {
-            continue;
-        };
-        if declarator.kind() != "variable_declarator" {
-            continue;
-        }
+        let Some(declarator) = node.child(i) else { continue };
+        if declarator.kind() != "variable_declarator" { continue; }
         let name_n = declarator.child_by_field_name("name");
         let value_n = declarator.child_by_field_name("value");
-        let (Some(name_n), Some(value_n)) = (name_n, value_n) else {
-            continue;
-        };
+        let (Some(name_n), Some(value_n)) = (name_n, value_n) else { continue };
         let vt = value_n.kind();
 
-        if vt == "arrow_function"
-            || vt == "function_expression"
-            || vt == "function"
-            || vt == "generator_function"
-        {
+        if vt == "arrow_function" || vt == "function_expression" || vt == "function" || vt == "generator_function" {
             let children = extract_js_parameters(&value_n, source);
             symbols.definitions.push(Definition {
                 name: node_text(&name_n, source).to_string(),
@@ -1934,36 +1538,30 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             // Parity with TS query path (extractDestructuredBindingsWalk):
             // skip destructured const bindings inside function scopes so the
             // Rust walk path matches FUNCTION_SCOPE_TYPES behaviour.
-            extract_destructured_bindings(
-                &name_n,
-                source,
-                start_line(node),
-                end_line(node),
-                &mut symbols.definitions,
-            );
+            extract_destructured_bindings(&name_n, source, start_line(node), end_line(node), &mut symbols.definitions);
             // If the RHS is a CJS require() call, also add to imports so the
             // receiver-edge resolver treats the names as import artifacts, not
             // local definitions — mirroring the WASM cjsRequireBindings fix (#1678).
             if value_n.kind() == "call_expression" {
                 if let Some(fn_node) = value_n.child_by_field_name("function") {
                     if node_text(&fn_node, source) == "require" {
-                        let args = value_n
-                            .child_by_field_name("arguments")
+                        let args = value_n.child_by_field_name("arguments")
                             .or_else(|| find_child(&value_n, "arguments"));
                         if let Some(args) = args {
                             if let Some(str_arg) = find_child(&args, "string") {
-                                let mod_path =
-                                    node_text(&str_arg, source).replace(&['\'', '"'][..], "");
+                                let mod_path = node_text(&str_arg, source)
+                                    .replace(&['\'', '"'][..], "");
                                 // CJS require bindings never populate renamed_imports —
                                 // resolve_call_targets deliberately ignores the original
                                 // name for these (empty target_file forces a same-file
                                 // fallback match, matching WASM's importedNamesMap
                                 // exclusion, #1678) — so the rename pairs collected here
                                 // are discarded.
-                                let names =
-                                    collect_object_pattern_names(&name_n, source, &mut Vec::new());
+                                let names = collect_object_pattern_names(&name_n, source, &mut Vec::new());
                                 if !names.is_empty() {
-                                    let mut imp = Import::new(mod_path, names, start_line(node));
+                                    let mut imp = Import::new(
+                                        mod_path, names, start_line(node),
+                                    );
                                     imp.cjs_require = Some(true);
                                     symbols.imports.push(imp);
                                 }
@@ -1999,15 +1597,8 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         } else if is_const && name_n.kind() == "array_pattern" && !in_function_scope {
             // Array destructuring: `const [x, y] = ...` — one constant Definition per
             // bound identifier (#1901). Scope guard mirrors the object_pattern branch above.
-            extract_array_pattern_bindings(
-                &name_n,
-                source,
-                start_line(node),
-                end_line(node),
-                &mut symbols.definitions,
-            );
-        } else if !is_const
-            && value_n.kind() == "object"
+            extract_array_pattern_bindings(&name_n, source, start_line(node), end_line(node), &mut symbols.definitions);
+        } else if !is_const && value_n.kind() == "object"
             && is_eligible_object_literal_declarator(&declarator)
         {
             // `let`/`var` object literals get no "constant" definition of their own (mirrors
@@ -2129,9 +1720,7 @@ fn extract_dispatch_table_call(
     let table_name = format!("<dt_{}_{}>", line, col);
     let mut idx: u32 = 0;
     for i in 0..obj_node.child_count() {
-        let Some(child) = obj_node.child(i) else {
-            continue;
-        };
+        let Some(child) = obj_node.child(i) else { continue };
         match child.kind() {
             "shorthand_property_identifier" => {
                 let text = node_text(&child, source);
@@ -2181,9 +1770,7 @@ fn handle_call_expr(
     symbols: &mut FileSymbols,
     callback_param_shapes: &CallbackParamShapes,
 ) {
-    let Some(fn_node) = node.child_by_field_name("function") else {
-        return;
-    };
+    let Some(fn_node) = node.child_by_field_name("function") else { return };
     if fn_node.kind() == "import" {
         handle_dynamic_import(node, &fn_node, source, symbols);
         return;
@@ -2220,19 +1807,12 @@ fn handle_call_expr(
     // the values as array-elem bindings under a synthetic `<dt_line_col>` name and
     // emit a `<dt_line_col>[*]` call so the PTS solver can resolve each target.
     if fn_node.kind() == "subscript_expression" {
-        if let Some(call) =
-            extract_dispatch_table_call(&fn_node, node, source, &mut symbols.array_elem_bindings)
-        {
+        if let Some(call) = extract_dispatch_table_call(&fn_node, node, source, &mut symbols.array_elem_bindings) {
             symbols.calls.push(call);
             if let Some(cb_def) = extract_callback_definition(node, source) {
                 symbols.definitions.push(cb_def);
             }
-            extract_callback_reference_calls(
-                node,
-                source,
-                callback_param_shapes,
-                &mut symbols.calls,
-            );
+            extract_callback_reference_calls(node, source, callback_param_shapes, &mut symbols.calls);
             return;
         }
     }
@@ -2246,8 +1826,7 @@ fn handle_call_expr(
 }
 
 fn handle_new_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let ctor = node
-        .child_by_field_name("constructor")
+    let ctor = node.child_by_field_name("constructor")
         .or_else(|| node.child(1));
     let Some(ctor) = ctor else { return };
     match ctor.kind() {
@@ -2311,13 +1890,14 @@ fn handle_decorator(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_dynamic_import(node: &Node, _fn_node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let args = node
-        .child_by_field_name("arguments")
+    let args = node.child_by_field_name("arguments")
         .or_else(|| find_child(node, "arguments"));
     let Some(args) = args else { return };
-    let str_node = find_child(&args, "string").or_else(|| find_child(&args, "template_string"));
+    let str_node = find_child(&args, "string")
+        .or_else(|| find_child(&args, "template_string"));
     if let Some(str_node) = str_node {
-        let mod_path = node_text(&str_node, source).replace(&['\'', '"', '`'][..], "");
+        let mod_path = node_text(&str_node, source)
+            .replace(&['\'', '"', '`'][..], "");
         let mut renamed_imports = Vec::new();
         let names = extract_dynamic_import_names(node, source, &mut renamed_imports);
         let mut imp = Import::new(mod_path, names, start_line(node));
@@ -2336,15 +1916,12 @@ fn handle_import_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         .child_by_field_name("source")
         .or_else(|| find_child(node, "string"));
     if let Some(source_node) = source_node {
-        let mod_path = node_text(&source_node, source).replace(&['\'', '"'][..], "");
+        let mod_path = node_text(&source_node, source)
+            .replace(&['\'', '"'][..], "");
         let mut renamed_imports = Vec::new();
         let mut type_only_names = Vec::new();
-        let names = extract_import_names_with_renames(
-            node,
-            source,
-            &mut renamed_imports,
-            &mut type_only_names,
-        );
+        let names =
+            extract_import_names_with_renames(node, source, &mut renamed_imports, &mut type_only_names);
         let mut imp = Import::new(mod_path, names, start_line(node));
         if is_type_only {
             imp.type_only = Some(true);
@@ -2419,26 +1996,14 @@ fn collect_exported_var_declarations(
         .unwrap_or(false);
     let line = start_line(node);
     for i in 0..decl.child_count() {
-        let Some(declarator) = decl.child(i) else {
-            continue;
-        };
-        if declarator.kind() != "variable_declarator" {
-            continue;
-        }
+        let Some(declarator) = decl.child(i) else { continue };
+        if declarator.kind() != "variable_declarator" { continue; }
         let name_n = declarator.child_by_field_name("name");
         let value_n = declarator.child_by_field_name("value");
-        let (Some(name_n), Some(value_n)) = (name_n, value_n) else {
-            continue;
-        };
-        if name_n.kind() != "identifier" {
-            continue;
-        }
+        let (Some(name_n), Some(value_n)) = (name_n, value_n) else { continue };
+        if name_n.kind() != "identifier" { continue; }
         let vt = value_n.kind();
-        if vt == "arrow_function"
-            || vt == "function_expression"
-            || vt == "function"
-            || vt == "generator_function"
-        {
+        if vt == "arrow_function" || vt == "function_expression" || vt == "function" || vt == "generator_function" {
             symbols.exports.push(ExportInfo {
                 name: node_text(&name_n, source).to_string(),
                 kind: "function".to_string(),
@@ -2455,15 +2020,12 @@ fn collect_exported_var_declarations(
 }
 
 fn handle_reexport(node: &Node, source_node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let mod_path = node_text(source_node, source).replace(&['\'', '"'][..], "");
+    let mod_path = node_text(source_node, source)
+        .replace(&['\'', '"'][..], "");
     let mut reexport_renames = Vec::new();
     let mut type_only_names = Vec::new();
-    let reexport_names = extract_import_names_with_renames(
-        node,
-        source,
-        &mut reexport_renames,
-        &mut type_only_names,
-    );
+    let reexport_names =
+        extract_import_names_with_renames(node, source, &mut reexport_renames, &mut type_only_names);
     let text = node_text(node, source);
     let is_wildcard = text.contains("export *") || text.contains("export*");
     let mut imp = Import::new(mod_path, reexport_names.clone(), start_line(node));
@@ -2479,18 +2041,12 @@ fn handle_reexport(node: &Node, source_node: &Node, source: &[u8], symbols: &mut
 
 fn handle_expr_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let Some(expr) = node.child(0) else { return };
-    if expr.kind() != "assignment_expression" {
-        return;
-    }
+    if expr.kind() != "assignment_expression" { return; }
     let left = expr.child_by_field_name("left");
     let right = expr.child_by_field_name("right");
-    let (Some(left), Some(right)) = (left, right) else {
-        return;
-    };
+    let (Some(left), Some(right)) = (left, right) else { return };
     let left_text = node_text(&left, source);
-    if !left_text.starts_with("module.exports") && left_text != "exports" {
-        return;
-    }
+    if !left_text.starts_with("module.exports") && left_text != "exports" { return; }
     if right.kind() == "call_expression" {
         handle_require_reexport(&right, node, source, symbols);
     }
@@ -2507,7 +2063,8 @@ fn handle_require_reexport(right: &Node, node: &Node, source: &[u8], symbols: &m
     if let (Some(fn_node), Some(args)) = (fn_node, args) {
         if node_text(&fn_node, source) == "require" {
             if let Some(str_arg) = find_child(&args, "string") {
-                let mod_path = node_text(&str_arg, source).replace(&['\'', '"'][..], "");
+                let mod_path = node_text(&str_arg, source)
+                    .replace(&['\'', '"'][..], "");
                 let mut imp = Import::new(mod_path, vec![], start_line(node));
                 imp.reexport = Some(true);
                 imp.wildcard_reexport = Some(true);
@@ -2517,40 +2074,23 @@ fn handle_require_reexport(right: &Node, node: &Node, source: &[u8], symbols: &m
     }
 }
 
-fn handle_spread_require_reexports(
-    right: &Node,
-    node: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
+fn handle_spread_require_reexports(right: &Node, node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for ci in 0..right.child_count() {
-        let Some(child) = right.child(ci) else {
-            continue;
-        };
-        if child.kind() != "spread_element" {
-            continue;
-        }
-        let spread_expr = child
-            .child(1)
+        let Some(child) = right.child(ci) else { continue };
+        if child.kind() != "spread_element" { continue; }
+        let spread_expr = child.child(1)
             .or_else(|| child.child_by_field_name("value"));
-        let Some(spread_expr) = spread_expr else {
-            continue;
-        };
-        if spread_expr.kind() != "call_expression" {
-            continue;
-        }
+        let Some(spread_expr) = spread_expr else { continue };
+        if spread_expr.kind() != "call_expression" { continue; }
         let fn2 = spread_expr.child_by_field_name("function");
         let args2 = spread_expr
             .child_by_field_name("arguments")
             .or_else(|| find_child(&spread_expr, "arguments"));
-        let (Some(fn2), Some(args2)) = (fn2, args2) else {
-            continue;
-        };
-        if node_text(&fn2, source) != "require" {
-            continue;
-        }
+        let (Some(fn2), Some(args2)) = (fn2, args2) else { continue };
+        if node_text(&fn2, source) != "require" { continue; }
         if let Some(str_arg2) = find_child(&args2, "string") {
-            let mod_path2 = node_text(&str_arg2, source).replace(&['\'', '"'][..], "");
+            let mod_path2 = node_text(&str_arg2, source)
+                .replace(&['\'', '"'][..], "");
             let mut imp = Import::new(mod_path2, vec![], start_line(node));
             imp.reexport = Some(true);
             imp.wildcard_reexport = Some(true);
@@ -2657,11 +2197,7 @@ fn walk_ast_nodes_depth(node: &Node, source: &[u8], ast_nodes: &mut Vec<AstNode>
         }
         "regex" => {
             let raw = node_text(node, source);
-            let name = if raw.is_empty() {
-                "?".to_string()
-            } else {
-                raw.to_string()
-            };
+            let name = if raw.is_empty() { "?".to_string() } else { raw.to_string() };
             let text = truncate(raw, TEXT_MAX);
             ast_nodes.push(AstNode {
                 kind: "regex".to_string(),
@@ -2767,8 +2303,7 @@ fn extract_expression_text(node: &Node, source: &[u8]) -> Option<String> {
 
 fn extract_js_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
-    let params_node = node
-        .child_by_field_name("parameters")
+    let params_node = node.child_by_field_name("parameters")
         .or_else(|| find_child(node, "formal_parameters"));
     if let Some(params_node) = params_node {
         for i in 0..params_node.child_count() {
@@ -2784,8 +2319,7 @@ fn extract_js_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
                     "required_parameter" | "optional_parameter" => {
                         // TS parameters: pattern field holds the identifier;
                         // fall back to left field or first child for edge cases
-                        let name_node = child
-                            .child_by_field_name("pattern")
+                        let name_node = child.child_by_field_name("pattern")
                             .or_else(|| child.child_by_field_name("left"))
                             .or_else(|| child.child(0));
                         if let Some(name_node) = name_node {
@@ -2834,22 +2368,19 @@ fn extract_js_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
 
 fn extract_js_class_properties(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut props = Vec::new();
-    let body = node
-        .child_by_field_name("body")
+    let body = node.child_by_field_name("body")
         .or_else(|| find_child(node, "class_body"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
             if let Some(child) = body.child(i) {
                 match child.kind() {
                     "field_definition" | "public_field_definition" | "property_definition" => {
-                        let prop = child
-                            .child_by_field_name("property")
+                        let prop = child.child_by_field_name("property")
                             .or_else(|| child.child_by_field_name("name"))
                             .or_else(|| find_child(&child, "property_identifier"));
                         if let Some(prop) = prop {
                             let kind = prop.kind();
-                            if kind == "property_identifier"
-                                || kind == "identifier"
+                            if kind == "property_identifier" || kind == "identifier"
                                 || kind == "private_property_identifier"
                             {
                                 props.push(child_def(
@@ -2870,14 +2401,14 @@ fn extract_js_class_properties(node: &Node, source: &[u8]) -> Vec<Definition> {
 
 fn extract_ts_enum_members(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut members = Vec::new();
-    let body = node
-        .child_by_field_name("body")
+    let body = node.child_by_field_name("body")
         .or_else(|| find_child(node, "enum_body"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
             if let Some(child) = body.child(i) {
                 if child.kind() == "enum_assignment" || child.kind() == "property_identifier" {
-                    let name = child.child_by_field_name("name").unwrap_or(child);
+                    let name = child.child_by_field_name("name")
+                        .unwrap_or(child);
                     members.push(child_def(
                         node_text(&name, source).to_string(),
                         "constant",
@@ -2987,54 +2518,20 @@ fn extract_implements_depth(node: &Node, source: &[u8], result: &mut Vec<String>
 /// Mirrors `CALLBACK_ACCEPTING_CALLEES` in `src/extractors/javascript.ts`.
 const CALLBACK_ACCEPTING_CALLEES: &[&str] = &[
     // Express / router / middleware
-    "use",
-    "get",
-    "post",
-    "put",
-    "delete",
-    "patch",
-    "options",
-    "head",
-    "all",
+    "use", "get", "post", "put", "delete", "patch", "options", "head", "all",
     // Promises
-    "then",
-    "catch",
-    "finally",
+    "then", "catch", "finally",
     // Array iteration / reduction
-    "map",
-    "filter",
-    "forEach",
-    "find",
-    "findIndex",
-    "findLast",
-    "findLastIndex",
-    "some",
-    "every",
-    "reduce",
-    "reduceRight",
-    "flatMap",
-    "sort",
+    "map", "filter", "forEach", "find", "findIndex", "findLast", "findLastIndex",
+    "some", "every", "reduce", "reduceRight", "flatMap", "sort",
     // Event emitters / DOM
-    "on",
-    "once",
-    "off",
-    "addListener",
-    "removeListener",
-    "addEventListener",
-    "removeEventListener",
-    "subscribe",
-    "unsubscribe",
+    "on", "once", "off", "addListener", "removeListener",
+    "addEventListener", "removeEventListener", "subscribe", "unsubscribe",
     // Scheduling / plain function callbacks
-    "setTimeout",
-    "setInterval",
-    "setImmediate",
-    "queueMicrotask",
-    "requestAnimationFrame",
-    "requestIdleCallback",
-    "nextTick",
+    "setTimeout", "setInterval", "setImmediate", "queueMicrotask",
+    "requestAnimationFrame", "requestIdleCallback", "nextTick",
     // Commander / yargs / hooks
-    "action",
-    "command",
+    "action", "command",
 ];
 
 /// HTTP-verb callees that double as Map/cache/repository method names.
@@ -3228,7 +2725,8 @@ fn collect_function_shaped_type_aliases(root: &Node, source: &[u8]) -> HashMap<S
     // Resolve `type A = B` chains against the direct classifications above.
     for (name, alias_of) in &direct_alias_of {
         if !resolved.contains_key(name) {
-            let shaped = alias_of == "Function" || resolved.get(alias_of).copied().unwrap_or(false);
+            let shaped =
+                alias_of == "Function" || resolved.get(alias_of).copied().unwrap_or(false);
             resolved.insert(name.clone(), shaped);
         }
     }
@@ -3263,9 +2761,7 @@ fn collect_callback_param_shapes(root: &Node, source: &[u8]) -> CallbackParamSha
         let params_node = fn_node
             .child_by_field_name("parameters")
             .or_else(|| find_child(fn_node, "formal_parameters"));
-        let Some(params_node) = params_node else {
-            return indices;
-        };
+        let Some(params_node) = params_node else { return indices };
 
         let mut arg_index: usize = 0;
         for child in iter_children(&params_node, PUNCTUATION_TOKENS) {
@@ -3323,22 +2819,10 @@ fn collect_callback_param_shapes(root: &Node, source: &[u8]) -> CallbackParamSha
         }
         match node.kind() {
             "function_declaration" | "generator_function_declaration" => {
-                record_declaration(
-                    node.child_by_field_name("name"),
-                    node,
-                    source,
-                    alias_shapes,
-                    declarations,
-                );
+                record_declaration(node.child_by_field_name("name"), node, source, alias_shapes, declarations);
             }
             "method_definition" => {
-                record_declaration(
-                    node.child_by_field_name("name"),
-                    node,
-                    source,
-                    alias_shapes,
-                    declarations,
-                );
+                record_declaration(node.child_by_field_name("name"), node, source, alias_shapes, declarations);
             }
             "variable_declarator" => {
                 if let (Some(name_node), Some(value_node)) = (
@@ -3347,17 +2831,9 @@ fn collect_callback_param_shapes(root: &Node, source: &[u8]) -> CallbackParamSha
                 ) {
                     let vt = value_node.kind();
                     if name_node.kind() == "identifier"
-                        && (vt == "arrow_function"
-                            || vt == "function_expression"
-                            || vt == "generator_function")
+                        && (vt == "arrow_function" || vt == "function_expression" || vt == "generator_function")
                     {
-                        record_declaration(
-                            Some(name_node),
-                            &value_node,
-                            source,
-                            alias_shapes,
-                            declarations,
-                        );
+                        record_declaration(Some(name_node), &value_node, source, alias_shapes, declarations);
                     }
                 }
             }
@@ -3374,9 +2850,7 @@ fn collect_callback_param_shapes(root: &Node, source: &[u8]) -> CallbackParamSha
     let mut shapes: CallbackParamShapes = HashMap::new();
     for (name, per_decl_indices) in declarations {
         let mut iter = per_decl_indices.into_iter();
-        let Some(mut intersected) = iter.next() else {
-            continue;
-        };
+        let Some(mut intersected) = iter.next() else { continue };
         for other in iter {
             intersected.retain(|idx| other.contains(idx));
         }
@@ -3411,8 +2885,7 @@ fn extract_callback_reference_calls(
     callback_param_shapes: &CallbackParamShapes,
     calls: &mut Vec<Call>,
 ) {
-    let args = call_node
-        .child_by_field_name("arguments")
+    let args = call_node.child_by_field_name("arguments")
         .or_else(|| find_child(call_node, "arguments"));
     let Some(args) = args else { return };
     let call_line = start_line(call_node);
@@ -3458,9 +2931,7 @@ fn extract_callback_reference_calls(
                 continue;
             }
         } else if !callback_args_allowed
-            && !callee_param_shapes
-                .map(|s| s.contains(&arg_index))
-                .unwrap_or(false)
+            && !callee_param_shapes.map(|s| s.contains(&arg_index)).unwrap_or(false)
         {
             continue;
         }
@@ -3477,8 +2948,7 @@ fn extract_callback_reference_calls(
             }
             "member_expression" => {
                 if let Some(prop) = child.child_by_field_name("property") {
-                    let receiver = child
-                        .child_by_field_name("object")
+                    let receiver = child.child_by_field_name("object")
                         .map(|obj| extract_receiver_name(&obj, source));
                     calls.push(Call {
                         name: node_text(&prop, source).to_string(),
@@ -3516,9 +2986,7 @@ fn extract_callback_reference_calls(
 ///
 /// Mirrors `collectObjectLiteralValueRefCall` in `src/extractors/javascript.ts`.
 fn handle_object_literal_pair_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>) {
-    let Some(value_n) = node.child_by_field_name("value") else {
-        return;
-    };
+    let Some(value_n) = node.child_by_field_name("value") else { return };
     if value_n.kind() != "identifier" {
         return;
     }
@@ -3526,9 +2994,7 @@ fn handle_object_literal_pair_value_ref(node: &Node, source: &[u8], calls: &mut 
     if JS_BUILTIN_GLOBALS.contains(&text) {
         return;
     }
-    let key_expr = node
-        .child_by_field_name("key")
-        .and_then(|k| resolve_pair_key_name(&k, source));
+    let key_expr = node.child_by_field_name("key").and_then(|k| resolve_pair_key_name(&k, source));
     calls.push(Call {
         name: text.to_string(),
         line: start_line(&value_n),
@@ -3586,15 +3052,11 @@ fn handle_object_literal_shorthand_value_ref(node: &Node, source: &[u8], calls: 
 ///
 /// Mirrors `collectInstanceofValueRefCall` in `src/extractors/javascript.ts`.
 fn handle_instanceof_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>) {
-    let Some(operator_n) = node.child_by_field_name("operator") else {
-        return;
-    };
+    let Some(operator_n) = node.child_by_field_name("operator") else { return };
     if node_text(&operator_n, source) != "instanceof" {
         return;
     }
-    let Some(right_n) = node.child_by_field_name("right") else {
-        return;
-    };
+    let Some(right_n) = node.child_by_field_name("right") else { return };
     if right_n.kind() != "identifier" {
         return;
     }
@@ -3632,9 +3094,7 @@ fn extract_destructured_bindings(
     definitions: &mut Vec<Definition>,
 ) {
     for i in 0..pattern.child_count() {
-        let Some(child) = pattern.child(i) else {
-            continue;
-        };
+        let Some(child) = pattern.child(i) else { continue };
         match child.kind() {
             "shorthand_property_identifier_pattern" | "shorthand_property_identifier" => {
                 definitions.push(Definition {
@@ -3691,9 +3151,7 @@ fn extract_array_pattern_bindings(
     definitions: &mut Vec<Definition>,
 ) {
     for i in 0..pattern.child_count() {
-        let Some(child) = pattern.child(i) else {
-            continue;
-        };
+        let Some(child) = pattern.child(i) else { continue };
         match child.kind() {
             "identifier" => {
                 definitions.push(Definition {
@@ -3737,9 +3195,7 @@ fn extract_array_pattern_bindings(
                 // and recurse into a nested array_pattern instead of silently
                 // dropping it, mirroring extract_js_parameters' own rest_pattern scan.
                 for j in 0..child.child_count() {
-                    let Some(inner) = child.child(j) else {
-                        continue;
-                    };
+                    let Some(inner) = child.child(j) else { continue };
                     match inner.kind() {
                         "identifier" => {
                             definitions.push(Definition {
@@ -3759,13 +3215,7 @@ fn extract_array_pattern_bindings(
                         "array_pattern" => {
                             // [...[a, b]] — recurse so the nested pattern's own
                             // bound identifiers each get their own Definition.
-                            extract_array_pattern_bindings(
-                                &inner,
-                                source,
-                                line,
-                                end_line,
-                                definitions,
-                            );
+                            extract_array_pattern_bindings(&inner, source, line, end_line, definitions);
                             break;
                         }
                         _ => {}
@@ -3809,8 +3259,7 @@ fn extract_receiver_name(obj: &Node, source: &[u8]) -> String {
 /// Mirrors `getFirstCallArg` in src/extractors/javascript.ts, which likewise
 /// only needs node structure (not source text) to locate the argument.
 fn get_first_call_arg<'a>(call_node: &'a Node) -> Option<Node<'a>> {
-    let args = call_node
-        .child_by_field_name("arguments")
+    let args = call_node.child_by_field_name("arguments")
         .or_else(|| find_child(call_node, "arguments"))?;
     for i in 0..args.child_count() {
         let child = args.child(i)?;
@@ -3826,19 +3275,16 @@ fn get_first_call_arg<'a>(call_node: &'a Node) -> Option<Node<'a>> {
 fn extract_reflect_callee_from_arg(first_arg: Option<Node>, call_line: u32, source: &[u8]) -> Call {
     if let Some(arg) = first_arg {
         match arg.kind() {
-            "identifier" => {
-                return Call {
-                    name: node_text(&arg, source).to_string(),
-                    line: call_line,
-                    dynamic: Some(true),
-                    dynamic_kind: Some("reflection".to_string()),
-                    ..Default::default()
-                }
-            }
+            "identifier" => return Call {
+                name: node_text(&arg, source).to_string(),
+                line: call_line,
+                dynamic: Some(true),
+                dynamic_kind: Some("reflection".to_string()),
+                ..Default::default()
+            },
             "member_expression" => {
                 if let Some(inner_prop) = arg.child_by_field_name("property") {
-                    let receiver = arg
-                        .child_by_field_name("object")
+                    let receiver = arg.child_by_field_name("object")
                         .map(|o| extract_receiver_name(&o, source));
                     return Call {
                         name: node_text(&inner_prop, source).to_string(),
@@ -3894,8 +3340,7 @@ fn extract_call_info(fn_node: &Node, call_node: &Node, source: &[u8]) -> Option<
             let prop = prop?;
             let prop_text = node_text(&prop, source);
             let call_line = start_line(call_node);
-            let is_reflect = obj
-                .as_ref()
+            let is_reflect = obj.as_ref()
                 .map(|o| o.kind() == "identifier" && node_text(o, source) == "Reflect")
                 .unwrap_or(false);
 
@@ -3920,8 +3365,7 @@ fn extract_call_info(fn_node: &Node, call_node: &Node, source: &[u8]) -> Option<
 
             // Reflect.get(target, prop) — property access via reflection
             if is_reflect && prop_text == "get" {
-                let args = call_node
-                    .child_by_field_name("arguments")
+                let args = call_node.child_by_field_name("arguments")
                     .or_else(|| find_child(call_node, "arguments"));
                 if let Some(args) = args {
                     let mut first_arg: Option<Node> = None;
@@ -3929,23 +3373,17 @@ fn extract_call_info(fn_node: &Node, call_node: &Node, source: &[u8]) -> Option<
                     let mut arg_idx = 0usize;
                     for i in 0..args.child_count() {
                         let Some(child) = args.child(i) else { continue };
-                        if matches!(child.kind(), "(" | ")" | ",") {
-                            continue;
-                        }
-                        if arg_idx == 0 {
-                            first_arg = Some(child);
-                        } else if arg_idx == 1 {
-                            second_arg = Some(child);
-                            break;
-                        }
+                        if matches!(child.kind(), "(" | ")" | ",") { continue }
+                        if arg_idx == 0 { first_arg = Some(child); }
+                        else if arg_idx == 1 { second_arg = Some(child); break; }
                         arg_idx += 1;
                     }
                     let receiver = first_arg.as_ref().map(|a| extract_receiver_name(a, source));
                     if let Some(prop_arg) = second_arg {
                         match prop_arg.kind() {
                             "string" | "string_fragment" => {
-                                let prop_name =
-                                    node_text(&prop_arg, source).replace(&['\'', '"'][..], "");
+                                let prop_name = node_text(&prop_arg, source)
+                                    .replace(&['\'', '"'][..], "");
                                 if !prop_name.is_empty() {
                                     return Some(Call {
                                         name: prop_name,
@@ -4036,13 +3474,12 @@ fn extract_call_info(fn_node: &Node, call_node: &Node, source: &[u8]) -> Option<
         "subscript_expression" => {
             let index = fn_node.child_by_field_name("index");
             if let Some(index) = index {
-                let receiver = fn_node
-                    .child_by_field_name("object")
+                let receiver = fn_node.child_by_field_name("object")
                     .map(|o| extract_receiver_name(&o, source));
                 match index.kind() {
                     "string" | "template_string" => {
-                        let method_name =
-                            node_text(&index, source).replace(&['\'', '"', '`'][..], "");
+                        let method_name = node_text(&index, source)
+                            .replace(&['\'', '"', '`'][..], "");
                         if !method_name.is_empty() && !method_name.contains('$') {
                             return Some(Call {
                                 name: method_name,
@@ -4112,11 +3549,7 @@ fn find_first_string_arg<'a>(args_node: &Node<'a>, source: &'a [u8]) -> Option<S
     None
 }
 
-fn walk_call_chain<'a>(
-    start_node: &Node<'a>,
-    method_name: &str,
-    source: &[u8],
-) -> Option<Node<'a>> {
+fn walk_call_chain<'a>(start_node: &Node<'a>, method_name: &str, source: &[u8]) -> Option<Node<'a>> {
     let mut current = Some(*start_node);
     while let Some(node) = current {
         if node.kind() == "call_expression" {
@@ -4273,7 +3706,8 @@ fn find_parent_class_no_fn_boundary(node: &Node, source: &[u8]) -> Option<String
             return None;
         }
         if JS_CLASS_KINDS.contains(&kind) {
-            return named_child_text(&parent, "name", source).map(|s| s.to_string());
+            return named_child_text(&parent, "name", source)
+                .map(|s| s.to_string());
         }
         current = parent.parent();
     }
@@ -4344,9 +3778,7 @@ fn collect_object_pattern_names(
 ) -> Vec<String> {
     let mut names = Vec::new();
     for i in 0..pattern.child_count() {
-        let Some(child) = pattern.child(i) else {
-            continue;
-        };
+        let Some(child) = pattern.child(i) else { continue };
         match child.kind() {
             "shorthand_property_identifier_pattern" | "shorthand_property_identifier" => {
                 names.push(node_text(&child, source).to_string());
@@ -4361,8 +3793,9 @@ fn collect_object_pattern_names(
                 let key = child.child_by_field_name("key");
                 let value = child.child_by_field_name("value");
                 let local_node = match value.map(|v| (v.kind(), v)) {
-                    Some(("identifier", v))
-                    | Some(("shorthand_property_identifier_pattern", v)) => Some(v),
+                    Some(("identifier", v)) | Some(("shorthand_property_identifier_pattern", v)) => {
+                        Some(v)
+                    }
                     Some(("assignment_pattern", v)) => {
                         // { imported: local = defaultValue } — the local
                         // binding is the assignment_pattern's left identifier.
@@ -4430,9 +3863,7 @@ fn collect_object_pattern_names(
 fn collect_array_pattern_names(pattern: &Node, source: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     for i in 0..pattern.child_count() {
-        let Some(child) = pattern.child(i) else {
-            continue;
-        };
+        let Some(child) = pattern.child(i) else { continue };
         match child.kind() {
             "identifier" => {
                 names.push(node_text(&child, source).to_string());
@@ -4700,9 +4131,7 @@ fn enclosing_func_context(node: &Node, source: &[u8]) -> String {
 /// - `this(args)` → `Call { name: "this" }` (this used as a function)
 /// - `fn.call(ctx, ...)` / `fn.apply(ctx, ...)` → ThisCallBinding
 fn collect_this_call_and_bindings(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(fn_node) = node.child_by_field_name("function") else {
-        return;
-    };
+    let Some(fn_node) = node.child_by_field_name("function") else { return };
     if fn_node.kind() == "this" {
         symbols.calls.push(Call {
             name: "this".to_string(),
@@ -4743,10 +4172,7 @@ fn collect_this_call_and_bindings(node: &Node, source: &[u8], symbols: &mut File
         }
         if t == "identifier" {
             let arg_text = node_text(&child, source);
-            if !JS_BUILTIN_GLOBALS.contains(&arg_text)
-                && arg_text != "undefined"
-                && arg_text != "null"
-            {
+            if !JS_BUILTIN_GLOBALS.contains(&arg_text) && arg_text != "undefined" && arg_text != "null" {
                 symbols.this_call_bindings.push(ThisCallBinding {
                     callee: obj_text.to_string(),
                     this_arg: arg_text.to_string(),
@@ -4760,9 +4186,7 @@ fn collect_this_call_and_bindings(node: &Node, source: &[u8], symbols: &mut File
 /// Phase 8.3c: `f(x)` identifier-argument bindings, including inline
 /// `f(...[a, b])` array-literal spread expansion.
 fn collect_param_bindings(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(fn_node) = node.child_by_field_name("function") else {
-        return;
-    };
+    let Some(fn_node) = node.child_by_field_name("function") else { return };
     if fn_node.kind() != "identifier" {
         return;
     }
@@ -4792,13 +4216,9 @@ fn collect_param_bindings(node: &Node, source: &[u8], symbols: &mut FileSymbols)
             }
         } else if ct == "spread_element" {
             // f(...[a, b]) — inline array literal: expand each element as a direct binding.
-            let inner = child.child_by_field_name("argument").or_else(|| {
-                if child.child_count() > 1 {
-                    child.child(1)
-                } else {
-                    None
-                }
-            });
+            let inner = child
+                .child_by_field_name("argument")
+                .or_else(|| if child.child_count() > 1 { child.child(1) } else { None });
             if let Some(inner) = inner {
                 if inner.kind() == "array" {
                     let mut elem_count: u32 = 0;
@@ -4833,9 +4253,7 @@ fn collect_param_bindings(node: &Node, source: &[u8], symbols: &mut FileSymbols)
 
 /// Phase 8.3e: `f(...arr)` spread bindings and `Array.from(src, cb)` callbacks.
 fn collect_spread_and_array_from_bindings(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(fn_node) = node.child_by_field_name("function") else {
-        return;
-    };
+    let Some(fn_node) = node.child_by_field_name("function") else { return };
     let args = node
         .child_by_field_name("arguments")
         .or_else(|| find_child(node, "arguments"));
@@ -4853,13 +4271,9 @@ fn collect_spread_and_array_from_bindings(node: &Node, source: &[u8], symbols: &
                     continue;
                 }
                 if ct == "spread_element" {
-                    let target = child.child_by_field_name("argument").or_else(|| {
-                        if child.child_count() > 1 {
-                            child.child(1)
-                        } else {
-                            None
-                        }
-                    });
+                    let target = child
+                        .child_by_field_name("argument")
+                        .or_else(|| if child.child_count() > 1 { child.child(1) } else { None });
                     if let Some(target) = target {
                         if target.kind() == "identifier" {
                             let target_text = node_text(&target, source);
@@ -4931,9 +4345,7 @@ fn collect_array_elem_bindings(node: &Node, source: &[u8], symbols: &mut FileSym
     let array_name = node_text(&name_n, source);
     let mut idx: u32 = 0;
     for i in 0..value_n.child_count() {
-        let Some(elem) = value_n.child(i) else {
-            continue;
-        };
+        let Some(elem) = value_n.child(i) else { continue };
         let et = elem.kind();
         if et == "," || et == "[" || et == "]" {
             continue;
@@ -5010,16 +4422,12 @@ fn collect_for_of_binding(node: &Node, source: &[u8], symbols: &mut FileSymbols)
     if !is_for_of {
         return;
     }
-    let Some(right) = node.child_by_field_name("right") else {
-        return;
-    };
+    let Some(right) = node.child_by_field_name("right") else { return };
     let right_text = node_text(&right, source);
     if right.kind() != "identifier" || JS_BUILTIN_GLOBALS.contains(&right_text) {
         return;
     }
-    let Some(left) = node.child_by_field_name("left") else {
-        return;
-    };
+    let Some(left) = node.child_by_field_name("left") else { return };
     let mut var_name: Option<&str> = None;
     if left.kind() == "identifier" {
         var_name = Some(node_text(&left, source));
@@ -5082,9 +4490,7 @@ fn collect_object_rest_params(node: &Node, source: &[u8], symbols: &mut FileSymb
             ) {
                 let vt = value_n.kind();
                 if name_n.kind() == "identifier"
-                    && (vt == "arrow_function"
-                        || vt == "function_expression"
-                        || vt == "generator_function")
+                    && (vt == "arrow_function" || vt == "function_expression" || vt == "generator_function")
                 {
                     fn_name = Some(node_text(&name_n, source).to_string());
                     params_node = value_n
@@ -5103,10 +4509,7 @@ fn collect_object_rest_params(node: &Node, source: &[u8], symbols: &mut FileSymb
                     .filter(|p| p.kind() == "class_body")
                     .and_then(|p| p.parent())
                     .filter(|c| c.kind() == "class_declaration" || c.kind() == "class")
-                    .and_then(|c| {
-                        c.child_by_field_name("name")
-                            .map(|n| node_text(&n, source).to_string())
-                    });
+                    .and_then(|c| c.child_by_field_name("name").map(|n| node_text(&n, source).to_string()));
                 fn_name = Some(match current_class {
                     Some(c) => format!("{c}.{method}"),
                     None => method.to_string(),
@@ -5126,10 +4529,7 @@ fn collect_object_rest_params(node: &Node, source: &[u8], symbols: &mut FileSymb
                 node.child_by_field_name("value"),
             ) {
                 let vt = value_n.kind();
-                if vt == "arrow_function"
-                    || vt == "function_expression"
-                    || vt == "generator_function"
-                {
+                if vt == "arrow_function" || vt == "function_expression" || vt == "generator_function" {
                     if let Some(key_name) = resolve_pair_key_name(&key_n, source) {
                         fn_name = Some(key_name);
                         params_node = value_n
@@ -5142,34 +4542,26 @@ fn collect_object_rest_params(node: &Node, source: &[u8], symbols: &mut FileSymb
         _ => {}
     }
 
-    let (Some(fn_name), Some(params_node)) = (fn_name, params_node) else {
-        return;
-    };
+    let (Some(fn_name), Some(params_node)) = (fn_name, params_node) else { return };
     let mut param_idx: u32 = 0;
     for i in 0..params_node.child_count() {
-        let Some(child) = params_node.child(i) else {
-            continue;
-        };
+        let Some(child) = params_node.child(i) else { continue };
         let ct = child.kind();
         if ct == "," || ct == "(" || ct == ")" {
             continue;
         }
         if ct == "object_pattern" {
             for j in 0..child.child_count() {
-                let Some(inner) = child.child(j) else {
-                    continue;
-                };
+                let Some(inner) = child.child(j) else { continue };
                 if inner.kind() == "rest_pattern" || inner.kind() == "rest_element" {
                     let rest_id = inner.child(1).or_else(|| inner.child_by_field_name("name"));
                     if let Some(rest_id) = rest_id {
                         if rest_id.kind() == "identifier" {
-                            symbols
-                                .object_rest_param_bindings
-                                .push(ObjectRestParamBinding {
-                                    callee: fn_name.clone(),
-                                    rest_name: node_text(&rest_id, source).to_string(),
-                                    arg_index: param_idx,
-                                });
+                            symbols.object_rest_param_bindings.push(ObjectRestParamBinding {
+                                callee: fn_name.clone(),
+                                rest_name: node_text(&rest_id, source).to_string(),
+                                arg_index: param_idx,
+                            });
                         }
                     }
                 }
@@ -5193,9 +4585,7 @@ fn collect_object_prop_bindings(node: &Node, source: &[u8], symbols: &mut FileSy
     }
     let object_name = node_text(&name_n, source);
     for i in 0..value_n.child_count() {
-        let Some(child) = value_n.child(i) else {
-            continue;
-        };
+        let Some(child) = value_n.child(i) else { continue };
         if child.kind() == "shorthand_property_identifier" {
             let prop = node_text(&child, source);
             symbols.object_prop_bindings.push(ObjectPropBinding {
@@ -5297,11 +4687,7 @@ mod tests {
                }\n\
              }\n",
         );
-        let iface_save = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "Repo.save")
-            .unwrap();
+        let iface_save = s.definitions.iter().find(|d| d.name == "Repo.save").unwrap();
         assert_eq!(iface_save.bodyless, Some(true));
 
         let class_save = s
@@ -5401,24 +4787,14 @@ mod tests {
     #[test]
     fn skips_commander_named_handler() {
         let s = parse_js("program.command('test').action(handleTest);");
-        let defs: Vec<_> = s
-            .definitions
-            .iter()
-            .filter(|d| d.name.starts_with("command:"))
-            .collect();
-        assert!(
-            defs.is_empty(),
-            "should not extract when handler is a named reference"
-        );
+        let defs: Vec<_> = s.definitions.iter().filter(|d| d.name.starts_with("command:")).collect();
+        assert!(defs.is_empty(), "should not extract when handler is a named reference");
     }
 
     #[test]
     fn extracts_express_get_route() {
         let s = parse_js("app.get('/api/users', (req, res) => { res.json([]); });");
-        let def = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "route:GET /api/users");
+        let def = s.definitions.iter().find(|d| d.name == "route:GET /api/users");
         assert!(def.is_some(), "should extract route:GET /api/users");
         assert_eq!(def.unwrap().kind, "function");
     }
@@ -5426,21 +4802,14 @@ mod tests {
     #[test]
     fn extracts_express_post_route() {
         let s = parse_js("router.post('/api/items', async (req, res) => { save(); });");
-        let def = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "route:POST /api/items");
+        let def = s.definitions.iter().find(|d| d.name == "route:POST /api/items");
         assert!(def.is_some(), "should extract route:POST /api/items");
     }
 
     #[test]
     fn skips_map_get_false_positive() {
         let s = parse_js("myMap.get('someKey');");
-        let defs: Vec<_> = s
-            .definitions
-            .iter()
-            .filter(|d| d.name.starts_with("route:"))
-            .collect();
+        let defs: Vec<_> = s.definitions.iter().filter(|d| d.name.starts_with("route:")).collect();
         assert!(defs.is_empty(), "should not extract Map.get as a route");
     }
 
@@ -5462,15 +4831,8 @@ mod tests {
     #[test]
     fn skips_event_named_handler() {
         let s = parse_js("emitter.on('data', handleData);");
-        let defs: Vec<_> = s
-            .definitions
-            .iter()
-            .filter(|d| d.name.starts_with("event:"))
-            .collect();
-        assert!(
-            defs.is_empty(),
-            "should not extract when handler is a named reference"
-        );
+        let defs: Vec<_> = s.definitions.iter().filter(|d| d.name.starts_with("event:")).collect();
+        assert!(defs.is_empty(), "should not extract when handler is a named reference");
     }
 
     // ── Extended kinds tests ────────────────────────────────────────────────
@@ -5563,9 +4925,7 @@ mod tests {
     fn exports_const_with_call_expression_initializer() {
         let s = parse_js("export const config = loadConfig();");
         assert!(
-            s.exports
-                .iter()
-                .any(|e| e.name == "config" && e.kind == "constant"),
+            s.exports.iter().any(|e| e.name == "config" && e.kind == "constant"),
             "config should be listed as an exported constant; got: {:?}",
             s.exports
         );
@@ -5631,16 +4991,12 @@ mod tests {
         // decoupled fnRefBindings pass).
         let s = parse_js("const alias = handler;");
         assert!(
-            s.definitions
-                .iter()
-                .any(|d| d.name == "alias" && d.kind == "constant"),
+            s.definitions.iter().any(|d| d.name == "alias" && d.kind == "constant"),
             "alias should be extracted as a constant definition; got: {:?}",
             s.definitions
         );
         assert!(
-            s.fn_ref_bindings
-                .iter()
-                .any(|b| b.lhs == "alias" && b.rhs == "handler"),
+            s.fn_ref_bindings.iter().any(|b| b.lhs == "alias" && b.rhs == "handler"),
             "alias -> handler fn_ref_binding should still be recorded; got: {:?}",
             s.fn_ref_bindings
         );
@@ -5681,11 +5037,7 @@ mod tests {
         let new_nodes: Vec<_> = s.ast_nodes.iter().filter(|n| n.kind == "new").collect();
         let throw_nodes: Vec<_> = s.ast_nodes.iter().filter(|n| n.kind == "throw").collect();
         assert_eq!(throw_nodes.len(), 1);
-        assert_eq!(
-            new_nodes.len(),
-            0,
-            "throw new Error should not also emit a new node"
-        );
+        assert_eq!(new_nodes.len(), 0, "throw new Error should not also emit a new node");
     }
 
     #[test]
@@ -5743,11 +5095,7 @@ mod tests {
     #[test]
     fn finds_dynamic_import() {
         let s = parse_js("const mod = import('./foo.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].source, "./foo.js");
     }
@@ -5755,11 +5103,7 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_destructuring() {
         let s = parse_js("const { a, b } = await import('./bar.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].source, "./bar.js");
         assert!(dyn_imports[0].names.contains(&"a".to_string()));
@@ -5775,11 +5119,7 @@ mod tests {
         // local → original mapping so call-edge resolution can still find
         // `buildGraph` in the target file.
         let s = parse_js("const { buildGraph: fromBarrel } = await import('./builder.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].source, "./builder.js");
         assert!(dyn_imports[0].names.contains(&"fromBarrel".to_string()));
@@ -5799,11 +5139,7 @@ mod tests {
         // verbatim as `imported` would make the resolver look for an export
         // literally named `'foo-bar'`, which never matches (Greptile follow-up).
         let s = parse_js("const { 'foo-bar': local } = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].names, vec!["local".to_string()]);
         let renamed = dyn_imports[0]
@@ -5818,11 +5154,7 @@ mod tests {
     #[test]
     fn unwraps_computed_string_literal_destructuring_key() {
         let s = parse_js("const { ['foo-bar']: local } = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].names, vec!["local".to_string()]);
         let renamed = dyn_imports[0]
@@ -5839,11 +5171,7 @@ mod tests {
         // `[Symbol()]` has no statically resolvable export name — the local
         // binding must still be tracked, just without a renamed_imports entry.
         let s = parse_js("const { [Symbol()]: local } = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].names, vec!["local".to_string()]);
         assert!(dyn_imports[0].renamed_imports.is_none());
@@ -5852,11 +5180,7 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_mixed_destructuring() {
         let s = parse_js("const { a, buildGraph: fromBarrel, c } = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].source, "./mod.js");
         assert!(dyn_imports[0].names.contains(&"a".to_string()));
@@ -5875,11 +5199,7 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_aliased_default_destructuring() {
         let s = parse_js("const { buildGraph: local = null } = await import('./builder.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert!(dyn_imports[0].names.contains(&"local".to_string()));
         assert!(!dyn_imports[0].names.contains(&"buildGraph".to_string()));
@@ -5895,11 +5215,7 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_nested_object_destructuring() {
         let s = parse_js("const { foo: { nested } } = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert!(dyn_imports[0].names.contains(&"foo".to_string()));
         assert!(!dyn_imports[0].names.contains(&"nested".to_string()));
@@ -5917,11 +5233,7 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_parenthesized_destructuring() {
         let s = parse_ts("const { a, b } = (await import('./foo.js'));");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert!(dyn_imports[0].names.contains(&"a".to_string()));
         assert!(dyn_imports[0].names.contains(&"b".to_string()));
@@ -5930,11 +5242,7 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_as_cast_destructuring() {
         let s = parse_ts("const { a, b } = await import('./foo.js') as { a: Fn; b: Fn };");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert!(dyn_imports[0].names.contains(&"a".to_string()));
         assert!(dyn_imports[0].names.contains(&"b".to_string()));
@@ -5945,11 +5253,7 @@ mod tests {
         // TS 4.9+ `satisfies` is structurally identical to `as` here (Greptile
         // follow-up to #1781) — same walk-up gap would otherwise reproduce.
         let s = parse_ts("const { a, b } = await import('./foo.js') satisfies { a: Fn; b: Fn };");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert!(dyn_imports[0].names.contains(&"a".to_string()));
         assert!(dyn_imports[0].names.contains(&"b".to_string()));
@@ -5962,19 +5266,11 @@ mod tests {
         let s = parse_ts(
             "const { buildDataflowVerticesFromMap, buildDataflowEdges } = (await import('../../../../features/dataflow.js')) as { buildDataflowVerticesFromMap: Fn; buildDataflowEdges: Fn };",
         );
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].source, "../../../../features/dataflow.js");
-        assert!(dyn_imports[0]
-            .names
-            .contains(&"buildDataflowVerticesFromMap".to_string()));
-        assert!(dyn_imports[0]
-            .names
-            .contains(&"buildDataflowEdges".to_string()));
+        assert!(dyn_imports[0].names.contains(&"buildDataflowVerticesFromMap".to_string()));
+        assert!(dyn_imports[0].names.contains(&"buildDataflowEdges".to_string()));
     }
 
     // Regression tests for #1920: `extract_rest_identifier` indexed into a
@@ -5985,26 +5281,15 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_object_rest_destructuring() {
         let s = parse_js("const { a, ...rest } = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
-        assert_eq!(
-            dyn_imports[0].names,
-            vec!["a".to_string(), "rest".to_string()]
-        );
+        assert_eq!(dyn_imports[0].names, vec!["a".to_string(), "rest".to_string()]);
     }
 
     #[test]
     fn finds_dynamic_import_with_shorthand_default_destructuring() {
         let s = parse_js("const { a = 1 } = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(dyn_imports[0].names, vec!["a".to_string()]);
     }
@@ -6012,20 +5297,11 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_mixed_plain_renamed_default_and_rest_destructuring() {
         let s = parse_js("const { a, b: alias, c = 1, ...rest } = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
         assert_eq!(
             dyn_imports[0].names,
-            vec![
-                "a".to_string(),
-                "alias".to_string(),
-                "c".to_string(),
-                "rest".to_string()
-            ]
+            vec!["a".to_string(), "alias".to_string(), "c".to_string(), "rest".to_string()]
         );
         let renamed = dyn_imports[0]
             .renamed_imports
@@ -6039,26 +5315,16 @@ mod tests {
     #[test]
     fn finds_dynamic_import_with_array_rest_destructuring() {
         let s = parse_js("const [a, ...rest] = await import('./mod.js');");
-        let dyn_imports: Vec<_> = s
-            .imports
-            .iter()
-            .filter(|i| i.dynamic_import == Some(true))
-            .collect();
+        let dyn_imports: Vec<_> = s.imports.iter().filter(|i| i.dynamic_import == Some(true)).collect();
         assert_eq!(dyn_imports.len(), 1);
-        assert_eq!(
-            dyn_imports[0].names,
-            vec!["a".to_string(), "rest".to_string()]
-        );
+        assert_eq!(dyn_imports[0].names, vec!["a".to_string(), "rest".to_string()]);
     }
 
     #[test]
     fn extracts_callback_reference_in_router_use() {
         let s = parse_js("router.use(handleToken);");
         let dynamic_calls: Vec<_> = s.calls.iter().filter(|c| c.dynamic == Some(true)).collect();
-        assert!(
-            dynamic_calls.iter().any(|c| c.name == "handleToken"),
-            "should extract handleToken as dynamic call"
-        );
+        assert!(dynamic_calls.iter().any(|c| c.name == "handleToken"), "should extract handleToken as dynamic call");
     }
 
     #[test]
@@ -6221,11 +5487,7 @@ mod tests {
             .map(|c| c.name.as_str())
             .collect();
         for expected in ["isA", "resolveA", "isB", "resolveB"] {
-            assert!(
-                names.contains(&expected),
-                "missing value-ref call for {}",
-                expected
-            );
+            assert!(names.contains(&expected), "missing value-ref call for {}", expected);
         }
     }
 
@@ -6312,28 +5574,19 @@ mod tests {
     #[test]
     fn no_value_ref_call_for_call_expression_value() {
         let s = parse_js("const table = { resolve: someFunction() };");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_for_member_expression_value() {
         let s = parse_js("const table = { resolve: obj.someFunction };");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_for_inline_function_value() {
         let s = parse_js("const table = { resolve: () => {}, other: function () {} };");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
@@ -6341,19 +5594,13 @@ mod tests {
         let s = parse_js(
             "const config = { name: 'literal', count: 42, active: true, empty: null, list: [1, 2] };",
         );
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_for_builtin_globals() {
         let s = parse_js("const table = { log: console, Ctor: Object };");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     // ── #1784: instanceof value-ref extraction ──────────────────────────────
@@ -6386,19 +5633,17 @@ mod tests {
     #[test]
     fn no_value_ref_call_for_instanceof_member_expression_operand() {
         let s = parse_js("const check = (a) => a instanceof ns.SomeClass;");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| !(c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "SomeClass")));
+        assert!(
+            s.calls
+                .iter()
+                .all(|c| !(c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "SomeClass"))
+        );
     }
 
     #[test]
     fn no_value_ref_call_for_instanceof_call_expression_operand() {
         let s = parse_js("const check = (a) => a instanceof getClass();");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
@@ -6406,38 +5651,25 @@ mod tests {
         let s = parse_js(
             "function isBuiltin(x) { return x instanceof Error || x instanceof Array || x instanceof Map; }",
         );
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_for_in_operator() {
         let s = parse_js("const has = (obj) => 'key' in obj;");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_value_ref_call_for_other_binary_operators() {
         let s = parse_js("const sum = (a, b) => a + b === Total;");
-        assert!(s
-            .calls
-            .iter()
-            .all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
+        assert!(s.calls.iter().all(|c| c.dynamic_kind.as_deref() != Some("value-ref")));
     }
 
     #[test]
     fn no_duplicate_call_for_call_expression_arg() {
         let s = parse_js("router.use(checkPermissions(['admin']));");
-        let cp_calls: Vec<_> = s
-            .calls
-            .iter()
-            .filter(|c| c.name == "checkPermissions")
-            .collect();
+        let cp_calls: Vec<_> = s.calls.iter().filter(|c| c.name == "checkPermissions").collect();
         assert_eq!(cp_calls.len(), 1);
     }
 
@@ -6448,11 +5680,8 @@ mod tests {
         // map, addEventListener, etc.) get member_expression args emitted as
         // dynamic calls. Mirrors WASM test in `tests/parsers/javascript.test.ts`.
         let s = parse_js("store.set(user.id, user);");
-        let dyn_member_calls: Vec<_> = s
-            .calls
-            .iter()
-            .filter(|c| c.dynamic == Some(true) && c.name == "id")
-            .collect();
+        let dyn_member_calls: Vec<_> =
+            s.calls.iter().filter(|c| c.dynamic == Some(true) && c.name == "id").collect();
         assert!(
             dyn_member_calls.is_empty(),
             "store.set non-allowlisted callee must not emit member-expr arg `id` as dynamic call",
@@ -6465,25 +5694,15 @@ mod tests {
         // must still produce dynamic calls with receivers, because `use` and `then`
         // are callback-accepting APIs.
         let use_s = parse_js("app.use(auth.validate);");
-        let use_cb = use_s
-            .calls
-            .iter()
+        let use_cb = use_s.calls.iter()
             .find(|c| c.dynamic == Some(true) && c.name == "validate");
-        assert!(
-            use_cb.is_some(),
-            "app.use must still emit validate as dynamic call"
-        );
+        assert!(use_cb.is_some(), "app.use must still emit validate as dynamic call");
         assert_eq!(use_cb.unwrap().receiver.as_deref(), Some("auth"));
 
         let then_s = parse_js("promise.then(handlers.onSuccess);");
-        let then_cb = then_s
-            .calls
-            .iter()
+        let then_cb = then_s.calls.iter()
             .find(|c| c.dynamic == Some(true) && c.name == "onSuccess");
-        assert!(
-            then_cb.is_some(),
-            "promise.then must still emit onSuccess as dynamic call"
-        );
+        assert!(then_cb.is_some(), "promise.then must still emit onSuccess as dynamic call");
         assert_eq!(then_cb.unwrap().receiver.as_deref(), Some("handlers"));
     }
 
@@ -6494,28 +5713,19 @@ mod tests {
         // must not be emitted as dynamic calls. Same for `repo.put`, `map.delete`.
         let cache_s = parse_js("cache.get(user.id);");
         assert!(
-            !cache_s
-                .calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "id"),
+            !cache_s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "id"),
             "cache.get(user.id) must not emit `id` as dynamic call",
         );
 
         let repo_s = parse_js("repo.put(record.key, value);");
         assert!(
-            !repo_s
-                .calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "key"),
+            !repo_s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "key"),
             "repo.put(record.key) must not emit `key` as dynamic call",
         );
 
         let map_s = parse_js("map.delete(entry.id);");
         assert!(
-            !map_s
-                .calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "id"),
+            !map_s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "id"),
             "map.delete(entry.id) must not emit `id` as dynamic call",
         );
     }
@@ -6525,25 +5735,15 @@ mod tests {
         // Positive regression guard: HTTP-verb calls with a string-literal
         // first arg (Express route signature) must still emit member-expr args.
         let router_s = parse_js("router.get('/users/:id', auth.check);");
-        let router_cb = router_s
-            .calls
-            .iter()
+        let router_cb = router_s.calls.iter()
             .find(|c| c.dynamic == Some(true) && c.name == "check");
-        assert!(
-            router_cb.is_some(),
-            "Express route with string path must emit auth.check"
-        );
+        assert!(router_cb.is_some(), "Express route with string path must emit auth.check");
         assert_eq!(router_cb.unwrap().receiver.as_deref(), Some("auth"));
 
         let template_s = parse_js("app.post(`/api`, handlers.create);");
-        let template_cb = template_s
-            .calls
-            .iter()
+        let template_cb = template_s.calls.iter()
             .find(|c| c.dynamic == Some(true) && c.name == "create");
-        assert!(
-            template_cb.is_some(),
-            "Express route with template string must emit handlers.create"
-        );
+        assert!(template_cb.is_some(), "Express route with template string must emit handlers.create");
         assert_eq!(template_cb.unwrap().receiver.as_deref(), Some("handlers"));
     }
 
@@ -6553,14 +5753,9 @@ mod tests {
         // represent `obj?.on` as a `member_expression` with an `optional_chain`
         // child, so `extract_callee_name` returns `on` and the allowlist gate works.
         let s = parse_js("emitter?.on('tick', handlers.fn);");
-        let cb = s
-            .calls
-            .iter()
+        let cb = s.calls.iter()
             .find(|c| c.dynamic == Some(true) && c.name == "fn");
-        assert!(
-            cb.is_some(),
-            "optional-chain callee must still gate by allowlist"
-        );
+        assert!(cb.is_some(), "optional-chain callee must still gate by allowlist");
         assert_eq!(cb.unwrap().receiver.as_deref(), Some("handlers"));
     }
 
@@ -6599,9 +5794,7 @@ mod tests {
         // "identifier args are always emitted" trade-off existed to preserve.
         let s = parse_js("arr.forEach(myNamedCallback);");
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "myNamedCallback"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "myNamedCallback"),
             "arr.forEach must still emit myNamedCallback as dynamic call; got: {:?}",
             s.calls,
         );
@@ -6624,9 +5817,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "logUser"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "logUser"),
             "processEach(users, logUser) must emit logUser as dynamic call; got: {:?}",
             s.calls,
         );
@@ -6644,9 +5835,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "logUser"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "logUser"),
             "inline arrow-function-type param must recognize logUser; got: {:?}",
             s.calls,
         );
@@ -6662,9 +5851,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "handler"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "handler"),
             "Function-typed param must recognize handler; got: {:?}",
             s.calls,
         );
@@ -6681,9 +5868,7 @@ mod tests {
              }",
         );
         assert!(
-            !s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "communities"),
+            !s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "communities"),
             "non-function-shaped param must not emit communities as dynamic call; got: {:?}",
             s.calls,
         );
@@ -6701,9 +5886,7 @@ mod tests {
                filterThen(users, hasEmail, logUser);
              }",
         );
-        let dynamic_names: Vec<&str> = s
-            .calls
-            .iter()
+        let dynamic_names: Vec<&str> = s.calls.iter()
             .filter(|c| c.dynamic == Some(true))
             .map(|c| c.name.as_str())
             .collect();
@@ -6724,9 +5907,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "logUser"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "logUser"),
             "one-level alias indirection must still recognize logUser; got: {:?}",
             s.calls,
         );
@@ -6744,9 +5925,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "logUser"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "logUser"),
             "class-method function-shaped param must recognize logUser; got: {:?}",
             s.calls,
         );
@@ -6764,9 +5943,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "logUser"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "logUser"),
             "explicit this param must not misalign the callback param index; got: {:?}",
             s.calls,
         );
@@ -6785,9 +5962,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "logUser"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "logUser"),
             "arrow-function HOF must recognize logUser; got: {:?}",
             s.calls,
         );
@@ -6806,9 +5981,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "logUser"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "logUser"),
             "function-expression HOF must recognize logUser; got: {:?}",
             s.calls,
         );
@@ -6828,9 +6001,7 @@ mod tests {
              }",
         );
         assert!(
-            !s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "users"),
+            !s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "users"),
             "unrelated same-named methods must not merge callback shapes; got: {:?}",
             s.calls,
         );
@@ -6844,9 +6015,7 @@ mod tests {
         // arg must not be emitted as a dynamic call either.
         let s = parse_js("cache.get(someKey);");
         assert!(
-            !s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "someKey"),
+            !s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "someKey"),
             "cache.get(someKey) must not emit `someKey` as dynamic call; got: {:?}",
             s.calls,
         );
@@ -6861,16 +6030,12 @@ mod tests {
         // class #1741 fixes for the data argument; only `mapFn` should resolve.
         let s = parse_js("Array.from(arr, mapCallback);");
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "mapCallback"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "mapCallback"),
             "Array.from(arr, mapCallback) must emit mapCallback as dynamic call; got: {:?}",
             s.calls,
         );
         assert!(
-            !s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "arr"),
+            !s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "arr"),
             "Array.from(arr, mapCallback) must not emit `arr` (index 0) as dynamic call; got: {:?}",
             s.calls,
         );
@@ -6881,17 +6046,13 @@ mod tests {
         // `Array.from(arrayLike, mapFn, thisArg)` — thisArg (index 2) is a `this`
         // binding context, not a callback, and must not be emitted either.
         let s = parse_js("Array.from(arr, mapCallback, thisArg);");
-        let dynamic_names: Vec<&str> = s
-            .calls
-            .iter()
+        let dynamic_names: Vec<&str> = s.calls.iter()
             .filter(|c| c.dynamic == Some(true))
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(
-            dynamic_names,
-            vec!["mapCallback"],
-            "only index-1 mapCallback should be dynamic; got: {:?}",
-            s.calls,
+            dynamic_names, vec!["mapCallback"],
+            "only index-1 mapCallback should be dynamic; got: {:?}", s.calls,
         );
     }
 
@@ -6903,16 +6064,12 @@ mod tests {
         // uniformly.
         let s = parse_js("Uint8Array.from(arr, mapCallback);");
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "mapCallback"),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "mapCallback"),
             "Uint8Array.from(arr, mapCallback) must emit mapCallback; got: {:?}",
             s.calls,
         );
         assert!(
-            !s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "arr"),
+            !s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "arr"),
             "Uint8Array.from(arr, mapCallback) must not emit `arr`; got: {:?}",
             s.calls,
         );
@@ -6928,32 +6085,24 @@ mod tests {
         // emitted with its receiver, while one at index 0 is not.
         let s = parse_js("Array.from(arr, obj.mapper);");
         assert!(
-            s.calls.iter().any(|c| c.dynamic == Some(true)
-                && c.name == "mapper"
-                && c.receiver.as_deref() == Some("obj")),
+            s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "mapper" && c.receiver.as_deref() == Some("obj")),
             "Array.from(arr, obj.mapper) must emit mapper with receiver obj; got: {:?}",
             s.calls,
         );
         assert!(
-            !s.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "arr"),
+            !s.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "arr"),
             "Array.from(arr, obj.mapper) must not emit `arr` (index 0); got: {:?}",
             s.calls,
         );
 
         let s2 = parse_js("Array.from(obj.arrayLike, mapCallback);");
         assert!(
-            !s2.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "arrayLike"),
+            !s2.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "arrayLike"),
             "Array.from(obj.arrayLike, mapCallback) must not emit `arrayLike` (index 0); got: {:?}",
             s2.calls,
         );
         assert!(
-            s2.calls
-                .iter()
-                .any(|c| c.dynamic == Some(true) && c.name == "mapCallback"),
+            s2.calls.iter().any(|c| c.dynamic == Some(true) && c.name == "mapCallback"),
             "Array.from(obj.arrayLike, mapCallback) must emit mapCallback; got: {:?}",
             s2.calls,
         );
@@ -6981,19 +6130,9 @@ mod tests {
         // destructured bindings like `handleToken` still resolve when called.
         let s = parse_js("const { handleToken, checkPermissions } = initAuth(config);");
         let names: Vec<&str> = s.definitions.iter().map(|d| d.name.as_str()).collect();
-        assert!(
-            names.contains(&"handleToken"),
-            "should extract handleToken definition"
-        );
-        assert!(
-            names.contains(&"checkPermissions"),
-            "should extract checkPermissions definition"
-        );
-        let ht = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "handleToken")
-            .unwrap();
+        assert!(names.contains(&"handleToken"), "should extract handleToken definition");
+        assert!(names.contains(&"checkPermissions"), "should extract checkPermissions definition");
+        let ht = s.definitions.iter().find(|d| d.name == "handleToken").unwrap();
         assert_eq!(ht.kind, "constant");
     }
 
@@ -7037,9 +6176,7 @@ mod tests {
         // Parity with TS query path (extractDestructuredBindingsWalk), which
         // skips FUNCTION_SCOPE_TYPES. Function-internal destructured const
         // bindings must not be emitted as definitions in the Rust walk path.
-        let s = parse_js(
-            "function setup() { const { handleToken, checkPermissions } = initAuth(config); }",
-        );
+        let s = parse_js("function setup() { const { handleToken, checkPermissions } = initAuth(config); }");
         assert!(
             !s.definitions.iter().any(|d| d.name == "handleToken"),
             "function-nested destructured binding must not be emitted"
@@ -7060,10 +6197,7 @@ mod tests {
             .expect("should use the local alias");
         // kind is "constant" (#1773) — see comment on extracts_destructured_const_bindings.
         assert_eq!(renamed.kind, "constant");
-        assert!(
-            !s.definitions.iter().any(|d| d.name == "original"),
-            "should not use the original key"
-        );
+        assert!(!s.definitions.iter().any(|d| d.name == "original"), "should not use the original key");
     }
 
     /// Regression test for issue #1271: native engine missing receiver edges.
@@ -7097,10 +6231,7 @@ mod tests {
         assert!(
             compute_call.is_some(),
             "calls should contain 'compute'; got: {:?}",
-            s.calls
-                .iter()
-                .map(|c| (&c.name, &c.receiver))
-                .collect::<Vec<_>>()
+            s.calls.iter().map(|c| (&c.name, &c.receiver)).collect::<Vec<_>>()
         );
         assert_eq!(
             compute_call.unwrap().receiver.as_deref(),
@@ -7134,7 +6265,9 @@ mod tests {
     /// constructor) falls back to the un-scoped `this.prop` key.
     #[test]
     fn this_prop_constructor_assignment_outside_class_uses_this_key() {
-        let s = parse_js("function Service() { this.client = new HttpClient(); }");
+        let s = parse_js(
+            "function Service() { this.client = new HttpClient(); }",
+        );
         let tm = s.type_map.iter().find(|t| t.name == "this.client");
         assert!(
             tm.is_some(),
@@ -7203,9 +6336,7 @@ mod tests {
              const b = Math.bind(null);",
         );
         assert!(
-            s.fn_ref_bindings
-                .iter()
-                .all(|b| b.lhs != "a" && b.lhs != "b"),
+            s.fn_ref_bindings.iter().all(|b| b.lhs != "a" && b.lhs != "b"),
             "method-receiver and builtin binds must not be tracked; got: {:?}",
             s.fn_ref_bindings
         );
@@ -7220,17 +6351,10 @@ mod tests {
              C.prototype.foo = function() { return 1; };",
         );
         let def = s.definitions.iter().find(|d| d.name == "C.foo");
-        assert!(
-            def.is_some(),
-            "C.foo definition missing; got: {:?}",
-            s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>()
-        );
+        assert!(def.is_some(), "C.foo definition missing; got: {:?}", s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>());
         let def = def.unwrap();
         assert_eq!(def.kind, "method");
-        assert!(
-            def.complexity.is_some(),
-            "C.foo should have complexity metrics"
-        );
+        assert!(def.complexity.is_some(), "C.foo should have complexity metrics");
         assert!(def.cfg.is_some(), "C.foo should have a CFG");
     }
 
@@ -7241,17 +6365,10 @@ mod tests {
              C.prototype.foo = () => { return 1; };",
         );
         let def = s.definitions.iter().find(|d| d.name == "C.foo");
-        assert!(
-            def.is_some(),
-            "C.foo definition missing; got: {:?}",
-            s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>()
-        );
+        assert!(def.is_some(), "C.foo definition missing; got: {:?}", s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>());
         let def = def.unwrap();
         assert_eq!(def.kind, "method");
-        assert!(
-            def.complexity.is_some(),
-            "C.foo (arrow) should have complexity metrics"
-        );
+        assert!(def.complexity.is_some(), "C.foo (arrow) should have complexity metrics");
         assert!(def.cfg.is_some(), "C.foo (arrow) should have a CFG");
     }
 
@@ -7263,11 +6380,7 @@ mod tests {
              A.prototype.t = f;",
         );
         let entry = s.type_map.iter().find(|e| e.name == "A.t");
-        assert!(
-            entry.is_some(),
-            "type_map entry A.t missing; got: {:?}",
-            s.type_map.iter().map(|e| &e.name).collect::<Vec<_>>()
-        );
+        assert!(entry.is_some(), "type_map entry A.t missing; got: {:?}", s.type_map.iter().map(|e| &e.name).collect::<Vec<_>>());
         assert_eq!(entry.unwrap().type_name, "f");
     }
 
@@ -7285,18 +6398,12 @@ mod tests {
         assert!(foo.is_some(), "C.foo missing");
         let foo = foo.unwrap();
         assert_eq!(foo.kind, "method");
-        assert!(
-            foo.complexity.is_some(),
-            "C.foo should have complexity metrics"
-        );
+        assert!(foo.complexity.is_some(), "C.foo should have complexity metrics");
         assert!(foo.cfg.is_some(), "C.foo should have a CFG");
         assert!(bar.is_some(), "C.bar missing");
         let bar = bar.unwrap();
         assert_eq!(bar.kind, "method");
-        assert!(
-            bar.complexity.is_some(),
-            "C.bar should have complexity metrics"
-        );
+        assert!(bar.complexity.is_some(), "C.bar should have complexity metrics");
         assert!(bar.cfg.is_some(), "C.bar should have a CFG");
     }
 
@@ -7309,17 +6416,10 @@ mod tests {
              };",
         );
         let def = s.definitions.iter().find(|d| d.name == "C.greet");
-        assert!(
-            def.is_some(),
-            "C.greet definition missing; got: {:?}",
-            s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>()
-        );
+        assert!(def.is_some(), "C.greet definition missing; got: {:?}", s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>());
         let def = def.unwrap();
         assert_eq!(def.kind, "method");
-        assert!(
-            def.complexity.is_some(),
-            "C.greet should have complexity metrics"
-        );
+        assert!(def.complexity.is_some(), "C.greet should have complexity metrics");
         assert!(def.cfg.is_some(), "C.greet should have a CFG");
     }
 
@@ -7331,11 +6431,7 @@ mod tests {
              C.prototype = { helper };",
         );
         let entry = s.type_map.iter().find(|e| e.name == "C.helper");
-        assert!(
-            entry.is_some(),
-            "type_map entry C.helper missing; got: {:?}",
-            s.type_map.iter().map(|e| &e.name).collect::<Vec<_>>()
-        );
+        assert!(entry.is_some(), "type_map entry C.helper missing; got: {:?}", s.type_map.iter().map(|e| &e.name).collect::<Vec<_>>());
         assert_eq!(entry.unwrap().type_name, "helper");
     }
 
@@ -7343,11 +6439,7 @@ mod tests {
     fn prototype_builtin_globals_are_excluded() {
         let s = parse_js("Array.prototype.custom = function() {};");
         let def = s.definitions.iter().find(|d| d.name.contains("Array"));
-        assert!(
-            def.is_none(),
-            "built-in prototype assignment should be ignored; got: {:?}",
-            def
-        );
+        assert!(def.is_none(), "built-in prototype assignment should be ignored; got: {:?}", def);
     }
 
     #[test]
@@ -7356,26 +6448,17 @@ mod tests {
             "function C() {}\n\
              C.prototype.foo = function(x, y) { if (true) { return 1; } return 0; };",
         );
-        let def = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "C.foo")
-            .expect("C.foo missing");
-        assert!(
-            def.complexity.is_some(),
-            "C.foo should have complexity metrics"
-        );
+        let def = s.definitions.iter().find(|d| d.name == "C.foo").expect("C.foo missing");
+        assert!(def.complexity.is_some(), "C.foo should have complexity metrics");
         assert!(def.cfg.is_some(), "C.foo should have CFG data");
         let children = def.children.as_deref().unwrap_or(&[]);
         assert!(
             children.iter().any(|c| c.name == "x"),
-            "C.foo should have parameter 'x'; got: {:?}",
-            children
+            "C.foo should have parameter 'x'; got: {:?}", children
         );
         assert!(
             children.iter().any(|c| c.name == "y"),
-            "C.foo should have parameter 'y'; got: {:?}",
-            children
+            "C.foo should have parameter 'y'; got: {:?}", children
         );
     }
 
@@ -7389,17 +6472,10 @@ mod tests {
              f.g = function() { return 1; };",
         );
         let def = s.definitions.iter().find(|d| d.name == "f.g");
-        assert!(
-            def.is_some(),
-            "f.g definition missing; got: {:?}",
-            s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>()
-        );
+        assert!(def.is_some(), "f.g definition missing; got: {:?}", s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>());
         let def = def.unwrap();
         assert_eq!(def.kind, "method");
-        assert!(
-            def.complexity.is_some(),
-            "f.g should have complexity metrics"
-        );
+        assert!(def.complexity.is_some(), "f.g should have complexity metrics");
         assert!(def.cfg.is_some(), "f.g should have a CFG");
     }
 
@@ -7410,11 +6486,7 @@ mod tests {
              f.g = (x) => x + 1;",
         );
         let def = s.definitions.iter().find(|d| d.name == "f.g");
-        assert!(
-            def.is_some(),
-            "f.g definition missing; got: {:?}",
-            s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>()
-        );
+        assert!(def.is_some(), "f.g definition missing; got: {:?}", s.definitions.iter().map(|d| &d.name).collect::<Vec<_>>());
         assert_eq!(def.unwrap().kind, "method");
     }
 
@@ -7424,21 +6496,15 @@ mod tests {
             "function f() {}\n\
              f.process = function(a, b) { return a + b; };",
         );
-        let def = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "f.process")
-            .expect("f.process missing");
+        let def = s.definitions.iter().find(|d| d.name == "f.process").expect("f.process missing");
         let children = def.children.as_deref().unwrap_or(&[]);
         assert!(
             children.iter().any(|c| c.name == "a"),
-            "f.process should have parameter 'a'; got: {:?}",
-            children
+            "f.process should have parameter 'a'; got: {:?}", children
         );
         assert!(
             children.iter().any(|c| c.name == "b"),
-            "f.process should have parameter 'b'; got: {:?}",
-            children
+            "f.process should have parameter 'b'; got: {:?}", children
         );
     }
 
@@ -7446,11 +6512,7 @@ mod tests {
     fn func_prop_builtin_globals_are_excluded() {
         let s = parse_js("console.log = function() {};");
         let def = s.definitions.iter().find(|d| d.name == "console.log");
-        assert!(
-            def.is_none(),
-            "built-in global func-prop assignment should be ignored; got: {:?}",
-            def
-        );
+        assert!(def.is_none(), "built-in global func-prop assignment should be ignored; got: {:?}", def);
     }
 
     #[test]
@@ -7460,11 +6522,7 @@ mod tests {
         // extractor).
         let s = parse_js("const a = { b: {} };\na.b.c = function() {};");
         let def = s.definitions.iter().find(|d| d.name.ends_with(".c"));
-        assert!(
-            def.is_none(),
-            "nested member receiver should be skipped; got: {:?}",
-            def
-        );
+        assert!(def.is_none(), "nested member receiver should be skipped; got: {:?}", def);
     }
 
     #[test]
@@ -7477,11 +6535,7 @@ mod tests {
              C.prototype = function() {};",
         );
         let def = s.definitions.iter().find(|d| d.name == "C.prototype");
-        assert!(
-            def.is_none(),
-            "C.prototype function assignment should not emit a method; got: {:?}",
-            def
-        );
+        assert!(def.is_none(), "C.prototype function assignment should not emit a method; got: {:?}", def);
     }
 
     #[test]
@@ -7490,26 +6544,17 @@ mod tests {
             "function C() {}\n\
              C.prototype.bar = (a, b) => a > 0 ? a : b;",
         );
-        let def = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "C.bar")
-            .expect("C.bar missing");
-        assert!(
-            def.complexity.is_some(),
-            "C.bar arrow should have complexity metrics"
-        );
+        let def = s.definitions.iter().find(|d| d.name == "C.bar").expect("C.bar missing");
+        assert!(def.complexity.is_some(), "C.bar arrow should have complexity metrics");
         assert!(def.cfg.is_some(), "C.bar arrow should have CFG data");
         let children = def.children.as_deref().unwrap_or(&[]);
         assert!(
             children.iter().any(|c| c.name == "a"),
-            "C.bar should have parameter 'a'; got: {:?}",
-            children
+            "C.bar should have parameter 'a'; got: {:?}", children
         );
         assert!(
             children.iter().any(|c| c.name == "b"),
-            "C.bar should have parameter 'b'; got: {:?}",
-            children
+            "C.bar should have parameter 'b'; got: {:?}", children
         );
     }
 
@@ -7521,21 +6566,13 @@ mod tests {
                greet(name) { if (true) { return 'hi'; } return ''; },\n\
              };",
         );
-        let def = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "C.greet")
-            .expect("C.greet missing");
-        assert!(
-            def.complexity.is_some(),
-            "C.greet should have complexity metrics"
-        );
+        let def = s.definitions.iter().find(|d| d.name == "C.greet").expect("C.greet missing");
+        assert!(def.complexity.is_some(), "C.greet should have complexity metrics");
         assert!(def.cfg.is_some(), "C.greet should have CFG data");
         let children = def.children.as_deref().unwrap_or(&[]);
         assert!(
             children.iter().any(|c| c.name == "name"),
-            "C.greet should have parameter 'name'; got: {:?}",
-            children
+            "C.greet should have parameter 'name'; got: {:?}", children
         );
     }
 
@@ -7547,21 +6584,13 @@ mod tests {
                bar: function(n) { if (true) { return 1; } return 0; },\n\
              };",
         );
-        let def = s
-            .definitions
-            .iter()
-            .find(|d| d.name == "C.bar")
-            .expect("C.bar missing");
-        assert!(
-            def.complexity.is_some(),
-            "C.bar should have complexity metrics"
-        );
+        let def = s.definitions.iter().find(|d| d.name == "C.bar").expect("C.bar missing");
+        assert!(def.complexity.is_some(), "C.bar should have complexity metrics");
         assert!(def.cfg.is_some(), "C.bar should have CFG data");
         let children = def.children.as_deref().unwrap_or(&[]);
         assert!(
             children.iter().any(|c| c.name == "n"),
-            "C.bar should have parameter 'n'; got: {:?}",
-            children
+            "C.bar should have parameter 'n'; got: {:?}", children
         );
     }
 
@@ -7574,11 +6603,7 @@ mod tests {
              Object.defineProperty(obj, \"f\", { value: f1 });",
         );
         let entry = s.type_map.iter().find(|e| e.name == "obj.f");
-        assert!(
-            entry.is_some(),
-            "type_map should contain 'obj.f'; got: {:?}",
-            s.type_map
-        );
+        assert!(entry.is_some(), "type_map should contain 'obj.f'; got: {:?}", s.type_map);
         assert_eq!(entry.unwrap().type_name, "f1");
     }
 
@@ -7596,16 +6621,8 @@ mod tests {
         );
         let e1 = s.type_map.iter().find(|e| e.name == "obj.f1");
         let e2 = s.type_map.iter().find(|e| e.name == "obj.f2");
-        assert!(
-            e1.is_some(),
-            "type_map should contain 'obj.f1'; got: {:?}",
-            s.type_map
-        );
-        assert!(
-            e2.is_some(),
-            "type_map should contain 'obj.f2'; got: {:?}",
-            s.type_map
-        );
+        assert!(e1.is_some(), "type_map should contain 'obj.f1'; got: {:?}", s.type_map);
+        assert!(e2.is_some(), "type_map should contain 'obj.f2'; got: {:?}", s.type_map);
         assert_eq!(e1.unwrap().type_name, "f1");
         assert_eq!(e2.unwrap().type_name, "f2");
     }
@@ -7620,16 +6637,8 @@ mod tests {
         );
         let e1 = s.type_map.iter().find(|e| e.name == "obj.f1");
         let e2 = s.type_map.iter().find(|e| e.name == "obj.f2");
-        assert!(
-            e1.is_some(),
-            "type_map should contain 'obj.f1'; got: {:?}",
-            s.type_map
-        );
-        assert!(
-            e2.is_some(),
-            "type_map should contain 'obj.f2'; got: {:?}",
-            s.type_map
-        );
+        assert!(e1.is_some(), "type_map should contain 'obj.f1'; got: {:?}", s.type_map);
+        assert!(e2.is_some(), "type_map should contain 'obj.f2'; got: {:?}", s.type_map);
         assert_eq!(e1.unwrap().type_name, "f1");
         assert_eq!(e2.unwrap().type_name, "f2");
     }
@@ -7649,53 +6658,23 @@ mod tests {
              };",
         );
         let names: Vec<_> = s.definitions.iter().map(|d| (&d.name, &d.kind)).collect();
-        let f_bare_pos = s
-            .definitions
-            .iter()
-            .position(|d| d.name == "f" && d.kind == "method");
-        let g_bare_pos = s
-            .definitions
-            .iter()
-            .position(|d| d.name == "g" && d.kind == "method");
-        let f_qual_pos = s
-            .definitions
-            .iter()
-            .position(|d| d.name == "o1.f" && d.kind == "function");
-        let g_qual_pos = s
-            .definitions
-            .iter()
-            .position(|d| d.name == "o1.g" && d.kind == "function");
-        assert!(
-            f_bare_pos.is_some(),
-            "bare f(method) missing; got: {:?}",
-            names
-        );
-        assert!(
-            g_bare_pos.is_some(),
-            "bare g(method) missing; got: {:?}",
-            names
-        );
-        assert!(
-            f_qual_pos.is_some(),
-            "qualified o1.f(function) missing; got: {:?}",
-            names
-        );
-        assert!(
-            g_qual_pos.is_some(),
-            "qualified o1.g(function) missing; got: {:?}",
-            names
-        );
+        let f_bare_pos = s.definitions.iter().position(|d| d.name == "f" && d.kind == "method");
+        let g_bare_pos = s.definitions.iter().position(|d| d.name == "g" && d.kind == "method");
+        let f_qual_pos = s.definitions.iter().position(|d| d.name == "o1.f" && d.kind == "function");
+        let g_qual_pos = s.definitions.iter().position(|d| d.name == "o1.g" && d.kind == "function");
+        assert!(f_bare_pos.is_some(), "bare f(method) missing; got: {:?}", names);
+        assert!(g_bare_pos.is_some(), "bare g(method) missing; got: {:?}", names);
+        assert!(f_qual_pos.is_some(), "qualified o1.f(function) missing; got: {:?}", names);
+        assert!(g_qual_pos.is_some(), "qualified o1.g(function) missing; got: {:?}", names);
         assert!(
             f_bare_pos.unwrap() < f_qual_pos.unwrap(),
             "f(method) at {} must precede o1.f(function) at {} — equal-span tie-break",
-            f_bare_pos.unwrap(),
-            f_qual_pos.unwrap()
+            f_bare_pos.unwrap(), f_qual_pos.unwrap()
         );
         assert!(
             g_bare_pos.unwrap() < g_qual_pos.unwrap(),
             "g(method) at {} must precede o1.g(function) at {}",
-            g_bare_pos.unwrap(),
-            g_qual_pos.unwrap()
+            g_bare_pos.unwrap(), g_qual_pos.unwrap()
         );
         // typeMap entry must point to bare name for two-step accessor dispatch.
         let tm_f = s.type_map.iter().find(|e| e.name == "o1.f");
@@ -7717,16 +6696,8 @@ mod tests {
              obj.bar();",
         );
         let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
-        assert!(
-            names.contains(&"obj.foo"),
-            "expected 'obj.foo'; got: {:?}",
-            names
-        );
-        assert!(
-            names.contains(&"obj.bar"),
-            "expected 'obj.bar'; got: {:?}",
-            names
-        );
+        assert!(names.contains(&"obj.foo"), "expected 'obj.foo'; got: {:?}", names);
+        assert!(names.contains(&"obj.bar"), "expected 'obj.bar'; got: {:?}", names);
         assert!(
             !names.iter().any(|n| n.contains('[')),
             "no definition name should retain the bracketed/quoted form; got: {:?}",
@@ -7751,11 +6722,7 @@ mod tests {
             "non-string computed key must not produce a definition; got: {:?}",
             names
         );
-        assert!(
-            names.contains(&"obj.bar"),
-            "expected 'obj.bar'; got: {:?}",
-            names
-        );
+        assert!(names.contains(&"obj.bar"), "expected 'obj.bar'; got: {:?}", names);
     }
 
     /// Issue #1944: a plain quoted (non-computed) method key (`'foo'() {}`, kind `"string"`,
@@ -7766,11 +6733,7 @@ mod tests {
     fn quoted_plain_method_key_resolves_to_plain_name() {
         let s = parse_js("class A {\n  'foo'() { return 1; }\n}");
         let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
-        assert!(
-            names.contains(&"A.foo"),
-            "expected 'A.foo'; got: {:?}",
-            names
-        );
+        assert!(names.contains(&"A.foo"), "expected 'A.foo'; got: {:?}", names);
         assert!(
             !names.iter().any(|n| n.contains('\'')),
             "no definition name should retain the quoted form; got: {:?}",
@@ -7783,11 +6746,7 @@ mod tests {
     fn quoted_plain_object_literal_method_key_resolves_to_plain_name() {
         let s = parse_js("const obj = { 'quoted'() { return 1; } };");
         let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
-        assert!(
-            names.contains(&"obj.quoted"),
-            "expected 'obj.quoted'; got: {:?}",
-            names
-        );
+        assert!(names.contains(&"obj.quoted"), "expected 'obj.quoted'; got: {:?}", names);
         assert!(
             !names.iter().any(|n| n.contains('\'')),
             "no definition name should retain the quoted form; got: {:?}",
@@ -7804,21 +6763,9 @@ mod tests {
              var obj3 = { ['computedVar']: () => {} };",
         );
         let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
-        assert!(
-            names.contains(&"obj2.computedLet"),
-            "expected 'obj2.computedLet'; got: {:?}",
-            names
-        );
-        assert!(
-            names.contains(&"obj2.plain"),
-            "expected 'obj2.plain'; got: {:?}",
-            names
-        );
-        assert!(
-            names.contains(&"obj3.computedVar"),
-            "expected 'obj3.computedVar'; got: {:?}",
-            names
-        );
+        assert!(names.contains(&"obj2.computedLet"), "expected 'obj2.computedLet'; got: {:?}", names);
+        assert!(names.contains(&"obj2.plain"), "expected 'obj2.plain'; got: {:?}", names);
+        assert!(names.contains(&"obj3.computedVar"), "expected 'obj3.computedVar'; got: {:?}", names);
     }
 
     /// Issue #1884: `seed_object_create_entries`'s pair arm must unwrap a computed
@@ -7831,11 +6778,7 @@ mod tests {
              const obj = Object.create({ ['foo']: fn });",
         );
         let entry = s.type_map.iter().find(|e| e.name == "obj.foo");
-        assert!(
-            entry.is_some(),
-            "type_map should contain 'obj.foo'; got: {:?}",
-            s.type_map
-        );
+        assert!(entry.is_some(), "type_map should contain 'obj.foo'; got: {:?}", s.type_map);
         assert_eq!(entry.unwrap().type_name, "fn");
     }
 
@@ -7849,11 +6792,7 @@ mod tests {
              Object.defineProperties(obj, { ['foo']: { value: f1 } });",
         );
         let entry = s.type_map.iter().find(|e| e.name == "obj.foo");
-        assert!(
-            entry.is_some(),
-            "type_map should contain 'obj.foo'; got: {:?}",
-            s.type_map
-        );
+        assert!(entry.is_some(), "type_map should contain 'obj.foo'; got: {:?}", s.type_map);
         assert_eq!(entry.unwrap().type_name, "f1");
     }
 
@@ -7868,8 +6807,7 @@ mod tests {
         );
         assert!(
             !s.type_map.iter().any(|e| e.name.contains("Symbol")),
-            "non-string computed key must not produce a type_map entry; got: {:?}",
-            s.type_map
+            "non-string computed key must not produce a type_map entry; got: {:?}", s.type_map
         );
     }
 
@@ -7882,11 +6820,7 @@ mod tests {
              var routes = { ['get']: handler };",
         );
         let entry = s.type_map.iter().find(|e| e.name == "routes.get");
-        assert!(
-            entry.is_some(),
-            "type_map should contain 'routes.get'; got: {:?}",
-            s.type_map
-        );
+        assert!(entry.is_some(), "type_map should contain 'routes.get'; got: {:?}", s.type_map);
         assert_eq!(entry.unwrap().type_name, "handler");
     }
 
@@ -7900,11 +6834,7 @@ mod tests {
              C.prototype = { ['run']: helper };",
         );
         let entry = s.type_map.iter().find(|e| e.name == "C.run");
-        assert!(
-            entry.is_some(),
-            "type_map should contain 'C.run'; got: {:?}",
-            s.type_map
-        );
+        assert!(entry.is_some(), "type_map should contain 'C.run'; got: {:?}", s.type_map);
         assert_eq!(entry.unwrap().type_name, "helper");
     }
 
@@ -7917,11 +6847,7 @@ mod tests {
              C.prototype = { ['foo']: function() { return 1; } };",
         );
         let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
-        assert!(
-            names.contains(&"C.foo"),
-            "expected 'C.foo'; got: {:?}",
-            names
-        );
+        assert!(names.contains(&"C.foo"), "expected 'C.foo'; got: {:?}", names);
     }
 
     /// Issue #1884: `collect_object_rest_params`'s pair arm previously skipped ALL computed
@@ -7936,15 +6862,8 @@ mod tests {
                }\n\
              };",
         );
-        let b = s
-            .object_rest_param_bindings
-            .iter()
-            .find(|b| b.callee == "process");
-        assert!(
-            b.is_some(),
-            "object_rest_param_bindings missing; got: {:?}",
-            s.object_rest_param_bindings
-        );
+        let b = s.object_rest_param_bindings.iter().find(|b| b.callee == "process");
+        assert!(b.is_some(), "object_rest_param_bindings missing; got: {:?}", s.object_rest_param_bindings);
         let b = b.unwrap();
         assert_eq!(b.rest_name, "rest");
         assert_eq!(b.arg_index, 0);
@@ -7962,11 +6881,8 @@ mod tests {
              };",
         );
         assert!(
-            !s.object_rest_param_bindings
-                .iter()
-                .any(|b| b.rest_name == "rest"),
-            "non-string computed key must not produce a binding; got: {:?}",
-            s.object_rest_param_bindings
+            !s.object_rest_param_bindings.iter().any(|b| b.rest_name == "rest"),
+            "non-string computed key must not produce a binding; got: {:?}", s.object_rest_param_bindings
         );
     }
 
@@ -7981,33 +6897,14 @@ mod tests {
              obj.f();",
         );
         let tm = s_let_method.type_map.iter().find(|e| e.name == "obj.f");
-        assert!(
-            tm.is_some(),
-            "let obj method: typeMap 'obj.f' missing; got: {:?}",
-            s_let_method
-                .type_map
-                .iter()
-                .map(|e| &e.name)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            tm.unwrap().type_name,
-            "f",
-            "typeMap 'obj.f' must point at bare name 'f', not the qualified key"
-        );
-        let call = s_let_method
-            .calls
-            .iter()
-            .find(|c| c.name == "f" && c.receiver.as_deref() == Some("obj"));
-        assert!(
-            call.is_some(),
+        assert!(tm.is_some(), "let obj method: typeMap 'obj.f' missing; got: {:?}",
+            s_let_method.type_map.iter().map(|e| &e.name).collect::<Vec<_>>());
+        assert_eq!(tm.unwrap().type_name, "f",
+            "typeMap 'obj.f' must point at bare name 'f', not the qualified key");
+        let call = s_let_method.calls.iter().find(|c| c.name == "f" && c.receiver.as_deref() == Some("obj"));
+        assert!(call.is_some(),
             "calls must contain obj.f() with receiver='obj'; got: {:?}",
-            s_let_method
-                .calls
-                .iter()
-                .map(|c| (&c.name, &c.receiver))
-                .collect::<Vec<_>>()
-        );
+            s_let_method.calls.iter().map(|c| (&c.name, &c.receiver)).collect::<Vec<_>>());
 
         // Shorthand property: `var obj = { e4 }` → typeMap['obj.e4'] = 'e4'
         let s_var_shorthand = parse_js(
@@ -8015,15 +6912,8 @@ mod tests {
              var obj = { e4 };",
         );
         let tm2 = s_var_shorthand.type_map.iter().find(|e| e.name == "obj.e4");
-        assert!(
-            tm2.is_some(),
-            "var obj shorthand: typeMap 'obj.e4' missing; got: {:?}",
-            s_var_shorthand
-                .type_map
-                .iter()
-                .map(|e| &e.name)
-                .collect::<Vec<_>>()
-        );
+        assert!(tm2.is_some(), "var obj shorthand: typeMap 'obj.e4' missing; got: {:?}",
+            s_var_shorthand.type_map.iter().map(|e| &e.name).collect::<Vec<_>>());
         assert_eq!(tm2.unwrap().type_name, "e4");
 
         // Pair with identifier value: `var routes = { get: handler }` → typeMap['routes.get'] = 'handler'
@@ -8032,15 +6922,8 @@ mod tests {
              var routes = { get: handler };",
         );
         let tm3 = s_var_pair.type_map.iter().find(|e| e.name == "routes.get");
-        assert!(
-            tm3.is_some(),
-            "var routes pair: typeMap 'routes.get' missing; got: {:?}",
-            s_var_pair
-                .type_map
-                .iter()
-                .map(|e| &e.name)
-                .collect::<Vec<_>>()
-        );
+        assert!(tm3.is_some(), "var routes pair: typeMap 'routes.get' missing; got: {:?}",
+            s_var_pair.type_map.iter().map(|e| &e.name).collect::<Vec<_>>());
         assert_eq!(tm3.unwrap().type_name, "handler");
 
         // Pair with arrow value: `let api = { save: () => {} }` → typeMap['api.save'] = 'api.save'
@@ -8051,39 +6934,19 @@ mod tests {
              api.save();",
         );
         let tm4 = s_let_arrow.type_map.iter().find(|e| e.name == "api.save");
-        assert!(
-            tm4.is_some(),
-            "let api arrow: typeMap 'api.save' missing; got: {:?}",
-            s_let_arrow
-                .type_map
-                .iter()
-                .map(|e| &e.name)
-                .collect::<Vec<_>>()
-        );
+        assert!(tm4.is_some(), "let api arrow: typeMap 'api.save' missing; got: {:?}",
+            s_let_arrow.type_map.iter().map(|e| &e.name).collect::<Vec<_>>());
         assert_eq!(tm4.unwrap().type_name, "api.save",
             "typeMap 'api.save' must point at the qualified name 'api.save' (qualified definition exists)");
         assert!(
             s_let_arrow.definitions.iter().any(|d| d.name == "api.save"),
             "let api arrow: qualified definition 'api.save' missing; got: {:?}",
-            s_let_arrow
-                .definitions
-                .iter()
-                .map(|d| &d.name)
-                .collect::<Vec<_>>()
+            s_let_arrow.definitions.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
-        let call4 = s_let_arrow
-            .calls
-            .iter()
-            .find(|c| c.name == "save" && c.receiver.as_deref() == Some("api"));
-        assert!(
-            call4.is_some(),
+        let call4 = s_let_arrow.calls.iter().find(|c| c.name == "save" && c.receiver.as_deref() == Some("api"));
+        assert!(call4.is_some(),
             "calls must contain api.save() with receiver='api'; got: {:?}",
-            s_let_arrow
-                .calls
-                .iter()
-                .map(|c| (&c.name, &c.receiver))
-                .collect::<Vec<_>>()
-        );
+            s_let_arrow.calls.iter().map(|c| (&c.name, &c.receiver)).collect::<Vec<_>>());
 
         // Scope guard: object literal inside a function body must NOT seed module-level typeMap.
         let s_scoped = parse_js(
@@ -8095,11 +6958,7 @@ mod tests {
         assert!(
             s_scoped.type_map.iter().all(|e| e.name != "local.run"),
             "function-scoped let obj must not pollute typeMap; got: {:?}",
-            s_scoped
-                .type_map
-                .iter()
-                .map(|e| &e.name)
-                .collect::<Vec<_>>()
+            s_scoped.type_map.iter().map(|e| &e.name).collect::<Vec<_>>()
         );
     }
 
@@ -8115,24 +6974,14 @@ mod tests {
              }",
         );
         let tm = s.type_map.iter().find(|e| e.name == "obj.f");
-        assert!(
-            tm.is_some(),
-            "type_map should contain 'obj.f'; got: {:?}",
-            s.type_map
-        );
+        assert!(tm.is_some(), "type_map should contain 'obj.f'; got: {:?}", s.type_map);
         assert_eq!(tm.unwrap().type_name, "f1");
 
-        let call = s
-            .calls
-            .iter()
-            .find(|c| c.name == "f" && c.receiver.as_deref() == Some("obj"));
+        let call = s.calls.iter().find(|c| c.name == "f" && c.receiver.as_deref() == Some("obj"));
         assert!(
             call.is_some(),
             "calls should contain obj.f() with receiver='obj'; got: {:?}",
-            s.calls
-                .iter()
-                .map(|c| (&c.name, &c.receiver))
-                .collect::<Vec<_>>()
+            s.calls.iter().map(|c| (&c.name, &c.receiver)).collect::<Vec<_>>()
         );
     }
 
@@ -8149,11 +6998,7 @@ mod tests {
             .param_bindings
             .iter()
             .find(|b| b.callee == "hof" && b.arg_name == "target");
-        assert!(
-            b.is_some(),
-            "param_bindings should contain hof←target; got: {:?}",
-            s.param_bindings
-        );
+        assert!(b.is_some(), "param_bindings should contain hof←target; got: {:?}", s.param_bindings);
         assert_eq!(b.unwrap().arg_index, 0);
     }
 
@@ -8227,29 +7072,17 @@ mod tests {
              function runCallThis() { return invoker.call(handler, 10); }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.name == "invoker" && c.dynamic == Some(true)),
+            s.calls.iter().any(|c| c.name == "invoker" && c.dynamic == Some(true)),
             "invoker.call() should emit a dynamic call to invoker; got: {:?}",
-            s.calls
-                .iter()
-                .map(|c| (&c.name, c.dynamic))
-                .collect::<Vec<_>>()
+            s.calls.iter().map(|c| (&c.name, c.dynamic)).collect::<Vec<_>>()
         );
         assert!(
             !s.calls.iter().any(|c| c.name == "handler"),
             ".call() args must not become callback-reference calls; got: {:?}",
-            s.calls
-                .iter()
-                .map(|c| (&c.name, c.dynamic))
-                .collect::<Vec<_>>()
+            s.calls.iter().map(|c| (&c.name, c.dynamic)).collect::<Vec<_>>()
         );
         let b = s.this_call_bindings.iter().find(|b| b.callee == "invoker");
-        assert!(
-            b.is_some(),
-            "this_call_bindings should contain invoker→handler; got: {:?}",
-            s.this_call_bindings
-        );
+        assert!(b.is_some(), "this_call_bindings should contain invoker→handler; got: {:?}", s.this_call_bindings);
         assert_eq!(b.unwrap().this_arg, "handler");
     }
 
@@ -8271,10 +7104,7 @@ mod tests {
         assert!(
             !s.calls.iter().any(|c| c.name == "b"),
             "argument `b` of this(b) must not become a callback-reference call; got: {:?}",
-            s.calls
-                .iter()
-                .map(|c| (&c.name, c.dynamic))
-                .collect::<Vec<_>>()
+            s.calls.iter().map(|c| (&c.name, c.dynamic)).collect::<Vec<_>>()
         );
     }
 
@@ -8292,18 +7122,12 @@ mod tests {
         assert!(
             !s.calls.iter().any(|c| c.name == "a"),
             "argument `a` of super(a, b) must not become a callback-reference call; got: {:?}",
-            s.calls
-                .iter()
-                .map(|c| (&c.name, c.dynamic))
-                .collect::<Vec<_>>()
+            s.calls.iter().map(|c| (&c.name, c.dynamic)).collect::<Vec<_>>()
         );
         assert!(
             !s.calls.iter().any(|c| c.name == "b"),
             "argument `b` of super(a, b) must not become a callback-reference call; got: {:?}",
-            s.calls
-                .iter()
-                .map(|c| (&c.name, c.dynamic))
-                .collect::<Vec<_>>()
+            s.calls.iter().map(|c| (&c.name, c.dynamic)).collect::<Vec<_>>()
         );
     }
 
@@ -8326,10 +7150,7 @@ mod tests {
         assert!(
             super_call.is_some(),
             "bare super(...) must be recorded as a constructor call with receiver=super; got: {:?}",
-            s.calls
-                .iter()
-                .map(|c| (&c.name, &c.receiver))
-                .collect::<Vec<_>>()
+            s.calls.iter().map(|c| (&c.name, &c.receiver)).collect::<Vec<_>>()
         );
     }
 
@@ -8346,16 +7167,8 @@ mod tests {
             .filter(|b| b.array_name == "arr")
             .map(|b| (b.index, b.elem_name.as_str()))
             .collect();
-        assert!(
-            got.contains(&(0, "fn1")),
-            "expected (0, fn1); got: {:?}",
-            got
-        );
-        assert!(
-            got.contains(&(1, "fn2")),
-            "expected (1, fn2); got: {:?}",
-            got
-        );
+        assert!(got.contains(&(0, "fn1")), "expected (0, fn1); got: {:?}", got);
+        assert!(got.contains(&(1, "fn2")), "expected (1, fn2); got: {:?}", got);
     }
 
     #[test]
@@ -8366,11 +7179,7 @@ mod tests {
              callAll(...fns);",
         );
         let b = s.spread_arg_bindings.iter().find(|b| b.callee == "callAll");
-        assert!(
-            b.is_some(),
-            "spread_arg_bindings missing; got: {:?}",
-            s.spread_arg_bindings
-        );
+        assert!(b.is_some(), "spread_arg_bindings missing; got: {:?}", s.spread_arg_bindings);
         let b = b.unwrap();
         assert_eq!(b.array_name, "fns");
         assert_eq!(b.start_index, 0);
@@ -8383,11 +7192,7 @@ mod tests {
              const wrapped = new Set(arr);",
         );
         let b = s.fn_ref_bindings.iter().find(|b| b.lhs == "wrapped[*]");
-        assert!(
-            b.is_some(),
-            "Set wrap should bind wrapped[*] ⊇ arr[*]; got: {:?}",
-            s.fn_ref_bindings
-        );
+        assert!(b.is_some(), "Set wrap should bind wrapped[*] ⊇ arr[*]; got: {:?}", s.fn_ref_bindings);
         assert_eq!(b.unwrap().rhs, "arr[*]");
     }
 
@@ -8399,11 +7204,7 @@ mod tests {
              }",
         );
         let b = s.for_of_bindings.iter().find(|b| b.var_name == "h");
-        assert!(
-            b.is_some(),
-            "for_of_bindings missing; got: {:?}",
-            s.for_of_bindings
-        );
+        assert!(b.is_some(), "for_of_bindings missing; got: {:?}", s.for_of_bindings);
         let b = b.unwrap();
         assert_eq!(b.source_name, "handlers");
         assert_eq!(b.enclosing_func, "run");
@@ -8417,11 +7218,7 @@ mod tests {
              }",
         );
         let b = s.for_of_bindings.iter().find(|b| b.var_name == "g");
-        assert!(
-            b.is_some(),
-            "for_of_bindings missing for g; got: {:?}",
-            s.for_of_bindings
-        );
+        assert!(b.is_some(), "for_of_bindings missing for g; got: {:?}", s.for_of_bindings);
         assert_eq!(b.unwrap().enclosing_func, "Runner.runAll");
     }
 
@@ -8429,11 +7226,7 @@ mod tests {
     fn for_of_binding_at_module_level_uses_module_context() {
         let s = parse_js("for (const cb of callbacks) { cb(); }");
         let b = s.for_of_bindings.iter().find(|b| b.var_name == "cb");
-        assert!(
-            b.is_some(),
-            "for_of_bindings missing; got: {:?}",
-            s.for_of_bindings
-        );
+        assert!(b.is_some(), "for_of_bindings missing; got: {:?}", s.for_of_bindings);
         assert_eq!(b.unwrap().enclosing_func, "<module>");
     }
 
@@ -8447,11 +7240,7 @@ mod tests {
             .array_callback_bindings
             .iter()
             .find(|b| b.callee_name == "makeThing");
-        assert!(
-            b.is_some(),
-            "array_callback_bindings missing; got: {:?}",
-            s.array_callback_bindings
-        );
+        assert!(b.is_some(), "array_callback_bindings missing; got: {:?}", s.array_callback_bindings);
         assert_eq!(b.unwrap().source_name, "items");
     }
 
@@ -8462,11 +7251,7 @@ mod tests {
             .object_rest_param_bindings
             .iter()
             .find(|b| b.callee == "f3");
-        assert!(
-            b.is_some(),
-            "object_rest_param_bindings missing; got: {:?}",
-            s.object_rest_param_bindings
-        );
+        assert!(b.is_some(), "object_rest_param_bindings missing; got: {:?}", s.object_rest_param_bindings);
         let b = b.unwrap();
         assert_eq!(b.rest_name, "eerest");
         assert_eq!(b.arg_index, 0);
@@ -8479,15 +7264,8 @@ mod tests {
                handle({ id, ...rest }) { rest.go(); }\n\
              }",
         );
-        let b = s
-            .object_rest_param_bindings
-            .iter()
-            .find(|b| b.rest_name == "rest");
-        assert!(
-            b.is_some(),
-            "object_rest_param_bindings missing; got: {:?}",
-            s.object_rest_param_bindings
-        );
+        let b = s.object_rest_param_bindings.iter().find(|b| b.rest_name == "rest");
+        assert!(b.is_some(), "object_rest_param_bindings missing; got: {:?}", s.object_rest_param_bindings);
         assert_eq!(b.unwrap().callee, "Svc.handle");
     }
 
@@ -8502,22 +7280,14 @@ mod tests {
             .object_prop_bindings
             .iter()
             .find(|b| b.object_name == "obj" && b.prop_name == "e4");
-        assert!(
-            shorthand.is_some(),
-            "shorthand binding missing; got: {:?}",
-            s.object_prop_bindings
-        );
+        assert!(shorthand.is_some(), "shorthand binding missing; got: {:?}", s.object_prop_bindings);
         assert_eq!(shorthand.unwrap().value_name, "e4");
 
         let pair = s
             .object_prop_bindings
             .iter()
             .find(|b| b.object_name == "obj" && b.prop_name == "alias");
-        assert!(
-            pair.is_some(),
-            "pair binding missing; got: {:?}",
-            s.object_prop_bindings
-        );
+        assert!(pair.is_some(), "pair binding missing; got: {:?}", s.object_prop_bindings);
         assert_eq!(pair.unwrap().value_name, "named");
     }
 
@@ -8553,39 +7323,18 @@ mod tests {
              function runDispatch(key) { ({ a: dtFn1, b: dtFn2 })[key](); }",
         );
         // The call name must be <dt_line_col>[*]
-        let dt_call = s
-            .calls
-            .iter()
-            .find(|c| c.name.starts_with("<dt_") && c.name.ends_with(">[*]"));
-        assert!(
-            dt_call.is_some(),
-            "dispatch-table call missing; got: {:?}",
-            s.calls
-        );
+        let dt_call = s.calls.iter().find(|c| c.name.starts_with("<dt_") && c.name.ends_with(">[*]"));
+        assert!(dt_call.is_some(), "dispatch-table call missing; got: {:?}", s.calls);
         let dt_call = dt_call.unwrap();
         assert_eq!(dt_call.dynamic, Some(true));
         assert_eq!(dt_call.dynamic_kind.as_deref(), Some("dispatch-table"));
 
         // The array_elem_bindings must contain dtFn1 and dtFn2 under the same table name
         let table_name = dt_call.name.trim_end_matches("[*]");
-        let elem1 = s
-            .array_elem_bindings
-            .iter()
-            .find(|b| b.array_name == table_name && b.elem_name == "dtFn1");
-        let elem2 = s
-            .array_elem_bindings
-            .iter()
-            .find(|b| b.array_name == table_name && b.elem_name == "dtFn2");
-        assert!(
-            elem1.is_some(),
-            "dtFn1 array_elem_binding missing; got: {:?}",
-            s.array_elem_bindings
-        );
-        assert!(
-            elem2.is_some(),
-            "dtFn2 array_elem_binding missing; got: {:?}",
-            s.array_elem_bindings
-        );
+        let elem1 = s.array_elem_bindings.iter().find(|b| b.array_name == table_name && b.elem_name == "dtFn1");
+        let elem2 = s.array_elem_bindings.iter().find(|b| b.array_name == table_name && b.elem_name == "dtFn2");
+        assert!(elem1.is_some(), "dtFn1 array_elem_binding missing; got: {:?}", s.array_elem_bindings);
+        assert!(elem2.is_some(), "dtFn2 array_elem_binding missing; got: {:?}", s.array_elem_bindings);
         assert_eq!(elem1.unwrap().index, 0);
         assert_eq!(elem2.unwrap().index, 1);
     }
@@ -8597,15 +7346,8 @@ mod tests {
              function fnB() {}\n\
              function run(k) { ({a: fnA, b: fnB})[k](); }",
         );
-        let dt_call = s
-            .calls
-            .iter()
-            .find(|c| c.name.starts_with("<dt_") && c.name.ends_with(">[*]"));
-        assert!(
-            dt_call.is_some(),
-            "dispatch-table call missing for parenthesized object; got: {:?}",
-            s.calls
-        );
+        let dt_call = s.calls.iter().find(|c| c.name.starts_with("<dt_") && c.name.ends_with(">[*]"));
+        assert!(dt_call.is_some(), "dispatch-table call missing for parenthesized object; got: {:?}", s.calls);
     }
 
     // ── ES6 getter/setter same-file property-read call attribution (#1893) ──
@@ -8619,9 +7361,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.name == "isReady" && c.receiver.as_deref() == Some("this")),
+            s.calls.iter().any(|c| c.name == "isReady" && c.receiver.as_deref() == Some("this")),
             "expected a call to isReady via this; got: {:?}",
             s.calls
         );
@@ -8638,9 +7378,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.name == "db" && c.receiver.as_deref() == Some("repo")),
+            s.calls.iter().any(|c| c.name == "db" && c.receiver.as_deref() == Some("repo")),
             "expected a call to db via repo; got: {:?}",
             s.calls
         );
@@ -8655,9 +7393,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.name == "flag" && c.receiver.as_deref() == Some("this")),
+            s.calls.iter().any(|c| c.name == "flag" && c.receiver.as_deref() == Some("this")),
             "expected a call to flag via this; got: {:?}",
             s.calls
         );
@@ -8689,16 +7425,8 @@ mod tests {
                return w.value();\n\
              }",
         );
-        let matches = s
-            .calls
-            .iter()
-            .filter(|c| c.name == "value" && c.receiver.as_deref() == Some("w"))
-            .count();
-        assert_eq!(
-            matches, 1,
-            "expected exactly one call to w.value(); got: {:?}",
-            s.calls
-        );
+        let matches = s.calls.iter().filter(|c| c.name == "value" && c.receiver.as_deref() == Some("w")).count();
+        assert_eq!(matches, 1, "expected exactly one call to w.value(); got: {:?}", s.calls);
     }
 
     #[test]
@@ -8713,9 +7441,7 @@ mod tests {
              }",
         );
         assert!(
-            !s.calls
-                .iter()
-                .any(|c| c.name == "render" && c.receiver.as_deref() == Some("w")),
+            !s.calls.iter().any(|c| c.name == "render" && c.receiver.as_deref() == Some("w")),
             "plain method reference (no accessor) must not produce a call; got: {:?}",
             s.calls
         );
@@ -8730,9 +7456,7 @@ mod tests {
              }",
         );
         assert!(
-            s.calls
-                .iter()
-                .any(|c| c.name == "version" && c.receiver.as_deref() == Some("this")),
+            s.calls.iter().any(|c| c.name == "version" && c.receiver.as_deref() == Some("this")),
             "expected a call to version via this; got: {:?}",
             s.calls
         );
