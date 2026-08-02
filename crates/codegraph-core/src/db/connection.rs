@@ -744,6 +744,21 @@ impl NativeDatabase {
                 let _ =
                     conn.execute_batch("ALTER TABLE edges ADD COLUMN dynamic INTEGER DEFAULT 0");
             }
+            // #2001/#2066: version-gated migration v20 alone cannot repair a
+            // native-only database whose schema_version was already advanced
+            // past 20 by the pre-fix MIGRATIONS array (which jumped straight
+            // from v19 to v21, never applying v20) — its stored version being
+            // >= 21 makes the `migration.version > current_version` gate skip
+            // v20 forever on every subsequent init_schema() call. This
+            // unconditional, reality-checked backfill (mirroring the
+            // confidence/dynamic columns just above) repairs those databases
+            // too, not just fresh ones.
+            if !has_column(conn, "edges", "dynamic_kind") {
+                let _ = conn.execute_batch("ALTER TABLE edges ADD COLUMN dynamic_kind TEXT");
+            }
+            let _ = conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_edges_dynamic_kind ON edges(dynamic_kind) WHERE dynamic_kind IS NOT NULL",
+            );
         }
 
         Ok(())
@@ -1653,6 +1668,49 @@ mod tests {
         assert!(
             has_dynamic_kind,
             "edges.dynamic_kind column missing after native-only init_schema()"
+        );
+    }
+
+    /// Regression for the Greptile-flagged gap in #2001's initial fix: a
+    /// native-only database that was ALREADY migrated past v20 by the
+    /// pre-fix `MIGRATIONS` array (which jumped straight from v19 to v21,
+    /// never applying v20) has `schema_version >= 21` stored — so the
+    /// version-gated `migration.version > current_version` check skips v20
+    /// forever on every later `init_schema()` call, even after v20 is added
+    /// to the array. Only the unconditional, reality-checked legacy-column
+    /// backfill (not the version-gated migration itself) can repair an
+    /// already-affected database. Simulates that exact prior-bug state by
+    /// stamping schema_version to 23 (the current max) and dropping
+    /// dynamic_kind back out before re-running init_schema().
+    #[test]
+    fn init_schema_repairs_edges_dynamic_kind_on_a_database_already_past_v20() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("initial init_schema should succeed");
+
+        {
+            let conn = db.conn().expect("connection should still be open");
+            // Simulate the pre-fix native-only end state: schema stamped past
+            // v20, but the column itself never actually got added.
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS idx_edges_dynamic_kind; \
+                 ALTER TABLE edges DROP COLUMN dynamic_kind; \
+                 UPDATE schema_version SET version = 23;",
+            )
+            .expect("simulating the pre-fix state should succeed");
+            assert!(
+                !has_column(conn, "edges", "dynamic_kind"),
+                "test setup failed: dynamic_kind should be absent after the simulated drop"
+            );
+        }
+
+        db.init_schema()
+            .expect("repair init_schema call should succeed");
+
+        let conn = db.conn().expect("connection should still be open");
+        assert!(
+            has_column(conn, "edges", "dynamic_kind"),
+            "edges.dynamic_kind was not repaired for a database already stamped past v20"
         );
     }
 }
