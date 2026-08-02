@@ -315,11 +315,15 @@ last_reply_id=$(gh api repos/<repo>/issues/<number>/comments --paginate \
 positive_count=$(gh api repos/<repo>/issues/comments/$last_reply_id/reactions \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]" and (.content == "+1" or .content == "hooray" or .content == "heart" or .content == "rocket"))] | length')
 
-# Step 2: If positive reaction exists → skip. Otherwise → re-trigger.
+# Step 2: If positive reaction exists → skip. Otherwise → re-trigger, capturing this
+# trigger's own comment ID directly from the post response — Step 2h's reaction check
+# reuses this exact value rather than searching for "the last @greptileai comment",
+# which would drift to a different trigger if this PR is also being worked by another
+# session or agent (Parallel Sessions) before this round's poll runs.
 if [ "$positive_count" -gt 0 ]; then
   echo "Greptile already reacted positively — skipping re-trigger."
 else
-  gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+  trigger_id=$(gh api repos/<repo>/issues/<number>/comments -f body="@greptileai" --jq '.id')
 fi
 ```
 
@@ -336,7 +340,11 @@ If all changes were only in response to Greptile feedback, do NOT re-trigger Cla
 
 After re-triggering:
 
-1. Poll for new reviews on an interval — see "Before you start: how to wait." Do not end your turn to wait passively, and don't declare a round "done" from a single check taken right after triggering — Greptile can take 15–30 minutes to respond.
+1. Poll for new reviews on an interval — see "Before you start: how to wait." Do not end your turn to wait passively, and don't declare a round "done" from a single check taken right after triggering — Greptile can take 15–30 minutes to respond. **But also check the trigger comment's own reactions on each poll**, reusing the `$trigger_id` you captured in Step 2g when you posted it — a positive reaction (`+1`/`hooray`/`heart`/`rocket`) from `greptile-apps[bot]` there, with no new review following it, means Greptile examined the fix and has nothing further to add: a terminal "done" signal for this round on its own, so don't keep polling the full 15–30 minutes waiting for a review object that isn't coming:
+   ```bash
+   positive_count=$(gh api repos/<repo>/issues/comments/$trigger_id/reactions \
+     --jq '[.[] | select(.user.login == "greptile-apps[bot]" and (.content == "+1" or .content == "hooray" or .content == "heart" or .content == "rocket"))] | length')
+   ```
 2. Fetch new comments again (repeat Step 2d + 2d.1 — re-mine the summary body too, not just inline comments).
 3. If there are **new** comments from Greptile or Claude, go back to Step 2e and address them, then re-trigger per 2g **only if** the trigger-count cap in 2g hasn't already been hit.
 4. **The 50-trigger cap in Step 2g is the actual stop condition — not a mental "round" count.** If you hit the cap mid-loop, stop re-triggering immediately (you may still reply to outstanding comments), run the mandatory Step 2h.1 final live check, and only then go to 2i with `Status: needs-human-review`.
