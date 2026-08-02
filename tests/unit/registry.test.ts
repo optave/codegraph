@@ -40,7 +40,7 @@ describe('REGISTRY_PATH', () => {
 
   it('respects CODEGRAPH_REGISTRY_PATH env var', () => {
     const customPath = path.join(tmpDir, 'custom', 'registry.json');
-    const loaderUrl = new URL('../../scripts/ts-resolve-loader.ts', import.meta.url).href;
+    const loaderUrl = new URL('../../scripts/ts-resolve-loader.js', import.meta.url).href;
     const result = execFileSync(
       'node',
       [

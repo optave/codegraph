@@ -260,7 +260,7 @@ describe('batch CLI', () => {
     path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, '$1')),
     '../../src/cli.ts',
   );
-  const loaderUrl = new URL('../../scripts/ts-resolve-loader.ts', import.meta.url).href;
+  const loaderUrl = new URL('../../scripts/ts-resolve-loader.js', import.meta.url).href;
   const NODE_TS_FLAGS = ['--experimental-strip-types', '--import', loaderUrl];
 
   test('outputs valid JSON', () => {

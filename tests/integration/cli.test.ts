@@ -10,7 +10,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 const CLI = path.resolve('src/cli.ts');
-const LOADER = new URL('../../scripts/ts-resolve-loader.ts', import.meta.url).href;
+const LOADER = new URL('../../scripts/ts-resolve-loader.js', import.meta.url).href;
 const NODE_TS_FLAGS = ['--experimental-strip-types', '--import', LOADER];
 
 const FIXTURE_FILES = {
