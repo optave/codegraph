@@ -53,12 +53,13 @@ async function printBuildMetadata(
   activeName: string,
 ): Promise<void> {
   try {
-    const { findDbPath, getBuildMeta } = await import('../../db/index.js');
+    const { findDbPath, getBuildMeta, resolveBusyTimeoutMs } = await import('../../db/index.js');
     const Database = (await import('better-sqlite3')).default;
     const dbPath = findDbPath(opts.db as string | undefined);
     const fs = await import('node:fs');
     if (fs.existsSync(dbPath)) {
       const db = new Database(dbPath, { readonly: true });
+      db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(dbPath)}`);
       const buildEngine = getBuildMeta(db, 'engine');
       const buildVersion = getBuildMeta(db, 'codegraph_version');
       const builtAt = getBuildMeta(db, 'built_at');

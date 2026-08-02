@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { openRepo, type Repository, resolveDbConfig } from '../db/index.js';
+import { openRepo, type Repository, resolveBusyTimeoutMs, resolveDbConfig } from '../db/index.js';
 import { SqliteRepository } from '../db/repository/sqlite-repository.js';
 import { findMatchingNodes } from '../domain/queries.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
@@ -180,6 +180,7 @@ function annotateDataflow(
     db = repo.db;
   } else if (dbPath) {
     db = new Database(dbPath, { readonly: true }) as unknown as BetterSqlite3Database;
+    db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(dbPath)}`);
     ownDb = true;
   } else {
     return;

@@ -197,13 +197,15 @@ function buildSymbolsViaJsFallback(
   return symbols;
 }
 
-function loadSymbolsFromDb(
+/** Exported for direct testing of its own busy_timeout pragma (issue #2020), mirroring `openNativeDbForFanMetrics`. */
+export function loadSymbolsFromDb(
   dbPath: string,
   changedFiles: string[],
   noTests: boolean,
 ): Map<string, SymbolInfo> {
   const Database = getDatabase();
   const db = new Database(dbPath, { readonly: true });
+  db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(dbPath)}`);
   const nativeDb = openNativeDbForFanMetrics(dbPath);
 
   try {
@@ -235,7 +237,8 @@ function loadSymbolsFromDb(
 
 // ─── Caller BFS ─────────────────────────────────────────────────────────
 
-function loadCallersFromDb(
+/** Exported for direct testing of its own busy_timeout pragma (issue #2020), mirroring `openNativeDbForFanMetrics`. */
+export function loadCallersFromDb(
   dbPath: string,
   nodeIds: number[],
   maxDepth: number,
@@ -245,6 +248,7 @@ function loadCallersFromDb(
 
   const Database = getDatabase();
   const db = new Database(dbPath, { readonly: true });
+  db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(dbPath)}`);
   try {
     const allCallers = new Set<string>();
 

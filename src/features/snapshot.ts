@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDatabase } from '../db/better-sqlite3.js';
-import { findDbPath } from '../db/index.js';
+import { findDbPath, resolveBusyTimeoutMs } from '../db/index.js';
 import { debug } from '../infrastructure/logger.js';
 import { ConfigError, DbError } from '../shared/errors.js';
 
@@ -101,6 +101,7 @@ export function snapshotSave(
 
   const Database = getDatabase();
   const db = new Database(dbPath, { readonly: true });
+  db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(dbPath)}`);
   try {
     db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
   } finally {
