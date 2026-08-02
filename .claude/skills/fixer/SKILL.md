@@ -410,6 +410,12 @@ case "$STATUS" in
     fi
 
     if [ "$RECONCILE" = "retry" ]; then
+      # A closed-without-merging PR's branch is NOT deleted automatically — this repo's
+      # --delete-branch only runs on merge (I1), so a stale fix/issue-$ISSUE can still be
+      # on the remote here. Since we already established above that no useful work lives
+      # on it (not merged, not open), delete it now so the retry's 2e can push cleanly
+      # instead of hitting a non-fast-forward rejection — never force-push (Rules).
+      git push origin --delete "fix/issue-$ISSUE" 2>/dev/null || true
       printf '%s\n' "retry" > .codegraph/fixer/dispatch-retry-needed
       echo "fixer: no usable PR found for issue #$ISSUE — will retry the full 2a-2g dispatch once"
     else
