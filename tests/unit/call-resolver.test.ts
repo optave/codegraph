@@ -810,6 +810,31 @@ describe('resolveCallTargets — concrete-receiver bare match still confirmed vi
     expect(targets).toEqual([bareMethod]);
   });
 
+  it('narrows to only the paired bare node when an unrelated bare match also shares the call name (#2227 follow-up)', () => {
+    // Repro (review finding on #2227): the same-file bare-name lookup can
+    // return the #1517 paired bare `method` node PLUS a wholly unrelated,
+    // separately-declared same-named node elsewhere in the file. Confirming
+    // "same declaration" for the paired node must not cause the resolver to
+    // fall through to keeping the ENTIRE original bare match array — only the
+    // specific paired bare node should survive, not the unrelated extra one.
+    const pairedBareMethod = { id: 8, file: 'utils.js', kind: 'method', line: 2 };
+    const qualifiedFn = { id: 9, file: 'utils.js', kind: 'function', line: 2 };
+    const unrelatedBareFn = { id: 10, file: 'utils.js', kind: 'function', line: 20 };
+    const lookup = makeLineAwareReceiverLookup(
+      { 'formatDate:utils.js': [pairedBareMethod, unrelatedBareFn] },
+      { 'helpers.formatDate': [qualifiedFn] },
+    );
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'formatDate', receiver: 'helpers' },
+      'utils.js',
+      new Map(),
+      new Map(),
+      null,
+    );
+    expect(targets).toEqual([pairedBareMethod]);
+  });
+
   it('falls back to the bare match when the type-aware tier finds nothing', () => {
     const bareFn = { id: 5, file: 'a.js', kind: 'function', line: 3 };
     const lookup = makeLineAwareReceiverLookup({ 'helper:a.js': [bareFn] }, {});

@@ -1051,6 +1051,13 @@ fn resolve_exact_global_match<'a>(
 /// distinguishes the deliberate #1517 duplicate from a coincidental same-line
 /// collision between two real, distinct declarations. Mirrors the same
 /// reconciliation in `resolveCallTargets` (call-resolver.ts).
+///
+/// When every type-aware match does pair up with a bare `method` node this
+/// way, resolves to exactly those paired bare nodes — NOT `bare` wholesale.
+/// `bare` can contain additional, wholly unrelated same-named nodes elsewhere
+/// in the file (a second collision independent of the #1517 pairing);
+/// returning it wholesale would attach a bogus extra `calls` edge to that
+/// unrelated declaration (review finding on #2227).
 fn prefer_type_aware_over_bare<'a>(
     bare: &[&'a NodeInfo],
     type_aware: Vec<&'a NodeInfo>,
@@ -1058,16 +1065,28 @@ fn prefer_type_aware_over_bare<'a>(
     if bare.is_empty() {
         return type_aware;
     }
-    let bare_method_locations: HashSet<(&str, u32)> = bare
+    let bare_methods_by_location: HashMap<(&str, u32), &'a NodeInfo> = bare
         .iter()
         .filter(|n| n.kind == "method")
-        .map(|n| (n.file.as_str(), n.line))
+        .map(|&n| ((n.file.as_str(), n.line), n))
         .collect();
-    let is_same_declaration = type_aware
-        .iter()
-        .all(|n| n.kind == "function" && bare_method_locations.contains(&(n.file.as_str(), n.line)));
+    let mut paired_bare: Vec<&'a NodeInfo> = Vec::new();
+    let is_same_declaration = type_aware.iter().all(|n| {
+        if n.kind != "function" {
+            return false;
+        }
+        match bare_methods_by_location.get(&(n.file.as_str(), n.line)) {
+            Some(&paired) => {
+                paired_bare.push(paired);
+                true
+            }
+            None => false,
+        }
+    });
     if is_same_declaration {
-        bare.to_vec()
+        paired_bare.sort_by_key(|n| n.id);
+        paired_bare.dedup_by_key(|n| n.id);
+        paired_bare
     } else {
         type_aware
     }

@@ -488,14 +488,30 @@ export function resolveCallTargets(
         // coordinates — distinguishes the deliberate #1517 duplicate from a
         // coincidental same-line collision between two real, distinct
         // declarations.
-        const bareMethodLocations = new Set(
-          targets.filter((n) => n.kind === 'method').map((n) => `${n.file}:${n.line}`),
-        );
-        const isSameDeclaration = viaReceiverOrGlobal.every(
-          (n) => n.kind === 'function' && bareMethodLocations.has(`${n.file}:${n.line}`),
-        );
+        //
+        // When every type-aware match does pair up with a bare `method` node
+        // this way, resolve to exactly those paired bare nodes — NOT the
+        // original bare lookup result wholesale. `targets` can contain
+        // additional, wholly unrelated same-named bare matches elsewhere in
+        // the file (a second collision independent of the #1517 pairing);
+        // keeping the whole array would attach a bogus extra `calls` edge to
+        // that unrelated declaration (review finding on #2227).
+        const bareMethodByLocation = new Map<string, ResolvedCandidate>();
+        for (const n of targets) {
+          if (n.kind === 'method') bareMethodByLocation.set(`${n.file}:${n.line}`, n);
+        }
+        const pairedBareTargets: ResolvedCandidate[] = [];
+        const isSameDeclaration = viaReceiverOrGlobal.every((n) => {
+          if (n.kind !== 'function') return false;
+          const paired = bareMethodByLocation.get(`${n.file}:${n.line}`);
+          if (!paired) return false;
+          pairedBareTargets.push(paired);
+          return true;
+        });
         if (!isSameDeclaration) {
           targets = viaReceiverOrGlobal;
+        } else {
+          targets = [...new Set(pairedBareTargets)];
         }
       }
     }
