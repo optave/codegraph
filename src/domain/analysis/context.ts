@@ -443,7 +443,7 @@ export function contextData(
     const noSource = opts.noSource || false;
     const includeTests = opts.includeTests || false;
 
-    const { noTests, displayOpts } = resolveAnalysisOpts({
+    const { noTests, displayOpts } = resolveAnalysisOpts(customDbPath, {
       ...opts,
       config: opts.config ?? config,
     });
@@ -517,7 +517,7 @@ export function explainData(
     const depth = opts.depth || 0;
     const kind = isFileLikeTarget(target) ? 'file' : 'function';
 
-    const { noTests, displayOpts } = resolveAnalysisOpts({
+    const { noTests, displayOpts } = resolveAnalysisOpts(customDbPath, {
       ...opts,
       config: opts.config ?? config,
     });

@@ -1,8 +1,7 @@
 import Database from 'better-sqlite3';
-import { openRepo, type Repository } from '../db/index.js';
+import { openRepo, type Repository, resolveDbConfig } from '../db/index.js';
 import { SqliteRepository } from '../db/repository/sqlite-repository.js';
 import { findMatchingNodes } from '../domain/queries.js';
-import { loadConfig } from '../infrastructure/config.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
 import { paginateResult } from '../shared/paginate.js';
 import type { BetterSqlite3Database, CodegraphConfig, NodeRowWithFanIn } from '../types.js';
@@ -336,7 +335,7 @@ export function sequenceData(
 ): SequenceDataResult {
   const { repo, close } = openRepo(dbPath, opts);
   try {
-    const config = opts.config || loadConfig();
+    const config = opts.config || resolveDbConfig(dbPath);
     const maxDepth = opts.depth || config.analysis.sequenceDepth || 10;
     const noTests = opts.noTests || false;
 

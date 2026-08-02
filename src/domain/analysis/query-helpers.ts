@@ -1,5 +1,5 @@
 import { openReadonlyOrFail, openRepo, type Repository, resolveDbConfig } from '../../db/index.js';
-import { DEFAULTS, loadConfig } from '../../infrastructure/config.js';
+import { DEFAULTS } from '../../infrastructure/config.js';
 import type { BetterSqlite3Database, CodegraphConfig } from '../../types.js';
 
 /**
@@ -52,13 +52,16 @@ export function withRepo<T>(
  * Resolve common analysis options into a normalized form.
  * Shared across fn-impact, context, dependencies, and exports modules.
  */
-export function resolveAnalysisOpts(opts: { noTests?: boolean; config?: CodegraphConfig }): {
+export function resolveAnalysisOpts(
+  customDbPath: string | undefined,
+  opts: { noTests?: boolean; config?: CodegraphConfig },
+): {
   noTests: boolean;
   config: CodegraphConfig;
   displayOpts: Record<string, unknown>;
 } {
   const noTests = opts.noTests || false;
-  const config = opts.config || loadConfig();
+  const config = opts.config || resolveDbConfig(customDbPath);
   const displayOpts = config.display || {};
   return { noTests, config, displayOpts };
 }

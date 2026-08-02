@@ -3,9 +3,9 @@ import {
   openReadonlyOrFail,
   openReadonlyWithNative,
   resolveBusyTimeoutMs,
+  resolveDbConfig,
   testFilterSQL,
 } from '../../db/index.js';
-import { loadConfig } from '../../infrastructure/config.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
 import { DEAD_ROLE_PREFIX } from '../../shared/kinds.js';
@@ -562,7 +562,7 @@ export function statsData(customDbPath: string, opts: { noTests?: boolean; confi
   const { db, nativeDb, close } = openReadonlyWithNative(customDbPath);
   try {
     const noTests = opts.noTests || false;
-    const config = opts.config || loadConfig();
+    const config = opts.config || resolveDbConfig(customDbPath);
 
     // These always need JS (non-SQL logic)
     const jsSections = {
