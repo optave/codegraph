@@ -525,8 +525,11 @@ For Greptile's response to a re-trigger to arrive, use the `Monitor` tool to pol
 mkdir -p .codegraph/fixer
 REPO=$(cat .codegraph/fixer/repo)
 PR=$(cat .codegraph/fixer/current-pr)
-TRIGGER_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
-  '[.[] | select(.body | test("^@greptileai\\s*$"))] | last | .id')
+# --paginate with --jq applies the filter per-page, not to the merged result, so 'last'
+# across a multi-page comment list would return one candidate PER PAGE instead of the true
+# global last — fetch raw and slurp instead, matching the pattern used elsewhere in this file.
+TRIGGER_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+  | jq -s '[.[][] | select(.body | test("^@greptileai\\s*$"))] | last | .id')
 gh api "repos/$REPO/issues/comments/$TRIGGER_COMMENT_ID/reactions" \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]" and (.content == "+1" or .content == "hooray" or .content == "heart" or .content == "rocket"))] | length'
 # > 0 with no new review after this comment's timestamp: converged, proceed to the gate evaluation below.
