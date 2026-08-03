@@ -1793,6 +1793,58 @@ function handleNewExpr(node: TreeSitterNode, ctx: ExtractorOutput): void {
 }
 
 /**
+ * The logical callee name of a decorator's call-expression form (`@Foo()` →
+ * `Foo`, `@Ns.Foo()` → `Foo`), or null if `decoratorNode` doesn't wrap a
+ * call_expression. Used by `decoratorPrecedesCallSibling` to confirm a
+ * sibling decorator actually targets the same name before trusting its
+ * position for the `outOfOrder` determination.
+ */
+function decoratorCallExprName(decoratorNode: TreeSitterNode): string | null {
+  for (let i = 0; i < decoratorNode.childCount; i++) {
+    const child = decoratorNode.child(i);
+    if (!child || child.type === '@') continue;
+    if (child.type !== 'call_expression') return null;
+    const fn = child.childForFieldName('function');
+    if (fn?.type === 'identifier') return fn.text;
+    if (fn?.type === 'member_expression') {
+      const prop = fn.childForFieldName('property');
+      return prop?.text ?? null;
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * True when `decoratorNode` (a bare-identifier/member-expression decorator,
+ * e.g. `@Log`) has a LATER sibling decorator in the same decorator list
+ * (e.g. class_declaration's `@Log()`) that wraps a call_expression targeting
+ * the same callee name.
+ *
+ * Decorators are always direct, contiguous siblings of one another and of
+ * the node they decorate (confirmed via AST dump: `@Log @Log() class Foo {}`
+ * parses as two sibling `decorator` nodes under `class_declaration`), so
+ * walking `nextSibling` gives the true relative source order directly from
+ * the AST — independent of which pass (query-match loop vs supplementary
+ * walk, see runCollectorWalk) happens to visit this node, and independent of
+ * both nodes sharing the same `line`.
+ *
+ * This is what lets `outOfOrder` be correct for BOTH textual orderings of a
+ * stacked bare/call decorator pair sharing a callee name: `@Log @Log()` (bare
+ * genuinely first — flag true, upgrade is safe) and `@Log() @Log` (bare
+ * genuinely second — flag false, no upgrade, matching native's
+ * first-recorded-wins result for that ordering) (#2029).
+ */
+function decoratorPrecedesCallSibling(decoratorNode: TreeSitterNode, name: string): boolean {
+  let sib = decoratorNode.nextSibling;
+  while (sib?.type === 'decorator') {
+    if (decoratorCallExprName(sib) === name) return true;
+    sib = sib.nextSibling;
+  }
+  return false;
+}
+
+/**
  * Handle a TypeScript/JS decorator node.
  *
  * Only handles bare-identifier and bare-member-expression decorators
@@ -1812,11 +1864,19 @@ function handleDecorator(node: TreeSitterNode, calls: Call[]): void {
         line: nodeStartLine(node),
         dynamic: true,
         dynamicKind: 'reflection',
+        outOfOrder: decoratorPrecedesCallSibling(node, child.text),
       });
     } else if (t === 'member_expression') {
       // @Foo.bar — emit as reflection; always mark dynamic since it's decorator dispatch
       const callInfo = extractCallInfo(child, node);
-      if (callInfo) calls.push({ ...callInfo, dynamic: true, dynamicKind: 'reflection' });
+      if (callInfo) {
+        calls.push({
+          ...callInfo,
+          dynamic: true,
+          dynamicKind: 'reflection',
+          outOfOrder: decoratorPrecedesCallSibling(node, callInfo.name),
+        });
+      }
     }
     // call_expression / other — handled by the recursive walker automatically
     break;

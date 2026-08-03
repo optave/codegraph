@@ -560,6 +560,30 @@ export interface Call {
   dynamicKind?: DynamicKind;
   /** Raw key/arg text — used for diagnostics and future RES-1 const-string resolution. */
   keyExpr?: string;
+  /**
+   * True when this entry's true source position is known to be EARLIER than a
+   * sibling call this extractor already recorded for the same target — even
+   * though `line` collides with (or, on the query path, this entry was
+   * appended to `calls` after) that sibling's entry, so array order alone
+   * doesn't reflect that.
+   *
+   * Only set by the JS/TS extractor's bare-decorator handling
+   * (`handleDecorator`): a bare decorator (`@Log`) and its call-expression
+   * sibling (`@Log()`) share one `line`, and on the query path
+   * (`extractSymbolsQuery`) the bare form is always collected by a
+   * supplementary walk pass that runs after — and therefore appends after —
+   * the main query-match loop that collects call expressions, regardless of
+   * which one is textually first (#1683). This flag is computed directly from
+   * sibling AST position at extraction time (see `decoratorPrecedesCallSibling`)
+   * so it is accurate for both textual orderings (`@Log @Log()` vs
+   * `@Log() @Log`), not merely "collected in the walk pass".
+   *
+   * Consumed by `emitDirectCallEdgesForCall` (build-edges.ts) to loosen its
+   * dyn=0→dyn=1 upgrade guard from strict `<` to `<=` only for entries that
+   * carry this flag — keeping strict `<` for ordinary query-phase entries
+   * (`.call`/`.apply`/`.bind`) so #1687 stays fixed (#2029).
+   */
+  outOfOrder?: boolean;
 }
 
 /** An import statement detected by an extractor. */

@@ -1317,12 +1317,12 @@ function resolveFallbackTargets(
  *   - If a pts edge already exists for this pair, upgrades it in-place to
  *     direct-call confidence and promotes to seenCallEdges.
  *   - If a dyn=0 edge already exists and the incoming call has an explicit
- *     dynamicKind AND textually precedes the recorded dyn=0 call (e.g. a bare
- *     decorator `@Log` reordered after `@Log()` by the query path's
- *     query-then-walk collection — see buildFileCallEdges), upgrades the
- *     existing row to dyn=1 in-place so the earlier-in-source classification
- *     wins, matching what native's single-pass source-order walk produces
- *     natively.
+ *     dynamicKind AND (textually precedes the recorded dyn=0 call, OR shares
+ *     its line and is confirmed `outOfOrder` — e.g. a bare decorator `@Log`
+ *     reordered after `@Log()` by the query path's query-then-walk collection,
+ *     see buildFileCallEdges), upgrades the existing row to dyn=1 in-place so
+ *     the earlier-in-source classification wins, matching what native's
+ *     single-pass source-order walk produces natively.
  *   - Otherwise records a new `calls` edge with `ts-native` technique.
  */
 function emitDirectCallEdgesForCall(
@@ -1337,6 +1337,7 @@ function emitDirectCallEdgesForCall(
   ptsEdgeRows: Map<string, number>,
   allEdgeRows: EdgeRowTuple[],
   dynZeroEdgeRows?: Map<string, DynZeroEdgeEntry>,
+  outOfOrder?: boolean,
 ): void {
   // Sort targets by confidence descending before emitting edges.
   // For multi-target calls with duplicate (source_id, target_id) pairs the
@@ -1379,9 +1380,23 @@ function emitDirectCallEdgesForCall(
       // dynamic-flavored call's line is LATER than the recorded dyn=0 call, it
       // is genuinely a second, later reference to the same target — native's
       // dedup (first-recorded-wins, no upgrade) drops it, so WASM must too.
+      //
+      // `line` alone can't distinguish a same-line bare decorator that's
+      // genuinely EARLIER in source (`@Log @Log()`, should upgrade) from one
+      // that's genuinely LATER (`@Log() @Log`, should not — first-recorded-wins
+      // already got it right) — both collide on the same `callLine ===
+      // dynZeroEntry.line`. `outOfOrder` (set by the extractor from direct AST
+      // sibling-position comparison, see decoratorPrecedesCallSibling in
+      // javascript.ts) resolves that collision per-entry, so the guard only
+      // loosens to `<=` for the entries where it's actually been confirmed safe
+      // (#2029) — every other dynamicKind (`.call`/`.apply`/`.bind` included)
+      // keeps the strict `<` that #1687 depends on.
       if (isDynamic === 1 && hasDynamicKind && dynZeroEdgeRows) {
         const dynZeroEntry = dynZeroEdgeRows.get(edgeKey);
-        if (dynZeroEntry !== undefined && callLine < dynZeroEntry.line) {
+        if (
+          dynZeroEntry !== undefined &&
+          (callLine < dynZeroEntry.line || (outOfOrder && callLine === dynZeroEntry.line))
+        ) {
           const row = allEdgeRows[dynZeroEntry.idx];
           if (row) row[4] = 1;
           dynZeroEdgeRows.delete(edgeKey);
@@ -1719,6 +1734,7 @@ function buildFileCallEdges(
       ptsEdgeRows,
       allEdgeRows,
       dynZeroEdgeRows,
+      call.outOfOrder,
     );
 
     // Step 3: Phase 8.3/8.3c pts fallback for unresolved no-receiver calls.
