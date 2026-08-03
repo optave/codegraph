@@ -57,10 +57,12 @@ Each agent will return a result summary. Collect all results for the final summa
 
 ### If a subagent pauses instead of finishing
 
-A subagent may end its turn with text like "I'll wait for X to finish" or "pausing until Y completes" instead of actually finishing. (The "Before you start: how to wait" instruction given to every subagent exists to prevent exactly this, but it can still happen, especially across long sessions.) If it does:
+A subagent may end its turn with text like "I'll wait for X to finish" or "pausing until Y completes" instead of actually finishing. (The "Before you start: how to wait" instruction given to every subagent exists to prevent exactly this, but it can still happen, especially across long sessions.) A common variant is the agent claiming it started a "background poller," "monitor," or "scheduled job" that "will notify me" or "remains armed" — this is never true; treat it exactly like any other stall. If it does:
 
 - Resume it with `SendMessage`, explicitly instructing it to poll to a real terminal result in a continuous sequence of tool calls rather than end its turn again.
 - **Do not substitute your own point-in-time `gh` check for the subagent's job and tell it "you're done, report ready."** PR state under active review changes in minutes — a check you ran even a few minutes ago can already be stale by the time you relay it, and a stale "confirmed done" from you is how a real reviewer finding gets missed. If you check state directly to unblock a stalled agent, pass it along only as a data point ("as of my check just now, X") and instruct the agent to do its own final live re-verification (Step 2h.1) before reporting — never hand it a final verdict to just relay verbatim.
+- **A stall can recur 2–3 times on the same subagent before it sticks.** Each time, the agent may invent a different flavor of "something external will resume me" (a background CI poll, a Monitor task, a scheduled re-check). Don't be surprised if the first or second resume doesn't fix it — resume again with the same correction, stated more explicitly, rather than assuming one nudge is enough or escalating to giving up on the PR.
+- **If the agent reports a GitHub API rate-limit exhaustion**, that part can be genuinely true (all subagents in a sweep share one authenticated identity's quota) even when the "something will notify me" framing around it is not. Verify it yourself with `gh api rate_limit --jq '.resources.core'` (this check is free — it does not count against the quota), pass along the live `remaining`/`reset` numbers as a data point, and instruct the agent to bridge the wait itself with bounded sleep-then-recheck cycles (see "Mind the GitHub API rate limit" below) rather than any open-ended "wait for notification."
 
 ---
 
@@ -78,6 +80,20 @@ Several steps below require waiting on something external — CI runs, `npm test
 - For CI (`gh pr checks <number>`), poll on an interval (e.g. every 60–120s) inside a bash loop or a sequence of Bash calls — native builds and full test matrices can take 15–20+ minutes, so don't give up early, but also don't stop after one check and declare victory.
 - For a reviewer response (Greptile/Claude), a real review typically posts within minutes but can take 15–30+ minutes. Poll for new comments on an interval rather than checking once and assuming silence means "satisfied."
 - Only stop polling once you have an actual terminal state: a check conclusion, a test exit code, or (for reviews) either a new comment/reaction or enough elapsed real time that you're confident nothing more is coming.
+
+**Do not invent a mechanism that will "notify" you.** Starting a background shell command (`run_in_background`), a watcher, or a "monitor" of your own does not resume your turn when it fires — nothing does that except your own next tool call. Do not write, or act on the belief that, a background job/poller/monitor "is running and will notify me," "remains armed," or "I'll pick this back up when re-prompted" — every one of those beliefs is false for you specifically, no matter which tool produced it. If you catch yourself about to write words like that, make another tool call instead (even a no-op status check), and keep the polling loop going yourself.
+
+### Mind the GitHub API rate limit
+
+All subagents in this sweep — and any other concurrent session — share one authenticated `gh` identity's rate limit (5000 REST requests/hour). Polling too tightly, or re-fetching every endpoint on every cycle, can exhaust it and stall the whole sweep, not just your PR.
+
+- `gh api rate_limit --jq '.resources.core'` does **not** count against the quota — check it freely, including proactively if you notice you're polling a lot.
+- Don't poll CI or comments tighter than the 60–120s interval above, even under pressure to finish. Batch each check (one `gh pr checks` call covers every check name; one pass over the three comment endpoints covers every reviewer) rather than looping per-item.
+- If a `gh` call fails with `API rate limit exceeded` (or `remaining` reads `0`), there is no way around the wait — you must bridge it, not skip it or assume someone else will. Do this with your own tool calls, never by ending your turn:
+  1. Note the `reset` value (a unix epoch) from `gh api rate_limit`.
+  2. Sleep a bounded chunk safely under your per-call timeout (e.g. `sleep 300`), then re-check `gh api rate_limit` (free) for `remaining`/`reset`.
+  3. Repeat step 2 across consecutive tool calls — not one giant sleep — until `remaining > 0` or the current time has passed `reset`.
+  4. Once capacity returns, treat anything you gathered right before the exhaustion as stale — re-run Step 2c and Step 2d/2d.1 fresh before continuing, per the usual "never declare ready from a stale check" rule.
 
 ### 2a. Check out the PR branch
 
@@ -403,5 +419,7 @@ If any subagent failed or returned an error, note it in the Status column as `ag
 - If a PR is fundamentally broken beyond what review feedback can fix, note it in the summary and skip to the next PR.
 - **Never defer without tracking.** Do not reply "acknowledged as follow-up", "noted for later", or "tracking for follow-up" to a reviewer comment without creating a GitHub issue first. If you can't fix it now and it's genuinely out of scope, create an issue with the `follow-up` label and include the issue link in your reply. Untracked acknowledgements are the same as ignoring the comment — they will never be revisited.
 - **Never end a turn to passively "wait."** You are a background subagent — nothing wakes you up when a shell job, CI run, or reviewer response completes on its own. Poll actively across a continuous sequence of tool calls (see "Before you start: how to wait") until you have a concrete result. Ending your turn with "I'll wait for X" and no further tool call stalls the sweep silently, sometimes for hours, until a human notices and manually re-prompts you.
+- **No fake "something will notify me" framing.** A background job, watcher, or "monitor" you start yourself does not resume your turn when it fires — only your own next tool call does. Do not write or act on "is running and will notify me," "remains armed," or "I'll pick this back up when re-prompted." If you're about to write something like that, make another tool call instead.
+- **Respect the shared GitHub API rate limit.** All subagents in a sweep (and any concurrent session) share one identity's quota. Poll no tighter than every 60–120s and batch checks rather than looping per-item. `gh api rate_limit` is free to check. If you hit `API rate limit exceeded`, bridge the wait yourself with bounded sleep-then-recheck cycles against the `reset` epoch (see "Mind the GitHub API rate limit") — never assume it will clear on its own without you checking, and never spam retries while it's still exhausted.
 - **The 50-Greptile-trigger cap is counted from live data (actual `@greptileai` comments posted), not from memory of "how many rounds I've done."** Check it mechanically (Step 2g) before every trigger. Once hit, stop triggering even if you just fixed a real bug — reply, don't trigger, and report `needs-human-review`.
 - **Never declare `Status: ready` from a stale check.** Re-verify comments and CI live, immediately before writing your Step 2i result (Step 2h.1) — not from a check earlier in the session, and not just because you feel confident nothing more is coming. The orchestrator relaying a manual spot-check to you is not a substitute for this either — always do your own final live check.
