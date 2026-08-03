@@ -425,6 +425,19 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
   // regardless of match order.
   const callbackParamShapes = collectCallbackParamShapes(tree.rootNode);
 
+  // Extract top-level constants via targeted walk (query patterns don't cover
+  // these). Deliberately run BEFORE the query-match dispatch loop below
+  // (#1961): this pass only ever pushes to `definitions` (never reads it
+  // back), so the two passes have no content/ordering dependency on each
+  // other — but a same-line tie between one of this pass's object-literal
+  // method entries (e.g. `obj.m`) and a class-qualified duplicate emitted by
+  // dispatchQueryMatch's generic method handler (e.g. `Foo.m`, via
+  // findParentClass — see isObjectLiteralDeclaratorMethod's doc comment)
+  // must resolve with this pass's entry first, matching the walk/native
+  // path's single source-ordered DFS, which visits the declarator-qualified
+  // name before the class-qualified duplicate at that same node.
+  extractConstantsWalk(tree.rootNode, definitions);
+
   for (const match of matches) {
     // Build capture lookup for this match (1-3 captures each, very fast)
     const c: Record<string, TreeSitterNode> = Object.create(null);
@@ -440,9 +453,6 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
       arrayElemBindings,
     );
   }
-
-  // Extract top-level constants via targeted walk (query patterns don't cover these)
-  extractConstantsWalk(tree.rootNode, definitions);
 
   // Phase 8.2: Extract function return types first — runContextCollectorWalk's
   // declarator handler reads the *complete* per-file map for inter-procedural
@@ -494,6 +504,19 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
     thisCallBindings,
     classMemberDefs: definitions,
   });
+
+  // #1961: the passes above each append their own findings to `definitions`
+  // in *pass* order, not source-position order (e.g. dispatchQueryMatch's
+  // class/method captures land before extractConstantsWalk's top-level
+  // constants, before runCollectorWalk's class fields/static blocks —
+  // regardless of those definitions' actual relative line numbers). The walk
+  // path (extractSymbolsWalk) and native both do a single source-ordered
+  // DFS, so they naturally agree with each other; sort here so the query
+  // path's returned order matches them too. `Array.prototype.sort` is
+  // spec-guaranteed stable, so definitions sharing the same line keep their
+  // original push order as the tiebreak — content (the definition set) is
+  // unaffected, only array order changes.
+  definitions.sort((a, b) => a.line - b.line);
 
   return {
     definitions,
