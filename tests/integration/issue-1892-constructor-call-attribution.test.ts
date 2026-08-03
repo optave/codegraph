@@ -53,10 +53,10 @@ const bar = new Bar();
 `;
 
 // Each construction is wrapped in its own top-level function rather than a
-// bare module-level assignment: two SCREAMING_CASE module constants without
-// individual endLine bounds collide in findEnclosingBinding's widest-span
-// tie-break (see #2027, filed separately — unrelated to this fix), which
-// would make this fixture assert the wrong caller name.
+// bare module-level assignment, mirroring the Java/PHP/Dart/Groovy fixtures
+// below. (Bare module-level SCREAMING_CASE assignments used to collide in
+// findEnclosingBinding's widest-span tie-break — see the now-fixed #2027 —
+// but that was unrelated to constructor-call attribution either way.)
 const PY_FIXTURE = `
 class Baz:
     def __init__(self):

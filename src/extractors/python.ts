@@ -210,6 +210,7 @@ function handlePyExpressionStmt(node: TreeSitterNode, ctx: ExtractorOutput): voi
           name: left.text,
           kind: 'constant',
           line: node.startPosition.row + 1,
+          endLine: nodeEndLine(node),
         });
       }
     }
