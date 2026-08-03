@@ -883,6 +883,15 @@ pub fn capture_removed_file_neighbors(conn: &Connection, removed_files: &[String
 /// True if `table` can be queried without error. Used for
 /// `deleted_export_advisories` (added in migration v21), which an older,
 /// not-yet-migrated schema may not have.
+///
+/// Uses `prepare_cached` (mirrors the pattern used throughout
+/// `insert_nodes.rs`) rather than `Connection::query_row`'s implicit
+/// one-off `prepare` — this is called unconditionally on every incremental
+/// build via `record_deleted_export_advisories`/`clear_deleted_export_advisories`,
+/// so a fresh compile per call is wasted work (#1948; the equivalent JS/WASM
+/// probe in `deleted-export-advisories.ts` was the confirmed cause of a
+/// `detectMs` regression there — native's per-call cost was never measurable,
+/// but the same avoidable recompilation applied here too).
 fn table_queryable(conn: &Connection, table: &str) -> bool {
     // `query_row` returns `Err(QueryReturnedNoRows)` for a query that is
     // syntactically/semantically valid but matches zero rows — e.g. a table
@@ -892,7 +901,10 @@ fn table_queryable(conn: &Connection, table: &str) -> bool {
     // conflate the two), an existence probe must treat "exists but empty"
     // as queryable, or every advisory capture on a freshly-migrated,
     // still-empty table would silently no-op.
-    match conn.query_row(&format!("SELECT 1 FROM {table} LIMIT 1"), [], |_| Ok(())) {
+    match conn
+        .prepare_cached(&format!("SELECT 1 FROM {table} LIMIT 1"))
+        .and_then(|mut stmt| stmt.query_row([], |_| Ok(())))
+    {
         Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => true,
         Err(_) => false,
     }
@@ -935,7 +947,7 @@ pub fn record_deleted_export_advisories(conn: &Connection, removed_files: &[Stri
         Err(_) => return,
     };
 
-    let defs_result = tx.prepare(
+    let defs_result = tx.prepare_cached(
         "SELECT id, name, kind, line FROM nodes \
          WHERE file = ?1 AND kind IN ('function', 'method', 'class') AND exported = 1 \
          ORDER BY line",
@@ -947,19 +959,21 @@ pub fn record_deleted_export_advisories(conn: &Connection, removed_files: &[Stri
     // source for a bare top-level call with no enclosing function/binding —
     // keying on source-node kind instead would misclassify that real call as
     // a type-only import (Greptile, #1973).
-    let consumers_result = tx.prepare(
+    let consumers_result = tx.prepare_cached(
         "SELECT DISTINCT caller.name, caller.file, caller.line, e.kind \
          FROM edges e JOIN nodes caller ON e.source_id = caller.id \
          WHERE e.target_id = ?1 AND e.kind IN ('calls', 'imports-type') AND caller.file != ?2",
     );
-    let insert_result = tx.prepare(
+    let insert_result = tx.prepare_cached(
         "INSERT INTO deleted_export_advisories \
            (file, name, kind, line, consumer_name, consumer_file, consumer_line, consumer_kind, deleted_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     );
+    let delete_result =
+        tx.prepare_cached("DELETE FROM deleted_export_advisories WHERE file = ?1");
 
-    if let (Ok(mut defs_stmt), Ok(mut consumers_stmt), Ok(mut insert_stmt)) =
-        (defs_result, consumers_result, insert_result)
+    if let (Ok(mut defs_stmt), Ok(mut consumers_stmt), Ok(mut insert_stmt), Ok(mut delete_stmt)) =
+        (defs_result, consumers_result, insert_result, delete_result)
     {
         let now = now_ms();
         for file in removed_files {
@@ -976,7 +990,7 @@ pub fn record_deleted_export_advisories(conn: &Connection, removed_files: &[Stri
             if defs.is_empty() {
                 continue;
             }
-            let _ = tx.execute("DELETE FROM deleted_export_advisories WHERE file = ?1", [file]);
+            let _ = delete_stmt.execute([file]);
             for (id, name, kind, line) in defs {
                 let consumers: Vec<(String, String, i64, String)> = match consumers_stmt
                     .query_map(rusqlite::params![id, file], |row| {
@@ -1012,17 +1026,44 @@ pub fn record_deleted_export_advisories(conn: &Connection, removed_files: &[Stri
 /// about to be (re)inserted, so a resolved deletion never lingers to
 /// misattribute a stale violation to whatever now lives at that path.
 /// Mirrors `clearDeletedExportAdvisories` in
-/// `deleted-export-advisories.ts` (#1938).
+/// `deleted-export-advisories.ts` (#1948, #1938).
+///
+/// Runs unconditionally on every incremental build, including the
+/// overwhelmingly common case where `files` never had an advisory row to
+/// begin with — checked cheaply via the indexed `file` column before paying
+/// for a write transaction (mirrors the JS/WASM fix for #1948).
 pub fn clear_deleted_export_advisories(conn: &Connection, files: &[String]) {
     if files.is_empty() || !table_queryable(conn, "deleted_export_advisories") {
+        return;
+    }
+    let to_clear: Vec<&String> = {
+        let mut exists_stmt = match conn
+            .prepare_cached("SELECT 1 FROM deleted_export_advisories WHERE file = ?1 LIMIT 1")
+        {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        files
+            .iter()
+            .filter(|file| exists_stmt.query_row([file.as_str()], |_| Ok(())).is_ok())
+            .collect()
+    };
+    if to_clear.is_empty() {
         return;
     }
     let tx = match conn.unchecked_transaction() {
         Ok(t) => t,
         Err(_) => return,
     };
-    for file in files {
-        let _ = tx.execute("DELETE FROM deleted_export_advisories WHERE file = ?1", [file]);
+    {
+        let mut delete_stmt =
+            match tx.prepare_cached("DELETE FROM deleted_export_advisories WHERE file = ?1") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+        for file in to_clear {
+            let _ = delete_stmt.execute([file.as_str()]);
+        }
     }
     let _ = tx.commit();
 }

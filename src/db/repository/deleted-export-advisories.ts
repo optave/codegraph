@@ -15,9 +15,22 @@
  * the removed-file set, so `check` can fall back to it once the live rows
  * are gone. See issue #1938.
  */
-import type { BetterSqlite3Database, ExternalConsumerRow } from '../../types.js';
+import type { BetterSqlite3Database, ExternalConsumerRow, StmtCache } from '../../types.js';
+import { cachedStmt } from './cached-stmt.js';
 import { findExternalConsumers } from './edges.js';
 import { findExportedDefinitions } from './nodes.js';
+
+// ── Statement/schema-probe caches (one per db instance) ────────────────────
+// `clearDeletedExportAdvisories` runs unconditionally on every incremental
+// build (see detect-changes.ts) — re-preparing statements and re-probing the
+// schema on every call was measurably regressing the WASM engine's detectMs
+// (issue #1948). Cached the same way as `_hasExportedColCache`/`cachedStmt`
+// elsewhere in this package (nodes.ts, dataflow.ts).
+const _hasAdvisoryTableCache: WeakMap<BetterSqlite3Database, boolean> = new WeakMap();
+const _hasConsumerKindColCache: WeakMap<BetterSqlite3Database, boolean> = new WeakMap();
+const _existsForFileStmt: StmtCache<{ 1: number }> = new WeakMap();
+const _deleteByFileStmt: StmtCache = new WeakMap();
+const _insertAdvisoryStmt: StmtCache = new WeakMap();
 
 export interface DeletedExportAdvisoryEntry {
   file: string;
@@ -44,14 +57,24 @@ interface DeletedExportAdvisoryRow {
  * throughout `build-stmts.ts` for other optional tables. A DB opened
  * read-only via `openReadonlyOrFail` (as `check` does) never runs
  * migrations, so an older DB genuinely may not have this table yet.
+ *
+ * The result is cached per db handle (`_hasAdvisoryTableCache`) — schema
+ * shape cannot change over the lifetime of an open handle, so re-probing on
+ * every call (as this did before #1948's fix) is pure waste. Mirrors the
+ * `_hasExportedColCache` pattern in `nodes.ts`.
  */
 function hasAdvisoryTable(db: BetterSqlite3Database): boolean {
+  const cached = _hasAdvisoryTableCache.get(db);
+  if (cached !== undefined) return cached;
+  let has = false;
   try {
     db.prepare('SELECT 1 FROM deleted_export_advisories LIMIT 1').get();
-    return true;
+    has = true;
   } catch {
-    return false;
+    /* older DB predates migration v21 */
   }
+  _hasAdvisoryTableCache.set(db, has);
+  return has;
 }
 
 /**
@@ -59,15 +82,20 @@ function hasAdvisoryTable(db: BetterSqlite3Database): boolean {
  * `check` invocation can still hit a DB whose `deleted_export_advisories`
  * table exists (v21) but hasn't run v22 yet, if the last write-mode
  * `codegraph build` predates this column. Same try/catch probe pattern as
- * `hasAdvisoryTable` above, for the same reason.
+ * `hasAdvisoryTable` above, for the same reason, and cached the same way.
  */
 function hasConsumerKindColumn(db: BetterSqlite3Database): boolean {
+  const cached = _hasConsumerKindColCache.get(db);
+  if (cached !== undefined) return cached;
+  let has = false;
   try {
     db.prepare('SELECT consumer_kind FROM deleted_export_advisories LIMIT 1').get();
-    return true;
+    has = true;
   } catch {
-    return false;
+    /* older DB predates migration v22 */
   }
+  _hasConsumerKindColCache.set(db, has);
+  return has;
 }
 
 /**
@@ -93,8 +121,14 @@ export function recordDeletedExportAdvisories(
 ): void {
   if (removedFiles.length === 0 || !hasAdvisoryTable(db)) return;
 
-  const deleteStmt = db.prepare('DELETE FROM deleted_export_advisories WHERE file = ?');
-  const insertStmt = db.prepare(
+  const deleteStmt = cachedStmt(
+    _deleteByFileStmt,
+    db,
+    'DELETE FROM deleted_export_advisories WHERE file = ?',
+  );
+  const insertStmt = cachedStmt(
+    _insertAdvisoryStmt,
+    db,
     `INSERT INTO deleted_export_advisories
        (file, name, kind, line, consumer_name, consumer_file, consumer_line, consumer_kind, deleted_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -137,12 +171,32 @@ export function recordDeletedExportAdvisories(
  * about to be (re)inserted by the build pipeline, so a resolved deletion
  * never lingers to misattribute a stale violation to whatever now lives at
  * that path (#1938).
+ *
+ * Runs unconditionally on every incremental build (see detect-changes.ts),
+ * including the overwhelmingly common case where `files` never had an
+ * advisory row to begin with. Opening a write transaction (BEGIN/COMMIT) for
+ * that no-op case was the dominant cost behind #1948's WASM `detectMs`
+ * regression, so this checks — via the indexed `file` column, no transaction
+ * needed for a plain read — whether any row actually needs clearing before
+ * paying for one. Statements are cached module-scope (`cachedStmt`) rather
+ * than re-prepared per call.
  */
 export function clearDeletedExportAdvisories(db: BetterSqlite3Database, files: string[]): void {
   if (files.length === 0 || !hasAdvisoryTable(db)) return;
-  const stmt = db.prepare('DELETE FROM deleted_export_advisories WHERE file = ?');
+  const existsStmt = cachedStmt(
+    _existsForFileStmt,
+    db,
+    'SELECT 1 FROM deleted_export_advisories WHERE file = ? LIMIT 1',
+  );
+  const toClear = files.filter((file) => existsStmt.get(file) !== undefined);
+  if (toClear.length === 0) return;
+  const stmt = cachedStmt(
+    _deleteByFileStmt,
+    db,
+    'DELETE FROM deleted_export_advisories WHERE file = ?',
+  );
   const tx = db.transaction(() => {
-    for (const file of files) stmt.run(file);
+    for (const file of toClear) stmt.run(file);
   });
   tx();
 }
