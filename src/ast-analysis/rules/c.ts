@@ -241,6 +241,144 @@ export const halsteadCpp: HalsteadRules = {
   skipTypes: new Set(['template_argument_list', 'template_parameter_list']),
 };
 
+// ─── Objective-C Complexity ────────────────────────────────────────────────
+//
+// Mirrors the native `OBJC_RULES`. tree-sitter-objc extends tree-sitter-c:
+// if_statement/for_statement/while_statement/do_statement/switch_statement/
+// case_statement/conditional_expression/binary_expression are byte-identical
+// to plain C (confirmed by parsing sample ObjC control flow and inspecting
+// the S-expression), including the same else_clause wrapper (Pattern A).
+// Two additions on top of C_RULES:
+//   - `method_definition` (the `-`/`+` method body, e.g. `- (void)foo {..}`)
+//     is added to functionNodes alongside `function_definition` — its
+//     compound_statement body is a direct child (unlike tree-sitter-dart's
+//     function_signature/function_body sibling split, #2182), confirmed by
+//     parsing `@implementation Foo - (void)bar { .. } @end`.
+//   - `catch_clause` (from ObjC's `@try`/`@catch`/`@finally` exception
+//     handling, which tree-sitter-objc also models with a dedicated
+//     try_statement/catch_clause/finally_clause shape) is a branch/nesting
+//     node, same treatment as C++'s catch_clause.
+export const complexityObjC: ComplexityRules = {
+  branchNodes: new Set([
+    'if_statement',
+    'else_clause',
+    'for_statement',
+    'while_statement',
+    'do_statement',
+    'case_statement',
+    'conditional_expression',
+    'catch_clause',
+  ]),
+  caseNodes: new Set(['case_statement']),
+  logicalOperators: new Set(['&&', '||']),
+  logicalNodeTypes: new Set(['binary_expression']),
+  optionalChainType: null,
+  nestingNodes: new Set([
+    'if_statement',
+    'for_statement',
+    'while_statement',
+    'do_statement',
+    'catch_clause',
+    'conditional_expression',
+  ]),
+  functionNodes: new Set(['function_definition', 'method_definition']),
+  ifNodeType: 'if_statement',
+  elseNodeType: 'else_clause',
+  elifNodeType: null,
+  elseViaAlternative: false,
+  switchLikeNodes: new Set(['switch_statement']),
+};
+
+// ─── Objective-C Halstead ───────────────────────────────────────────────────
+//
+// Mirrors the native `OBJC_HALSTEAD`. Extends C's operator/operand leaf sets
+// with ObjC's `@try`/`@catch`/`@finally`/`@throw`/`@synchronized` keyword
+// tokens (each its own anonymous leaf node in tree-sitter-objc, confirmed by
+// parsing) and treats `message_expression` (`[receiver selector:arg]`) and
+// `selector_expression` (`@selector(...)`) as compound operators, the same
+// way `call_expression` is already treated — their leaf children (receiver/
+// selector/argument identifiers) fall through to the shared identifier
+// operand rule below.
+
+export const halsteadObjC: HalsteadRules = {
+  operatorLeafTypes: new Set([
+    '+',
+    '-',
+    '*',
+    '/',
+    '%',
+    '=',
+    '+=',
+    '-=',
+    '*=',
+    '/=',
+    '%=',
+    '&=',
+    '|=',
+    '^=',
+    '<<=',
+    '>>=',
+    '==',
+    '!=',
+    '<',
+    '>',
+    '<=',
+    '>=',
+    '&&',
+    '||',
+    '!',
+    '&',
+    '|',
+    '^',
+    '~',
+    '<<',
+    '>>',
+    '++',
+    '--',
+    'sizeof',
+    'if',
+    'else',
+    'for',
+    'while',
+    'do',
+    'switch',
+    'case',
+    'return',
+    'break',
+    'continue',
+    'goto',
+    '@try',
+    '@catch',
+    '@finally',
+    '@throw',
+    '@synchronized',
+    '.',
+    '->',
+    ',',
+    ';',
+    ':',
+    '?',
+  ]),
+  operandLeafTypes: new Set([
+    'identifier',
+    'type_identifier',
+    'field_identifier',
+    'number_literal',
+    'string_literal',
+    'char_literal',
+    'true',
+    'false',
+    'null',
+  ]),
+  compoundOperators: new Set([
+    'call_expression',
+    'subscript_expression',
+    'message_expression',
+    'selector_expression',
+  ]),
+  skipTypes: new Set([]),
+};
+
 // ─── C/C++ function-name extraction ──────────────────────────────────────────
 //
 // C/C++ function_definition nests the name inside declarators:

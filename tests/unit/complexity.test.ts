@@ -1177,6 +1177,60 @@ describe('CUDA complexity', () => {
   });
 });
 
+// ─── Objective-C (#1923) ──────────────────────────────────────────────────
+//
+// tree-sitter-objc extends tree-sitter-c: if/else/for/while/switch/case/
+// logical-operator node kinds are identical to plain C (confirmed by parsing
+// sample ObjC control flow and inspecting the S-expression), so complexityObjC
+// reuses the same shapes as C's rules, plus `method_definition` in
+// functionNodes and `catch_clause` (from `@try`/`@catch`) as a branch/nesting
+// node — mirroring how C++'s catch_clause is already treated.
+
+describe('ObjC complexity', () => {
+  const { analyze, halstead } = makeHelpers('objc', sharedParsers());
+
+  it('method with if/else-if/else chain', () => {
+    // method_definition's compound_statement body is a direct child (unlike
+    // tree-sitter-dart's function_signature/function_body sibling split,
+    // #2182) — confirmed by parsing this fixture.
+    const r = analyze(
+      '@implementation Calculator\n- (NSInteger)classify:(NSInteger)value {\n  if (value > 0) {\n    return 1;\n  } else if (value < 0) {\n    return -1;\n  } else {\n    return 0;\n  }\n}\n@end\n',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('method with logical operators and for loop', () => {
+    const r = analyze(
+      '@implementation Calculator\n- (NSInteger)sum:(NSInteger)n withFlag:(BOOL)flag {\n  NSInteger result = 0;\n  for (NSInteger i = 0; i < n && flag; i++) {\n    result += i;\n  }\n  return result;\n}\n@end\n',
+    );
+    expect(r.cyclomatic).toBe(3);
+    expect(r.maxNesting).toBe(1);
+  });
+
+  it('method with @try/@catch', () => {
+    const r = analyze(
+      '@implementation Calculator\n- (NSInteger)risky {\n  @try {\n    return 1;\n  } @catch (NSException *ex) {\n    return -1;\n  }\n}\n@end\n',
+    );
+    // catch_clause: +1 cog, +1 cyc, +1 nesting (mirrors C++'s/JS's catch_clause treatment)
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it('plain C-style function still works', () => {
+    const r = analyze(
+      'NSInteger plainFunction(NSInteger a, NSInteger b) {\n  if (a > b) {\n    return a;\n  }\n  return b;\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it('halstead: message send and positive volume', () => {
+    const h = halstead(
+      '@implementation Calculator\n- (NSInteger)sum {\n  return [self compute];\n}\n@end\n',
+    );
+    expect(h).not.toBeNull();
+    expect(h.volume).toBeGreaterThan(0);
+  });
+});
+
 // ─── Kotlin (#1923) ───────────────────────────────────────────────────────
 
 describe('Kotlin complexity', () => {
@@ -1489,6 +1543,61 @@ describe('DFS vs visitor parity — Go (elseViaAlternative)', () => {
         return -2
       }
     `);
+    expect(visitor!.cognitive).toBe(dfs!.cognitive);
+    expect(visitor!.cyclomatic).toBe(dfs!.cyclomatic);
+    expect(visitor!.maxNesting).toBe(dfs!.maxNesting);
+  });
+});
+
+// computeFunctionComplexity is the standalone DFS reference (mirrors the
+// Rust walk); computeAllMetrics is the visitor-based path WASM builds
+// actually use. ObjC gets its own dedicated block (rather than folding into
+// the tier-1 dict below) because it introduces a genuinely new rule set
+// (method_definition in functionNodes, catch_clause as a branch/nesting
+// node) rather than reusing an existing one — both walk paths must agree on
+// method-body detection and @try/@catch handling.
+describe('DFS vs visitor parity — ObjC (#1923)', () => {
+  let objcParser: any;
+
+  beforeAll(async () => {
+    const parsers = await createParsers();
+    objcParser = parsers.get('objc');
+  });
+
+  function findObjCFunc(node: any): any {
+    const rules = COMPLEXITY_RULES.get('objc');
+    if (!rules) return null;
+    if (rules.functionNodes.has(node.type)) return node;
+    for (let i = 0; i < node.childCount; i++) {
+      const result = findObjCFunc(node.child(i));
+      if (result) return result;
+    }
+    return null;
+  }
+
+  function analyzeObjCBoth(code: string) {
+    if (!objcParser) throw new Error('ObjC parser not available');
+    const tree = objcParser.parse(code);
+    const funcNode = findObjCFunc(tree.rootNode);
+    if (!funcNode) throw new Error('No function found in ObjC snippet');
+    const dfs = computeFunctionComplexity(funcNode, 'objc');
+    const visitor = computeAllMetrics(funcNode, 'objc');
+    return { dfs, visitor };
+  }
+
+  it('method if/else-if/else chain — identical', () => {
+    const { dfs, visitor } = analyzeObjCBoth(
+      '@implementation Calculator\n- (NSInteger)classify:(NSInteger)value {\n  if (value > 0) {\n    return 1;\n  } else if (value < 0) {\n    return -1;\n  } else {\n    return 0;\n  }\n}\n@end\n',
+    );
+    expect(visitor!.cognitive).toBe(dfs!.cognitive);
+    expect(visitor!.cyclomatic).toBe(dfs!.cyclomatic);
+    expect(visitor!.maxNesting).toBe(dfs!.maxNesting);
+  });
+
+  it('method @try/@catch — identical', () => {
+    const { dfs, visitor } = analyzeObjCBoth(
+      '@implementation Calculator\n- (NSInteger)risky {\n  @try {\n    return 1;\n  } @catch (NSException *ex) {\n    return -1;\n  }\n}\n@end\n',
+    );
     expect(visitor!.cognitive).toBe(dfs!.cognitive);
     expect(visitor!.cyclomatic).toBe(dfs!.cyclomatic);
     expect(visitor!.maxNesting).toBe(dfs!.maxNesting);

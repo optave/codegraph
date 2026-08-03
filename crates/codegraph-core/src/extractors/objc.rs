@@ -174,16 +174,30 @@ fn handle_method(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     };
 
     let params = extract_method_params(node, source);
+    // `method_declaration` (an `@interface`/`@protocol` signature) never has a
+    // `compound_statement` body — only `method_definition` (inside
+    // `@implementation`) does, confirmed via tree-sitter-objc's node-types.json.
+    // Running complexity/CFG analysis on the bodyless signature node produced a
+    // spurious trivial entry (cognitive 0, cyclomatic 1) that duplicated the
+    // real `method_definition` entry under the same dotted name — a
+    // native/WASM divergence, since the WASM/TS side only attaches complexity
+    // to definitions matched by a real function-shaped node later in the
+    // pipeline. Gate both on body presence, mirroring the
+    // `bodyless: Some(child_by_field_name("body").is_none())` convention used
+    // by the C#/Java/Go/PHP/Rust extractors (which can't use that exact field
+    // lookup here since tree-sitter-objc exposes the method body as a
+    // positional child, not a named field).
+    let has_body = find_child(node, "compound_statement").is_some();
     symbols.definitions.push(Definition {
         name: full_name,
         kind: "method".to_string(),
         line: start_line(node),
         end_line: Some(end_line(node)),
         decorators: None,
-        complexity: compute_all_metrics(node, source, "objc"),
-        cfg: build_function_cfg(node, "objc", source),
+        complexity: if has_body { compute_all_metrics(node, source, "objc") } else { None },
+        cfg: if has_body { build_function_cfg(node, "objc", source) } else { None },
         children: opt_children(params),
-        bodyless: None,
+        bodyless: Some(!has_body),
         content_hash: None,
     });
 }

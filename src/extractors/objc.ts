@@ -204,12 +204,24 @@ function handleMethodDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
   const fullName = parentClass ? `${parentClass}.${selector}` : selector;
 
   const params = extractMethodParams(node);
+  // `method_declaration` (an `@interface`/`@protocol` signature) never has a
+  // `compound_statement` body — only `method_definition` (inside
+  // `@implementation`) does, confirmed via tree-sitter-objc's node-types.json.
+  // Set `bodyless` explicitly rather than relying solely on the endLine>line
+  // heuristic in `hasFuncBody` (apply-results.ts), which a multi-line
+  // signature-only declaration could otherwise slip past. Mirrors the fix to
+  // the native extractor (`crates/codegraph-core/src/extractors/objc.rs`),
+  // which was calling complexity/CFG analysis unconditionally on the bodyless
+  // node and producing a spurious trivial entry duplicating the real
+  // `method_definition` entry under the same dotted name.
+  const bodyless = !findChild(node, 'compound_statement');
   ctx.definitions.push({
     name: fullName,
     kind: 'method',
     line: node.startPosition.row + 1,
     endLine: nodeEndLine(node),
     children: params.length > 0 ? params : undefined,
+    bodyless,
   });
 }
 

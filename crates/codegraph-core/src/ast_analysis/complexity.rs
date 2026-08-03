@@ -382,6 +382,36 @@ pub static CPP_RULES: LangRules = LangRules {
     switch_like_nodes: &["switch_statement"],
 };
 
+// tree-sitter-objc extends tree-sitter-c: if_statement/for_statement/
+// while_statement/do_statement/switch_statement/case_statement/
+// conditional_expression/binary_expression are byte-identical to plain C
+// (confirmed by parsing sample ObjC control flow and inspecting the
+// S-expression), including the same else_clause wrapper (Pattern A). Two
+// additions on top of C_RULES:
+//   - `method_definition` (the `-`/`+` method body) joins `function_definition`
+//     in function_nodes — its compound_statement body is a direct child
+//     (unlike tree-sitter-dart's function_signature/function_body sibling
+//     split, #2182), confirmed by parsing
+//     `@implementation Foo - (void)bar { .. } @end`.
+//   - `catch_clause` (from `@try`/`@catch`/`@finally`, which tree-sitter-objc
+//     also models as a dedicated try_statement/catch_clause/finally_clause
+//     shape) is a branch/nesting node, same treatment as CPP_RULES's
+//     catch_clause.
+pub static OBJC_RULES: LangRules = LangRules {
+    branch_nodes: &["if_statement", "else_clause", "for_statement", "while_statement", "do_statement", "case_statement", "conditional_expression", "catch_clause"],
+    case_nodes: &["case_statement"],
+    logical_operators: &["&&", "||"],
+    logical_node_types: &["binary_expression"],
+    optional_chain_type: None,
+    nesting_nodes: &["if_statement", "for_statement", "while_statement", "do_statement", "catch_clause", "conditional_expression"],
+    function_nodes: &["function_definition", "method_definition"],
+    if_node_type: Some("if_statement"),
+    else_node_type: Some("else_clause"),
+    elif_node_type: None,
+    else_via_alternative: false,
+    switch_like_nodes: &["switch_statement"],
+};
+
 pub static KOTLIN_RULES: LangRules = LangRules {
     branch_nodes: &["if_expression", "for_statement", "while_statement", "do_while_statement", "catch_block", "when_expression", "when_entry"],
     case_nodes: &["when_entry"],
@@ -498,6 +528,7 @@ pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
         "php" => Some(&PHP_RULES),
         "c" => Some(&C_RULES),
         "cpp" | "cuda" => Some(&CPP_RULES),
+        "objc" => Some(&OBJC_RULES),
         "kotlin" => Some(&KOTLIN_RULES),
         "swift" => Some(&SWIFT_RULES),
         "scala" => Some(&SCALA_RULES),
@@ -996,6 +1027,31 @@ pub static CPP_HALSTEAD: HalsteadRules = HalsteadRules {
     skip_types: &["template_argument_list", "template_parameter_list"],
 };
 
+// Extends C_HALSTEAD with ObjC's `@try`/`@catch`/`@finally`/`@throw`/
+// `@synchronized` keyword tokens (each its own anonymous leaf node in
+// tree-sitter-objc, confirmed by parsing) and treats `message_expression`
+// (`[receiver selector:arg]`) and `selector_expression` (`@selector(...)`) as
+// compound operators, the same way `call_expression` is already treated —
+// their leaf children (receiver/selector/argument identifiers) fall through
+// to the shared identifier operand rule below.
+pub static OBJC_HALSTEAD: HalsteadRules = HalsteadRules {
+    operator_leaf_types: &[
+        "+", "-", "*", "/", "%", "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
+        "==", "!=", "<", ">", "<=", ">=", "&&", "||", "!",
+        "&", "|", "^", "~", "<<", ">>", "++", "--",
+        "sizeof", "if", "else", "for", "while", "do", "switch", "case",
+        "return", "break", "continue", "goto",
+        "@try", "@catch", "@finally", "@throw", "@synchronized",
+        ".", "->", ",", ";", ":", "?",
+    ],
+    operand_leaf_types: &[
+        "identifier", "type_identifier", "field_identifier", "number_literal", "string_literal",
+        "char_literal", "true", "false", "null",
+    ],
+    compound_operators: &["call_expression", "subscript_expression", "message_expression", "selector_expression"],
+    skip_types: &[],
+};
+
 pub static KOTLIN_HALSTEAD: HalsteadRules = HalsteadRules {
     operator_leaf_types: &[
         "+", "-", "*", "/", "%", "=", "+=", "-=", "*=", "/=", "%=",
@@ -1122,6 +1178,7 @@ pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
         "php" => Some(&PHP_HALSTEAD),
         "c" => Some(&C_HALSTEAD),
         "cpp" | "cuda" => Some(&CPP_HALSTEAD),
+        "objc" => Some(&OBJC_HALSTEAD),
         "kotlin" => Some(&KOTLIN_HALSTEAD),
         "swift" => Some(&SWIFT_HALSTEAD),
         "scala" => Some(&SCALA_HALSTEAD),
@@ -1139,7 +1196,7 @@ pub fn comment_prefixes(lang_id: &str) -> &'static [&'static str] {
         }
         "python" | "ruby" => &["#"],
         "php" => &["//", "#", "/*", "*", "*/"],
-        "c" | "cpp" | "cuda" => &["//", "/*"],
+        "c" | "cpp" | "cuda" | "objc" => &["//", "/*"],
         "kotlin" => &["//", "/*"],
         "swift" => &["//", "/*"],
         "scala" => &["//", "/*"],
@@ -1921,6 +1978,68 @@ mod tests {
             "__global__ void kernel(int *a, int n) {\n  for (int i = 0; i < n && a[i] > 0; i++) {\n    a[i]++;\n  }\n}",
         );
         assert_eq!(m.cyclomatic, 3);
+    }
+
+    // ─── ObjC tests (issue #1923) ────────────────────────────────────────────
+    //
+    // tree-sitter-objc extends tree-sitter-c: if/else/for/while/switch/case/
+    // logical-operator node kinds are identical to plain C (confirmed by
+    // parsing sample ObjC control flow), so OBJC_RULES reuses the same shapes
+    // as C_RULES, plus `method_definition` in function_nodes and
+    // `catch_clause` (from `@try`/`@catch`) as a branch/nesting node.
+
+    fn compute_objc(code: &str) -> ComplexityMetrics {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_objc::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &OBJC_RULES).expect("no function found");
+        compute_function_complexity(&func, &OBJC_RULES)
+    }
+
+    #[test]
+    fn objc_method_if_elseif_else() {
+        // method_definition's compound_statement body is a direct child
+        // (unlike tree-sitter-dart's function_signature/function_body
+        // sibling split, #2182) — confirmed by parsing this fixture.
+        let m = compute_objc(
+            "@implementation Calculator\n- (NSInteger)classify:(NSInteger)value {\n  if (value > 0) {\n    return 1;\n  } else if (value < 0) {\n    return -1;\n  } else {\n    return 0;\n  }\n}\n@end",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn objc_method_logical_operators_and_for_loop() {
+        let m = compute_objc(
+            "@implementation Calculator\n- (NSInteger)sum:(NSInteger)n withFlag:(BOOL)flag {\n  NSInteger result = 0;\n  for (NSInteger i = 0; i < n && flag; i++) {\n    result += i;\n  }\n  return result;\n}\n@end",
+        );
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn objc_method_try_catch() {
+        let m = compute_objc(
+            "@implementation Calculator\n- (NSInteger)risky {\n  @try {\n    return 1;\n  } @catch (NSException *ex) {\n    return -1;\n  }\n}\n@end",
+        );
+        // catch_clause: +1 cog, +1 cyc (mirrors CPP_RULES's catch_clause treatment)
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
+    }
+
+    #[test]
+    fn objc_plain_c_function_still_works() {
+        // Plain C-style functions (not ObjC methods) inside an .m file still
+        // use function_definition, unchanged from C_RULES's shape.
+        let m = compute_objc(
+            "NSInteger plainFunction(NSInteger a, NSInteger b) {\n  if (a > b) {\n    return a;\n  }\n  return b;\n}",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
     }
 
     // ─── Kotlin tests (issue #1923) ─────────────────────────────────────────

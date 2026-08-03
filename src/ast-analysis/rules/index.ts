@@ -37,6 +37,7 @@ export const COMPLEXITY_RULES: Map<string, ComplexityRules> = new Map([
   // if/else/for/while/switch/logical-operator node kinds are byte-identical
   // to C++'s, confirmed by parsing sample CUDA source with tree-sitter-cuda.
   ['cuda', c.complexityCpp],
+  ['objc', c.complexityObjC],
   ['kotlin', b2.complexityKotlin],
   ['swift', b2.complexitySwift],
   ['scala', b2.complexityScala],
@@ -60,6 +61,7 @@ export const HALSTEAD_RULES: Map<string, HalsteadRules> = new Map([
   ['c', c.halstead],
   ['cpp', c.halsteadCpp],
   ['cuda', c.halsteadCpp],
+  ['objc', c.halsteadObjC],
   ['kotlin', b2.halsteadKotlin],
   ['swift', b2.halsteadSwift],
   ['scala', b2.halsteadScala],
