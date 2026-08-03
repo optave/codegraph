@@ -1209,6 +1209,15 @@ Each pass does three things, in order:
 
    Then apply I8 exactly as in step 2f-bis: verify the post-merge `CI` workflow run on `main` for this merge's commit, wait for it if still in progress, and diagnose-and-fix (or confirm-transient-via-rerun) a red result before merging the next parked PR or starting another pass. A drain-phase merge lands on `main` the same way a Phase 2 merge does, so it carries the identical risk of tipping shared CI capacity into failure.
 
+   2f-bis's own script reads the merged PR's number from `.codegraph/fixer/current-pr` — but by the time draining starts, normal per-issue cleanup (2g) has already removed that file, and this loop only ever holds the PR number in `MERGED_PR`. Seed `current-pr` from `MERGED_PR` before running 2f-bis's two bash blocks exactly as written. Register a trap first: 2f-bis's own blocks contain several `exit 1` paths (no matching CI run found, post-merge CI still red after a rerun), and a plain `rm` placed only after those blocks would never run on any of them, leaving this drain-specific artifact behind:
+   ```bash
+   printf '%s\n' "$MERGED_PR" > .codegraph/fixer/current-pr
+   trap 'rm -f .codegraph/fixer/current-pr' EXIT
+   # ... run 2f-bis's two bash blocks unmodified here ...
+   trap - EXIT
+   rm -f .codegraph/fixer/current-pr
+   ```
+
 **After each pass**, record whether it made progress and decide whether to run another one:
 
 ```bash
