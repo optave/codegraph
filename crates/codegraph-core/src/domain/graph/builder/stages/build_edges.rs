@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use napi_derive::napi;
 
@@ -21,6 +21,15 @@ const IMPLEMENTS_TARGET_KINDS: &[&str] = &["interface", "trait", "class"];
 /// Confidence penalty per alias hop — mirrors `PROPAGATION_HOP_PENALTY` in
 /// `src/extractors/javascript.ts`.
 pub(crate) const PROPAGATION_HOP_PENALTY: f64 = 0.1;
+
+/// Fixed confidence for typed-receiver (interface/CHA) dispatch edges produced
+/// by the native CHA fallback in `resolve_call_targets_core` (#1949). File
+/// proximity is not meaningful for virtual dispatch — mirrors
+/// `CHA_TYPED_DISPATCH_CONFIDENCE` in `src/domain/graph/builder/helpers.ts`,
+/// which all three WASM engine paths (inline, WASM post-pass) and the native
+/// post-pass CHA expansion (`runPostNativeCha` in
+/// `src/domain/graph/builder/stages/native-orchestrator.ts`) already agree on.
+pub(crate) const CHA_TYPED_DISPATCH_CONFIDENCE: f64 = 0.8;
 
 #[napi(object)]
 pub struct NodeInfo {
@@ -156,6 +165,22 @@ struct EdgeContext<'a> {
     /// (`x.name(...)`) across every file in this build pass — see
     /// `collect_invoked_property_names` for the #1895 liveness rationale.
     invoked_property_names: HashSet<&'a str>,
+    /// CHA + RTA typed-dispatch context (#1949): interface/class name →
+    /// concrete classes that implement or extend it, built once per build
+    /// pass from every file's `classes` (`extends`/`implements`). Used by
+    /// `resolve_call_targets_core`'s CHA fallback tier only — mirrors the
+    /// `implementors` half of `ChaContext`/`buildChaContext` in
+    /// `src/domain/graph/builder/cha.ts` (the `parents` half, used for
+    /// `this`/`self`/`super` dispatch, has no native equivalent here — that
+    /// dispatch is handled separately by `runPostNativeThisDispatch` in
+    /// `native-orchestrator.ts`).
+    cha_implementors: HashMap<&'a str, Vec<&'a str>>,
+    /// RTA: class names that appear as a high-confidence (>= 0.9) typeMap
+    /// target anywhere in this build pass — mirrors the typeMap fallback
+    /// branch of `collectInstantiatedTypes` in `cha.ts` (the native
+    /// `FileEdgeInput` has no dedicated `newExpressions` list, so only that
+    /// fallback branch applies here).
+    cha_instantiated_types: HashSet<&'a str>,
 }
 
 impl<'a> EdgeContext<'a> {
@@ -182,8 +207,97 @@ impl<'a> EdgeContext<'a> {
             builtin_set,
             receiver_kinds,
             invoked_property_names: collect_invoked_property_names(files),
+            cha_implementors: build_cha_implementors_map(files),
+            cha_instantiated_types: collect_cha_instantiated_types(files),
         }
     }
+}
+
+/// Build the CHA implementors map: interface/class name → concrete classes
+/// that implement or extend it. Both `implements` and `extends` relationships
+/// feed the same map (an abstract base class dispatches to its subclasses
+/// exactly like an interface dispatches to its implementors) so a multi-level
+/// hierarchy (`IFoo` → `AbstractFoo` → `ConcreteFoo`) is BFS-reachable in one
+/// structure. Mirrors `recordImplements`/`recordExtends`'s shared
+/// contribution to `ChaContext.implementors` in `cha.ts`'s `buildChaContext`
+/// (the separate `parents` map `buildChaContext` also produces is only used
+/// for `this`/`self`/`super` walking, which is out of scope here — see
+/// `EdgeContext.cha_implementors` doc comment).
+fn build_cha_implementors_map<'a>(files: &'a [FileEdgeInput]) -> HashMap<&'a str, Vec<&'a str>> {
+    let mut implementors: HashMap<&str, Vec<&str>> = HashMap::new();
+    for file in files {
+        for cls in &file.classes {
+            if let Some(ref parent) = cls.implements {
+                let list = implementors.entry(parent.as_str()).or_default();
+                if !list.contains(&cls.name.as_str()) { list.push(&cls.name); }
+            }
+            if let Some(ref parent) = cls.extends {
+                let list = implementors.entry(parent.as_str()).or_default();
+                if !list.contains(&cls.name.as_str()) { list.push(&cls.name); }
+            }
+        }
+    }
+    implementors
+}
+
+/// RTA: collect instantiated class names from every file's typeMap, keeping
+/// only high-confidence (>= 0.9) entries — mirrors the typeMap fallback
+/// branch of `collectInstantiatedTypes` in `cha.ts` (constructor-confidence
+/// 1.0 and type-annotation-confidence 0.9 entries both qualify; native has no
+/// dedicated `newExpressions` list, so this is the only RTA evidence source).
+fn collect_cha_instantiated_types<'a>(files: &'a [FileEdgeInput]) -> HashSet<&'a str> {
+    let mut instantiated = HashSet::new();
+    for file in files {
+        for tm in &file.type_map {
+            if tm.confidence >= 0.9 {
+                instantiated.insert(tm.type_name.as_str());
+            }
+        }
+    }
+    instantiated
+}
+
+/// CHA + RTA: given a receiver's resolved type name (interface or class),
+/// return all concrete method implementations reachable via the class
+/// hierarchy, filtered to types that are actually instantiated somewhere in
+/// the project (RTA). BFS over the implementors map so multi-level
+/// hierarchies (`IFoo` → `AbstractFoo` → `ConcreteFoo`) transparently skip
+/// non-instantiated intermediate classes while still reaching their
+/// instantiated concrete subclasses. Mirrors `resolveChaTargets` in `cha.ts`
+/// exactly (including the "always traverse children, even non-instantiated
+/// ones" rule) — no confidence filtering is applied here; callers use the
+/// flat `CHA_TYPED_DISPATCH_CONFIDENCE` for any edge built from this tier's
+/// results (file proximity is not meaningful for virtual dispatch).
+fn resolve_cha_dispatch<'a>(
+    ctx: &EdgeContext<'a>,
+    type_name: &str,
+    method_name: &str,
+) -> Vec<&'a NodeInfo> {
+    let mut results: Vec<&'a NodeInfo> = Vec::new();
+    let mut queue: VecDeque<&str> = VecDeque::from([type_name]);
+    let mut visited: HashSet<&str> = HashSet::new();
+    visited.insert(type_name);
+
+    while let Some(current) = queue.pop_front() {
+        let Some(children) = ctx.cha_implementors.get(current) else { continue };
+        for &cls in children {
+            if visited.contains(cls) { continue; }
+            visited.insert(cls);
+
+            if ctx.cha_instantiated_types.contains(cls) {
+                let qualified = format!("{}.{}", cls, method_name);
+                if let Some(found) = ctx.nodes_by_name.get(qualified.as_str()) {
+                    results.extend(found.iter().filter(|n| n.kind == "method"));
+                }
+            }
+
+            // Always traverse children — non-instantiated classes may have
+            // instantiated subclasses.
+            queue.push_back(cls);
+        }
+    }
+
+    results
 }
 
 /// Collect the set of property/method names ever invoked via member-call
@@ -465,11 +579,16 @@ fn emit_pts_alias_edges<'a>(
             dynamic_kind: None,
             key_expr: None,
         };
+        // The CHA typed-dispatch fallback (#1949) only fires for a genuine
+        // receiver; `alias_call` is always receiver-less (an alias name
+        // resolved via points-to), so this override is structurally always
+        // `None` here — discarded rather than threaded further.
+        let mut alias_confidence_override: Option<f64> = None;
         let mut alias_targets = resolve_call_targets(
             ctx, &alias_call, alias_ctx.rel_path, alias_imported_from, alias_ctx.type_map, alias_ctx.caller_name,
-            alias_ctx.imported_original_names,
+            alias_ctx.imported_original_names, &mut alias_confidence_override,
         );
-        sort_targets_by_confidence(&mut alias_targets, alias_ctx.rel_path, alias_imported_from);
+        sort_targets_by_confidence(&mut alias_targets, alias_ctx.rel_path, alias_imported_from, alias_confidence_override);
         for t in &alias_targets {
             let edge_key = ((alias_ctx.caller_id as u64) << 32) | (t.id as u64);
             if t.id != alias_ctx.caller_id && !seen_edges.contains(&edge_key) && !pts_edge_map.contains_key(&edge_key) {
@@ -820,8 +939,13 @@ fn process_file<'a>(
         let is_dynamic = if call.dynamic.unwrap_or(false) { 1u32 } else { 0u32 };
         let imported_from = fc.imported_names.get(call.name.as_str()).copied();
 
+        // Out-param set by the CHA typed-dispatch fallback (#1949) when it
+        // resolves a virtual-dispatch target that the proximity-gated
+        // interface lookup missed — see `resolve_call_targets` doc comment.
+        let mut confidence_override: Option<f64> = None;
         let mut targets = resolve_call_targets(
             ctx, call, fc.rel_path, imported_from, &fc.type_map, caller_name, &fc.imported_original_names,
+            &mut confidence_override,
         );
         // #1771/#1784: value-ref references (object-literal property values,
         // Lua builtin reassignment, `instanceof ClassName`) resolve against
@@ -851,8 +975,8 @@ fn process_file<'a>(
                 }
             }
         }
-        sort_targets_by_confidence(&mut targets, fc.rel_path, imported_from);
-        emit_call_edges(&targets, caller_id, is_dynamic, fc.rel_path, imported_from, &mut seen_edges, &mut pts_edge_map, edges);
+        sort_targets_by_confidence(&mut targets, fc.rel_path, imported_from, confidence_override);
+        emit_call_edges(&targets, caller_id, is_dynamic, fc.rel_path, imported_from, confidence_override, &mut seen_edges, &mut pts_edge_map, edges);
 
         if targets.is_empty() && call.receiver.is_none() {
             emit_no_receiver_pts_edges(ctx, &fc, call, caller_id, caller_name, is_dynamic, &seen_edges, &mut pts_edge_map, edges);
@@ -1102,6 +1226,17 @@ fn prefer_type_aware_over_bare<'a>(
 /// `attach_constructor_targets`. Split out because the core resolver has many
 /// early-return tiers, so a single post-processing pass at the call site is
 /// simpler than threading the augmentation through every tier.
+///
+/// `confidence_override` is an out-param (mirrors the `&mut` accumulator
+/// pattern used elsewhere in this module): left untouched (`None`) by every
+/// tier except the CHA fallback (#1949), which sets it to
+/// `Some(CHA_TYPED_DISPATCH_CONFIDENCE)` when it fires. Callers must use this
+/// value instead of `resolve::compute_confidence` for the returned targets
+/// when it is `Some` — file proximity is not meaningful for virtual dispatch
+/// confidence. An out-param (rather than widening every one of
+/// `resolve_call_targets_core`'s ~15 early returns to a tuple) keeps the
+/// blast radius of this change small in a function shared by all 34
+/// supported languages.
 fn resolve_call_targets<'a>(
     ctx: &EdgeContext<'a>,
     call: &CallInfo,
@@ -1110,9 +1245,11 @@ fn resolve_call_targets<'a>(
     type_map: &HashMap<&str, (&str, f64)>,
     caller_name: &str,
     imported_original_names: &HashMap<&str, &str>,
+    confidence_override: &mut Option<f64>,
 ) -> Vec<&'a NodeInfo> {
     let targets = resolve_call_targets_core(
         ctx, call, rel_path, imported_from, type_map, caller_name, imported_original_names,
+        confidence_override,
     );
     if call.receiver.is_some() {
         return targets;
@@ -1134,6 +1271,7 @@ fn resolve_call_targets_core<'a>(
     type_map: &HashMap<&str, (&str, f64)>,
     caller_name: &str,
     imported_original_names: &HashMap<&str, &str>,
+    confidence_override: &mut Option<f64>,
 ) -> Vec<&'a NodeInfo> {
     // Flagged dynamic calls use synthetic names like "<dynamic:eval>". Short-circuit
     // so they never accidentally match a real symbol via name lookup.
@@ -1278,6 +1416,29 @@ fn resolve_call_targets_core<'a>(
                         .copied().collect())
                     .unwrap_or_default();
                 if !resolved.is_empty() { return prefer_type_aware_over_bare(&bare_targets, resolved); }
+            }
+
+            // 3.7. Native CHA typed-dispatch fallback (#1949). The direct
+            // qualified lookup above (`typed`) only accepts a target when
+            // `computeConfidence(rel_path, targetFile) >= 0.5` — a proximity
+            // check that fails whenever the interface/abstract type
+            // declaration lives many directories away from the caller (e.g.
+            // an interface in a shared `types.ts` implemented by a class deep
+            // in a subdirectory). WASM never has this gap because its CHA
+            // post-pass (`resolveChaTargets` in `cha.ts`) resolves typed
+            // receiver dispatch unconditionally, independent of that
+            // proximity gate — "file proximity is not meaningful for virtual
+            // dispatch confidence" (see `CHA_TYPED_DISPATCH_CONFIDENCE`).
+            // Tried only here — after the interface-qualified lookup and its
+            // prototype-alias fallback both found nothing — and only for a
+            // genuine receiver (`this`/`self`/`super` dispatch is handled
+            // separately by `runPostNativeThisDispatch`).
+            if has_concrete_receiver {
+                let cha_targets = resolve_cha_dispatch(ctx, type_name, call.name.as_str());
+                if !cha_targets.is_empty() {
+                    *confidence_override = Some(CHA_TYPED_DISPATCH_CONFIDENCE);
+                    return prefer_type_aware_over_bare(&bare_targets, cha_targets);
+                }
             }
         }
         // 3.5. Direct qualified method lookup: ClassName.staticMethod() or ClassName.instanceMethod()
@@ -1578,9 +1739,16 @@ fn extract_inline_new_type(receiver: &str) -> Option<String> {
     }
 }
 
-/// Sort targets by confidence descending.
-fn sort_targets_by_confidence(targets: &mut Vec<&NodeInfo>, rel_path: &str, imported_from: Option<&str>) {
-    if targets.len() > 1 {
+/// Sort targets by confidence descending. `confidence_override` (#1949) skips
+/// sorting entirely when set — CHA-fallback targets all share the same flat
+/// confidence, so relative order is meaningless.
+fn sort_targets_by_confidence(
+    targets: &mut Vec<&NodeInfo>,
+    rel_path: &str,
+    imported_from: Option<&str>,
+    confidence_override: Option<f64>,
+) {
+    if confidence_override.is_none() && targets.len() > 1 {
         targets.sort_by(|a, b| {
             let conf_a = resolve::compute_confidence(rel_path, &a.file, imported_from);
             let conf_b = resolve::compute_confidence(rel_path, &b.file, imported_from);
@@ -1589,16 +1757,20 @@ fn sort_targets_by_confidence(targets: &mut Vec<&NodeInfo>, rel_path: &str, impo
     }
 }
 
-/// Emit call edges from caller to resolved targets (deduped).
+/// Emit call edges from caller to resolved targets (deduped). When
+/// `confidence_override` is set (#1949 CHA typed-dispatch fallback), every
+/// target uses that flat confidence instead of `resolve::compute_confidence`
+/// — file proximity is not meaningful for virtual dispatch confidence.
 fn emit_call_edges(
     targets: &[&NodeInfo], caller_id: u32, is_dynamic: u32,
-    rel_path: &str, imported_from: Option<&str>,
+    rel_path: &str, imported_from: Option<&str>, confidence_override: Option<f64>,
     seen_edges: &mut HashSet<u64>, pts_edge_map: &mut HashMap<u64, usize>, edges: &mut Vec<ComputedEdge>,
 ) {
     for t in targets {
         let edge_key = ((caller_id as u64) << 32) | (t.id as u64);
         if t.id != caller_id && !seen_edges.contains(&edge_key) {
-            let confidence = resolve::compute_confidence(rel_path, &t.file, imported_from);
+            let confidence = confidence_override
+                .unwrap_or_else(|| resolve::compute_confidence(rel_path, &t.file, imported_from));
             if let Some(&pts_idx) = pts_edge_map.get(&edge_key) {
                 // A pts-resolved edge already exists for this caller→target pair with a
                 // penalised confidence. Upgrade it to the direct-call confidence in-place,
@@ -3047,6 +3219,14 @@ mod call_edge_tests {
         TypeMapInput { name: name.to_string(), type_name: type_name.to_string(), confidence }
     }
 
+    fn class_info(name: &str, extends: Option<&str>, implements: Option<&str>) -> ClassInfo {
+        ClassInfo {
+            name: name.to_string(),
+            extends: extends.map(|s| s.to_string()),
+            implements: implements.map(|s| s.to_string()),
+        }
+    }
+
     fn make_file(
         file: &str,
         file_node_id: u32,
@@ -3538,6 +3718,211 @@ mod call_edge_tests {
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(receiver_edge.is_some(), "expected receiver edge for direct class-name receiver");
         assert_eq!(receiver_edge.unwrap().target_id, 2);
+    }
+
+    // ── CHA typed-dispatch fallback (#1949) ─────────────────────────────────
+    //
+    // Reproduces the exact pattern isolated on this repo's own dogfooding
+    // build: a caller holds a parameter typed as an interface (via typeMap)
+    // declared many directories away (e.g. a shared `types.ts`), and calls a
+    // method on it. The interface's own qualified method node fails the
+    // proximity gate (`computeConfidence >= 0.5`) at that distance in BOTH
+    // engines, but WASM's unconditional CHA post-pass still resolves the
+    // call to the concrete implementing class's own method — native
+    // previously had no equivalent and produced no edge at all.
+
+    #[test]
+    fn cha_typed_dispatch_fallback_resolves_distant_interface_implementation() {
+        let all_nodes = vec![
+            node(1, "main", "function", "src/domain/graph/builder/helpers.ts", 1),
+            node(2, "BetterSqlite3Database.prepare", "method", "src/types.ts", 5),
+            node(3, "NativeDbProxy", "class", "src/domain/graph/builder/native-db-proxy.ts", 1),
+            node(4, "NativeDbProxy.prepare", "method", "src/domain/graph/builder/native-db-proxy.ts", 8),
+        ];
+
+        let caller_file = make_file(
+            "src/domain/graph/builder/helpers.ts",
+            10,
+            vec![def("main", "function", 1, 10)],
+            vec![call("prepare", 5, Some("db"))],
+            // `db: BetterSqlite3Database` parameter — type-annotation confidence 0.9.
+            vec![type_map_entry("db", "BetterSqlite3Database", 0.9)],
+            vec![],
+        );
+        let impl_file = make_file(
+            "src/domain/graph/builder/native-db-proxy.ts",
+            20,
+            vec![],
+            vec![],
+            // RTA evidence: `new NativeDbProxy(...)` somewhere — constructor confidence 1.0.
+            vec![type_map_entry("proxy", "NativeDbProxy", 1.0)],
+            vec![class_info("NativeDbProxy", None, Some("BetterSqlite3Database"))],
+        );
+
+        let edges = build_call_edges(vec![caller_file, impl_file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        // The interface's own qualified method (id 2) must NOT receive an edge —
+        // computeConfidence(helpers.ts, types.ts) is well below the 0.5 gate.
+        let to_interface = edges.iter().any(|e| e.kind == "calls" && e.target_id == 2);
+        assert!(!to_interface, "did not expect a calls edge to the interface method node");
+
+        // The concrete implementation's own method (id 4) must receive the edge instead.
+        let to_impl = edges.iter().find(|e| e.kind == "calls" && e.target_id == 4);
+        assert!(
+            to_impl.is_some(),
+            "expected a CHA-fallback calls edge to NativeDbProxy.prepare; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id, e.confidence)).collect::<Vec<_>>()
+        );
+        let edge = to_impl.unwrap();
+        assert_eq!(edge.source_id, 1);
+        assert!(
+            (edge.confidence - CHA_TYPED_DISPATCH_CONFIDENCE).abs() < 1e-9,
+            "expected flat CHA_TYPED_DISPATCH_CONFIDENCE ({}), got {}",
+            CHA_TYPED_DISPATCH_CONFIDENCE,
+            edge.confidence
+        );
+    }
+
+    /// RTA must still filter out implementors that are never instantiated
+    /// anywhere in the project — mirrors `resolveChaTargets`'s strict RTA gate
+    /// in `cha.ts`. Same shape as the previous test, but with no
+    /// constructor-confidence typeMap entry for `NativeDbProxy` anywhere.
+    #[test]
+    fn cha_typed_dispatch_fallback_respects_rta_filter() {
+        let all_nodes = vec![
+            node(1, "main", "function", "src/domain/graph/builder/helpers.ts", 1),
+            node(2, "BetterSqlite3Database.prepare", "method", "src/types.ts", 5),
+            node(3, "NativeDbProxy", "class", "src/domain/graph/builder/native-db-proxy.ts", 1),
+            node(4, "NativeDbProxy.prepare", "method", "src/domain/graph/builder/native-db-proxy.ts", 8),
+        ];
+
+        let caller_file = make_file(
+            "src/domain/graph/builder/helpers.ts",
+            10,
+            vec![def("main", "function", 1, 10)],
+            vec![call("prepare", 5, Some("db"))],
+            vec![type_map_entry("db", "BetterSqlite3Database", 0.9)],
+            vec![],
+        );
+        let impl_file = make_file(
+            "src/domain/graph/builder/native-db-proxy.ts",
+            20,
+            vec![],
+            vec![],
+            vec![], // no RTA evidence for NativeDbProxy anywhere
+            vec![class_info("NativeDbProxy", None, Some("BetterSqlite3Database"))],
+        );
+
+        let edges = build_call_edges(vec![caller_file, impl_file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        let calls_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
+        assert!(
+            calls_edges.is_empty(),
+            "expected no calls edge when the implementor has no RTA evidence; got: {:?}",
+            calls_edges.iter().map(|e| (e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+    }
+
+    /// When the interface's own qualified method already passes the
+    /// proximity gate (same directory as the caller), the existing
+    /// type-aware tier must win outright — the CHA fallback must not run at
+    /// all, let alone override an already-successful resolution with a
+    /// different target or a different (flat) confidence.
+    #[test]
+    fn cha_typed_dispatch_fallback_does_not_override_successful_proximity_lookup() {
+        let all_nodes = vec![
+            node(1, "main", "function", "src/domain/graph/builder/helpers.ts", 1),
+            node(2, "ILocal.run", "method", "src/domain/graph/builder/types.ts", 5),
+            node(3, "LocalImpl", "class", "src/domain/graph/builder/local-impl.ts", 1),
+            node(4, "LocalImpl.run", "method", "src/domain/graph/builder/local-impl.ts", 8),
+        ];
+
+        let caller_file = make_file(
+            "src/domain/graph/builder/helpers.ts",
+            10,
+            vec![def("main", "function", 1, 10)],
+            vec![call("run", 5, Some("svc"))],
+            vec![type_map_entry("svc", "ILocal", 0.9)],
+            vec![],
+        );
+        let impl_file = make_file(
+            "src/domain/graph/builder/local-impl.ts",
+            20,
+            vec![],
+            vec![],
+            vec![type_map_entry("impl", "LocalImpl", 1.0)],
+            vec![class_info("LocalImpl", None, Some("ILocal"))],
+        );
+
+        let edges = build_call_edges(vec![caller_file, impl_file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        let calls_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
+        assert_eq!(
+            calls_edges.len(), 1,
+            "expected exactly one calls edge (the direct interface hit); got: {:?}",
+            calls_edges.iter().map(|e| (e.source_id, e.target_id, e.confidence)).collect::<Vec<_>>()
+        );
+        let edge = calls_edges[0];
+        assert_eq!(edge.target_id, 2, "expected the interface method (same-dir proximity hit), not the CHA fallback");
+        assert!(
+            (edge.confidence - CHA_TYPED_DISPATCH_CONFIDENCE).abs() > 1e-9,
+            "expected proximity-based confidence, not the flat CHA_TYPED_DISPATCH_CONFIDENCE"
+        );
+    }
+
+    /// BFS must transparently skip a non-instantiated abstract intermediate
+    /// class to reach an instantiated concrete grandchild — mirrors
+    /// `resolveChaTargets`'s multi-level hierarchy handling in `cha.ts`.
+    #[test]
+    fn cha_typed_dispatch_fallback_bfs_reaches_through_abstract_intermediate() {
+        let all_nodes = vec![
+            node(1, "main", "function", "src/domain/graph/builder/helpers.ts", 1),
+            node(2, "IWorker.doWork", "method", "src/types.ts", 5),
+            node(3, "AbstractWorker", "class", "src/domain/graph/builder/worker-base.ts", 1),
+            node(4, "RealWorker", "class", "src/domain/graph/builder/real-worker.ts", 1),
+            node(5, "RealWorker.doWork", "method", "src/domain/graph/builder/real-worker.ts", 8),
+        ];
+
+        let caller_file = make_file(
+            "src/domain/graph/builder/helpers.ts",
+            10,
+            vec![def("main", "function", 1, 10)],
+            vec![call("doWork", 5, Some("worker"))],
+            vec![type_map_entry("worker", "IWorker", 0.9)],
+            vec![],
+        );
+        // AbstractWorker implements IWorker but is never itself instantiated.
+        let base_file = make_file(
+            "src/domain/graph/builder/worker-base.ts",
+            20,
+            vec![],
+            vec![],
+            vec![],
+            vec![class_info("AbstractWorker", None, Some("IWorker"))],
+        );
+        // RealWorker extends AbstractWorker and IS instantiated.
+        let real_file = make_file(
+            "src/domain/graph/builder/real-worker.ts",
+            30,
+            vec![],
+            vec![],
+            vec![type_map_entry("w", "RealWorker", 1.0)],
+            vec![class_info("RealWorker", Some("AbstractWorker"), None)],
+        );
+
+        let edges = build_call_edges(
+            vec![caller_file, base_file, real_file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+        );
+
+        let to_real = edges.iter().find(|e| e.kind == "calls" && e.target_id == 5);
+        assert!(
+            to_real.is_some(),
+            "expected BFS to reach RealWorker.doWork through the non-instantiated AbstractWorker; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
     }
 
     // ── Points-to constraint solver (parity with buildPointsToMap) ──────────
