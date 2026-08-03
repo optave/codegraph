@@ -31,6 +31,7 @@ A previous batch run on this repo collapsed under compounding merge conflicts �
 - **I5 — Never rebase; always `git merge origin/main`.** The ruleset forbids non-fast-forward pushes to `main` and the repo disables rebase-merge.
 - **I6 — A parked PR never blocks the next issue.** Parking is the escape hatch that keeps the batch moving; Phase: Drain Parked PRs cleans up.
 - **I7 — Every issue's work happens in a freshly dispatched sub-agent, never inline in the orchestrating session.** The orchestrator only reads state back off disk between dispatches, the same disk state a resumed run already relies on. This keeps a multi-batch run's context from growing without bound and gives each issue a genuinely clean slate.
+- **I8 — A merge to `main` is not complete until `main`'s own post-merge CI is confirmed green.** This repo's GitHub Actions run a separate `CI` workflow triggered directly by the push-to-`main` event at merge time — a full, independent re-run of the entire test suite on the new `main` HEAD, distinct from and in addition to the PR's own pre-merge checks G1-G5 evaluate in step 2f. A PR's pre-merge checks passing is necessary but not sufficient: this post-merge run can fail for reasons the PR branch alone could never have shown — environmental drift, shared-runner contention (a run of rapid-fire merges pays for its own cadence in strained Windows-runner capacity), or a genuine merge-order-dependent regression. `main` staying green, not just each PR's own checks, is the real ground truth for whether the batch is leaving the repo in a healthy state, so every merge — in step 2f-bis and in Phase: Drain Parked PRs — is followed by a mandatory check of that run, with a mandatory fix (or confirmed-transient rerun) before advancing if it's red.
 
 ---
 
@@ -185,7 +186,7 @@ else
         .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature \
         .codegraph/fixer/drain-pass .codegraph/fixer/drain-stall .codegraph/fixer/drain-parked-count \
         .codegraph/fixer/run-complete .codegraph/fixer/state.json.bak .codegraph/fixer/dispatching-issue \
-        .codegraph/fixer/dispatch-retry-needed
+        .codegraph/fixer/dispatch-retry-needed .codegraph/fixer/post-merge-ci-run
 fi
 ```
 
@@ -494,7 +495,8 @@ BRANCH="fix/issue-$ISSUE"
 # inherit a stale "parked" verdict, an inflated round count, or a stall counter/signature
 # from the previous issue's PR before it has even opened its own.
 rm -f .codegraph/fixer/outcome .codegraph/fixer/round .codegraph/fixer/current-pr .codegraph/fixer/gate-fail \
-      .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature
+      .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature \
+      .codegraph/fixer/post-merge-ci-run
 
 if ! printf '%s\n' "$BRANCH" | grep -qE '^(feat|fix|docs|refactor|test|chore|ci|perf|build|release|dependabot|revert)/'; then
   echo "ERROR: branch '$BRANCH' fails the repo's Validate branch name check"; exit 1
@@ -920,6 +922,72 @@ fi
 
 Squash-merge is used because the repo disables rebase-merge and squashing keeps one clean commit per issue on `main`.
 
+### 2f-bis. Verify and fix post-merge CI on `main` (invariant I8)
+
+Skip this step entirely if the merge above did not happen (dry run, or the PR was parked instead). Otherwise, the merge just landed a new commit on `main` via GitHub's own squash-merge machinery — a push event GitHub Actions reacts to with a separate `CI` workflow run, distinct from the pre-merge checks G1-G5 above already confirmed on the PR itself. Confirming *that* run, not just the PR's own checks, is what I8 requires before this issue is actually done.
+
+Identify the run triggered by this exact merge commit — the push-triggered run can lag the merge by a few seconds, so poll briefly rather than treating an empty result as evidence the workflow never ran:
+
+```bash
+mkdir -p .codegraph/fixer
+REPO=$(cat .codegraph/fixer/repo)
+
+# The merge lands via GitHub's own squash-merge machinery, not a local push, so the local
+# checkout does not have the new commit until fetched.
+git fetch origin main || { echo "ERROR: git fetch failed — cannot identify the merge commit"; exit 1; }
+MERGE_SHA=$(git rev-parse origin/main)
+echo "fixer: verifying post-merge CI on main for merge commit $MERGE_SHA"
+
+CI_RUN_ID=""
+for _ in $(seq 1 20); do
+  CI_RUN_ID=$(gh run list --repo "$REPO" --branch main --workflow "CI" --limit 5 \
+    --json databaseId,conclusion,headSha,createdAt \
+    --jq "[.[] | select(.headSha == \"$MERGE_SHA\")] | .[0].databaseId // empty")
+  [ -n "$CI_RUN_ID" ] && break
+  sleep 5
+done
+if [ -z "$CI_RUN_ID" ]; then
+  echo "ERROR: no post-merge 'CI' workflow run found for commit $MERGE_SHA after polling — investigate manually. Do not cut the next issue's branch while main's post-merge state is unknown."
+  exit 1
+fi
+printf '%s\n' "$CI_RUN_ID" > .codegraph/fixer/post-merge-ci-run
+echo "fixer: post-merge CI run $CI_RUN_ID for commit $MERGE_SHA"
+```
+
+Wait for it in the foreground — never background this; the next issue's branch must not be cut while `main`'s own post-merge state is unknown — then diagnose and fix a red result before continuing:
+
+```bash
+mkdir -p .codegraph/fixer
+REPO=$(cat .codegraph/fixer/repo)
+CI_RUN_ID=$(cat .codegraph/fixer/post-merge-ci-run)
+
+gh run watch "$CI_RUN_ID" --repo "$REPO" --exit-status
+CONCLUSION=$(gh run view "$CI_RUN_ID" --repo "$REPO" --json conclusion --jq '.conclusion')
+
+if [ "$CONCLUSION" = "success" ]; then
+  echo "fixer: post-merge CI on main is green (I8 satisfied) — advancing to the next issue"
+else
+  echo "fixer: post-merge CI on main is RED ($CONCLUSION) — I8 requires fixing this before advancing"
+  gh run view "$CI_RUN_ID" --repo "$REPO" --log-failed
+
+  # A timeout or resource-contention failure (not a deterministic assertion) is worth one
+  # rerun before concluding it is a real regression — the same one-rerun allowance /fixer
+  # already gives the flaky Pre-publish benchmark gate.
+  gh run rerun "$CI_RUN_ID" --repo "$REPO" --failed
+  gh run watch "$CI_RUN_ID" --repo "$REPO" --exit-status
+  CONCLUSION=$(gh run view "$CI_RUN_ID" --repo "$REPO" --json conclusion --jq '.conclusion')
+
+  if [ "$CONCLUSION" = "success" ]; then
+    echo "fixer: confirmed transient — post-merge CI green after rerun, advancing to the next issue"
+  else
+    echo "ERROR: post-merge CI on main is still red after a rerun — this is not transient."
+    echo "Root-cause it: if it traces to the PR just merged, fix it with a new small PR through the normal branch/PR/merge machinery before proceeding. Never cut the next issue's branch while main's latest post-merge CI is red and unexplained."
+    exit 1
+  fi
+fi
+rm -f .codegraph/fixer/post-merge-ci-run
+```
+
 ### 2g. Record the outcome and advance
 
 Append this issue's result to `state.json`, then remove it from the queue so the next iteration picks up the following entry. Status is one of `merged`, `parked`, or `abandoned`.
@@ -966,14 +1034,15 @@ trap 'rm -f "$TMP_QUEUE"' EXIT
 jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
 trap - EXIT
 rm -f .codegraph/fixer/current-pr .codegraph/fixer/gate-fail .codegraph/fixer/outcome .codegraph/fixer/round \
-      .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature
+      .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature \
+      .codegraph/fixer/post-merge-ci-run
 
 echo "fixer: issue #$ISSUE recorded as $STATUS; $(jq 'length' .codegraph/fixer/queue.json) remaining"
 ```
 
 Loop back to step 2a for the next queue entry. **Only after the current PR is merged or parked** — that ordering is I2.
 
-**Exit condition:** Every queue entry has a `state.json` record with status `merged`, `parked`, or `abandoned`; `queue.json` is an empty array. Every merged PR satisfied all five gate conditions. No branch was reused and no branch was stacked on another issue's branch. Every issue's 2a–2g ran inside its own dispatched sub-agent, validated against `state.json` before the next dispatch — never inline in this session.
+**Exit condition:** Every queue entry has a `state.json` record with status `merged`, `parked`, or `abandoned`; `queue.json` is an empty array. Every merged PR satisfied all five gate conditions, and every merge's post-merge CI on `main` was confirmed green (I8) before the next issue's branch was cut. No branch was reused and no branch was stacked on another issue's branch. Every issue's 2a–2g ran inside its own dispatched sub-agent, validated against `state.json` before the next dispatch — never inline in this session.
 
 ---
 
@@ -1131,6 +1200,8 @@ Each pass does three things, in order:
    echo "fixer: state.json entry for PR #$MERGED_PR updated parked -> merged"
    ```
 
+   Then apply I8 exactly as in step 2f-bis: verify the post-merge `CI` workflow run on `main` for this merge's commit, wait for it if still in progress, and diagnose-and-fix (or confirm-transient-via-rerun) a red result before merging the next parked PR or starting another pass. A drain-phase merge lands on `main` the same way a Phase 2 merge does, so it carries the identical risk of tipping shared CI capacity into failure.
+
 **After each pass**, record whether it made progress and decide whether to run another one:
 
 ```bash
@@ -1251,7 +1322,7 @@ A reported line is not automatically a bug — `main` may have legitimately supe
 
 After the integrity check passes, re-run local verification and push, then re-evaluate the five gate conditions from Phase: Solve and Merge Loop before merging.
 
-**Exit condition:** Every PR listed in `parked.txt` is merged, or is reported as needing human review with a specific reason. No catch-up merge was pushed without a passing I4 integrity check. Drain stopped only once a pass merged nothing 3 times in a row, or the 15-pass safety cap was hit — never on a fixed pass count while merges were still happening.
+**Exit condition:** Every PR listed in `parked.txt` is merged, or is reported as needing human review with a specific reason. No catch-up merge was pushed without a passing I4 integrity check. Every drain-phase merge's post-merge CI on `main` was confirmed green (I8) before the next merge in the pass. Drain stopped only once a pass merged nothing 3 times in a row, or the 15-pass safety cap was hit — never on a fixed pass count while merges were still happening.
 
 ---
 
@@ -1319,6 +1390,7 @@ All state is under `.codegraph/fixer/`:
 | `batches-done` | text | count of batches completed this run; read by Phase 3 and the final report; reset on a fresh run |
 | `loop-decision` | text | `loop`/`stop` — Phase 3's verdict on whether to start another batch |
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
+| `post-merge-ci-run` | text | run ID of the post-merge `CI` workflow run on `main` currently being watched for the just-merged commit (I8); cleared once that run is confirmed green (or the run exits on an unresolved red) |
 | `outcome` | text | `abandoned`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
 | `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
 | `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state (score, a hash of the full Greptile review text, which specific comments are unanswered, branch ancestry, mergeability, each non-green check's name plus its completion timestamp, and the current commit SHA), used to detect a stalled (blocked) PR rather than counting rounds |
@@ -1354,6 +1426,7 @@ All state is under `.codegraph/fixer/`:
 - **`--admin` covers the missing approval only.** Never merge past a check that is red because of this PR's own changes. A check may be bypassed only after reading its logs, establishing the failure is unrelated to the diff, and recording that diagnosis in the final report.
 - **Rerun the `Pre-publish benchmark gate` once** before treating its failure as a real regression — it is known to fail intermittently by a thin margin on unrelated PRs.
 - **All five gate conditions must hold before a merge:** Greptile 5/5, every comment addressed and replied to, up to date with `main`, no conflicts, all six required checks green.
+- **Verify and fix post-merge CI on `main`, not just the PR's own pre-merge checks (I8).** After every merge — in step 2f-bis and in Phase: Drain Parked PRs — wait for the separate push-triggered `CI` workflow run on that merge commit, and if it's red, diagnose and fix a genuine regression or confirm-and-clear a transient failure via rerun before cutting the next issue's branch. The five gate conditions above cover the PR's own pre-merge state; `main`'s post-merge CI is the independent ground truth for whether the batch is leaving the repo healthy.
 - **Mine the Greptile summary, not just inline comments.** A score below 5/5 always names at least one gap in prose, and those gaps frequently have no inline comment.
 - **Never defer without tracking.** Out-of-scope findings become GitHub issues via `gh issue create` immediately, and the issue number goes in the reply.
 - **PR bodies use `Closes #N`**, never a bare `(#N)` — the closing keyword is what auto-closes the issue on merge.
