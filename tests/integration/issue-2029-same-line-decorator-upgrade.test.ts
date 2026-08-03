@@ -24,14 +24,22 @@
  * is set, leaving every other dynamicKind (`.call`/`.apply`/`.bind`) on the
  * strict `<` that #1687 depends on — including the same-line variant of that
  * bug, which must still collapse to dyn=0.
+ *
+ * REVIEW FOLLOW-UP: `decoratorPrecedesCallSibling` must compare a sibling's
+ * FULL callee identity (name AND receiver), not just the tail property name —
+ * otherwise an unrelated qualified decorator sharing only a tail name (e.g.
+ * `@B.Log()` vs `@C.Log()`) could be mistaken for the same callee as a middle
+ * bare decorator (`@A.Log`), wrongly marking it out of order. See the
+ * `decoratorCallExprIdentity` unit tests below.
  */
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { buildGraph } from '../../src/domain/graph/builder.js';
+import { createParsers, extractSymbols } from '../../src/domain/parser.js';
 
 const ENGINES = ['wasm', 'native'] as const;
 
@@ -158,4 +166,45 @@ describe('#2029: same-line decorator upgrade gap — engine parity', () => {
       expect(edges[0].dynamic).toBe(0);
     },
   );
+});
+
+describe('#2029: decoratorPrecedesCallSibling — receiver-aware sibling matching', () => {
+  let parsers: any;
+
+  beforeAll(async () => {
+    parsers = await createParsers();
+  });
+
+  function parseTS(code: string) {
+    const parser = parsers.get('typescript');
+    const tree = parser.parse(code);
+    return extractSymbols(tree, 'test.ts');
+  }
+
+  it('does not mark a bare decorator out of order because of an unrelated later decorator sharing only its tail name', () => {
+    // `@B.Log() @A.Log @C.Log() class Foo {}` — three qualified decorators
+    // sharing the tail name "Log" but with three DIFFERENT receivers (A, B,
+    // C). The middle bare `@A.Log`'s real callee is `{name: 'Log', receiver:
+    // 'A'}` — neither `@B.Log()` (receiver B, precedes it) nor `@C.Log()`
+    // (receiver C, follows it) targets that callee. Matching on the tail name
+    // "Log" alone would wrongly treat the later `@C.Log()` as proof `@A.Log`
+    // is out of order.
+    const symbols = parseTS(['@B.Log() @A.Log @C.Log() class Foo {}', ''].join('\n'));
+    const bareA = symbols.calls.find(
+      (c) => c.name === 'Log' && c.receiver === 'A' && c.dynamicKind === 'reflection',
+    );
+    expect(bareA).toBeDefined();
+    expect(bareA?.outOfOrder).toBe(false);
+  });
+
+  it('still marks a qualified bare decorator out of order when a later sibling targets the exact same callee (name AND receiver)', () => {
+    // `@A.Log @A.Log() class Foo {}` — the genuine #2029 scenario through a
+    // qualified (member-expression) decorator: same receiver AND name.
+    const symbols = parseTS(['@A.Log @A.Log() class Foo {}', ''].join('\n'));
+    const bareA = symbols.calls.find(
+      (c) => c.name === 'Log' && c.receiver === 'A' && c.dynamicKind === 'reflection',
+    );
+    expect(bareA).toBeDefined();
+    expect(bareA?.outOfOrder).toBe(true);
+  });
 });
