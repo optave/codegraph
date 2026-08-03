@@ -57,6 +57,7 @@ interface InsertNodesBatch {
     endLine?: number;
     visibility?: string;
     contentHash?: string;
+    accessorKind?: string;
     children: Array<{
       name: string;
       kind: string;
@@ -82,6 +83,7 @@ function marshalSymbolBatches(allSymbols: Map<string, ExtractorOutput>): InsertN
         endLine: def.endLine ?? undefined,
         visibility: def.visibility ?? undefined,
         contentHash: def.contentHash ?? undefined,
+        accessorKind: def.accessorKind ?? undefined,
         children: (def.children ?? []).map((c) => ({
           name: c.name,
           kind: c.kind,
@@ -268,7 +270,7 @@ function insertDefinitionsAndExports(
   const phase1Rows: unknown[][] = [];
   const exportKeys: unknown[][] = [];
   for (const [relPath, symbols] of allSymbols) {
-    phase1Rows.push([relPath, 'file', relPath, 0, null, null, null, null, null, null]);
+    phase1Rows.push([relPath, 'file', relPath, 0, null, null, null, null, null, null, null]);
     for (const def of symbols.definitions) {
       const dotIdx = def.name.lastIndexOf('.');
       const scope = dotIdx !== -1 ? def.name.slice(0, dotIdx) : null;
@@ -283,6 +285,7 @@ function insertDefinitionsAndExports(
         scope,
         def.visibility || null,
         def.contentHash || null,
+        def.accessorKind || null,
       ]);
     }
     for (const exp of symbols.exports) {
@@ -294,6 +297,7 @@ function insertDefinitionsAndExports(
         null,
         null,
         exp.name,
+        null,
         null,
         null,
         null,
@@ -350,6 +354,7 @@ function collectChildRowsAndFileEdges(
           def.name,
           child.visibility || null,
           child.contentHash || null,
+          null,
         ]);
       }
     }

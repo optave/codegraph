@@ -27,6 +27,7 @@ pub fn child_def(name: String, kind: &str, line: u32) -> Definition {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     }
 }
 

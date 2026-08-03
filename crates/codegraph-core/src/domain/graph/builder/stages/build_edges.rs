@@ -38,6 +38,13 @@ pub struct NodeInfo {
     pub kind: String,
     pub file: String,
     pub line: u32,
+    /// `get`/`set` when this `method`-kind node is an ES6 accessor
+    /// declaration, `None` otherwise (issue #2030). Populated from the DB
+    /// `accessor_kind` column — see `loadNodes` in `build-edges.ts` (JS path)
+    /// and `load_all_edge_nodes`/`load_edge_node_set` in `pipeline.rs`
+    /// (native path) for the two SELECTs that populate this field.
+    #[napi(js_name = "accessorKind")]
+    pub accessor_kind: Option<String>,
 }
 
 #[napi(object)]
@@ -50,6 +57,11 @@ pub struct CallInfo {
     pub dynamic_kind: Option<String>,
     #[napi(js_name = "keyExpr")]
     pub key_expr: Option<String>,
+    /// Set on a synthetic property-read call to the accessor kind the read
+    /// requires — mirrors TS `Call.accessorRead` (issue #2030). See that
+    /// field's doc comment for the full rationale.
+    #[napi(js_name = "accessorRead")]
+    pub accessor_read: Option<String>,
 }
 
 #[napi(object)]
@@ -584,6 +596,7 @@ fn emit_pts_alias_edges<'a>(
             receiver: None,
             dynamic_kind: None,
             key_expr: None,
+            accessor_read: None,
         };
         // The CHA typed-dispatch fallback (#1949) only fires for a genuine
         // receiver; `alias_call` is always receiver-less (an alias name
@@ -1287,6 +1300,36 @@ fn resolve_call_targets_core<'a>(
     // so they never accidentally match a real symbol via name lookup.
     if call.name.starts_with("<dynamic:") {
         return vec![];
+    }
+
+    // #2030: a property-read call tagged with the accessor kind it needs
+    // carries its *resolved class name* as `receiver` (see
+    // handle_accessor_property_read in extractors/javascript.rs) — resolve
+    // directly against the qualified `receiver.name`, filtered to the DB's
+    // `accessor_kind` column. Deliberately bypasses the rest of this
+    // function's directory-proximity confidence scoring: kind-plus-exact-
+    // qualified-name match is a strictly stronger disambiguator than
+    // proximity (proximity exists only to arbitrate when nothing stronger is
+    // available — see resolve_exact_global_match for that precedent), and a
+    // real cross-file accessor can legitimately live many directories away
+    // from the read site. An unconfirmed candidate is dropped outright —
+    // never falls through to the general cascade below, which could
+    // otherwise resolve to an unrelated same-named non-accessor method/field,
+    // the exact false-positive class #1893's same-file registry was designed
+    // to prevent. Mirrors resolveCallTargets in call-resolver.ts.
+    if let Some(ref needed_kind) = call.accessor_read {
+        let Some(receiver) = call.receiver.as_deref() else { return vec![] };
+        let qualified = format!("{}.{}", receiver, call.name);
+        return ctx
+            .nodes_by_name
+            .get(qualified.as_str())
+            .map(|v| {
+                v.iter()
+                    .filter(|n| n.accessor_kind.as_deref() == Some(needed_kind.as_str()))
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
     }
 
     // When the call site uses a renamed import binding (`import { X as Y }`),
@@ -3211,7 +3254,33 @@ mod call_edge_tests {
     use super::*;
 
     fn node(id: u32, name: &str, kind: &str, file: &str, line: u32) -> NodeInfo {
-        NodeInfo { id, name: name.to_string(), kind: kind.to_string(), file: file.to_string(), line }
+        NodeInfo {
+            id,
+            name: name.to_string(),
+            kind: kind.to_string(),
+            file: file.to_string(),
+            line,
+            accessor_kind: None,
+        }
+    }
+
+    /// Like [`node`], but with an explicit `accessor_kind` — for #2030 tests.
+    fn accessor_node(
+        id: u32,
+        name: &str,
+        kind: &str,
+        file: &str,
+        line: u32,
+        accessor_kind: &str,
+    ) -> NodeInfo {
+        NodeInfo {
+            id,
+            name: name.to_string(),
+            kind: kind.to_string(),
+            file: file.to_string(),
+            line,
+            accessor_kind: Some(accessor_kind.to_string()),
+        }
     }
 
     fn def(name: &str, kind: &str, line: u32, end_line: u32) -> DefInfo {
@@ -3232,6 +3301,20 @@ mod call_edge_tests {
             receiver: receiver.map(|s| s.to_string()),
             dynamic_kind: None,
             key_expr: None,
+            accessor_read: None,
+        }
+    }
+
+    /// Like [`call`], but tagged with `accessor_read` — for #2030 tests.
+    fn accessor_call(name: &str, line: u32, receiver: &str, accessor_read: &str) -> CallInfo {
+        CallInfo {
+            name: name.to_string(),
+            line,
+            dynamic: None,
+            receiver: Some(receiver.to_string()),
+            dynamic_kind: None,
+            key_expr: None,
+            accessor_read: Some(accessor_read.to_string()),
         }
     }
 
@@ -3306,6 +3389,103 @@ mod call_edge_tests {
         let re = receiver_edge.unwrap();
         assert_eq!(re.source_id, 1, "receiver edge source should be main (id=1)");
         assert_eq!(re.target_id, 2, "receiver edge target should be Calculator (id=2)");
+    }
+
+    // ── Cross-file ES6 accessor property-read resolution (#2030) ───────────
+
+    /// The issue's own repro shape: a property-read call tagged
+    /// `accessor_read: "get"` with `receiver` set to the *resolved class
+    /// name* (not a variable) must resolve to the matching accessor node
+    /// even when it lives many directories away from the caller — the
+    /// directory-proximity confidence gate the rest of the cascade relies on
+    /// must NOT apply here.
+    #[test]
+    fn cross_file_accessor_read_resolves_across_distant_directories() {
+        let all_nodes = vec![
+            node(1, "useRepo", "function", "src/features/sequence.js", 1),
+            accessor_node(2, "SqliteRepository.db", "method", "src/db/repository/sqlite.js", 3, "get"),
+        ];
+        let files = vec![make_file(
+            "src/features/sequence.js",
+            10,
+            vec![def("useRepo", "function", 1, 3)],
+            vec![accessor_call("db", 2, "SqliteRepository", "get")],
+            vec![],
+            vec![],
+        )];
+
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        let call_edge = edges.iter().find(|e| e.kind == "calls");
+        assert!(
+            call_edge.is_some(),
+            "expected a calls edge to the cross-file accessor; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+        let ce = call_edge.unwrap();
+        assert_eq!(ce.source_id, 1);
+        assert_eq!(ce.target_id, 2);
+    }
+
+    /// A plain (non-accessor) method sharing the exact qualified name must
+    /// NOT be matched by an `accessor_read`-tagged call — the whole point of
+    /// #2030's DB `accessor_kind` column is to rule this false positive out,
+    /// which #1893's same-file-only registry couldn't do across files.
+    #[test]
+    fn cross_file_accessor_read_does_not_match_plain_method_of_same_name() {
+        let all_nodes = vec![
+            node(1, "useThing", "function", "consumer.js", 1),
+            node(2, "Thing.value", "method", "thing.js", 3), // plain method, accessor_kind = None
+        ];
+        let files = vec![make_file(
+            "consumer.js",
+            10,
+            vec![def("useThing", "function", 1, 3)],
+            vec![accessor_call("value", 2, "Thing", "get")],
+            vec![],
+            vec![],
+        )];
+
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        assert!(
+            !edges.iter().any(|e| e.kind == "calls"),
+            "an accessor-read call must never resolve to a plain (non-accessor) method; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+    }
+
+    /// When a property declares both a getter and setter (two distinct
+    /// nodes sharing the same qualified name, one accessor_kind="get" and
+    /// the other "set"), an accessor_read-tagged call must resolve to
+    /// exactly the one matching its own needed kind — never both, never the
+    /// wrong one.
+    #[test]
+    fn cross_file_accessor_read_disambiguates_get_and_set_pair() {
+        let all_nodes = vec![
+            node(1, "useToggle", "function", "consumer.js", 1),
+            accessor_node(2, "Toggle.flag", "method", "toggle.js", 3, "get"),
+            accessor_node(3, "Toggle.flag", "method", "toggle.js", 6, "set"),
+        ];
+        let files = vec![make_file(
+            "consumer.js",
+            10,
+            vec![def("useToggle", "function", 1, 3)],
+            vec![accessor_call("flag", 2, "Toggle", "set")],
+            vec![],
+            vec![],
+        )];
+
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
+        assert_eq!(
+            call_edges.len(),
+            1,
+            "expected exactly one calls edge (to the setter only); got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+        assert_eq!(call_edges[0].target_id, 3, "expected the setter (id=3), not the getter");
     }
 
     /// Issue #1895: an object-literal-property value-ref call whose property
@@ -4124,7 +4304,7 @@ mod call_edge_tests {
                 // this() inside invoker
                 call("this", 2, None),
                 // invoker.call(handler, 10) — extractor emits dynamic call to invoker
-                CallInfo { name: "invoker".to_string(), line: 9, dynamic: Some(true), receiver: None, dynamic_kind: None, key_expr: None },
+                CallInfo { name: "invoker".to_string(), line: 9, dynamic: Some(true), receiver: None, dynamic_kind: None, key_expr: None, accessor_read: None },
             ],
             vec![],
             vec![],
@@ -4207,7 +4387,7 @@ mod call_edge_tests {
             vec![def("f3", "function", 1, 3), def("main", "function", 8, 10)],
             vec![
                 // eerest.e4() inside f3
-                CallInfo { name: "e4".to_string(), line: 2, dynamic: None, receiver: Some("eerest".to_string()), dynamic_kind: None, key_expr: None },
+                CallInfo { name: "e4".to_string(), line: 2, dynamic: None, receiver: Some("eerest".to_string()), dynamic_kind: None, key_expr: None, accessor_read: None },
                 call("f3", 9, None),
             ],
             vec![],

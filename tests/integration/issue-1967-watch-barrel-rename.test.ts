@@ -111,7 +111,7 @@ function readReexportRenames(dbPath: string) {
 function makeStmts(db: ReturnType<typeof openDb>) {
   return {
     insertNode: db.prepare(
-      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line) VALUES (?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     getNodeId: {
       get: (name: string, kind: string, file: string, line: number) => {

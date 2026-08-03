@@ -98,17 +98,31 @@ interface RebuildResult {
 // ── Node insertion ──────────────────────────────────────────────────────
 
 function insertFileNodes(stmts: IncrementalStmts, relPath: string, symbols: ExtractorOutput): void {
-  stmts.insertNode.run(relPath, 'file', relPath, 0, null);
+  stmts.insertNode.run(relPath, 'file', relPath, 0, null, null);
   for (const def of symbols.definitions) {
-    stmts.insertNode.run(def.name, def.kind, relPath, def.line, def.endLine || null);
+    stmts.insertNode.run(
+      def.name,
+      def.kind,
+      relPath,
+      def.line,
+      def.endLine || null,
+      def.accessorKind ?? null,
+    );
     if (def.children?.length) {
       for (const child of def.children) {
-        stmts.insertNode.run(child.name, child.kind, relPath, child.line, child.endLine || null);
+        stmts.insertNode.run(
+          child.name,
+          child.kind,
+          relPath,
+          child.line,
+          child.endLine || null,
+          null,
+        );
       }
     }
   }
   for (const exp of symbols.exports) {
-    stmts.insertNode.run(exp.name, exp.kind, relPath, exp.line, null);
+    stmts.insertNode.run(exp.name, exp.kind, relPath, exp.line, null, null);
   }
 }
 

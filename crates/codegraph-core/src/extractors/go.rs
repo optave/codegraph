@@ -46,6 +46,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -70,6 +71,7 @@ fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(children),
         bodyless: Some(node.child_by_field_name("body").is_none()),
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -111,6 +113,7 @@ fn handle_type_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     children: opt_children(children),
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
             "interface_type" => {
@@ -125,6 +128,7 @@ fn handle_type_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     children: None,
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
                 extract_go_interface_methods(&type_node, &name, source, symbols);
             }
@@ -140,6 +144,7 @@ fn handle_type_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     children: None,
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
         }
@@ -162,6 +167,7 @@ fn extract_go_interface_methods(type_node: &Node, iface_name: &str, source: &[u8
                 children: None,
                 bodyless: Some(member.child_by_field_name("body").is_none()),
                 content_hash: None,
+                accessor_kind: None,
             });
         }
     }
@@ -183,6 +189,7 @@ fn handle_const_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 children: None,
                 bodyless: None,
                 content_hash: None,
+                accessor_kind: None,
             });
         }
     }

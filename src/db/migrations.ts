@@ -424,6 +424,24 @@ export const MIGRATIONS: Migration[] = [
       UPDATE edges SET technique = 'cha' WHERE technique = 'cha-expanded';
     `,
   },
+  {
+    // Cross-file ES6 getter/setter accessor recognition (issue #2030, follow-up
+    // to #1893). #1893's same-file accessor registry could confirm a bare
+    // property read (`obj.prop`, no call parens) really targets a `get`/`set`
+    // accessor — not a plain method/field sharing the name — using only
+    // in-file knowledge, so it needed no DB column. Recognizing the same
+    // pattern when the accessor's class is declared in a *different* file
+    // requires a global (whole-build) accessor registry, which in turn needs
+    // each accessor's kind persisted on its own node so resolution can filter
+    // candidates by exact kind match rather than guessing. Set only on
+    // `method`-kind nodes that are ES6 get/set accessors; NULL for everything
+    // else. Mirrored in crates/codegraph-core/src/db/connection.rs.
+    version: 27,
+    up: `
+      ALTER TABLE nodes ADD COLUMN accessor_kind TEXT;
+      CREATE INDEX IF NOT EXISTS idx_nodes_accessor_kind ON nodes(accessor_kind) WHERE accessor_kind IS NOT NULL;
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {
@@ -516,6 +534,7 @@ function ensureNodeColumns(db: BetterSqlite3Database): void {
   if (missing('scope')) db.exec('ALTER TABLE nodes ADD COLUMN scope TEXT');
   if (missing('visibility')) db.exec('ALTER TABLE nodes ADD COLUMN visibility TEXT');
   if (missing('content_hash')) db.exec('ALTER TABLE nodes ADD COLUMN content_hash TEXT');
+  if (missing('accessor_kind')) db.exec('ALTER TABLE nodes ADD COLUMN accessor_kind TEXT');
   db.exec('UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_scope ON nodes(scope)');

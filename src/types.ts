@@ -141,6 +141,12 @@ export interface NodeRow {
   scope: string | null;
   visibility: 'public' | 'private' | 'protected' | null;
   role: Role | null;
+  /**
+   * `get`/`set` when this `method`-kind node is an ES6 accessor declaration,
+   * `null` otherwise (issue #2030). Optional so existing call sites that
+   * construct/cast a narrower column set don't need updating.
+   */
+  accessor_kind?: 'get' | 'set' | null;
 }
 
 /** A node row augmented with fan-in count (from findNodesWithFanIn). */
@@ -488,6 +494,17 @@ export interface Definition {
    * when `endLine` is unavailable (no reliable body range to hash).
    */
   contentHash?: string;
+  /**
+   * Set when this `method`-kind definition is an ES6 `get`/`set` class
+   * accessor declaration (issue #2030, follow-up to #1893) — mirrors the
+   * `accessor_kind` DB column. Persisted so a global (whole-build) accessor
+   * registry can confirm, at resolution time, whether a bare property read
+   * on a *cross-file* receiver type genuinely targets an accessor (as
+   * opposed to an unrelated same-named plain method/field) — the same
+   * confirmation #1893's same-file-only registry already does for a
+   * same-file receiver, without needing this field at all.
+   */
+  accessorKind?: 'get' | 'set';
 }
 
 /** Sub-declaration (child) within a definition. */
@@ -584,6 +601,29 @@ export interface Call {
    * (`.call`/`.apply`/`.bind`) so #1687 stays fixed (#2029).
    */
   outOfOrder?: boolean;
+  /**
+   * Set on a synthetic property-read `Call` (a bare `varName.prop`/`this.prop`
+   * member-expression, no call parens, recognized as invoking an ES6 `get`/
+   * `set` class accessor — see `collectAccessorPropertyRead` in
+   * extractors/javascript.ts) to the accessor kind the read requires: `'get'`
+   * for an ordinary read, `'set'` for a plain-assignment write.
+   *
+   * Only set for the *cross-file* case (issue #2030) — when the accessor's
+   * declaring class isn't known to be declared in the reading file, so
+   * extraction cannot itself confirm the target is really an accessor (the
+   * same-file case stays either confirmed-and-emitted-plain or dropped, per
+   * #1893, since a same-file registry can already rule out false matches
+   * without this field). When set, `receiver` carries the *resolved class
+   * name* (not the read site's variable/`this` text) so resolution can look
+   * up the qualified `receiver.name` directly. `resolveCallTargets`
+   * (call-resolver.ts) short-circuits on this field: it resolves only
+   * against a candidate whose DB `accessor_kind` column matches exactly,
+   * dropping the call entirely rather than falling through to an unrelated
+   * same-named non-accessor method/field — the false-positive class #1893's
+   * same-file registry was designed to rule out, now enforced by the
+   * resolver instead of by an extraction-time gate.
+   */
+  accessorRead?: 'get' | 'set';
 }
 
 /** An import statement detected by an extractor. */

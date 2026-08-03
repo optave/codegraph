@@ -40,6 +40,11 @@ pub struct InsertNodesDefinition {
     pub visibility: Option<String>,
     #[serde(default, rename = "contentHash")]
     pub content_hash: Option<String>,
+    /// `get`/`set` when this `method`-kind definition is an ES6 accessor
+    /// (issue #2030, follow-up to #1893) — mirrors TS
+    /// `InsertNodesBatch.definitions[].accessorKind`.
+    #[serde(default, rename = "accessorKind")]
+    pub accessor_kind: Option<String>,
     #[serde(default)]
     pub children: Vec<InsertNodesChild>,
 }
@@ -146,8 +151,8 @@ fn insert_file_nodes(
 ) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare_cached(
         "INSERT OR IGNORE INTO nodes \
-         (name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility, content_hash) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         (name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility, content_hash, accessor_kind) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
 
     for batch in batches {
@@ -162,6 +167,7 @@ fn insert_file_nodes(
             None::<&str>,
             None::<&str>,
             None::<&str>,
+            None::<&str>,
             None::<&str>
         ])?;
 
@@ -172,6 +178,7 @@ fn insert_file_nodes(
             // serialises None as SQL NULL unambiguously (#709).
             let vis = def.visibility.as_deref();
             let content_hash = def.content_hash.as_deref();
+            let accessor_kind = def.accessor_kind.as_deref();
             stmt.execute(params![
                 &def.name,
                 &def.kind,
@@ -182,7 +189,8 @@ fn insert_file_nodes(
                 &def.name,
                 scope,
                 vis,
-                content_hash
+                content_hash,
+                accessor_kind
             ])?;
         }
 
@@ -196,6 +204,7 @@ fn insert_file_nodes(
                 None::<u32>,
                 None::<i64>,
                 &exp.name,
+                None::<&str>,
                 None::<&str>,
                 None::<&str>,
                 None::<&str>
@@ -234,8 +243,8 @@ fn insert_symbol_nodes(
             tx.prepare_cached("SELECT id, name, kind, line FROM nodes WHERE file = ?1")?;
         let mut child_stmt = tx.prepare_cached(
             "INSERT OR IGNORE INTO nodes \
-             (name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility, content_hash) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (name, kind, file, line, end_line, parent_id, qualified_name, scope, visibility, content_hash, accessor_kind) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
 
         for batch in batches {
@@ -270,7 +279,8 @@ fn insert_symbol_nodes(
                         &qname,
                         &def.name,
                         child_vis,
-                        child_content_hash
+                        child_content_hash,
+                        None::<&str>
                     ])?;
                 }
             }

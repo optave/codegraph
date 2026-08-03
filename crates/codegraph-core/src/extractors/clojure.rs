@@ -192,6 +192,7 @@ fn handle_ns_form(node: &Node, source: &[u8], symbols: &mut FileSymbols) -> Opti
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 
     // Scan for nested `(:require ...)`, `(:import ...)`, `(:use ...)` forms.
@@ -273,6 +274,7 @@ fn handle_def_form(
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -308,6 +310,7 @@ fn handle_defn_form(
         children: opt_children(params),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -359,6 +362,7 @@ fn handle_defprotocol(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -378,6 +382,7 @@ fn handle_defrecord(node: &Node, source: &[u8], symbols: &mut FileSymbols, kind:
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 

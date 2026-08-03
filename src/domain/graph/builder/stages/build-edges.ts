@@ -92,6 +92,8 @@ interface QueryNodeRow {
   kind: string;
   file: string;
   line: number;
+  /** `get`/`set` for an ES6 accessor node, `null` otherwise (issue #2030). */
+  accessorKind?: string | null;
 }
 
 /** Shape fed to the native buildCallEdges FFI. */
@@ -687,9 +689,19 @@ function buildCallEdgesNative(
     nativeFiles.push(buildNativeFileEntry(ctx, relPath, fileNodeRow.id, symbols, rootDir));
   }
 
+  // #2030: napi's Option<String> conversion for NodeInfo.accessorKind expects
+  // the field to be absent (undefined) for None, not explicitly `null` — the
+  // shape better-sqlite3 returns for a NULL column. Normalize before crossing
+  // the FFI boundary; the in-memory nodesByName/nodesByNameAndFile maps used
+  // by the JS/WASM resolution path are unaffected (built from these same rows
+  // but compared with `=== call.accessorRead`, where `null` and `undefined`
+  // are equally non-matching).
+  const nativeNodes = allNodes.map((n) =>
+    n.accessorKind == null ? { ...n, accessorKind: undefined } : n,
+  );
   const nativeEdges = native.buildCallEdges(
     nativeFiles,
-    allNodes,
+    nativeNodes,
     [...BUILTIN_RECEIVERS],
     ctx.config.analysis.pointsToMaxIterations,
   ) as NativeEdge[];
@@ -2307,7 +2319,7 @@ function loadNodes(ctx: PipelineContext): { rows: QueryNodeRow[]; scoped: boolea
       const placeholders = [...relevantFiles].map(() => '?').join(',');
       const rows = db
         .prepare(
-          `SELECT id, name, kind, file, line FROM nodes WHERE ${nodeKindFilter} AND file IN (${placeholders})`,
+          `SELECT id, name, kind, file, line, accessor_kind AS accessorKind FROM nodes WHERE ${nodeKindFilter} AND file IN (${placeholders})`,
         )
         .all(...relevantFiles) as QueryNodeRow[];
       return { rows, scoped: true };
@@ -2315,7 +2327,9 @@ function loadNodes(ctx: PipelineContext): { rows: QueryNodeRow[]; scoped: boolea
   }
 
   const rows = db
-    .prepare(`SELECT id, name, kind, file, line FROM nodes WHERE ${nodeKindFilter}`)
+    .prepare(
+      `SELECT id, name, kind, file, line, accessor_kind AS accessorKind FROM nodes WHERE ${nodeKindFilter}`,
+    )
     .all() as QueryNodeRow[];
   return { rows, scoped: false };
 }
@@ -2334,7 +2348,7 @@ function addLazyFallback(ctx: PipelineContext, scopedLoad: boolean): void {
   // with the same name>` (#1174 follow-up). Calls only ever target the
   // definition kinds, so the fallback's filter must agree with `loadNodes`.
   const fallbackStmt = db.prepare(
-    `SELECT id, name, kind, file, line FROM nodes WHERE name = ? AND ${NODE_KIND_FILTER_SQL}`,
+    `SELECT id, name, kind, file, line, accessor_kind AS accessorKind FROM nodes WHERE name = ? AND ${NODE_KIND_FILTER_SQL}`,
   );
   const originalGet = ctx.nodesByName.get.bind(ctx.nodesByName);
   ctx.nodesByName.get = (name: string) => {

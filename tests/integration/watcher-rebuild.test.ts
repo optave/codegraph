@@ -55,7 +55,7 @@ function readGraph(dbPath) {
 function makeStmts(db) {
   return {
     insertNode: db.prepare(
-      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line) VALUES (?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     getNodeId: {
       get: (name, kind, file, line) => {

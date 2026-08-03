@@ -116,6 +116,11 @@ pub struct Definition {
     /// `end_line` is unavailable.
     #[napi(js_name = "contentHash")]
     pub content_hash: Option<String>,
+    /// Set when this `method`-kind definition is an ES6 `get`/`set` class
+    /// accessor declaration (issue #2030, follow-up to #1893) — mirrors the
+    /// `accessor_kind` DB column and TS `Definition.accessorKind`.
+    #[napi(js_name = "accessorKind")]
+    pub accessor_kind: Option<String>,
 }
 
 #[napi(object)]
@@ -129,6 +134,12 @@ pub struct Call {
     pub dynamic_kind: Option<String>,
     #[napi(js_name = "keyExpr")]
     pub key_expr: Option<String>,
+    /// Set on a synthetic property-read call (bare `varName.prop`/`this.prop`,
+    /// no call parens, on an ES6 get/set accessor) to the accessor kind the
+    /// read requires — mirrors TS `Call.accessorRead` (issue #2030). See that
+    /// field's doc comment for the full rationale.
+    #[napi(js_name = "accessorRead")]
+    pub accessor_read: Option<String>,
 }
 
 /// `import { X as Y }`: the local binding name (Y) paired with the original

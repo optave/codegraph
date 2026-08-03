@@ -26,7 +26,20 @@ import { computeConfidence } from '../resolve.js';
  * `function`-kind node at the same line) versus a genuinely different
  * declaration that merely shares that same line (#2025).
  */
-export type ResolvedCandidate = { id: number; file: string; kind?: string; line: number };
+export type ResolvedCandidate = {
+  id: number;
+  file: string;
+  kind?: string;
+  line: number;
+  /**
+   * `get`/`set` when this node is an ES6 accessor declaration, `null`/absent
+   * otherwise (issue #2030). Populated from the DB `accessor_kind` column by
+   * every `CallNodeLookup` implementation's underlying query. Consulted by
+   * `resolveCallTargets` (call-resolver.ts) to filter candidates for a call
+   * tagged `accessorRead`.
+   */
+  accessorKind?: string | null;
+};
 
 /**
  * Structural mirror of `CallNodeLookup` from call-resolver.ts.

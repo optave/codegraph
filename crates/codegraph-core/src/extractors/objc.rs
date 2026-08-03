@@ -74,6 +74,7 @@ fn handle_class_interface(node: &Node, source: &[u8], symbols: &mut FileSymbols)
         children: opt_children(members),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 
     // Superclass — use the bare class name (categories already recorded above)
@@ -137,6 +138,7 @@ fn handle_class_implementation(node: &Node, source: &[u8], symbols: &mut FileSym
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -157,6 +159,7 @@ fn handle_protocol_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -199,6 +202,7 @@ fn handle_method(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(params),
         bodyless: Some(!has_body),
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -219,6 +223,7 @@ fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(params),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -269,6 +274,7 @@ fn handle_struct_specifier(node: &Node, source: &[u8], symbols: &mut FileSymbols
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -286,6 +292,7 @@ fn handle_enum_specifier(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -315,6 +322,7 @@ fn handle_typedef(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }

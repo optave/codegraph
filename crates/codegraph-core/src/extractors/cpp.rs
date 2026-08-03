@@ -205,6 +205,7 @@ fn handle_cpp_function_definition(node: &Node, source: &[u8], symbols: &mut File
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -226,6 +227,7 @@ fn handle_cpp_class_specifier(node: &Node, source: &[u8], symbols: &mut FileSymb
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
         extract_cpp_base_classes(node, source, &class_name, symbols);
     }
@@ -248,6 +250,7 @@ fn handle_cpp_struct_specifier(node: &Node, source: &[u8], symbols: &mut FileSym
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
         extract_cpp_base_classes(node, source, &struct_name, symbols);
     }
@@ -267,6 +270,7 @@ fn handle_cpp_enum_specifier(node: &Node, source: &[u8], symbols: &mut FileSymbo
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -284,6 +288,7 @@ fn handle_cpp_namespace_definition(node: &Node, source: &[u8], symbols: &mut Fil
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -313,6 +318,7 @@ fn handle_cpp_type_definition(node: &Node, source: &[u8], symbols: &mut FileSymb
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }

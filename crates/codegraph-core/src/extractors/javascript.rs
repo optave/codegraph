@@ -577,6 +577,7 @@ fn extract_object_literal_functions(
                             children: None,
                             bodyless: None,
                             content_hash: None,
+                            accessor_kind: None,
                         });
                         // Store qualified name as value so resolver looks up the qualified def.
                         symbols.type_map.push(TypeMapEntry {
@@ -626,6 +627,7 @@ fn extract_object_literal_functions(
                         children: opt_children(children),
                         bodyless: None,
                         content_hash: None,
+                        accessor_kind: None,
                     });
                 }
                 let body = child.child_by_field_name("body");
@@ -640,6 +642,7 @@ fn extract_object_literal_functions(
                     children: None,
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
             _ => {}
@@ -903,6 +906,7 @@ fn handle_js_prototype_assignment(lhs: &Node, rhs: &Node, source: &[u8], symbols
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -926,6 +930,7 @@ fn emit_js_prototype_method(class_name: &str, method_name: &str, rhs: &Node, sou
                 children: opt_children(children),
                 bodyless: None,
                 content_hash: None,
+                accessor_kind: None,
             });
         }
         "identifier" => {
@@ -959,6 +964,7 @@ fn extract_js_prototype_object_literal(class_name: &str, obj_node: &Node, source
                     children: opt_children(children),
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
             "shorthand_property_identifier" => {
@@ -1080,6 +1086,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -1099,6 +1106,7 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(children),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 
     // Heritage: extends + implements
@@ -1193,6 +1201,11 @@ fn handle_method_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             None => method_name.to_string(),
         };
         let children = extract_js_parameters(node, source);
+        // #2030: persist which ES6 accessor kind (if any) this method is, so
+        // a global (whole-build) accessor registry can confirm cross-file
+        // property reads at resolution time — see
+        // handle_accessor_property_read below.
+        let accessor_kind = get_method_accessor_kind(node).map(|k| k.to_string());
         symbols.definitions.push(Definition {
             name: full_name,
             kind: "method".to_string(),
@@ -1204,11 +1217,12 @@ fn handle_method_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind,
         });
     }
 }
 
-// ── ES6 getter/setter property-read call attribution (#1893) ────────────────
+// ── ES6 getter/setter property-read call attribution (#1893, #2030) ────────
 //
 // A bare (non-call) property read/write on an ES6 `get`/`set` class accessor
 // (`obj.isReady`, no call parens) invokes the accessor function just as surely
@@ -1217,11 +1231,13 @@ fn handle_method_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 // callee, so accessor reads/writes never produced a `calls` edge at all.
 // Mirrors `collectAccessorPropertyRead` in `src/extractors/javascript.ts`.
 //
-// Scoped to the *same-file* case: `this.prop` inside one of the accessor's own
-// class's methods, or `varName.prop` where `varName`'s type (from this file's
-// own type_map) is a class also declared in this file. Cross-file accessor
-// reads (the accessor's class declared in a different file than the read
-// site) are not yet covered — see #2030.
+// Two confirmation tiers — see `handle_accessor_property_read`'s doc comment:
+//   1. Same-file (#1893): `this.prop`, or `varName.prop` where `varName`'s
+//      type is a class also declared in this file — confirmed directly via
+//      this file's own `local_accessors` registry below.
+//   2. Cross-file (#2030): `varName.prop` where the type isn't declared in
+//      this file — emitted as a tagged candidate for the resolver's global
+//      accessor-kind filter to confirm once every file's accessors are known.
 
 /// Per-property record of which accessor kinds a same-file class declares.
 #[derive(Default, Clone, Copy)]
@@ -1291,19 +1307,115 @@ fn collect_local_accessors(root: &Node, source: &[u8]) -> LocalAccessorRegistry 
     registry
 }
 
+/// #2030: within the truthy branch of `if (var_name instanceof ClassName) { ... }`
+/// (including `&&`-chained conditions), `var_name`'s narrowed runtime type is
+/// `ClassName` for the rest of that branch — more specific than whatever this
+/// file's type_map otherwise knows about `var_name` (e.g. a base-class
+/// parameter annotation). Lets a cross-file accessor declared only on the
+/// narrowed (concrete) subclass, not the wider declared type, still be
+/// recognized as the property read's target. Mirrors
+/// `findNarrowedInstanceofType` in `src/extractors/javascript.ts` — see that
+/// function's doc comment for the full rationale and scope limits.
+fn find_narrowed_instanceof_type(node: &Node, var_name: &str, source: &[u8]) -> Option<String> {
+    let mut current = *node;
+    let mut depth = 0;
+    while depth < MAX_WALK_DEPTH {
+        let parent = current.parent()?;
+        if parent.kind() == "if_statement" {
+            if let Some(consequence) = parent.child_by_field_name("consequence") {
+                if consequence.id() == current.id() {
+                    if let Some(condition) = parent.child_by_field_name("condition") {
+                        if let Some(narrowed) =
+                            find_instanceof_operand(&condition, var_name, source, 0)
+                        {
+                            return Some(narrowed);
+                        }
+                    }
+                }
+            }
+        }
+        current = parent;
+        depth += 1;
+    }
+    None
+}
+
+/// Search `node` (an `if_statement`'s condition) for an `instanceof` check on
+/// `var_name`, recursing through `&&` chains only — any other operator
+/// (`||`, `===`, ...) does not guarantee the instanceof check held, so
+/// narrowing stops there rather than risk a false positive. Mirrors
+/// `findInstanceofOperand` in `src/extractors/javascript.ts`.
+fn find_instanceof_operand(
+    node: &Node,
+    var_name: &str,
+    source: &[u8],
+    depth: usize,
+) -> Option<String> {
+    if depth >= MAX_WALK_DEPTH {
+        return None;
+    }
+    if node.kind() == "parenthesized_expression" {
+        let inner = node.named_child(0)?;
+        return find_instanceof_operand(&inner, var_name, source, depth + 1);
+    }
+    if node.kind() != "binary_expression" {
+        return None;
+    }
+    let operator_n = node.child_by_field_name("operator")?;
+    let operator = node_text(&operator_n, source);
+    let left = node.child_by_field_name("left");
+    let right = node.child_by_field_name("right");
+    if operator == "instanceof" {
+        let (Some(left), Some(right)) = (&left, &right) else { return None };
+        if left.kind() == "identifier"
+            && node_text(left, source) == var_name
+            && right.kind() == "identifier"
+        {
+            return Some(node_text(right, source).to_string());
+        }
+        return None;
+    }
+    if operator == "&&" {
+        if let Some(left) = &left {
+            if let Some(found) = find_instanceof_operand(left, var_name, source, depth + 1) {
+                return Some(found);
+            }
+        }
+        if let Some(right) = &right {
+            if let Some(found) = find_instanceof_operand(right, var_name, source, depth + 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 /// Detect a bare (non-call) `this.prop` / `varName.prop` member-expression
-/// that reads or writes a same-file accessor property, and record it as an
+/// that reads or writes an ES6 accessor property, and record it as an
 /// ordinary `Call` — indistinguishable from a real
 /// `this.prop()`/`varName.prop()` call site, so it flows through the existing
 /// (unchanged) call-resolution cascade.
 ///
 /// A plain assignment (`obj.prop = value`) invokes the setter; every other
 /// bare usage (reads, compound-assignment targets, etc.) invokes the getter.
-/// When a property declares *both* a getter and a setter, the two accessors
-/// share the same qualified name and resolution has no way to tell them
-/// apart — rather than risk an edge to the wrong one, that case is skipped
-/// entirely (mirrors the "ambiguous → drop rather than fan out" precedent
-/// used elsewhere in call resolution).
+///
+/// Two confirmation tiers — mirrors `collectAccessorPropertyRead` in
+/// `src/extractors/javascript.ts`:
+///   1. Same-file (#1893): `class_name` is declared in this file, so
+///      `local_accessors` can confirm (or rule out) the accessor directly.
+///      A property declaring *both* a getter and a setter is skipped
+///      entirely here (mirrors the "ambiguous → drop rather than fan out"
+///      precedent used elsewhere in call resolution).
+///   2. Cross-file (#2030): `class_name` isn't declared in this file (a
+///      `this` receiver's class always is, so this tier only ever applies to
+///      a `var_name.prop` identifier receiver) — emitted anyway, tagged with
+///      `accessor_read`, deferring confirmation to the resolver's global
+///      accessor-kind filter. `receiver` carries the *resolved class name*
+///      here (not the read site's variable text) for the same reason given
+///      in the TS mirror: resolution must look up the qualified
+///      `class_name.prop_name` directly, since re-deriving the type from
+///      type_map would only recover the wider declared type for a narrowed
+///      variable, never the narrowed one.
 fn handle_accessor_property_read(
     node: &Node,
     source: &[u8],
@@ -1330,27 +1442,6 @@ fn handle_accessor_property_read(
     }
     let prop_name = node_text(&prop_node, source);
 
-    let (receiver, class_name): (String, Option<String>) = match obj.kind() {
-        "this" => ("this".to_string(), find_parent_class(node, source)),
-        "identifier" => {
-            let obj_name = node_text(&obj, source).to_string();
-            let type_name = symbols
-                .type_map
-                .iter()
-                .find(|e| e.name == obj_name)
-                .map(|e| e.type_name.clone());
-            (obj_name, type_name)
-        }
-        _ => return,
-    };
-    let Some(class_name) = class_name else { return };
-
-    let key = format!("{}.{}", class_name, prop_name);
-    let Some(accessor_info) = local_accessors.get(&key) else { return };
-    if accessor_info.get && accessor_info.set {
-        return;
-    }
-
     let is_plain_assign_target = node
         .parent()
         .filter(|p| p.kind() == "assignment_expression")
@@ -1358,17 +1449,71 @@ fn handle_accessor_property_read(
         .map(|l| l.id())
         == Some(node.id());
     let needed_get = !is_plain_assign_target;
-    if needed_get && !accessor_info.get {
-        return;
-    }
-    if !needed_get && !accessor_info.set {
+
+    if obj.kind() == "this" {
+        // `this`'s enclosing class is always declared in this same file —
+        // the #1893 same-file registry is authoritative, so keep its exact
+        // semantics (including the ambiguous get+set skip) unchanged.
+        let Some(class_name) = find_parent_class(node, source) else { return };
+        let key = format!("{}.{}", class_name, prop_name);
+        let Some(accessor_info) = local_accessors.get(&key) else { return };
+        if accessor_info.get && accessor_info.set {
+            return;
+        }
+        if needed_get && !accessor_info.get {
+            return;
+        }
+        if !needed_get && !accessor_info.set {
+            return;
+        }
+        symbols.calls.push(Call {
+            name: prop_name.to_string(),
+            line: start_line(node),
+            receiver: Some("this".to_string()),
+            ..Default::default()
+        });
         return;
     }
 
+    if obj.kind() != "identifier" {
+        return;
+    }
+    let receiver = node_text(&obj, source).to_string();
+    let narrowed_type = find_narrowed_instanceof_type(node, &receiver, source);
+    let class_name = narrowed_type.or_else(|| {
+        symbols.type_map.iter().find(|e| e.name == receiver).map(|e| e.type_name.clone())
+    });
+    let Some(class_name) = class_name else { return };
+
+    let key = format!("{}.{}", class_name, prop_name);
+    if let Some(accessor_info) = local_accessors.get(&key) {
+        // #1893: same-file confirmation available — unchanged semantics.
+        if accessor_info.get && accessor_info.set {
+            return;
+        }
+        if needed_get && !accessor_info.get {
+            return;
+        }
+        if !needed_get && !accessor_info.set {
+            return;
+        }
+        symbols.calls.push(Call {
+            name: prop_name.to_string(),
+            line: start_line(node),
+            receiver: Some(receiver),
+            ..Default::default()
+        });
+        return;
+    }
+
+    // #2030: `class_name` isn't declared in this file — nothing to confirm
+    // against locally. Emit a tagged candidate for the resolver's global
+    // accessor-kind filter to confirm or discard.
     symbols.calls.push(Call {
         name: prop_name.to_string(),
         line: start_line(node),
-        receiver: Some(receiver),
+        receiver: Some(class_name),
+        accessor_read: Some(if needed_get { "get".to_string() } else { "set".to_string() }),
         ..Default::default()
     });
 }
@@ -1395,6 +1540,7 @@ fn handle_static_block(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -1435,6 +1581,7 @@ fn handle_field_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -1452,6 +1599,7 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
     // Extract interface methods
     let body = node
@@ -1476,6 +1624,7 @@ fn handle_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -1495,6 +1644,7 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -1533,6 +1683,7 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 children: opt_children(children),
                 bodyless: None,
                 content_hash: None,
+                accessor_kind: None,
             });
         } else if is_const && name_n.kind() == "object_pattern" && !in_function_scope {
             // Parity with TS query path (extractDestructuredBindingsWalk):
@@ -1586,6 +1737,7 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 children: None,
                 bodyless: None,
                 content_hash: None,
+                accessor_kind: None,
             });
             // Phase 8.3f: extract function/arrow properties from object literals and seed
             // typeMap composite keys so that this.method() inside Object.defineProperty
@@ -2449,6 +2601,7 @@ fn extract_interface_methods(
                         children: None,
                         bodyless: Some(child.child_by_field_name("body").is_none()),
                         content_hash: None,
+                        accessor_kind: None,
                     });
                 }
             }
@@ -3108,6 +3261,7 @@ fn extract_destructured_bindings(
                     children: None,
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
             "pair_pattern" | "pair" => {
@@ -3126,6 +3280,7 @@ fn extract_destructured_bindings(
                             children: None,
                             bodyless: None,
                             content_hash: None,
+                            accessor_kind: None,
                         });
                     }
                 }
@@ -3165,6 +3320,7 @@ fn extract_array_pattern_bindings(
                     children: None,
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
             "assignment_pattern" => {
@@ -3181,6 +3337,7 @@ fn extract_array_pattern_bindings(
                             children: None,
                             bodyless: None,
                             content_hash: None,
+                            accessor_kind: None,
                         });
                     }
                 }
@@ -3209,6 +3366,7 @@ fn extract_array_pattern_bindings(
                                 children: None,
                                 bodyless: None,
                                 content_hash: None,
+                                accessor_kind: None,
                             });
                             break;
                         }
@@ -3617,6 +3775,7 @@ fn extract_callback_definition(call_node: &Node, source: &[u8]) -> Option<Defini
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 
@@ -3638,6 +3797,7 @@ fn extract_callback_definition(call_node: &Node, source: &[u8]) -> Option<Defini
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 
@@ -3656,6 +3816,7 @@ fn extract_callback_definition(call_node: &Node, source: &[u8]) -> Option<Defini
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 
@@ -7458,6 +7619,149 @@ mod tests {
         assert!(
             s.calls.iter().any(|c| c.name == "version" && c.receiver.as_deref() == Some("this")),
             "expected a call to version via this; got: {:?}",
+            s.calls
+        );
+    }
+
+    // ── ES6 getter/setter cross-file property-read call attribution (#2030) ──
+
+    #[test]
+    fn tags_cross_file_property_read_with_get_and_resolved_class_name() {
+        let s = parse_ts(
+            "function useRepo(repo: SqliteRepository) {\n\
+               return repo.db;\n\
+             }",
+        );
+        let call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "db" && c.receiver.as_deref() == Some("SqliteRepository"));
+        assert!(
+            call.is_some(),
+            "expected a tagged accessor-read call to SqliteRepository.db; got: {:?}",
+            s.calls
+        );
+        assert_eq!(call.unwrap().accessor_read.as_deref(), Some("get"));
+    }
+
+    #[test]
+    fn tags_cross_file_property_write_with_set() {
+        let s = parse_ts(
+            "function useRepo(repo: SqliteRepository) {\n\
+               repo.db = null;\n\
+             }",
+        );
+        let call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "db" && c.receiver.as_deref() == Some("SqliteRepository"));
+        assert_eq!(
+            call.expect("expected a tagged accessor-read call").accessor_read.as_deref(),
+            Some("set")
+        );
+    }
+
+    #[test]
+    fn same_file_confirmed_accessor_call_is_not_tagged() {
+        let s = parse_ts(
+            "class Repo {\n\
+               get db() { return this._db; }\n\
+             }\n\
+             function useRepo(repo: Repo) {\n\
+               return repo.db;\n\
+             }",
+        );
+        let call = s.calls.iter().find(|c| c.name == "db" && c.receiver.as_deref() == Some("repo"));
+        assert_eq!(
+            call.expect("expected same-file accessor call").accessor_read,
+            None,
+            "same-file confirmed accessor calls must not carry accessor_read"
+        );
+    }
+
+    #[test]
+    fn narrows_instanceof_type_for_cross_file_accessor_read() {
+        let s = parse_js(
+            "function useRepo(repo) {\n\
+               if (repo instanceof SqliteRepository) {\n\
+                 return repo.db;\n\
+               }\n\
+             }",
+        );
+        let call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "db" && c.receiver.as_deref() == Some("SqliteRepository"));
+        assert!(
+            call.is_some(),
+            "expected instanceof-narrowed type to produce a tagged accessor-read call; got: {:?}",
+            s.calls
+        );
+    }
+
+    #[test]
+    fn narrows_instanceof_type_across_logical_and_chain() {
+        let s = parse_js(
+            "function useRepo(x, repo) {\n\
+               if (x && repo instanceof SqliteRepository) {\n\
+                 return repo.db;\n\
+               }\n\
+             }",
+        );
+        let call = s.calls.iter().find(|c| c.name == "db");
+        assert_eq!(
+            call.expect("expected a call to db").receiver.as_deref(),
+            Some("SqliteRepository")
+        );
+    }
+
+    #[test]
+    fn does_not_narrow_instanceof_type_across_logical_or() {
+        let s = parse_ts(
+            "function useRepo(repo: Repository) {\n\
+               if (repo instanceof SqliteRepository || true) {\n\
+                 return repo.db;\n\
+               }\n\
+             }",
+        );
+        // `||` never guarantees the instanceof check held — must fall back to
+        // the declared type (Repository), not the unsafe narrowed one.
+        let call = s.calls.iter().find(|c| c.name == "db");
+        assert_eq!(
+            call.expect("expected a call to db").receiver.as_deref(),
+            Some("Repository")
+        );
+    }
+
+    #[test]
+    fn does_not_narrow_instanceof_type_in_else_branch() {
+        let s = parse_ts(
+            "function useRepo(repo: Repository) {\n\
+               if (repo instanceof SqliteRepository) {\n\
+                 return 1;\n\
+               } else {\n\
+                 return repo.db;\n\
+               }\n\
+             }",
+        );
+        let call = s.calls.iter().find(|c| c.name == "db");
+        assert_eq!(
+            call.expect("expected a call to db").receiver.as_deref(),
+            Some("Repository"),
+            "the else branch must not inherit the if-branch's instanceof narrowing"
+        );
+    }
+
+    #[test]
+    fn does_not_tag_plain_this_field_read_even_when_not_locally_confirmed() {
+        let s = parse_js(
+            "class Widget {\n\
+               useOther() { return this.unknownProp; }\n\
+             }",
+        );
+        assert!(
+            !s.calls.iter().any(|c| c.name == "unknownProp"),
+            "a plain (non-accessor) this.field read must never produce a call, tagged or not; got: {:?}",
             s.calls
         );
     }

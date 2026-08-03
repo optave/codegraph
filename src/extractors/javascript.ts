@@ -607,6 +607,10 @@ function isObjectLiteralDeclaratorMethod(methNode: TreeSitterNode): boolean {
 function buildMethodDefinition(node: TreeSitterNode, name: string): Definition {
   const methChildren = extractParameters(node);
   const methVis = extractVisibility(node);
+  // #2030: persist which ES6 accessor kind (if any) this method is, so a
+  // global (whole-build) accessor registry can confirm cross-file property
+  // reads at resolution time — see collectAccessorPropertyRead below.
+  const accessorKind = getMethodAccessorKind(node) ?? undefined;
   return {
     name,
     kind: 'method',
@@ -614,6 +618,7 @@ function buildMethodDefinition(node: TreeSitterNode, name: string): Definition {
     endLine: nodeEndLine(node),
     children: methChildren.length > 0 ? methChildren : undefined,
     visibility: methVis,
+    accessorKind,
   };
 }
 
@@ -701,18 +706,115 @@ function localTypeMapTypeName(typeMap: Map<string, TypeMapEntry>, varName: strin
 }
 
 /**
+ * #2030: within the truthy branch of `if (varName instanceof ClassName) { ... }`
+ * (including `&&`-chained conditions, e.g. `if (x && varName instanceof
+ * ClassName)`), `varName`'s narrowed runtime type is `ClassName` for the rest
+ * of that branch — more specific than whatever this file's typeMap otherwise
+ * knows about `varName` (e.g. a base-class parameter annotation). This lets a
+ * cross-file accessor declared only on the narrowed (concrete) subclass, not
+ * on the wider declared type, still be recognized as the property read's
+ * target — the exact shape of the issue's own repro (`repo.db` narrowed from
+ * `Repository` to `SqliteRepository`).
+ *
+ * Deliberately narrow: only the single-level `if (... instanceof ...) { <here> }`
+ * consequence-branch shape is recognized — no general control-flow/negation
+ * analysis (e.g. an early-return guard `if (!(x instanceof Y)) return;`).
+ * Missing the narrower type here just falls through to the file's ordinary
+ * typeMap type (or finds nothing) — never a *wrong* one, since a non-`&&`
+ * operator (`||`, comparisons, ...) is never treated as a guarantee.
+ */
+function findNarrowedInstanceofType(node: TreeSitterNode, varName: string): string | null {
+  let current: TreeSitterNode = node;
+  let depth = 0;
+  while (depth < MAX_WALK_DEPTH) {
+    const parent = current.parent;
+    if (!parent) return null;
+    if (parent.type === 'if_statement') {
+      const consequence = parent.childForFieldName('consequence');
+      // `current` must be exactly the consequence branch itself (reached by
+      // walking straight up from `node`) — not the condition, and not an
+      // `else` alternative — for this if's narrowing to apply.
+      if (consequence && consequence.id === current.id) {
+        const condition = parent.childForFieldName('condition');
+        const narrowed = condition ? findInstanceofOperand(condition, varName, 0) : null;
+        if (narrowed) return narrowed;
+      }
+      // Not the consequence branch — keep walking up in case an outer if
+      // narrows the same variable.
+    }
+    current = parent;
+    depth++;
+  }
+  return null;
+}
+
+/**
+ * Search `node` (an `if_statement`'s condition, always wrapped in a
+ * `parenthesized_expression`) for an `instanceof` check on `varName`,
+ * recursing through `&&` chains only — any other operator (`||`, `===`, ...)
+ * does not guarantee the instanceof check held, so narrowing stops there
+ * rather than risk a false positive.
+ */
+function findInstanceofOperand(
+  node: TreeSitterNode,
+  varName: string,
+  depth: number,
+): string | null {
+  if (depth >= MAX_WALK_DEPTH) return null;
+  if (node.type === 'parenthesized_expression') {
+    const inner = node.namedChild(0);
+    return inner ? findInstanceofOperand(inner, varName, depth + 1) : null;
+  }
+  if (node.type !== 'binary_expression') return null;
+  const operator = node.childForFieldName('operator')?.text;
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  if (operator === 'instanceof') {
+    if (left?.type === 'identifier' && left.text === varName && right?.type === 'identifier') {
+      return right.text;
+    }
+    return null;
+  }
+  if (operator === '&&') {
+    return (
+      (left && findInstanceofOperand(left, varName, depth + 1)) ||
+      (right && findInstanceofOperand(right, varName, depth + 1)) ||
+      null
+    );
+  }
+  return null;
+}
+
+/**
  * Detect a bare (non-call) `this.prop` / `varName.prop` member-expression that
- * reads or writes a same-file accessor property, and record it as an ordinary
+ * reads or writes an ES6 accessor property, and record it as an ordinary
  * `Call` — indistinguishable from a real `this.prop()`/`varName.prop()` call
  * site, so it flows through the existing (unchanged) call-resolution cascade.
  *
  * A plain assignment (`obj.prop = value`) invokes the setter; every other bare
- * usage (reads, compound-assignment targets, etc.) invokes the getter. When a
- * property declares *both* a getter and a setter, the two accessors share the
- * same qualified name and resolution has no way to tell them apart — rather
- * than risk an edge to the wrong one, that case is skipped entirely (mirrors
- * resolveExactGlobalMatch's "ambiguous → drop rather than fan out" precedent
- * in resolver/strategy.ts).
+ * usage (reads, compound-assignment targets, etc.) invokes the getter.
+ *
+ * Two confirmation tiers:
+ *   1. Same-file (#1893): `className` is declared in this file, so this
+ *      file's own `localAccessors` registry can confirm (or rule out) the
+ *      accessor directly. When a property declares *both* a getter and a
+ *      setter, the two accessors share the same qualified name and this
+ *      file's registry alone can't tell them apart — rather than risk an
+ *      edge to the wrong one, that case is skipped entirely here (mirrors
+ *      resolveExactGlobalMatch's "ambiguous → drop rather than fan out"
+ *      precedent in resolver/strategy.ts).
+ *   2. Cross-file (#2030): `className` isn't declared in this file (a `this`
+ *      receiver's class always is, so this tier only ever applies to a
+ *      `varName.prop` identifier receiver) — this file has no way to confirm
+ *      the accessor itself, so the call is emitted anyway, tagged with
+ *      `accessorRead`, deferring confirmation to the resolver's global
+ *      accessor-kind filter (`resolveCallTargets` in call-resolver.ts) once
+ *      every file's own accessor declarations are known. `receiver` carries
+ *      the *resolved class name* here (not the read site's variable text) so
+ *      that filter can look up the qualified `className.propName` directly —
+ *      required for the narrowed-instanceof case, where re-deriving the type
+ *      from typeMap at resolution time would only recover the wider declared
+ *      type, never the narrowed one.
  */
 function collectAccessorPropertyRead(
   node: TreeSitterNode,
@@ -736,28 +838,50 @@ function collectAccessorPropertyRead(
   if (!obj || !propNode || propNode.type !== 'property_identifier') return;
   const propName = propNode.text;
 
-  let receiver: string;
-  let className: string | null;
-  if (obj.type === 'this') {
-    receiver = 'this';
-    className = findParentClass(node);
-  } else if (obj.type === 'identifier') {
-    receiver = obj.text;
-    className = localTypeMapTypeName(typeMap, obj.text);
-  } else {
-    return;
-  }
-  if (!className) return;
-
-  const accessorInfo = localAccessors.get(`${className}.${propName}`);
-  if (!accessorInfo || (accessorInfo.get && accessorInfo.set)) return;
-
   const isPlainAssignTarget =
     parent?.type === 'assignment_expression' && parent.childForFieldName('left')?.id === node.id;
   const neededKind = isPlainAssignTarget ? 'set' : 'get';
-  if (!accessorInfo[neededKind]) return;
 
-  valueRefCalls.push({ name: propName, receiver, line: nodeStartLine(node) });
+  if (obj.type === 'this') {
+    // `this`'s enclosing class is always declared in this same file — the
+    // #1893 same-file registry is authoritative, so keep its exact semantics
+    // (including the ambiguous get+set skip) unchanged. A #2030 cross-file
+    // fallback would never have anything to add for `this`, and tagging
+    // every plain `this.field` read would add unbounded extraction volume
+    // for zero benefit.
+    const className = findParentClass(node);
+    if (!className) return;
+    const accessorInfo = localAccessors.get(`${className}.${propName}`);
+    if (!accessorInfo || (accessorInfo.get && accessorInfo.set) || !accessorInfo[neededKind]) {
+      return;
+    }
+    valueRefCalls.push({ name: propName, receiver: 'this', line: nodeStartLine(node) });
+    return;
+  }
+
+  if (obj.type !== 'identifier') return;
+  const receiver = obj.text;
+  const narrowedType = findNarrowedInstanceofType(node, receiver);
+  const className = narrowedType ?? localTypeMapTypeName(typeMap, receiver);
+  if (!className) return;
+
+  const accessorInfo = localAccessors.get(`${className}.${propName}`);
+  if (accessorInfo) {
+    // #1893: same-file confirmation available — unchanged semantics.
+    if ((accessorInfo.get && accessorInfo.set) || !accessorInfo[neededKind]) return;
+    valueRefCalls.push({ name: propName, receiver, line: nodeStartLine(node) });
+    return;
+  }
+
+  // #2030: `className` isn't declared in this file — nothing to confirm
+  // against locally. Emit a tagged candidate for the resolver's global
+  // accessor-kind filter to confirm or discard.
+  valueRefCalls.push({
+    name: propName,
+    receiver: className,
+    line: nodeStartLine(node),
+    accessorRead: neededKind,
+  });
 }
 
 /**

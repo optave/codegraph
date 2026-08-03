@@ -384,7 +384,7 @@ export function resolveByMethodOrGlobal(
 
 export function resolveCallTargets(
   lookup: CallNodeLookup,
-  call: { name: string; receiver?: string | null },
+  call: { name: string; receiver?: string | null; accessorRead?: 'get' | 'set' },
   relPath: string,
   importedNames: Map<string, string>,
   typeMap: Map<string, unknown>,
@@ -398,6 +398,30 @@ export function resolveCallTargets(
   // so they never accidentally match a real symbol via lookup.byName.
   if (call.name.startsWith('<dynamic:')) {
     return { targets: [], importedFrom: undefined };
+  }
+
+  // #2030: a property-read call tagged with the accessor kind it needs
+  // carries its *resolved class name* as `receiver` (see
+  // collectAccessorPropertyRead in extractors/javascript.ts, and the native
+  // mirror handle_accessor_property_read) — resolve directly against the
+  // qualified `receiver.name`, filtered to the DB's `accessor_kind` column.
+  // This deliberately bypasses the rest of this function's directory-
+  // proximity confidence scoring: kind-plus-exact-qualified-name match is a
+  // strictly stronger disambiguator than proximity (proximity exists only to
+  // arbitrate when nothing stronger is available — see resolveExactGlobalMatch
+  // in resolver/strategy.ts for that precedent), and a real cross-file
+  // accessor can legitimately live many directories away from the read site
+  // (the #2030 repro itself: src/features/sequence.ts ↔
+  // src/db/repository/sqlite-repository.ts). An unconfirmed candidate is
+  // dropped outright — never falls through to the general cascade below,
+  // which could otherwise resolve to an unrelated same-named non-accessor
+  // method/field, the exact false-positive class #1893's same-file registry
+  // was designed to prevent.
+  if (call.accessorRead && call.receiver) {
+    const targets = lookup
+      .byName(`${call.receiver}.${call.name}`)
+      .filter((n) => n.accessorKind === call.accessorRead);
+    return { targets: [...targets], importedFrom: undefined };
   }
 
   const importedFrom = importedNames.get(call.name);

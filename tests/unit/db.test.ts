@@ -101,6 +101,14 @@ describe('MIGRATIONS', () => {
     db.prepare(
       "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic, technique) VALUES (?, ?, 'calls', 0.8, 0, 'cha-expanded')",
     ).run(ids[0]!.id, ids[1]!.id);
+    // #2030 added migration v27 (a non-idempotent `ALTER TABLE ... ADD
+    // COLUMN`) after this test was written. Rolling schema_version back to 25
+    // below replays every migration after it — including v27 — on the second
+    // initSchema() call; the first call above already added `accessor_kind`
+    // once, so replaying v27 without also undoing it would hit "duplicate
+    // column name". Drop it back out here first.
+    db.exec('DROP INDEX IF EXISTS idx_nodes_accessor_kind');
+    db.exec('ALTER TABLE nodes DROP COLUMN accessor_kind');
     db.prepare('UPDATE schema_version SET version = 25').run();
 
     initSchema(db);

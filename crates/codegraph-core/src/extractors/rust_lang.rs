@@ -79,6 +79,7 @@ fn handle_function_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(children),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -97,6 +98,7 @@ fn handle_struct_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
         seed_rust_struct_field_types(node, &struct_name, source, symbols);
     }
@@ -136,6 +138,7 @@ fn handle_enum_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -153,6 +156,7 @@ fn handle_const_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -171,6 +175,7 @@ fn handle_trait_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
@@ -190,6 +195,7 @@ fn handle_trait_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                     children: None,
                     bodyless: Some(child.kind() == "function_signature_item"),
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
         }

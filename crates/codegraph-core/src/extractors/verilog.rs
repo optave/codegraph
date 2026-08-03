@@ -71,6 +71,7 @@ fn handle_module_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(ports),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -90,6 +91,7 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -109,6 +111,7 @@ fn handle_package_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -136,6 +139,7 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 
     if let Some(superclass) = find_class_superclass(node, source) {
@@ -203,6 +207,7 @@ fn handle_function_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -227,6 +232,7 @@ fn handle_task_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 

@@ -2898,4 +2898,120 @@ function runDemo(reporter: Reporter, users: string[]): void {
       );
     });
   });
+
+  describe('ES6 getter/setter cross-file property-read call attribution (#2030)', () => {
+    function parseJS(code) {
+      const parser = parsers.get('javascript');
+      const tree = parser.parse(code);
+      return extractSymbols(tree, 'test.js');
+    }
+
+    function parseTS(code) {
+      const parser = parsers.get('typescript');
+      const tree = parser.parse(code);
+      return extractSymbols(tree, 'test.ts');
+    }
+
+    it('tags a cross-file `varName.prop` read with accessorRead="get" and the resolved class name', () => {
+      const symbols = parseTS(`
+        function useRepo(repo: SqliteRepository) {
+          return repo.db;
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'db', receiver: 'SqliteRepository', accessorRead: 'get' }),
+      );
+    });
+
+    it('tags a cross-file plain-assignment write with accessorRead="set"', () => {
+      const symbols = parseTS(`
+        function useRepo(repo: SqliteRepository) {
+          repo.db = null;
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'db', receiver: 'SqliteRepository', accessorRead: 'set' }),
+      );
+    });
+
+    it('does not tag a same-file confirmed accessor call', () => {
+      const symbols = parseTS(`
+        class Repo {
+          get db() { return this._db; }
+        }
+        function useRepo(repo: Repo) {
+          return repo.db;
+        }
+      `);
+      const call = symbols.calls.find((c) => c.name === 'db' && c.receiver === 'repo');
+      expect(call).toBeDefined();
+      expect(call.accessorRead).toBeUndefined();
+    });
+
+    it('narrows the receiver type via `instanceof` for a cross-file accessor read', () => {
+      const symbols = parseJS(`
+        function useRepo(repo) {
+          if (repo instanceof SqliteRepository) {
+            return repo.db;
+          }
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'db', receiver: 'SqliteRepository', accessorRead: 'get' }),
+      );
+    });
+
+    it('narrows across an `&&`-chained instanceof condition', () => {
+      const symbols = parseJS(`
+        function useRepo(x, repo) {
+          if (x && repo instanceof SqliteRepository) {
+            return repo.db;
+          }
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'db', receiver: 'SqliteRepository' }),
+      );
+    });
+
+    it('does not narrow across an `||` condition (unsafe — falls back to the declared type)', () => {
+      const symbols = parseTS(`
+        function useRepo(repo: Repository) {
+          if (repo instanceof SqliteRepository || true) {
+            return repo.db;
+          }
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'db', receiver: 'Repository' }),
+      );
+      expect(symbols.calls).not.toContainEqual(
+        expect.objectContaining({ name: 'db', receiver: 'SqliteRepository' }),
+      );
+    });
+
+    it('does not leak instanceof narrowing into the else branch', () => {
+      const symbols = parseTS(`
+        function useRepo(repo: Repository) {
+          if (repo instanceof SqliteRepository) {
+            return 1;
+          } else {
+            return repo.db;
+          }
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'db', receiver: 'Repository' }),
+      );
+    });
+
+    it('never tags a plain `this.field` read even when not locally confirmed', () => {
+      const symbols = parseJS(`
+        class Widget {
+          useOther() { return this.unknownProp; }
+        }
+      `);
+      expect(symbols.calls).not.toContainEqual(expect.objectContaining({ name: 'unknownProp' }));
+    });
+  });
 });

@@ -94,6 +94,7 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -152,6 +153,7 @@ fn extract_dart_class_methods(body: &Node, class_name: &str, source: &[u8], symb
                             children: None,
                             bodyless: None,
                             content_hash: None,
+                            accessor_kind: None,
                         });
                     }
                 }
@@ -208,6 +210,7 @@ fn handle_dart_enum(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -228,6 +231,7 @@ fn handle_dart_mixin(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -248,6 +252,7 @@ fn handle_dart_extension(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -268,6 +273,7 @@ fn handle_dart_function_sig(node: &Node, source: &[u8], symbols: &mut FileSymbol
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -331,6 +337,7 @@ fn handle_dart_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols)
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }

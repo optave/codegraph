@@ -431,6 +431,16 @@ const MIGRATIONS: &[Migration] = &[
       UPDATE edges SET technique = 'cha' WHERE technique = 'cha-expanded';
     "#,
     },
+    Migration {
+        // Cross-file ES6 getter/setter accessor recognition (issue #2030,
+        // follow-up to #1893). Mirrors src/db/migrations.ts v27 — see that
+        // migration's comment for the rationale.
+        version: 27,
+        up: r#"
+      ALTER TABLE nodes ADD COLUMN accessor_kind TEXT;
+      CREATE INDEX IF NOT EXISTS idx_nodes_accessor_kind ON nodes(accessor_kind) WHERE accessor_kind IS NOT NULL;
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────
@@ -788,6 +798,9 @@ impl NativeDatabase {
                             "legacy repair: add nodes.content_hash failed: {e}"
                         ))
                     })?;
+            }
+            if !has_column(conn, "nodes", "accessor_kind") {
+                let _ = conn.execute_batch("ALTER TABLE nodes ADD COLUMN accessor_kind TEXT");
             }
             let _ = conn.execute_batch(
                 "UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL",
@@ -1886,6 +1899,21 @@ mod tests {
                  UPDATE schema_version SET version = 25;",
             )
             .expect("simulating a pre-v26 database with a legacy edge should succeed");
+            // #2030 added migration v27 (a non-idempotent `ALTER TABLE ... ADD
+            // COLUMN`) after this test was written. Stamping schema_version
+            // back to 25 below replays every migration after it — including
+            // v27 — on the SECOND init_schema() call; the first call above
+            // already added `accessor_kind` once, so replaying v27 without
+            // also undoing it would hit "duplicate column name" (exactly the
+            // staleness failure mode the dynamic_kind/content_hash repair
+            // tests' doc comments already warn about). Drop it back out here,
+            // mirroring how those tests drop their own non-idempotent column
+            // before re-stamping.
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS idx_nodes_accessor_kind; \
+                 ALTER TABLE nodes DROP COLUMN accessor_kind;",
+            )
+            .expect("simulating the pre-v27 state should succeed");
         }
 
         db.init_schema()

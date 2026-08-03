@@ -161,6 +161,7 @@ mod tests {
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         }
     }
 

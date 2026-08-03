@@ -1209,6 +1209,7 @@ fn build_insert_batches(
                         end_line: d.end_line,
                         visibility: None,
                         content_hash: d.content_hash.clone(),
+                        accessor_kind: d.accessor_kind.clone(),
                         children: d
                             .children
                             .as_ref()
@@ -1409,7 +1410,7 @@ fn load_edge_node_set(
     }
 
     let sql = format!(
-        "SELECT n.id, n.name, n.kind, n.file, n.line FROM nodes n \
+        "SELECT n.id, n.name, n.kind, n.file, n.line, n.accessor_kind FROM nodes n \
          INNER JOIN temp._edge_files ef ON n.file = ef.file \
          WHERE n.{EDGE_NODE_KIND_FILTER}",
     );
@@ -1427,7 +1428,7 @@ fn load_edge_node_set(
 /// Load every candidate edge node from the DB (full-build path).
 fn load_all_edge_nodes(conn: &Connection) -> Vec<crate::domain::graph::builder::stages::build_edges::NodeInfo> {
     let sql = format!(
-        "SELECT id, name, kind, file, line FROM nodes WHERE {EDGE_NODE_KIND_FILTER}",
+        "SELECT id, name, kind, file, line, accessor_kind FROM nodes WHERE {EDGE_NODE_KIND_FILTER}",
     );
     match conn.prepare(&sql) {
         Ok(mut stmt) => stmt
@@ -1447,6 +1448,7 @@ fn read_edge_node_info(row: &rusqlite::Row) -> rusqlite::Result<crate::domain::g
         kind: row.get(2)?,
         file: row.get(3)?,
         line: row.get::<_, i64>(4)? as u32,
+        accessor_kind: row.get(5)?,
     })
 }
 
@@ -1778,6 +1780,7 @@ fn build_and_insert_call_edges(
                     receiver: c.receiver.clone(),
                     dynamic_kind: c.dynamic_kind.clone(),
                     key_expr: c.key_expr.clone(),
+                    accessor_read: c.accessor_read.clone(),
                 })
                 .collect(),
             imported_names,

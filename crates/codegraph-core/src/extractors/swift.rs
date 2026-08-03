@@ -245,6 +245,7 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
                             children: opt_children(children),
                             bodyless: None,
                             content_hash: None,
+                            accessor_kind: None,
                         });
                     }
                     _ => {
@@ -260,6 +261,7 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
                             children: opt_children(children),
                             bodyless: None,
                             content_hash: None,
+                            accessor_kind: None,
                         });
                     }
                 }
@@ -284,6 +286,7 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
                     children: None,
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
                 // Protocol can also have inheritance
                 extract_swift_inheritance(node, source, &proto_name, symbols);
@@ -313,6 +316,7 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
                     children: opt_children(children),
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
         }

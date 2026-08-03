@@ -57,6 +57,7 @@ fn handle_assignment(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -77,6 +78,7 @@ fn handle_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(children),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
     if let Some(superclass) = node.child_by_field_name("superclass") {
         extract_ruby_superclass(&superclass, &class_name, node, source, symbols);
@@ -96,6 +98,7 @@ fn handle_module(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -120,6 +123,7 @@ fn handle_method(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(children),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -143,6 +147,7 @@ fn handle_singleton_method(node: &Node, source: &[u8], symbols: &mut FileSymbols
         children: opt_children(children),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 

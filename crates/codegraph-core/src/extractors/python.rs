@@ -58,6 +58,7 @@ fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(children),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -76,6 +77,7 @@ fn handle_class_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(children),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
     let superclasses = node
         .child_by_field_name("superclasses")
@@ -115,6 +117,7 @@ fn handle_expr_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 

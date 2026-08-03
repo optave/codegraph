@@ -69,6 +69,7 @@ fn handle_module_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) -> O
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 
     Some(name)
@@ -122,6 +123,7 @@ fn handle_function_def(
                 children: opt_children(params),
                 bodyless: None,
                 content_hash: None,
+                accessor_kind: None,
             });
             return;
         }
@@ -151,6 +153,7 @@ fn handle_function_def(
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -193,6 +196,7 @@ fn handle_assignment(
         children: opt_children(params),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -276,6 +280,7 @@ fn handle_struct_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: opt_children(children),
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -310,6 +315,7 @@ fn handle_abstract_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 
@@ -390,6 +396,7 @@ fn handle_macro_def(
         children: None,
         bodyless: None,
         content_hash: None,
+        accessor_kind: None,
     });
 }
 

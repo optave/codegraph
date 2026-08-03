@@ -32,6 +32,7 @@ fn match_bash_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
                     children: None,
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
         }

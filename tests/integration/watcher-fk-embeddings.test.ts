@@ -32,7 +32,7 @@ function copyDirSync(src: string, dest: string): void {
 function makeStmts(db: Database.Database): Parameters<typeof rebuildFile>[3] {
   return {
     insertNode: db.prepare(
-      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line) VALUES (?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     getNodeId: {
       get: (name: string, kind: string, file: string, line: number) => {

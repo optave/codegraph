@@ -364,6 +364,7 @@ fn handle_cuda_function_definition(node: &Node, source: &[u8], symbols: &mut Fil
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -386,6 +387,7 @@ fn handle_cuda_class_specifier(node: &Node, source: &[u8], symbols: &mut FileSym
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
         extract_cuda_base_classes(node, source, &class_name, symbols);
     }
@@ -409,6 +411,7 @@ fn handle_cuda_struct_specifier(node: &Node, source: &[u8], symbols: &mut FileSy
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -427,6 +430,7 @@ fn handle_cuda_enum_specifier(node: &Node, source: &[u8], symbols: &mut FileSymb
             children: opt_children(children),
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -444,6 +448,7 @@ fn handle_cuda_namespace_definition(node: &Node, source: &[u8], symbols: &mut Fi
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -476,6 +481,7 @@ fn handle_cuda_type_definition(node: &Node, source: &[u8], symbols: &mut FileSym
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }

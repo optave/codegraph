@@ -19,7 +19,7 @@ function shouldIgnorePath(filePath: string, ignoreSet: ReadonlySet<string>): boo
 function prepareWatcherStatements(db: ReturnType<typeof openDb>): IncrementalStmts {
   return {
     insertNode: db.prepare(
-      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line) VALUES (?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     getNodeId: {
       get: (...params: unknown[]) => {
@@ -36,15 +36,19 @@ function prepareWatcherStatements(db: ReturnType<typeof openDb>): IncrementalStm
       'SELECT COUNT(*) as c FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)',
     ),
     findNodeInFile: db.prepare(
-      "SELECT id, kind, file, line FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant') AND file = ?",
+      // `accessor_kind` (aliased to `accessorKind`) is included so
+      // resolveCallTargets can filter a #2030 accessorRead-tagged call to a
+      // matching accessor node.
+      "SELECT id, kind, file, line, accessor_kind AS accessorKind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant') AND file = ?",
     ),
     findNodeByName: db.prepare(
       // `kind` is included so resolveByMethodOrGlobal can filter to 'method' for
       // type-aware receiver resolution (mirrors the full-build resolver). `line`
       // is included so resolveCallTargets can tell whether a type-aware match
       // and an already-found bare match are the same physical declaration
-      // (#2025).
-      "SELECT id, file, kind, line FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
+      // (#2025). `accessor_kind` (aliased to `accessorKind`) is included for
+      // the same #2030 reason as findNodeInFile above.
+      "SELECT id, file, kind, line, accessor_kind AS accessorKind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
     ),
     listSymbols: db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? AND kind != 'file'"),
     upsertFileHash: db.prepare(

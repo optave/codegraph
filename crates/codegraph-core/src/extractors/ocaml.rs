@@ -69,6 +69,7 @@ fn handle_ocaml_let_binding(node: &Node, source: &[u8], symbols: &mut FileSymbol
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     } else {
         symbols.definitions.push(Definition {
@@ -82,6 +83,7 @@ fn handle_ocaml_let_binding(node: &Node, source: &[u8], symbols: &mut FileSymbol
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -130,6 +132,7 @@ fn handle_ocaml_module_def(node: &Node, source: &[u8], symbols: &mut FileSymbols
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -159,6 +162,7 @@ fn handle_ocaml_type_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
                     children: opt_children(children),
                     bodyless: None,
                     content_hash: None,
+                    accessor_kind: None,
                 });
             }
         }
@@ -203,6 +207,7 @@ fn handle_ocaml_class_def(node: &Node, source: &[u8], symbols: &mut FileSymbols)
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -247,6 +252,7 @@ fn handle_ocaml_value_spec(node: &Node, source: &[u8], symbols: &mut FileSymbols
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -267,6 +273,7 @@ fn handle_ocaml_external(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -286,6 +293,7 @@ fn handle_ocaml_module_type_def(node: &Node, source: &[u8], symbols: &mut FileSy
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
@@ -312,6 +320,7 @@ fn handle_ocaml_exception_def(node: &Node, source: &[u8], symbols: &mut FileSymb
             children: None,
             bodyless: None,
             content_hash: None,
+            accessor_kind: None,
         });
     }
 }
