@@ -417,6 +417,20 @@ const MIGRATIONS: &[Migration] = &[
       CREATE INDEX IF NOT EXISTS idx_reexport_renames_barrel ON reexport_renames(barrel_file, local_name);
     "#,
     },
+    Migration {
+        // One-time relabel (issue #1996): the CHA-expansion post-pass used to
+        // tag its own output 'cha-expanded' to distinguish it from
+        // this/super-dispatch edges ('cha') for a since-removed
+        // candidate-exclusion filter. Existing databases built before this
+        // migration have persisted 'cha-expanded' rows that an incremental
+        // rebuild's seen-pair dedup would otherwise leave stale forever.
+        // Backfill them once here so every database converges on the
+        // uniform 'cha' label without requiring a full rebuild.
+        version: 26,
+        up: r#"
+      UPDATE edges SET technique = 'cha' WHERE technique = 'cha-expanded';
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────
@@ -1846,6 +1860,44 @@ mod tests {
         assert!(
             has_column(conn, "edges", "dynamic_kind"),
             "edges.dynamic_kind was not repaired for a database already stamped past v20"
+        );
+    }
+
+    /// #1996: a database built before migration v26 existed may have
+    /// persisted `technique = 'cha-expanded'` edges from the CHA-expansion
+    /// post-pass's old self-exclusion convention. Because the incremental
+    /// rebuild's seen-pair dedup guard means such an edge would otherwise
+    /// never be re-emitted (and thus never relabeled) once its pair already
+    /// exists, v26's one-time backfill is the only way an existing database
+    /// converges on the uniform 'cha' label without a full rebuild.
+    #[test]
+    fn init_schema_relabels_legacy_cha_expanded_edges_on_a_database_already_past_v25() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("initial init_schema should succeed");
+
+        {
+            let conn = db.conn().expect("connection should still be open");
+            conn.execute_batch(
+                "INSERT INTO nodes (name, kind, file, line) VALUES ('a', 'function', 'a.ts', 1), ('b', 'method', 'b.ts', 2); \
+                 INSERT INTO edges (source_id, target_id, kind, confidence, dynamic, technique) \
+                   SELECT (SELECT id FROM nodes WHERE name = 'a'), (SELECT id FROM nodes WHERE name = 'b'), \
+                          'calls', 0.8, 0, 'cha-expanded'; \
+                 UPDATE schema_version SET version = 25;",
+            )
+            .expect("simulating a pre-v26 database with a legacy edge should succeed");
+        }
+
+        db.init_schema()
+            .expect("repair init_schema call should succeed");
+
+        let conn = db.conn().expect("connection should still be open");
+        let technique: String = conn
+            .query_row("SELECT technique FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .expect("the edge inserted above should still exist");
+        assert_eq!(
+            technique, "cha",
+            "legacy 'cha-expanded' edge was not relabeled 'cha' by migration v26"
         );
     }
 

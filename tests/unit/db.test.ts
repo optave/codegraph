@@ -87,6 +87,30 @@ describe('MIGRATIONS', () => {
       expect(MIGRATIONS[i].version).toBe(i + 1);
     }
   });
+
+  it("v26 relabels legacy 'cha-expanded' edges to 'cha' on an existing pre-v26 database (#1996)", () => {
+    // Simulate a database built before this migration existed: create it,
+    // insert a legacy-labeled edge, then roll schema_version back to 25 so
+    // initSchema() below re-runs v26 exactly as it would on a real upgrade.
+    const db = new Database(':memory:');
+    initSchema(db);
+    db.prepare(
+      "INSERT INTO nodes (name, kind, file, line) VALUES ('a', 'function', 'a.ts', 1), ('b', 'method', 'b.ts', 2)",
+    ).run();
+    const ids = db.prepare('SELECT id FROM nodes ORDER BY id').all() as Array<{ id: number }>;
+    db.prepare(
+      "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic, technique) VALUES (?, ?, 'calls', 0.8, 0, 'cha-expanded')",
+    ).run(ids[0]!.id, ids[1]!.id);
+    db.prepare('UPDATE schema_version SET version = 25').run();
+
+    initSchema(db);
+
+    const row = db
+      .prepare('SELECT technique FROM edges WHERE source_id = ? AND target_id = ?')
+      .get(ids[0]!.id, ids[1]!.id) as { technique: string };
+    expect(row.technique).toBe('cha');
+    db.close();
+  });
 });
 
 describe('openDb', () => {

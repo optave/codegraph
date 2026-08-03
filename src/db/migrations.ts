@@ -409,6 +409,21 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_reexport_renames_barrel ON reexport_renames(barrel_file, local_name);
     `,
   },
+  {
+    // One-time relabel (issue #1996): the CHA-expansion post-pass used to tag
+    // its own output 'cha-expanded' to distinguish it from this/super-dispatch
+    // edges ('cha') for a since-removed candidate-exclusion filter. Existing
+    // databases built before this migration have persisted 'cha-expanded'
+    // rows that an incremental rebuild's seen-pair dedup would otherwise leave
+    // stale forever (the pair already exists, so no new edge — and no
+    // relabeling — is ever emitted for it). Backfill them once here so every
+    // database converges on the uniform 'cha' label without requiring a full
+    // rebuild.
+    version: 26,
+    up: `
+      UPDATE edges SET technique = 'cha' WHERE technique = 'cha-expanded';
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {
