@@ -1337,7 +1337,14 @@ fn resolve_call_targets_core<'a>(
         // elsewhere" — the unscoped global fallback below is reserved for
         // when the class isn't a known import in this file at all (e.g. an
         // ambient/global type).
-        if let Some(accessor_imported_from) = imported_names.get(dealiased_class_name) {
+        //
+        // `imported_names` is keyed by the *local* binding as written in this
+        // file's own import statement (`receiver` — e.g. "Alias" for
+        // `import { Original as Alias }`), not the de-aliased original name —
+        // looking it up under `dealiased_class_name` would always miss for a
+        // renamed import and silently fall through to the unscoped lookup
+        // this whole branch exists to avoid.
+        if let Some(accessor_imported_from) = imported_names.get(receiver) {
             return ctx
                 .nodes_by_name_and_file
                 .get(&(qualified.as_str(), *accessor_imported_from))
@@ -3525,9 +3532,17 @@ mod call_edge_tests {
     /// qualified lookup, mirroring #1730's general-cascade de-aliasing.
     #[test]
     fn cross_file_accessor_read_dealiases_renamed_import_binding() {
+        // A competing unrelated node with the identical qualified name in a
+        // different file is included deliberately: `imported_names` is keyed
+        // by the *local alias* ('SR'), not the de-aliased original
+        // ('SqliteRepository') — an earlier version of this fix looked it up
+        // under the de-aliased name, always missed, and silently fell through
+        // to the unscoped global lookup, which would have returned this
+        // unrelated node too (masked in a single-candidate test).
         let all_nodes = vec![
             node(1, "useRepo", "function", "consumer.js", 1),
             accessor_node(2, "SqliteRepository.db", "method", "sqlite-repository.js", 3, "get"),
+            accessor_node(3, "SqliteRepository.db", "method", "unrelated-other-file.js", 9, "get"),
         ];
         let mut file = make_file(
             "consumer.js",
@@ -3545,13 +3560,17 @@ mod call_edge_tests {
 
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
 
-        let call_edge = edges.iter().find(|e| e.kind == "calls");
-        assert!(
-            call_edge.is_some(),
-            "expected the renamed-import alias to resolve to the real accessor; got: {:?}",
+        let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
+        assert_eq!(
+            call_edges.len(),
+            1,
+            "expected exactly one calls edge (to the aliased import's own file); got: {:?}",
             edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
         );
-        assert_eq!(call_edge.unwrap().target_id, 2);
+        assert_eq!(
+            call_edges[0].target_id, 2,
+            "expected the imported file's node (id=2), not the unrelated one (id=3)"
+        );
     }
 
     /// Regression for #2030's Greptile review finding: when the resolved

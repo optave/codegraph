@@ -1117,18 +1117,50 @@ describe('resolveCallTargets — accessor-read de-aliasing and import scoping (#
     // `import { SqliteRepository as SR } from './sqlite-repository.js'` seeds
     // the extractor's typeMap with the local alias 'SR', so the tagged call's
     // receiver is 'SR' — the accessor is persisted under the real name.
+    // `importedNames` is keyed by the local alias 'SR' (as the extractor's
+    // import bookkeeping actually populates it), NOT the de-aliased original
+    // — this must still resolve via the scoped (not global) lookup tier.
     const getter = { id: 1, file: 'sqlite-repository.js', kind: 'method', accessorKind: 'get' };
-    const lookup = makeAccessorLookup({}, { 'SqliteRepository.db': [getter] });
+    const lookup = makeAccessorLookup({ 'SqliteRepository.db:sqlite-repository.js': [getter] }, {});
     const { targets } = resolveCallTargets(
       lookup,
       { name: 'db', receiver: 'SR', accessorRead: 'get' },
       'consumer.js',
-      new Map(),
+      new Map([['SR', 'sqlite-repository.js']]),
       new Map(),
       null,
       new Map([['SR', 'SqliteRepository']]),
     );
     expect(targets).toEqual([getter]);
+  });
+
+  it('scopes a renamed-import alias to its own file, not an unrelated same-named global match', () => {
+    // Regression: a first attempt at this fix looked up `importedNames` under
+    // the de-aliased name ('SqliteRepository') instead of the local alias
+    // ('SR') actually used as the map key, always missing for a renamed
+    // import and silently falling through to the unscoped global lookup —
+    // which would have returned this test's unrelated getter too.
+    const realGetter = { id: 1, file: 'sqlite-repository.js', kind: 'method', accessorKind: 'get' };
+    const unrelatedGetter = {
+      id: 2,
+      file: 'unrelated-other-file.js',
+      kind: 'method',
+      accessorKind: 'get',
+    };
+    const lookup = makeAccessorLookup(
+      { 'SqliteRepository.db:sqlite-repository.js': [realGetter] },
+      { 'SqliteRepository.db': [realGetter, unrelatedGetter] },
+    );
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'db', receiver: 'SR', accessorRead: 'get' },
+      'consumer.js',
+      new Map([['SR', 'sqlite-repository.js']]),
+      new Map(),
+      null,
+      new Map([['SR', 'SqliteRepository']]),
+    );
+    expect(targets).toEqual([realGetter]);
   });
 
   it('prefers the file the class is imported from over an unrelated same-named global match', () => {

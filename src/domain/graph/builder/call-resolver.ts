@@ -433,7 +433,14 @@ export function resolveCallTargets(
     // wrong-kind) match here means "no", not "keep looking elsewhere" — the
     // unscoped global fallback below is reserved for when the class isn't a
     // known import in this file at all (e.g. an ambient/global type).
-    const accessorImportedFrom = importedNames.get(dealiasedClassName);
+    //
+    // `importedNames` is keyed by the *local* binding as written in this
+    // file's own import statement (`call.receiver` — e.g. 'Alias' for
+    // `import { Original as Alias }`), not the de-aliased original name —
+    // looking it up under `dealiasedClassName` would always miss for a
+    // renamed import and silently fall through to the unscoped lookup this
+    // whole branch exists to avoid.
+    const accessorImportedFrom = importedNames.get(call.receiver);
     if (accessorImportedFrom) {
       const scoped = lookup
         .byNameAndFile(qualified, accessorImportedFrom)
