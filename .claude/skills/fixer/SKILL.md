@@ -931,12 +931,19 @@ Identify the run triggered by this exact merge commit — the push-triggered run
 ```bash
 mkdir -p .codegraph/fixer
 REPO=$(cat .codegraph/fixer/repo)
+PR=$(cat .codegraph/fixer/current-pr)
 
-# The merge lands via GitHub's own squash-merge machinery, not a local push, so the local
-# checkout does not have the new commit until fetched.
-git fetch origin main || { echo "ERROR: git fetch failed — cannot identify the merge commit"; exit 1; }
-MERGE_SHA=$(git rev-parse origin/main)
-echo "fixer: verifying post-merge CI on main for merge commit $MERGE_SHA"
+# Read the merge commit from the PR object itself, not from origin/main's current tip —
+# if another actor pushes to main between the gh pr merge call above and this step,
+# rev-parse origin/main would silently identify a LATER commit than this merge, and every
+# check below would verify the wrong run while this merge's own CI went unchecked.
+# mergeCommit.oid is authoritative and immutable once GitHub records this PR's merge.
+MERGE_SHA=$(gh pr view "$PR" --repo "$REPO" --json mergeCommit --jq '.mergeCommit.oid')
+if [ -z "$MERGE_SHA" ] || [ "$MERGE_SHA" = "null" ]; then
+  echo "ERROR: could not read PR #$PR's merge commit — cannot verify post-merge CI"; exit 1
+fi
+git fetch origin main || { echo "ERROR: git fetch failed"; exit 1; }
+echo "fixer: verifying post-merge CI on main for merge commit $MERGE_SHA (PR #$PR)"
 
 CI_RUN_ID=""
 for _ in $(seq 1 20); do
