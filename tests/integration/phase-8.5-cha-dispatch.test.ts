@@ -92,13 +92,10 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
       edge,
       `Expected dispatch → ConcreteWorker.doWork edge (CHA should expand IWorker dispatch).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
     ).toBeDefined();
-    // #1996: the WASM/JS inline path (emitChaCallEdgesForCall) tags typed-
-    // receiver interface dispatch 'cha'. The native orchestrator's separate
-    // expansion pass still tags the same semantic case 'cha-expanded' — a
-    // known, tracked remaining inconsistency (#1996), not fixed by this
-    // assertion; pinned here so a future alignment fix has a failing test
-    // to flip rather than silently landing unverified.
-    expect(edge?.technique).toBe(engine === 'wasm' ? 'cha' : 'cha-expanded');
+    // #1996: both the WASM/JS inline path (emitChaCallEdgesForCall) and the
+    // native orchestrator's separate expansion pass (expandChaEdges) now tag
+    // typed-receiver interface dispatch uniformly as 'cha'.
+    expect(edge?.technique).toBe('cha');
   });
 
   it('CHA: emits dispatch → MockWorker.doWork (instantiated implementor)', () => {
@@ -113,7 +110,7 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
       `Expected dispatch → MockWorker.doWork edge (CHA should expand IWorker dispatch).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
     ).toBeDefined();
     // #1996: see the matching note on the ConcreteWorker.doWork test above.
-    expect(edge?.technique).toBe(engine === 'wasm' ? 'cha' : 'cha-expanded');
+    expect(edge?.technique).toBe('cha');
   });
 
   // ── RTA filter ─────────────────────────────────────────────────────────

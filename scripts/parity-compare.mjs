@@ -5,7 +5,9 @@
 // asserts it directly. For every resolution-benchmark fixture it builds the
 // graph with each engine into an isolated temp dir and compares the full node
 // and edge multisets — any difference is a bug in the less-accurate engine,
-// never an acceptable gap. Complements scripts/benchmark-parity-gate.mjs,
+// never an acceptable gap. Edge identity includes `technique` (#1996) so a
+// resolution-technique-label divergence fails parity just like a missing edge
+// or a confidence mismatch. Complements scripts/benchmark-parity-gate.mjs,
 // which gates performance parity (timings, DB size), not correctness.
 //
 // Build paths covered:
@@ -209,16 +211,18 @@ function readMultisets(dir, includeDataflow = false) {
         `SELECT e.kind AS kind,
                 sn.name AS srcName, sn.kind AS srcKind, sn.file AS srcFile,
                 tn.name AS tgtName, tn.kind AS tgtKind, tn.file AS tgtFile,
-                e.confidence AS conf, e.dynamic AS dyn
+                e.confidence AS conf, e.dynamic AS dyn, e.technique AS technique
          FROM edges e
          JOIN nodes sn ON sn.id = e.source_id
          JOIN nodes tn ON tn.id = e.target_id`,
       )
       .all();
     for (const r of edgeRows) {
+      // technique is part of the engine-agnostic edge identity (#1996) — both
+      // engines must agree on it, not just on confidence/dynamic.
       bump(
         edges,
-        `[${r.kind}] ${r.srcFile}:${r.srcName}(${r.srcKind}) -> ${r.tgtFile}:${r.tgtName}(${r.tgtKind}) conf=${r.conf} dyn=${r.dyn}`,
+        `[${r.kind}] ${r.srcFile}:${r.srcName}(${r.srcKind}) -> ${r.tgtFile}:${r.tgtName}(${r.tgtKind}) conf=${r.conf} dyn=${r.dyn} technique=${r.technique ?? 'null'}`,
       );
     }
     edges.set('__TOTAL_ROWS__', edgeRows.length);

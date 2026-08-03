@@ -144,6 +144,12 @@ pub struct ComputedEdge {
     pub dynamic: u32,
     #[napi(js_name = "dynamic_kind")]
     pub dynamic_kind: Option<String>,
+    /// Engine-agnostic resolution-technique label (#1996). `None` for edges
+    /// resolved by direct name-based lookup — the TS/JS caller backfills
+    /// those as `'ts-native'`. `Some("points-to")` for alias-resolved edges
+    /// (`emit_pts_alias_edges`), mirroring the WASM/JS inline path's own
+    /// `'points-to'` tag for the same semantic case.
+    pub technique: Option<String>,
 }
 
 /// Internal struct for caller resolution (def line range → node ID).
@@ -603,6 +609,9 @@ fn emit_pts_alias_edges<'a>(
                         confidence: conf,
                         dynamic: alias_ctx.is_dynamic,
                         dynamic_kind: None,
+                        // Alias-resolved edge (#1996) — mirrors the WASM/JS inline
+                        // path's 'points-to' tag for the same semantic case.
+                        technique: Some("points-to".to_string()),
                     });
                 }
             }
@@ -1004,6 +1013,7 @@ fn process_file<'a>(
                             confidence: 0.0,
                             dynamic: 1,
                             dynamic_kind: Some(dk.clone()),
+                            technique: None,
                         });
                     }
                 }
@@ -1775,10 +1785,12 @@ fn emit_call_edges(
                 // A pts-resolved edge already exists for this caller→target pair with a
                 // penalised confidence. Upgrade it to the direct-call confidence in-place,
                 // then promote to seen_edges so no further processing is needed.
-                // Mirrors the ptsEdgeRows upgrade path in build-edges.ts.
+                // Mirrors the ptsEdgeRows upgrade path in build-edges.ts, including the
+                // technique relabel from 'points-to' to 'ts-native' (#1996).
                 if let Some(pts_row) = edges.get_mut(pts_idx) {
                     pts_row.confidence = confidence;
                     pts_row.dynamic = is_dynamic; // direct call overrides alias dynamic flag
+                    pts_row.technique = Some("ts-native".to_string());
                 }
                 pts_edge_map.remove(&edge_key);
                 seen_edges.insert(edge_key);
@@ -1788,6 +1800,7 @@ fn emit_call_edges(
                     source_id: caller_id, target_id: t.id,
                     kind: "calls".to_string(), confidence, dynamic: is_dynamic,
                     dynamic_kind: None,
+                    technique: None,
                 });
             }
         }
@@ -1849,6 +1862,7 @@ fn emit_receiver_edge(
                 source_id: caller_id, target_id: recv_target.id,
                 kind: "receiver".to_string(), confidence, dynamic: 0,
                 dynamic_kind: None,
+                technique: None,
             });
         }
     }
@@ -1927,6 +1941,7 @@ fn emit_hierarchy_edges(
                     source_id: source.id, target_id: t.id,
                     kind: "extends".to_string(), confidence: 1.0, dynamic: 0,
                     dynamic_kind: None,
+                    technique: None,
                 });
             }
         }
@@ -1937,6 +1952,7 @@ fn emit_hierarchy_edges(
                     source_id: source.id, target_id: t.id,
                     kind: "implements".to_string(), confidence: 1.0, dynamic: 0,
                     dynamic_kind: None,
+                    technique: None,
                 });
             }
         }
@@ -2278,6 +2294,7 @@ fn emit_named_symbol_edges(
             confidence: 1.0,
             dynamic: 0,
             dynamic_kind: None,
+            technique: None,
         });
     }
 }
@@ -2326,6 +2343,7 @@ fn emit_barrel_through_edges(
                 confidence: 0.9,
                 dynamic: 0,
                 dynamic_kind: None,
+                technique: None,
             });
         }
         resolved_sources.insert(actual_source);
@@ -2361,6 +2379,7 @@ fn process_single_import(
         confidence: 1.0,
         dynamic: 0,
         dynamic_kind: None,
+        technique: None,
     });
     // Always attempted (not just for `import type`/inline-`type` specifiers) —
     // emit_named_symbol_edges also credits plain specifiers that resolve to a
@@ -2378,6 +2397,7 @@ fn process_single_import(
             confidence: 1.0,
             dynamic: 0,
             dynamic_kind: None,
+            technique: None,
         });
     }
     emit_barrel_through_edges(edges, file_input, imp, resolved_path, edge_kind, ctx);
@@ -3975,6 +3995,111 @@ mod call_edge_tests {
             edges.iter().any(|e| e.source_id == 3 && e.target_id == 1 && e.kind == "calls"),
             "expected direct edge main→hof; got: {:?}",
             edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+        );
+    }
+
+    /// #1996: an alias/points-to-resolved call edge must carry the
+    /// engine-agnostic `technique: "points-to"` label at insert time — not
+    /// left untagged for the generic `'ts-native'` backfill to swallow, which
+    /// would make it indistinguishable from a direct-resolution edge (unlike
+    /// the WASM/JS inline path, which already tags this case 'points-to').
+    #[test]
+    fn pts_alias_edge_is_tagged_points_to_technique() {
+        let all_nodes = vec![
+            node(1, "hof",    "function", "lib.js", 1),
+            node(2, "target", "function", "lib.js", 5),
+            node(3, "main",   "function", "lib.js", 8),
+        ];
+        let file = {
+            let mut f = make_file(
+                "lib.js",
+                10,
+                vec![
+                    def_with_params("hof", 1, 3, &["cb"]),
+                    def("target", "function", 5, 6),
+                    def("main", "function", 8, 10),
+                ],
+                vec![call("cb", 2, None), call("hof", 9, None)],
+                vec![],
+                vec![],
+            );
+            f.param_bindings = Some(vec![ParamBinding {
+                callee: "hof".to_string(),
+                arg_index: 0,
+                arg_name: "target".to_string(),
+            }]);
+            f
+        };
+
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        let pts_edge = edges
+            .iter()
+            .find(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls")
+            .expect("expected pts edge hof→target");
+        assert_eq!(
+            pts_edge.technique.as_deref(),
+            Some("points-to"),
+            "pts-resolved edge must be tagged 'points-to', got {:?}",
+            pts_edge.technique
+        );
+    }
+
+    /// #1996: when a direct call to the same target the pts fallback already
+    /// resolved is also present, the pts edge's technique must be relabeled
+    /// 'ts-native' in place (the direct resolution supersedes the alias
+    /// resolution), mirroring the WASM/JS `ptsEdgeRows` upgrade path exactly.
+    #[test]
+    fn pts_alias_edge_technique_upgraded_to_ts_native_on_direct_call() {
+        let all_nodes = vec![
+            node(1, "hof",    "function", "lib.js", 1),
+            node(2, "target", "function", "lib.js", 6),
+            node(3, "main",   "function", "lib.js", 9),
+        ];
+        let file = {
+            let mut f = make_file(
+                "lib.js",
+                11,
+                vec![
+                    def_with_params("hof", 1, 4, &["cb"]),
+                    def("target", "function", 6, 7),
+                    def("main", "function", 9, 11),
+                ],
+                vec![
+                    // pts fallback: cb() resolves to target via the param binding.
+                    call("cb", 2, None),
+                    // Direct call to the same target from within hof — must
+                    // upgrade the pts edge's technique from 'points-to' to
+                    // 'ts-native' in place rather than inserting a duplicate.
+                    call("target", 3, None),
+                    call("hof", 10, None),
+                ],
+                vec![],
+                vec![],
+            );
+            f.param_bindings = Some(vec![ParamBinding {
+                callee: "hof".to_string(),
+                arg_index: 0,
+                arg_name: "target".to_string(),
+            }]);
+            f
+        };
+
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        let hof_to_target: Vec<_> =
+            edges.iter().filter(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls").collect();
+        assert_eq!(
+            hof_to_target.len(),
+            1,
+            "expected exactly one hof→target edge (upgraded in place, not duplicated); got: {:?}",
+            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind, &e.technique)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            hof_to_target[0].technique.as_deref(),
+            Some("ts-native"),
+            "direct call must upgrade the pts edge's technique to 'ts-native', got {:?}",
+            hof_to_target[0].technique
         );
     }
 

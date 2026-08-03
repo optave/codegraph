@@ -1689,6 +1689,7 @@ fn insert_call_edge_rows(
             confidence: e.confidence,
             dynamic: e.dynamic,
             dynamic_kind: e.dynamic_kind.clone(),
+            technique: e.technique.clone(),
         })
         .collect();
     crate::db::repository::edges::do_insert_edges(conn, &edge_rows)

@@ -586,13 +586,19 @@ function expandChaCall(
           const key = `${sourceId}|${methodNode.id}`;
           if (seen.has(key)) continue;
           seen.add(key);
+          // Technique is 'cha' (not a distinct 'cha-expanded' label) so this
+          // pass's output is indistinguishable from any other typed-receiver
+          // CHA dispatch edge, matching the WASM inline path's convention
+          // (#1996). The exclusion filter below no longer special-cases this
+          // pass's own prior output — see the comment on the candidate query
+          // in runChaPostPass for why that's safe.
           newEdges.push([
             sourceId,
             methodNode.id,
             'calls',
             CHA_TYPED_DISPATCH_CONFIDENCE,
             0,
-            'cha-expanded',
+            'cha',
           ]);
         }
       }
@@ -629,6 +635,18 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
     debug('runChaPostPass: no constructor-call evidence — proceeding without RTA filter');
   }
 
+  // No technique exclusion here: this pass's own prior output is now tagged
+  // 'cha' (#1996), the same label as this/super-dispatch edges from a
+  // different pass — both are legitimate candidates for further BFS
+  // expansion (e.g. a this-dispatch edge resolved to an ancestor's method
+  // may still need expanding to sibling overrides). Re-examining a
+  // previously-expanded edge as a candidate again is safe: the BFS below
+  // already walks the full multi-level hierarchy in one pass, so any
+  // further "expansion" of an already-expanded edge just re-derives pairs
+  // already present in `seen` and is skipped there — no duplicate or
+  // incorrect edges result, only bounded redundant work on incremental
+  // rebuilds that re-scan the whole candidate set (Gate A/B in the native
+  // orchestrator's equivalent, `fetchChaCallToMethods`).
   const callToMethods = db
     .prepare(
       `SELECT e.source_id, src.name AS caller_name, tgt.name AS method_name
@@ -636,8 +654,7 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
        JOIN nodes tgt ON e.target_id = tgt.id
        JOIN nodes src ON e.source_id = src.id
        WHERE e.kind = 'calls' AND tgt.kind = 'method'
-       AND INSTR(tgt.name, '.') > 0
-       AND (e.technique IS NULL OR e.technique != 'cha-expanded')`,
+       AND INSTR(tgt.name, '.') > 0`,
     )
     .all() as Array<{ source_id: number; caller_name: string; method_name: string }>;
 

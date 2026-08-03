@@ -129,6 +129,10 @@ interface NativeEdge {
   confidence: number;
   dynamic: number;
   dynamic_kind?: string | null;
+  /** Engine-agnostic resolution-technique label (#1996), e.g. 'points-to'
+   * for alias-resolved calls. Absent/null for direct-resolution edges, which
+   * fall through to the 'ts-native' default below. */
+  technique?: string | null;
 }
 
 // ── Node lookup setup ───────────────────────────────────────────────────
@@ -696,7 +700,7 @@ function buildCallEdgesNative(
       e.kind,
       e.confidence,
       e.dynamic,
-      e.kind === 'calls' ? 'ts-native' : null,
+      e.kind === 'calls' ? (e.technique ?? 'ts-native') : null,
       e.dynamic_kind ?? null,
     ]);
   }

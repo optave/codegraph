@@ -805,6 +805,17 @@ function fetchChaCallToMethods(
   changedFiles: string[] | null,
   scopeToChangedFiles: boolean,
 ): ChaCallRow[] {
+  // No technique exclusion here: this pass's own prior output is tagged
+  // 'cha' (#1996), the same label used by this/super-dispatch edges from a
+  // different pass (runPostNativeThisDispatch) — both are legitimate
+  // candidates for further BFS expansion. Re-examining a previously-expanded
+  // edge as a candidate again is safe: expandChaEdges's BFS already walks the
+  // full multi-level hierarchy in one pass, so re-processing an
+  // already-expanded edge just re-derives pairs already present in `seen`
+  // and is skipped there — no duplicate or incorrect edges, only bounded
+  // redundant work on the rare incremental rebuild where Gate A/B forces a
+  // full rescan. Mirrors the equivalent change in builder/helpers.ts's
+  // runChaPostPass (the WASM-path twin of this function).
   if (scopeToChangedFiles && changedFiles && changedFiles.length > 0) {
     const CHUNK_SIZE = 500;
     const rows: ChaCallRow[] = [];
@@ -819,7 +830,6 @@ function fetchChaCallToMethods(
            JOIN nodes src ON e.source_id = src.id
            WHERE e.kind = 'calls' AND tgt.kind = 'method'
            AND INSTR(tgt.name, '.') > 0
-           AND (e.technique IS NULL OR e.technique != 'cha-expanded')
            AND src.file IN (${ph})`,
         )
         .all(...chunk) as ChaCallRow[];
@@ -835,7 +845,6 @@ function fetchChaCallToMethods(
       JOIN nodes src ON e.source_id = src.id
       WHERE e.kind = 'calls' AND tgt.kind = 'method'
       AND INSTR(tgt.name, '.') > 0
-      AND (e.technique IS NULL OR e.technique != 'cha-expanded')
     `)
     .all() as ChaCallRow[];
 }
@@ -919,7 +928,11 @@ function expandChaEdges(
             if (seen.has(key)) continue;
             seen.add(key);
             const conf = CHA_TYPED_DISPATCH_CONFIDENCE;
-            newEdges.push([source_id, methodNode.id, 'calls', conf, 0, 'cha-expanded']);
+            // Technique is 'cha' (not a distinct 'cha-expanded' label), matching
+            // the WASM inline path's convention (#1996) — see the comment on
+            // fetchChaCallToMethods for why the candidate query no longer needs
+            // to exclude this pass's own prior output by technique.
+            newEdges.push([source_id, methodNode.id, 'calls', conf, 0, 'cha']);
             newEdgeCount++;
             if (caller_file) affectedFiles.add(caller_file);
             if (methodNode.method_file) affectedFiles.add(methodNode.method_file);
@@ -2302,9 +2315,9 @@ async function runPostNativePasses(
   // the nodes whose fan-in/out actually changed.
   //
   // Runs AFTER this/super dispatch so super.method() edges are already in the DB.
-  // The 'cha-expanded' technique tag on this pass's own output prevents re-expansion
-  // of those edges in subsequent incremental builds, while 'cha'-tagged edges from
-  // this/super dispatch remain eligible for expansion here.
+  // This pass's own output and this/super dispatch's edges both carry the
+  // uniform 'cha' technique tag (#1996) — see fetchChaCallToMethods for why
+  // that's safe (no exclusion of prior output is needed).
   //
   // Function-as-object-property methods (`fn.method = function() {}`) are extracted
   // natively by the Rust engine (#1432) and resolved in-build by its edge builder, so
