@@ -95,11 +95,36 @@ All subagents in this sweep — and any other concurrent session — share one a
   3. Repeat step 2 across consecutive tool calls — not one giant sleep — until `remaining > 0` or the current time has passed `reset`.
   4. Once capacity returns, treat anything you gathered right before the exhaustion as stale — re-run Step 2c and Step 2d/2d.1 fresh before continuing, per the usual "never declare ready from a stale check" rule.
 
-### 2a. Check out the PR branch
+### 2a. Check out the PR head (detached)
+
+A full sweep runs one subagent per PR in parallel, so **never** run a bare `gh pr checkout <number>`: it claims the head branch *name*, and a branch can be checked out in exactly **one** worktree. If a concurrent agent — or a leftover worktree that was never collected — already holds it, the checkout aborts outright:
+
+```text
+fatal: 'fix/some-branch' is already checked out at '.claude/worktrees/wf_40037ee4-070-1'
+```
+
+Check out **detached** instead. A detached HEAD claims no branch name, so it can never collide; push by refspec at the end. Do **not** work around a collision by inventing a local branch name of your own.
 
 ```bash
-gh pr checkout <number>
+oid=$(gh pr view <number> --json headRefOid -q .headRefOid)
+gh pr checkout <number> --detach
+# Fail closed if HEAD is not the PR head (stale fetch, or the head moved as you started).
+[ "$(git rev-parse HEAD)" = "$oid" ] || { echo "ABORT: HEAD is not PR <number>'s head"; exit 1; }
 ```
+
+**Do not carry the branch name in a shell variable across steps.** Each Bash tool call may run in a fresh shell — variables set in one call do not survive into the next. A `head=...` captured here is gone by the time a later step pushes, silently expanding `git push origin "HEAD:$head"` into the invalid refspec `HEAD:` and leaving your fixes unpushed with no error surfaced until you check the PR. Instead, **re-derive the branch name in the same Bash call as every push**:
+
+```bash
+git push origin "HEAD:$(gh pr view <number> --json headRefName -q .headRefName)"
+```
+
+This applies to every push in this skill, including the commitlint-amend exception:
+
+```bash
+git push --force-with-lease origin "HEAD:$(gh pr view <number> --json headRefName -q .headRefName)"
+```
+
+> Stale worktrees are the usual reason a name is taken. `bash .claude/scripts/gc-worktrees.sh` collects the finished ones; it never touches a worktree with uncommitted work.
 
 ### 2b. Resolve merge conflicts
 
@@ -271,9 +296,12 @@ After addressing all comments for a PR:
 1. Stage only the files you changed.
 2. Group changes by concern — each logically distinct fix gets its own commit (e.g., one commit for a missing validation, another for a naming change). Do not lump all feedback into a single commit.
 3. Use descriptive messages per commit: `fix: <what this specific change does> (#<number>)`
-4. Push to the PR branch.
+4. Push to the PR branch — re-derive the branch name in the same call, per Step 2a:
+   ```bash
+   git push origin "HEAD:$(gh pr view <number> --json headRefName -q .headRefName)"
+   ```
 5. **If the push is rejected** (e.g., by a hook or commitlint), diagnose the error before retrying:
-   - **Commitlint failure** (bad commit message format): This is the ONE case where amend + force-push is allowed. Fix the message with `git commit --amend -m "correct message"` then `git push --force-with-lease`.
+   - **Commitlint failure** (bad commit message format): This is the ONE case where amend + force-push is allowed. Fix the message with `git commit --amend -m "correct message"` then `git push --force-with-lease origin "HEAD:$(gh pr view <number> --json headRefName -q .headRefName)"` (by refspec — you are on a detached HEAD from step 2a).
    - **Hook denial** (guard-git.sh blocking staged files not in session edit log): The worktree has no edit log — commit with explicit file paths (`git commit <file1> <file2> -m "msg"`) instead of staging first.
    - **Branch name validation failure**: You are on the wrong branch — check out the correct PR branch before retrying.
    - **Any other failure**: Fix with a new commit. Never amend + force-push for code changes.
@@ -405,7 +433,8 @@ If any subagent failed or returned an error, note it in the Status column as `ag
 ## Rules
 
 - **Never rebase.** Always `git merge <base>` to resolve conflicts.
-- **Never force-push** unless fixing a commit message that fails commitlint. Amend + force-push is the only way to fix a pushed commit title (messages are part of the SHA). This is safe on feature branches. For all other problems, fix with a new commit. **If a push or commit is denied by a hook**, read the denial reason — don't blindly retry or escalate to force-push. Common causes: (1) commitlint rejects the message format → amend + force-push (`git push --force-with-lease`), (2) guard-git blocks staged files not in session edit log → use `git commit <file1> <file2> -m "msg"` with explicit paths, (3) branch name validation fails → you're on the wrong branch.
+- **Push by refspec — you are detached.** Step 2a checks the PR head out with `--detach` so the checkout cannot collide with another worktree holding that branch name. A bare `git push` therefore fails with *"You are not currently on a branch"*: every push is `git push origin "HEAD:$(gh pr view <number> --json headRefName -q .headRefName)"`, re-deriving the branch name in the same Bash call as the push — a shell variable captured in an earlier step does not survive into a later one.
+- **Never force-push** unless fixing a commit message that fails commitlint. Amend + force-push is the only way to fix a pushed commit title (messages are part of the SHA). This is safe on feature branches. For all other problems, fix with a new commit. **If a push or commit is denied by a hook**, read the denial reason — don't blindly retry or escalate to force-push. Common causes: (1) commitlint rejects the message format → amend + force-push (`git push --force-with-lease origin "HEAD:$(gh pr view <number> --json headRefName -q .headRefName)"`), (2) guard-git blocks staged files not in session edit log → use `git commit <file1> <file2> -m "msg"` with explicit paths, (3) branch name validation fails → your detached HEAD is not on the PR's head commit.
 - **Address ALL comments from ALL reviewers** (Claude, Greptile, and humans), even minor/nit/optional ones. Leave zero unaddressed. Do not only respond to one reviewer and skip another.
 - **Always reply to comments** explaining what was done. Don't just fix silently. Every reviewer must see a reply on their feedback.
 - **Mine the Greptile *summary* body, not just inline comments** (Step 2d.1). A `Confidence Score: N/5` with `N < 5` always names at least one gap in prose, and those gaps frequently have **no** inline comment. Extract every finding from the summary and fix it (or file a tracked `follow-up`). Missing a summary-only finding is the #1 way a Greptile concern survives a sweep — reconcile your fixes against the summary before declaring the PR ready.

@@ -114,6 +114,12 @@ echo "Pre-flight passed. PR: $(jq -r '.title' .codegraph/resolve/pr-meta.json)"
 
 Check out the PR branch and run `git merge` to surface all conflicts.
 
+Check out **detached**. A plain `gh pr checkout` claims the branch *name*, and a branch can
+be checked out in only one worktree — if a concurrent agent or a leftover worktree already
+holds `$HEAD_BRANCH`, it aborts with `fatal: '<branch>' is already checked out at ...`. A
+detached HEAD claims no name, so it cannot collide; the push at the end targets the branch
+by refspec instead.
+
 ```bash
 HEAD_BRANCH=$(cat .codegraph/resolve/head-branch)
 BASE_BRANCH=$(cat .codegraph/resolve/base-branch)
@@ -121,7 +127,7 @@ PR_NUMBER=$(cat .codegraph/resolve/pr-number)
 REPO=$(cat .codegraph/resolve/repo)
 
 echo "Checking out PR branch: $HEAD_BRANCH"
-gh pr checkout "$PR_NUMBER" --repo "$REPO" \
+gh pr checkout "$PR_NUMBER" --repo "$REPO" --detach \
 
   || { echo "ERROR: failed to check out PR #$PR_NUMBER"; exit 1; }
 
@@ -545,6 +551,7 @@ fi
 Commit the resolved merge and push to the PR branch.
 
 ```bash
+HEAD_BRANCH=$(cat .codegraph/resolve/head-branch)
 BASE_BRANCH=$(cat .codegraph/resolve/base-branch)
 
 # Guard against empty commit (all staged changes might have been no-ops)
@@ -562,8 +569,12 @@ else
   echo "Committed merge resolution."
 fi
 
-echo "Pushing to origin..."
-git push \
+# Push BY REFSPEC: Phase 1 checked out detached (so the checkout could not collide with
+# another worktree holding this branch), and a bare `git push origin "HEAD:$HEAD_BRANCH"` from a detached HEAD fails
+# with "You are not currently on a branch". HEAD:<branch> is still a normal
+# fast-forward-only push — a non-fast-forward is rejected exactly as before.
+echo "Pushing to origin/$HEAD_BRANCH..."
+git push origin "HEAD:$HEAD_BRANCH" \
   || { echo "ERROR: push failed — check branch protection or authentication"; exit 1; }
 echo "Pushed successfully."
 ```
