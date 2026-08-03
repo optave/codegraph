@@ -1109,6 +1109,11 @@ pub fn purge_changed_files(
         ("DELETE FROM function_complexity WHERE node_id IN (SELECT id FROM nodes WHERE file = ?1)", false),
         ("DELETE FROM node_metrics WHERE node_id IN (SELECT id FROM nodes WHERE file = ?1)", false),
         ("DELETE FROM ast_nodes WHERE file = ?1", false),
+        // #1967: barrel rename pairs keyed by barrel file — cleared alongside
+        // the barrel's own outgoing edges so a deleted or no-longer-barrel
+        // file never leaves stale rows behind for the JS watch path's
+        // `resolveBarrelTarget` to read later.
+        ("DELETE FROM reexport_renames WHERE barrel_file = ?1", false),
         // Core tables (errors logged)
         ("DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?1) OR target_id IN (SELECT id FROM nodes WHERE file = ?1)", true),
         ("DELETE FROM nodes WHERE file = ?1", true),
@@ -1155,7 +1160,7 @@ pub fn clear_all_graph_data(conn: &Connection, has_embeddings: bool) {
         "PRAGMA foreign_keys = OFF; \
          DELETE FROM cfg_edges; DELETE FROM cfg_blocks; DELETE FROM node_metrics; \
          DELETE FROM edges; DELETE FROM function_complexity; DELETE FROM dataflow; \
-         DELETE FROM ast_nodes; DELETE FROM nodes; DELETE FROM file_hashes;",
+         DELETE FROM ast_nodes; DELETE FROM reexport_renames; DELETE FROM nodes; DELETE FROM file_hashes;",
     );
     if has_embeddings {
         sql.push_str(" DELETE FROM embeddings;");

@@ -394,6 +394,29 @@ const MIGRATIONS: &[Migration] = &[
       ALTER TABLE nodes ADD COLUMN content_hash TEXT;
     "#,
     },
+    Migration {
+        // Persist barrel re-export rename pairs (issue #1967): `export { X
+        // as Y } from '...'` records `{local: Y, imported: X}` alongside
+        // which file the rename's own source resolves to. Populated by the
+        // native orchestrator (import_edges::persist_reexport_renames) and
+        // the JS pipeline (resolve-imports.ts) whenever a barrel file is
+        // (re)parsed, so `codegraph watch`'s single-file incremental rebuild
+        // (resolveBarrelTarget, domain/graph/builder/incremental.ts, JS-only)
+        // can translate a consumer's requested external alias back to the
+        // name actually declared in the reexport source without needing to
+        // re-parse the barrel file itself in the same watch batch.
+        version: 25,
+        up: r#"
+      CREATE TABLE IF NOT EXISTS reexport_renames (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        barrel_file TEXT NOT NULL,
+        local_name TEXT NOT NULL,
+        imported_name TEXT NOT NULL,
+        source_file TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_reexport_renames_barrel ON reexport_renames(barrel_file, local_name);
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────

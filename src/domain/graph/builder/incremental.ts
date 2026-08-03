@@ -235,6 +235,10 @@ function rebuildReverseDepEdges(
   const fileNodeRow = stmts.getNodeId.get(depRelPath, 'file', depRelPath, 0);
   if (!fileNodeRow) return 0;
 
+  // #1967: keep this reverse-dep's persisted barrel rename table current if
+  // it's itself a barrel — independent of the edges rebuilt below.
+  persistReexportRenamesForFile(db, depRelPath, symbols, rootDir);
+
   const aliases: PathAliases = { baseUrl: null, paths: {} };
   let edgesAdded = buildContainmentEdges(db, stmts, depRelPath, symbols);
   // Don't rebuild dir->file containment for reverse-deps (it was never deleted)
@@ -299,11 +303,17 @@ let _barrelDb: BetterSqlite3Database | null = null;
 let _isBarrelStmt: SqliteStatement | null = null;
 let _reexportTargetsStmt: SqliteStatement | null = null;
 let _hasDefStmt: SqliteStatement | null = null;
+let _renameLookupStmt: SqliteStatement | null = null;
+let _renameDeleteStmt: SqliteStatement | null = null;
+let _renameInsertStmt: SqliteStatement | null = null;
 
 function getBarrelStmts(db: BetterSqlite3Database): {
   isBarrelStmt: SqliteStatement;
   reexportTargetsStmt: SqliteStatement;
   hasDefStmt: SqliteStatement;
+  renameLookupStmt: SqliteStatement;
+  renameDeleteStmt: SqliteStatement;
+  renameInsertStmt: SqliteStatement;
 } {
   if (_barrelDb !== db) {
     _barrelDb = db;
@@ -321,11 +331,25 @@ function getBarrelStmts(db: BetterSqlite3Database): {
     _hasDefStmt = db.prepare(
       `SELECT 1 FROM nodes WHERE name = ? AND file = ? AND kind != 'file' AND kind != 'directory' LIMIT 1`,
     );
+    // #1967: persisted barrel rename pairs — see `resolveBarrelTarget` and
+    // `persistReexportRenamesForFile` below.
+    _renameLookupStmt = db.prepare(
+      `SELECT imported_name, source_file FROM reexport_renames
+       WHERE barrel_file = ? AND local_name = ? LIMIT 1`,
+    );
+    _renameDeleteStmt = db.prepare('DELETE FROM reexport_renames WHERE barrel_file = ?');
+    _renameInsertStmt = db.prepare(
+      `INSERT INTO reexport_renames (barrel_file, local_name, imported_name, source_file)
+       VALUES (?, ?, ?, ?)`,
+    );
   }
   return {
     isBarrelStmt: _isBarrelStmt!,
     reexportTargetsStmt: _reexportTargetsStmt!,
     hasDefStmt: _hasDefStmt!,
+    renameLookupStmt: _renameLookupStmt!,
+    renameDeleteStmt: _renameDeleteStmt!,
+    renameInsertStmt: _renameInsertStmt!,
   };
 }
 
@@ -336,17 +360,69 @@ function isBarrelFile(db: BetterSqlite3Database, relPath: string): boolean {
 }
 
 /**
- * KNOWN LIMITATION, tracked separately in #1967: this is `codegraph watch`'s
- * single-file rebuild path (see `watcher.ts`) — unlike the `codegraph build`
- * resolver (`resolveBarrelExport` in resolve-imports.ts, fixed for #1823),
- * this has no way to recover a barrel's `export { X as Y } from …` rename
- * table when the barrel file itself isn't part of the current watch batch —
- * that mapping only exists in the barrel's freshly-parsed `Import.renamedImports`,
- * which isn't persisted to the DB and this function has no reparse access to.
- * It therefore still resolves purely by direct name match — renamed barrel
- * re-exports are not resolved when only a consumer file changes under watch.
+ * Persist this file's barrel re-export rename pairs (`export { X as Y } from
+ * …`) into `reexport_renames` (#1967) — the durable counterpart of
+ * `persistReexportRenames` in `resolve-imports.ts` (full-build path), needed
+ * here because `codegraph watch`'s single-file rebuild never goes through
+ * that stage. Always deletes this file's existing rows first (even when it
+ * has no reexports left) so a barrel that drops all its renames — or stops
+ * being a barrel entirely — never leaves stale rows behind.
+ *
+ * Called for both the primary rebuilt file and each reverse-dep, so a
+ * barrel's rename table stays current whenever *it* is reparsed, regardless
+ * of which file triggered this rebuild.
+ */
+function persistReexportRenamesForFile(
+  db: BetterSqlite3Database,
+  relPath: string,
+  symbols: ExtractorOutput,
+  rootDir: string,
+): void {
+  const { renameDeleteStmt, renameInsertStmt } = getBarrelStmts(db);
+  renameDeleteStmt.run(relPath);
+
+  const reexports = symbols.imports.filter((imp) => imp.reexport);
+  if (reexports.length === 0) return;
+
+  const aliases: PathAliases = { baseUrl: null, paths: {} };
+  for (const imp of reexports) {
+    if (!imp.renamedImports?.length) continue;
+    const source = resolveImportPath(path.join(rootDir, relPath), imp.source, rootDir, aliases);
+    for (const rename of imp.renamedImports) {
+      renameInsertStmt.run(relPath, rename.local, rename.imported, source);
+    }
+  }
+}
+
+/**
+ * Resolve a symbol through a barrel's re-export chain, consulting persisted
+ * rename pairs (`reexport_renames`, #1967) before falling back to a direct
+ * name match against the barrel's `reexports` edge targets.
+ *
+ * This is `codegraph watch`'s single-file rebuild path (see `watcher.ts`) —
+ * unlike the `codegraph build` resolver (`resolveBarrelExport` in
+ * resolve-imports.ts, fixed for #1823), it cannot re-parse the barrel file
+ * itself when it isn't part of the current watch batch. Previously this
+ * meant a renamed barrel re-export (`export { X as Y } from …`) could never
+ * resolve unless the barrel itself was reparsed in the same batch — the
+ * `{ local: Y, imported: X }` mapping only existed in the barrel's
+ * freshly-parsed `Import.renamedImports`, which was never persisted.
+ * `persistReexportRenamesForFile` (this file) and `persistReexportRenames`
+ * (resolve-imports.ts) now write that mapping to `reexport_renames` whenever
+ * the barrel itself is parsed (full build, incremental build, or a watch
+ * rebuild that happens to touch the barrel directly), so a later watch cycle
+ * that only touches a *consumer* can still look up the translation here.
+ *
+ * If a rename row matches but doesn't resolve (a stale mapping — the target
+ * no longer defines that symbol, and it isn't a further barrel hop), this
+ * deliberately falls through to the untranslated search below rather than
+ * committing to a possibly-wrong answer: unlike `resolveBarrelExport`'s
+ * in-memory `reexportMap` (always fresh within a single build), this
+ * persisted table can go stale between builds when only a consumer changes.
+ *
  * `name` in the result mirrors the shared `CallNodeLookup.resolveBarrel`
- * shape but is always just the input `symbolName` unchanged.
+ * shape — the actual declared name in `file`, which differs from the input
+ * `symbolName` exactly when a rename translation was applied.
  */
 function resolveBarrelTarget(
   db: BetterSqlite3Database,
@@ -357,7 +433,20 @@ function resolveBarrelTarget(
   if (visited.has(barrelPath)) return null;
   visited.add(barrelPath);
 
-  const { reexportTargetsStmt, hasDefStmt } = getBarrelStmts(db);
+  const { reexportTargetsStmt, hasDefStmt, renameLookupStmt } = getBarrelStmts(db);
+
+  const renameRow = renameLookupStmt.get(barrelPath, symbolName) as
+    | { imported_name: string; source_file: string }
+    | undefined;
+  if (renameRow) {
+    const { imported_name: importedName, source_file: sourceFile } = renameRow;
+    if (hasDefStmt.get(importedName, sourceFile)) return { file: sourceFile, name: importedName };
+    if (isBarrelFile(db, sourceFile)) {
+      const deeper = resolveBarrelTarget(db, sourceFile, importedName, visited);
+      if (deeper) return deeper;
+    }
+    // Stale rename mapping — fall through to the untranslated search below.
+  }
 
   // Find re-export targets from this barrel
   const reexportTargets = reexportTargetsStmt.all(barrelPath) as Array<{ file: string }>;
@@ -1287,6 +1376,10 @@ function rebuildEdgesForTargetFile(
   fileNodeRow: { id: number },
   rootDir: string,
 ): number {
+  // #1967: keep this file's persisted barrel rename table current if it's
+  // itself a barrel — independent of the edges rebuilt below.
+  persistReexportRenamesForFile(db, relPath, symbols, rootDir);
+
   const aliases: PathAliases = { baseUrl: null, paths: {} };
   let edgesAdded = buildContainmentEdges(db, stmts, relPath, symbols);
   edgesAdded += rebuildDirContainment(db, stmts, relPath);

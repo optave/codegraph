@@ -15,6 +15,11 @@ interface PurgeStmts {
   edges: SqliteStatement;
   nodes: SqliteStatement;
   fileHashes: SqliteStatement | null;
+  /** #1967: barrel rename pairs keyed by barrel file — cleared alongside the
+   *  barrel's own outgoing edges so a deleted or no-longer-barrel file never
+   *  leaves stale rows behind for `resolveBarrelTarget` (incremental.ts) to
+   *  read later. */
+  reexportRenames: SqliteStatement | null;
 }
 
 interface PurgeOpts {
@@ -81,6 +86,7 @@ function preparePurgeStmts(db: BetterSqlite3Database): PurgeStmts {
     ),
     nodes: db.prepare('DELETE FROM nodes WHERE file = ?'),
     fileHashes: tryPrepare('DELETE FROM file_hashes WHERE file = ?'),
+    reexportRenames: tryPrepare('DELETE FROM reexport_renames WHERE barrel_file = ?'),
   };
 }
 
@@ -113,6 +119,7 @@ function runPurge(stmts: PurgeStmts, file: string, opts: PurgeOpts = {}): void {
   stmts.complexity?.run(file);
   stmts.nodeMetrics?.run(file);
   stmts.astNodes?.run(file);
+  stmts.reexportRenames?.run(file);
 
   // Core tables
   stmts.edges.run({ f: file });

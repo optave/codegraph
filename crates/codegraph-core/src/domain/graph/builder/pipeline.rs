@@ -685,6 +685,12 @@ pub fn run_pipeline(
     import_ctx.barrel_only_files =
         import_edges::detect_barrel_only_files(&import_ctx, &barrel_candidates_added);
 
+    // Persist barrel rename pairs so `codegraph watch`'s JS-only single-file
+    // rebuild (resolveBarrelTarget, incremental.ts) can resolve renamed
+    // barrel re-exports for repos built with the native engine too (#1967).
+    import_edges::persist_reexport_renames(conn, &import_ctx.reexport_map)
+        .map_err(|e| format!("reexport rename persistence failed: {e}"))?;
+
     // Build import edges. A write failure here (transaction-start, a
     // malformed chunk, or commit) propagates via `?` instead of being
     // discarded — the old `run_pipeline` had no way to know edges were

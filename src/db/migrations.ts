@@ -387,6 +387,28 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE nodes ADD COLUMN content_hash TEXT;
     `,
   },
+  {
+    // Persist barrel re-export rename pairs (issue #1967): `export { X as Y }
+    // from '...'` records `{local: Y, imported: X}` alongside which file the
+    // rename's own source resolves to. Populated by the full-build pipeline
+    // (resolve-imports.ts) and both native paths whenever a barrel file is
+    // (re)parsed, so `codegraph watch`'s single-file incremental rebuild
+    // (resolveBarrelTarget, domain/graph/builder/incremental.ts) can
+    // translate a consumer's requested external alias back to the name
+    // actually declared in the reexport source without needing to re-parse
+    // the barrel file itself in the same watch batch.
+    version: 25,
+    up: `
+      CREATE TABLE IF NOT EXISTS reexport_renames (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        barrel_file TEXT NOT NULL,
+        local_name TEXT NOT NULL,
+        imported_name TEXT NOT NULL,
+        source_file TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_reexport_renames_barrel ON reexport_renames(barrel_file, local_name);
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {

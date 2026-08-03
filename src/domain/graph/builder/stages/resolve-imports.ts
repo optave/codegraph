@@ -205,6 +205,47 @@ export function resolveBarrelExportCached(
   return result;
 }
 
+/**
+ * Persist barrel re-export rename pairs (`export { X as Y } from …`) from
+ * `ctx.reexportMap` into the `reexport_renames` table (#1967).
+ *
+ * `codegraph watch`'s single-file incremental rebuild (`resolveBarrelTarget`
+ * in `domain/graph/builder/incremental.ts`) resolves barrel chains purely
+ * from already-persisted `reexports` edges, which carry no rename metadata —
+ * when a watch cycle only touches a *consumer* of a barrel (not the barrel
+ * itself), there is no in-memory `reexportMap` available to translate a
+ * requested external alias (Y) back to the name actually declared in the
+ * reexport source (X). Persisting the rename table here, once per full or
+ * incremental `codegraph build` (both engines' JS-pipeline path — the native
+ * orchestrator mirrors this via `import_edges::persist_reexport_renames` in
+ * Rust), gives the watch path something durable to query.
+ *
+ * Deletes and re-inserts per barrel file so a barrel whose renames changed
+ * (or were removed entirely) never leaves stale rows behind for that file.
+ */
+function persistReexportRenames(ctx: PipelineContext): void {
+  const { db, reexportMap } = ctx;
+  if (!reexportMap || reexportMap.size === 0) return;
+
+  const deleteStmt = db.prepare('DELETE FROM reexport_renames WHERE barrel_file = ?');
+  const insertStmt = db.prepare(
+    `INSERT INTO reexport_renames (barrel_file, local_name, imported_name, source_file)
+     VALUES (?, ?, ?, ?)`,
+  );
+
+  const tx = db.transaction(() => {
+    for (const [barrelFile, entries] of reexportMap) {
+      deleteStmt.run(barrelFile);
+      for (const re of entries as ReexportEntry[]) {
+        for (const rename of re.renames) {
+          insertStmt.run(barrelFile, rename.local, rename.imported, re.source);
+        }
+      }
+    }
+  });
+  tx();
+}
+
 export async function resolveImports(ctx: PipelineContext): Promise<void> {
   const { fileSymbols, rootDir, aliases, allFiles, isFullBuild } = ctx;
   const t0 = performance.now();
@@ -250,6 +291,8 @@ export async function resolveImports(ctx: PipelineContext): Promise<void> {
       firstPass = false;
     }
   }
+
+  persistReexportRenames(ctx);
 }
 
 export function getResolved(ctx: PipelineContext, absFile: string, importSource: string): string {

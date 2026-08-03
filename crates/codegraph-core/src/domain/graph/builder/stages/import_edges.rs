@@ -224,6 +224,61 @@ pub fn build_reexport_map(ctx: &ImportEdgeContext) -> HashMap<String, Vec<Reexpo
     reexport_map
 }
 
+/// Persist barrel re-export rename pairs (`export { X as Y } from …`) from
+/// `reexport_map` into the `reexport_renames` table (#1967) — the native
+/// orchestrator's counterpart of `persistReexportRenames` in
+/// `resolve-imports.ts` (JS pipeline).
+///
+/// `codegraph watch`'s single-file incremental rebuild (JS-only —
+/// `resolveBarrelTarget` in `domain/graph/builder/incremental.ts`) resolves
+/// barrel chains purely from already-persisted `reexports` edges, which
+/// carry no rename metadata. Persisting the rename table here, once per
+/// native-orchestrated build (full or incremental), gives that JS-only watch
+/// path something durable to query even for repos built with the native
+/// engine.
+///
+/// Deletes and re-inserts per barrel file so a barrel whose renames changed
+/// (or were removed entirely) never leaves stale rows behind for that file.
+pub fn persist_reexport_renames(
+    conn: &Connection,
+    reexport_map: &HashMap<String, Vec<ReexportEntry>>,
+) -> Result<(), String> {
+    if reexport_map.is_empty() {
+        return Ok(());
+    }
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("persist_reexport_renames: failed to start transaction: {e}"))?;
+    {
+        let mut delete_stmt = tx
+            .prepare("DELETE FROM reexport_renames WHERE barrel_file = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut insert_stmt = tx
+            .prepare(
+                "INSERT INTO reexport_renames (barrel_file, local_name, imported_name, source_file)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .map_err(|e| e.to_string())?;
+        for (barrel_file, entries) in reexport_map {
+            delete_stmt.execute([barrel_file]).map_err(|e| e.to_string())?;
+            for entry in entries {
+                for rename in &entry.renames {
+                    insert_stmt
+                        .execute(rusqlite::params![
+                            barrel_file,
+                            rename.local,
+                            rename.imported,
+                            entry.source
+                        ])
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    tx.commit().map_err(|e| format!("persist_reexport_renames: commit failed: {e}"))?;
+    Ok(())
+}
+
 /// Detect which of `candidate_paths` are barrel-only (reexport count >=
 /// definition count).
 ///
