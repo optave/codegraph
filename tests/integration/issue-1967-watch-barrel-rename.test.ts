@@ -218,3 +218,160 @@ describe.each(ENGINES)(
     });
   },
 );
+
+/**
+ * Regression coverage for a review finding on this same fix: the barrel's
+ * reexport *source* can itself be a tsconfig/jsconfig path alias (e.g.
+ * `@utils/foo`), not just a relative specifier. `persistReexportRenamesForFile`
+ * (the watch-mode write path, `incremental.ts`) must resolve that alias using
+ * the project's real tsconfig aliases — not an empty `PathAliases` object —
+ * or reparsing the barrel under watch (for any reason, not necessarily a
+ * rename change) would overwrite a correct full-build row with one pointing
+ * at an unresolved, non-file specifier that `resolveBarrelTarget` can never
+ * match to a graph node.
+ */
+const ALIAS_TSCONFIG = JSON.stringify({
+  compilerOptions: {
+    baseUrl: '.',
+    paths: { '@utils/*': ['utils/*'] },
+  },
+});
+
+const ALIAS_FILES: Record<string, string> = {
+  'tsconfig.json': ALIAS_TSCONFIG,
+  'utils/foo.ts': `
+export function realName(): string {
+  return 'real';
+}
+`,
+  'barrel.ts': `
+// Reexport source is a tsconfig path alias, not a relative specifier.
+export { realName as friendlyName } from '@utils/foo';
+`,
+  'consumer.ts': `
+import { friendlyName } from './barrel.js';
+
+export function useIt(): string {
+  return friendlyName();
+}
+`,
+};
+
+function writeAliasFixture(dir: string) {
+  for (const [rel, content] of Object.entries(ALIAS_FILES)) {
+    const abs = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+}
+
+describe.each(ENGINES)(
+  'codegraph watch preserves alias-resolved barrel renames (#1967 review) — initial build: %s',
+  (engine) => {
+    let watchDir: string;
+    let dbPath: string;
+
+    beforeAll(async () => {
+      watchDir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-1967-alias-${engine}-`));
+      writeAliasFixture(watchDir);
+
+      await buildGraph(watchDir, { incremental: false, skipRegistry: true, engine });
+      dbPath = path.join(watchDir, '.codegraph', 'graph.db');
+
+      // Sanity check: the full build resolved the alias to the real file.
+      expect(readReexportRenames(dbPath)).toEqual([
+        {
+          barrel_file: 'barrel.ts',
+          local_name: 'friendlyName',
+          imported_name: 'realName',
+          source_file: 'utils/foo.ts',
+        },
+      ]);
+
+      // Touch the BARREL itself (not the consumer) — this is the case the
+      // review flagged: reparsing an alias-based barrel under watch must not
+      // corrupt its own rename row.
+      const barrelFile = path.join(watchDir, 'barrel.ts');
+      fs.appendFileSync(barrelFile, '\n// touch\n');
+
+      const db = openDb(dbPath);
+      initSchema(db);
+      await rebuildFile(db, watchDir, barrelFile, makeStmts(db), { engine }, null);
+      db.close();
+    }, 60_000);
+
+    afterAll(() => {
+      try {
+        if (watchDir) fs.rmSync(watchDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    });
+
+    it('the rename row still resolves to the real aliased file after the barrel is reparsed', () => {
+      // Deliberately scoped to the row itself, not the barrel's own `calls`/
+      // `imports` edges: incremental.ts's edge-building functions
+      // (buildImportEdges, buildImportedNamesMap, etc.) hardcode an *empty*
+      // PathAliases object for every import resolution — a separate,
+      // pre-existing limitation of the whole file (not introduced by this
+      // fix, and not scoped to reexports/renames) that also breaks the
+      // barrel's own alias-resolved edges when it's reparsed under watch.
+      // Filed as a follow-up (issue link in the PR description) rather than
+      // fixed here — it affects every edge kind under watch for alias-based
+      // projects, well beyond this fix's scope.
+      expect(readReexportRenames(dbPath)).toEqual([
+        {
+          barrel_file: 'barrel.ts',
+          local_name: 'friendlyName',
+          imported_name: 'realName',
+          source_file: 'utils/foo.ts',
+        },
+      ]);
+    });
+  },
+);
+
+describe.each(ENGINES)(
+  'codegraph watch resolves alias-based barrel rename on consumer-only rebuild (#1967 review) — initial build: %s',
+  (engine) => {
+    let watchDir: string;
+    let dbPath: string;
+
+    beforeAll(async () => {
+      watchDir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-1967-alias-consumer-${engine}-`));
+      writeAliasFixture(watchDir);
+
+      await buildGraph(watchDir, { incremental: false, skipRegistry: true, engine });
+      dbPath = path.join(watchDir, '.codegraph', 'graph.db');
+
+      // Touch ONLY consumer.ts — the alias-based barrel is untouched, so its
+      // own (correctly alias-resolved) edges and rename row from the full
+      // build are never re-derived by this rebuild.
+      const consumerFile = path.join(watchDir, 'consumer.ts');
+      fs.appendFileSync(consumerFile, '\n// touch\n');
+
+      const db = openDb(dbPath);
+      initSchema(db);
+      await rebuildFile(db, watchDir, consumerFile, makeStmts(db), { engine }, null);
+      db.close();
+    }, 60_000);
+
+    afterAll(() => {
+      try {
+        if (watchDir) fs.rmSync(watchDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    });
+
+    it('useIt -> realName resolves through the alias-based barrel rename', () => {
+      const edges = readCallEdges(dbPath);
+      const edge = edges.find((e) => e.src === 'useIt' && e.tgt === 'realName');
+      expect(
+        edge,
+        `Expected useIt -> realName call edge via alias-resolved barrel\nActual call edges:\n${JSON.stringify(edges, null, 2)}`,
+      ).toBeDefined();
+      expect(edge?.tgt_file).toBe('utils/foo.ts');
+    });
+  },
+);

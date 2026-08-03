@@ -56,6 +56,7 @@ import {
   CHA_TYPED_DISPATCH_CONFIDENCE,
   fileHash,
   fileStat,
+  loadPathAliases,
   readFileSafe,
 } from './helpers.js';
 import { importNamePairs } from './import-utils.js';
@@ -372,6 +373,19 @@ function isBarrelFile(db: BetterSqlite3Database, relPath: string): boolean {
  * barrel's rename table stays current whenever *it* is reparsed, regardless
  * of which file triggered this rebuild.
  */
+// Lazily-cached tsconfig/jsconfig path aliases, keyed by rootDir (avoid a
+// disk read + JSON parse on every single-file rebuild — #1967 review).
+let _aliasesRootDir: string | null = null;
+let _aliasesCache: PathAliases | null = null;
+
+function getCachedPathAliases(rootDir: string): PathAliases {
+  if (_aliasesRootDir !== rootDir) {
+    _aliasesRootDir = rootDir;
+    _aliasesCache = loadPathAliases(rootDir);
+  }
+  return _aliasesCache!;
+}
+
 function persistReexportRenamesForFile(
   db: BetterSqlite3Database,
   relPath: string,
@@ -384,7 +398,12 @@ function persistReexportRenamesForFile(
   const reexports = symbols.imports.filter((imp) => imp.reexport);
   if (reexports.length === 0) return;
 
-  const aliases: PathAliases = { baseUrl: null, paths: {} };
+  // Real tsconfig/jsconfig aliases (#1967 review) — using an empty aliases
+  // object here would resolve an alias-based reexport source (e.g.
+  // `@utils/foo`) to a bogus non-file specifier, overwriting a correct
+  // full-build row with one `resolveBarrelTarget` can never match to a
+  // graph node.
+  const aliases = getCachedPathAliases(rootDir);
   for (const imp of reexports) {
     if (!imp.renamedImports?.length) continue;
     const source = resolveImportPath(path.join(rootDir, relPath), imp.source, rootDir, aliases);
