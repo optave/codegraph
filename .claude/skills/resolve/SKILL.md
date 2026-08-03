@@ -551,6 +551,7 @@ fi
 Commit the resolved merge and push to the PR branch.
 
 ```bash
+HEAD_BRANCH=$(cat .codegraph/resolve/head-branch)
 BASE_BRANCH=$(cat .codegraph/resolve/base-branch)
 
 # Guard against empty commit (all staged changes might have been no-ops)
