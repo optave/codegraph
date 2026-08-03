@@ -418,9 +418,29 @@ export function resolveCallTargets(
   // method/field, the exact false-positive class #1893's same-file registry
   // was designed to prevent.
   if (call.accessorRead && call.receiver) {
-    const targets = lookup
-      .byName(`${call.receiver}.${call.name}`)
-      .filter((n) => n.accessorKind === call.accessorRead);
+    // The resolved class name can itself be a renamed import binding
+    // (`import { Original as Alias }` — the extractor's typeMap only knows
+    // the local alias), so de-alias before building the qualified lookup key
+    // exactly like the general cascade below does (#1825).
+    const dealiasedClassName = importedOriginalNames?.get(call.receiver) ?? call.receiver;
+    const qualified = `${dealiasedClassName}.${call.name}`;
+    // When the class is a known import, commit to the specific file it
+    // resolves to rather than falling through to the unscoped global lookup
+    // below — otherwise an unrelated same-qualified-name accessor in a
+    // completely different file could "confirm" a read it has nothing to do
+    // with, whenever two files coincidentally declare the same class+property
+    // name pair. This scoped result is authoritative: an empty (or
+    // wrong-kind) match here means "no", not "keep looking elsewhere" — the
+    // unscoped global fallback below is reserved for when the class isn't a
+    // known import in this file at all (e.g. an ambient/global type).
+    const accessorImportedFrom = importedNames.get(dealiasedClassName);
+    if (accessorImportedFrom) {
+      const scoped = lookup
+        .byNameAndFile(qualified, accessorImportedFrom)
+        .filter((n) => n.accessorKind === call.accessorRead);
+      return { targets: [...scoped], importedFrom: undefined };
+    }
+    const targets = lookup.byName(qualified).filter((n) => n.accessorKind === call.accessorRead);
     return { targets: [...targets], importedFrom: undefined };
   }
 

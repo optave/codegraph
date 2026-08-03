@@ -605,7 +605,7 @@ fn emit_pts_alias_edges<'a>(
         let mut alias_confidence_override: Option<f64> = None;
         let mut alias_targets = resolve_call_targets(
             ctx, &alias_call, alias_ctx.rel_path, alias_imported_from, alias_ctx.type_map, alias_ctx.caller_name,
-            alias_ctx.imported_original_names, &mut alias_confidence_override,
+            alias_ctx.imported_names, alias_ctx.imported_original_names, &mut alias_confidence_override,
         );
         sort_targets_by_confidence(&mut alias_targets, alias_ctx.rel_path, alias_imported_from, alias_confidence_override);
         for t in &alias_targets {
@@ -966,8 +966,8 @@ fn process_file<'a>(
         // interface lookup missed — see `resolve_call_targets` doc comment.
         let mut confidence_override: Option<f64> = None;
         let mut targets = resolve_call_targets(
-            ctx, call, fc.rel_path, imported_from, &fc.type_map, caller_name, &fc.imported_original_names,
-            &mut confidence_override,
+            ctx, call, fc.rel_path, imported_from, &fc.type_map, caller_name, &fc.imported_names,
+            &fc.imported_original_names, &mut confidence_override,
         );
         // #1771/#1784: value-ref references (object-literal property values,
         // Lua builtin reassignment, `instanceof ClassName`) resolve against
@@ -1267,12 +1267,13 @@ fn resolve_call_targets<'a>(
     imported_from: Option<&str>,
     type_map: &HashMap<&str, (&str, f64)>,
     caller_name: &str,
+    imported_names: &HashMap<&str, &str>,
     imported_original_names: &HashMap<&str, &str>,
     confidence_override: &mut Option<f64>,
 ) -> Vec<&'a NodeInfo> {
     let targets = resolve_call_targets_core(
-        ctx, call, rel_path, imported_from, type_map, caller_name, imported_original_names,
-        confidence_override,
+        ctx, call, rel_path, imported_from, type_map, caller_name, imported_names,
+        imported_original_names, confidence_override,
     );
     if call.receiver.is_some() {
         return targets;
@@ -1293,6 +1294,7 @@ fn resolve_call_targets_core<'a>(
     imported_from: Option<&str>,
     type_map: &HashMap<&str, (&str, f64)>,
     caller_name: &str,
+    imported_names: &HashMap<&str, &str>,
     imported_original_names: &HashMap<&str, &str>,
     confidence_override: &mut Option<f64>,
 ) -> Vec<&'a NodeInfo> {
@@ -1319,7 +1321,34 @@ fn resolve_call_targets_core<'a>(
     // to prevent. Mirrors resolveCallTargets in call-resolver.ts.
     if let Some(ref needed_kind) = call.accessor_read {
         let Some(receiver) = call.receiver.as_deref() else { return vec![] };
-        let qualified = format!("{}.{}", receiver, call.name);
+        // The resolved class name can itself be a renamed import binding
+        // (`import { Original as Alias }` — the extractor's type_map only
+        // knows the local alias), so de-alias before building the qualified
+        // lookup key exactly like the general cascade below does (#1730).
+        let dealiased_class_name = imported_original_names.get(receiver).copied().unwrap_or(receiver);
+        let qualified = format!("{}.{}", dealiased_class_name, call.name);
+        // When the class is a known import, commit to the specific file it
+        // resolves to rather than falling through to the unscoped global
+        // lookup below — otherwise an unrelated same-qualified-name accessor
+        // in a completely different file could "confirm" a read it has
+        // nothing to do with, whenever two files coincidentally declare the
+        // same class+property name pair. This scoped result is authoritative:
+        // an empty (or wrong-kind) match here means "no", not "keep looking
+        // elsewhere" — the unscoped global fallback below is reserved for
+        // when the class isn't a known import in this file at all (e.g. an
+        // ambient/global type).
+        if let Some(accessor_imported_from) = imported_names.get(dealiased_class_name) {
+            return ctx
+                .nodes_by_name_and_file
+                .get(&(qualified.as_str(), *accessor_imported_from))
+                .map(|v| {
+                    v.iter()
+                        .filter(|n| n.accessor_kind.as_deref() == Some(needed_kind.as_str()))
+                        .copied()
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
         return ctx
             .nodes_by_name
             .get(qualified.as_str())
@@ -3486,6 +3515,115 @@ mod call_edge_tests {
             edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
         );
         assert_eq!(call_edges[0].target_id, 3, "expected the setter (id=3), not the getter");
+    }
+
+    /// Regression for #2030's Greptile review finding: the resolved class
+    /// name on an accessor-read-tagged call can itself be a renamed import
+    /// binding (`import { SqliteRepository as SR } from './sqlite-repository.js'`),
+    /// so `call.receiver` is the local alias 'SR' — the accessor is
+    /// persisted under the real declared name. Must de-alias before the
+    /// qualified lookup, mirroring #1730's general-cascade de-aliasing.
+    #[test]
+    fn cross_file_accessor_read_dealiases_renamed_import_binding() {
+        let all_nodes = vec![
+            node(1, "useRepo", "function", "consumer.js", 1),
+            accessor_node(2, "SqliteRepository.db", "method", "sqlite-repository.js", 3, "get"),
+        ];
+        let mut file = make_file(
+            "consumer.js",
+            10,
+            vec![def("useRepo", "function", 1, 3)],
+            vec![accessor_call("db", 2, "SR", "get")],
+            vec![],
+            vec![],
+        );
+        file.imported_names = vec![ImportedName {
+            name: "SR".to_string(),
+            file: "sqlite-repository.js".to_string(),
+            imported: Some("SqliteRepository".to_string()),
+        }];
+
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        let call_edge = edges.iter().find(|e| e.kind == "calls");
+        assert!(
+            call_edge.is_some(),
+            "expected the renamed-import alias to resolve to the real accessor; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+        assert_eq!(call_edge.unwrap().target_id, 2);
+    }
+
+    /// Regression for #2030's Greptile review finding: when the resolved
+    /// class name is a known import, resolution must commit to that specific
+    /// file rather than falling through to the unscoped global name map —
+    /// otherwise an unrelated file that happens to declare the same
+    /// `ClassName.prop` accessor (same kind) would also match.
+    #[test]
+    fn cross_file_accessor_read_prefers_imported_file_over_unrelated_same_named_global_match() {
+        let all_nodes = vec![
+            node(1, "useRepo", "function", "consumer.js", 1),
+            accessor_node(2, "SqliteRepository.db", "method", "sqlite-repository.js", 3, "get"),
+            accessor_node(3, "SqliteRepository.db", "method", "unrelated-other-file.js", 9, "get"),
+        ];
+        let mut file = make_file(
+            "consumer.js",
+            10,
+            vec![def("useRepo", "function", 1, 3)],
+            vec![accessor_call("db", 2, "SqliteRepository", "get")],
+            vec![],
+            vec![],
+        );
+        file.imported_names = vec![ImportedName {
+            name: "SqliteRepository".to_string(),
+            file: "sqlite-repository.js".to_string(),
+            imported: None,
+        }];
+
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
+        assert_eq!(
+            call_edges.len(),
+            1,
+            "expected exactly one calls edge (to the imported file's accessor only); got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+        assert_eq!(call_edges[0].target_id, 2, "expected the imported file's node (id=2), not the unrelated one (id=3)");
+    }
+
+    /// Companion to the above: when the imported file's own accessor doesn't
+    /// match the needed kind, the call must be dropped outright — never fall
+    /// back to an unrelated global match of the right kind in a different
+    /// file, even though one exists.
+    #[test]
+    fn cross_file_accessor_read_drops_when_imported_file_kind_mismatches_without_global_fallback() {
+        let all_nodes = vec![
+            node(1, "useRepo", "function", "consumer.js", 1),
+            accessor_node(2, "SqliteRepository.db", "method", "sqlite-repository.js", 3, "set"),
+            accessor_node(3, "SqliteRepository.db", "method", "unrelated-other-file.js", 9, "get"),
+        ];
+        let mut file = make_file(
+            "consumer.js",
+            10,
+            vec![def("useRepo", "function", 1, 3)],
+            vec![accessor_call("db", 2, "SqliteRepository", "get")],
+            vec![],
+            vec![],
+        );
+        file.imported_names = vec![ImportedName {
+            name: "SqliteRepository".to_string(),
+            file: "sqlite-repository.js".to_string(),
+            imported: None,
+        }];
+
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS);
+
+        assert!(
+            !edges.iter().any(|e| e.kind == "calls"),
+            "expected no calls edge — the imported file has only a setter, and the unrelated global getter must not be used as a fallback; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
     }
 
     /// Issue #1895: an object-literal-property value-ref call whose property

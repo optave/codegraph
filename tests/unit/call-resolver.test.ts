@@ -1073,3 +1073,134 @@ describe('resolveReflectionKeyExprFallback — shared between full-build and inc
     expect(targets).toEqual([]);
   });
 });
+
+/**
+ * Regression tests for #2030's Greptile review findings on the cross-file
+ * accessor-read short-circuit in resolveCallTargets:
+ *   1. Renamed import aliases must be de-aliased before the qualified lookup
+ *      (mirrors #1730's general-cascade de-aliasing) — otherwise a receiver
+ *      resolved via `import { Original as Alias }` looks up `Alias.prop`
+ *      instead of the persisted `Original.prop` and silently drops the edge.
+ *   2. The lookup must prefer the specific file the class is imported from
+ *      when known, not the unscoped global byName — otherwise two unrelated
+ *      files that happen to declare the same `ClassName.prop` accessor (same
+ *      kind) both "confirm" a read that only targets one of them.
+ */
+function makeAccessorLookup(
+  sameFile: Record<
+    string,
+    Array<{ id: number; file: string; kind: string; accessorKind?: string }>
+  >,
+  global: Record<string, Array<{ id: number; file: string; kind: string; accessorKind?: string }>>,
+): CallNodeLookup {
+  return {
+    byNameAndFile(name, file) {
+      return sameFile[`${name}:${file}`] ?? [];
+    },
+    byName(name) {
+      return global[name] ?? [];
+    },
+    isBarrel() {
+      return false;
+    },
+    resolveBarrel() {
+      return null;
+    },
+    nodeId() {
+      return undefined;
+    },
+  };
+}
+
+describe('resolveCallTargets — accessor-read de-aliasing and import scoping (#2030)', () => {
+  it('de-aliases a renamed import binding before the qualified accessor lookup', () => {
+    // `import { SqliteRepository as SR } from './sqlite-repository.js'` seeds
+    // the extractor's typeMap with the local alias 'SR', so the tagged call's
+    // receiver is 'SR' — the accessor is persisted under the real name.
+    const getter = { id: 1, file: 'sqlite-repository.js', kind: 'method', accessorKind: 'get' };
+    const lookup = makeAccessorLookup({}, { 'SqliteRepository.db': [getter] });
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'db', receiver: 'SR', accessorRead: 'get' },
+      'consumer.js',
+      new Map(),
+      new Map(),
+      null,
+      new Map([['SR', 'SqliteRepository']]),
+    );
+    expect(targets).toEqual([getter]);
+  });
+
+  it('prefers the file the class is imported from over an unrelated same-named global match', () => {
+    const realGetter = {
+      id: 1,
+      file: 'sqlite-repository.js',
+      kind: 'method',
+      accessorKind: 'get',
+    };
+    const unrelatedGetter = {
+      id: 2,
+      file: 'unrelated-other-file.js',
+      kind: 'method',
+      accessorKind: 'get',
+    };
+    const lookup = makeAccessorLookup(
+      { 'SqliteRepository.db:sqlite-repository.js': [realGetter] },
+      { 'SqliteRepository.db': [realGetter, unrelatedGetter] },
+    );
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'db', receiver: 'SqliteRepository', accessorRead: 'get' },
+      'consumer.js',
+      new Map([['SqliteRepository', 'sqlite-repository.js']]),
+      new Map(),
+      null,
+    );
+    expect(targets).toEqual([realGetter]);
+  });
+
+  it('falls back to the unscoped global lookup when the class is not a known import', () => {
+    // e.g. an ambient/global class never explicitly imported in this file.
+    const getter = { id: 1, file: 'sqlite-repository.js', kind: 'method', accessorKind: 'get' };
+    const lookup = makeAccessorLookup({}, { 'SqliteRepository.db': [getter] });
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'db', receiver: 'SqliteRepository', accessorRead: 'get' },
+      'consumer.js',
+      new Map(),
+      new Map(),
+      null,
+    );
+    expect(targets).toEqual([getter]);
+  });
+
+  it('drops the call when the imported-scoped file has no matching accessor kind, without falling back to the global match', () => {
+    // The scoped file's own db is a setter, not a getter — the read needs a
+    // getter, so it must not silently pick up an unrelated global getter.
+    const scopedSetter = {
+      id: 1,
+      file: 'sqlite-repository.js',
+      kind: 'method',
+      accessorKind: 'set',
+    };
+    const unrelatedGetter = {
+      id: 2,
+      file: 'unrelated-other-file.js',
+      kind: 'method',
+      accessorKind: 'get',
+    };
+    const lookup = makeAccessorLookup(
+      { 'SqliteRepository.db:sqlite-repository.js': [scopedSetter] },
+      { 'SqliteRepository.db': [scopedSetter, unrelatedGetter] },
+    );
+    const { targets } = resolveCallTargets(
+      lookup,
+      { name: 'db', receiver: 'SqliteRepository', accessorRead: 'get' },
+      'consumer.js',
+      new Map([['SqliteRepository', 'sqlite-repository.js']]),
+      new Map(),
+      null,
+    );
+    expect(targets).toEqual([]);
+  });
+});
