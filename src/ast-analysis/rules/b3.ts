@@ -61,7 +61,16 @@ export const complexityLua: ComplexityRules = {
   logicalNodeTypes: new Set(['binary_expression']),
   optionalChainType: null,
   nestingNodes: new Set(['if_statement', 'for_statement', 'while_statement', 'repeat_statement']),
-  functionNodes: new Set(['function_declaration']),
+  // 'function_declaration' covers named forms (`function f() end`,
+  // `local function f() end`, `function M.foo() end`). 'function_definition'
+  // is the anonymous function *expression* node — the RHS of the common
+  // module-table idiom `local M = {}; M.foo = function(...) end` (issue
+  // #2036) as well as `local f = function() end` and any function literal
+  // passed as a callback argument. Both node types share the same
+  // parameters/body field shape, so every rule above (branch/nesting/
+  // Halstead scope detection) applies identically to either. Mirrors
+  // `LUA_RULES.function_nodes` in the native `complexity.rs`.
+  functionNodes: new Set(['function_declaration', 'function_definition']),
   ifNodeType: 'if_statement',
   elseNodeType: 'else_statement',
   elifNodeType: 'elseif_statement',
