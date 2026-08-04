@@ -567,6 +567,69 @@ function hasFunctionScopeAncestor(node: TreeSitterNode): boolean {
 }
 
 /**
+ * Return the qualifier name for the nearest enclosing function scope of `node`
+ * — walks up FUNCTION_SCOPE_TYPES ancestors (same set `hasFunctionScopeAncestor`
+ * checks) and names the match the same way the const/let/var object-literal call
+ * sites of `extractObjectLiteralFunctions` name their `varName` qualifier (#2033).
+ * Used to extend that qualified-definition mechanism to object literals
+ * `return`ed from a factory function's body, e.g.
+ * `function makePartition(seed) { return { deltaCPM: (v) => computeDeltaCPM(s, v) } }`
+ * qualifies the property as `makePartition.deltaCPM`.
+ *
+ * Returns null when the enclosing scope has no resolvable name — an anonymous
+ * function expression/arrow that isn't directly assigned to a variable (e.g. an
+ * inline callback argument, an IIFE) — callers skip the qualified extraction in
+ * that case and fall back to the pre-existing generic caller-attribution behavior.
+ */
+function findEnclosingFunctionQualifier(node: TreeSitterNode): string | null {
+  let p: TreeSitterNode | null = node.parent ?? null;
+  while (p) {
+    if (FUNCTION_SCOPE_TYPES.has(p.type)) return qualifierForFunctionScopeNode(p);
+    p = p.parent ?? null;
+  }
+  return null;
+}
+
+/**
+ * Derive the qualifier name for a single FUNCTION_SCOPE_TYPES node — see
+ * `findEnclosingFunctionQualifier`. Mirrors the naming convention already used by
+ * `handleMethodDef` (ClassName.method) and `handleVarFnAssignment` (variable name)
+ * for the same node shapes.
+ */
+function qualifierForFunctionScopeNode(fnNode: TreeSitterNode): string | null {
+  const t = fnNode.type;
+  if (t === 'function_declaration' || t === 'generator_function_declaration') {
+    const nameNode = fnNode.childForFieldName('name');
+    return nameNode?.type === 'identifier' ? nameNode.text : null;
+  }
+  if (t === 'method_definition') {
+    const nameNode = fnNode.childForFieldName('name');
+    if (!nameNode) return null;
+    const methName = resolveMethodDefinitionName(nameNode);
+    if (!methName) return null;
+    const parentClass = findParentClass(fnNode);
+    return parentClass ? `${parentClass}.${methName}` : methName;
+  }
+  // function_expression / generator_function / arrow_function: prefer a named
+  // function expression's own name field, then fall back to the variable it's
+  // directly assigned to (`const foo = () => {...}`) — mirroring
+  // handleVarFnAssignment's convention for top-level var-assigned functions.
+  // Anonymous, non-assigned closures (inline callbacks, IIFEs) have no
+  // resolvable qualifier.
+  const nameNode = fnNode.childForFieldName('name');
+  if (nameNode?.type === 'identifier') return nameNode.text;
+  const parent = fnNode.parent;
+  if (
+    parent?.type === 'variable_declarator' &&
+    parent.childForFieldName('value')?.id === fnNode.id
+  ) {
+    const declName = parent.childForFieldName('name');
+    return declName?.type === 'identifier' ? declName.text : null;
+  }
+  return null;
+}
+
+/**
  * True when `declarator` is the shape extractObjectLiteralFunctions qualifies: a plain
  * identifier name, outside any function scope. Shared by that function's four call sites
  * (extractConstDeclarators, extractLetVarObjLiteralDeclarators, handleVariableDeclarator's
@@ -1801,6 +1864,56 @@ function extractObjectLiteralFunctions(
   }
 }
 
+/**
+ * Return the object-literal expression of a `return { ... };` statement, or null
+ * when the statement doesn't return a bare object literal (#2033). Mirrors
+ * `findReturnNewExprType`'s scan of a return_statement's direct children — no
+ * parenthesized-wrapper unwrapping, matching that function's existing scope.
+ */
+function findReturnedObjectLiteral(returnNode: TreeSitterNode): TreeSitterNode | null {
+  for (let i = 0; i < returnNode.childCount; i++) {
+    const child = returnNode.child(i);
+    if (child?.type === 'object') return child;
+  }
+  return null;
+}
+
+/**
+ * Qualify a `return { ... }` statement's object-literal properties against its
+ * enclosing named function (#2033) — extends `extractObjectLiteralFunctions`'
+ * qualified-definition mechanism (previously only reachable via a
+ * `const x = {...}` variable declarator) to object literals returned directly
+ * from a factory function's body.
+ *
+ * `function makePartition(seed) { return { deltaCPM: (v) => computeDeltaCPM(s, v) } }`
+ * now creates a `makePartition.deltaCPM` definition, so `findCaller` attributes
+ * the `computeDeltaCPM(s, v)` call to it instead of to `makePartition` itself —
+ * `makePartition`'s own body never executes that call; only invoking the
+ * returned object's `.deltaCPM(...)` property does.
+ *
+ * Also seeds the matching typeMap entries (mirrors `handleObjectLiteralTypeMap`'s
+ * const-case seeding) so `const p = makePartition(42); p.deltaModularity(1)`
+ * resolves through the qualified definition too, once `storeReturnType`'s sibling
+ * self-type inference (see `findReturnObjectLiteralSelfType`) types `p` as
+ * `makePartition`.
+ *
+ * Shared by both extraction paths (called from `runCollectorWalk`, which both
+ * `extractSymbolsWalk` and `extractSymbolsQuery` invoke) — see the "two code
+ * paths" note on `extractObjectLiteralFunctions`.
+ */
+function handleReturnStmtObjectLiteral(
+  node: TreeSitterNode,
+  definitions: Definition[],
+  typeMap: Map<string, TypeMapEntry>,
+): void {
+  const objNode = findReturnedObjectLiteral(node);
+  if (!objNode) return;
+  const qualifier = findEnclosingFunctionQualifier(node);
+  if (!qualifier) return;
+  extractObjectLiteralFunctions(objNode, qualifier, definitions);
+  handleObjectLiteralTypeMap(qualifier, objNode, typeMap);
+}
+
 function handleEnumDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
   const nameNode = node.childForFieldName('name');
   if (!nameNode) return;
@@ -2374,10 +2487,11 @@ function storeReturnType(
       return;
     }
   }
-  // Infer from first `return new Constructor()` in the function body
+  // Infer from first `return new Constructor()` in the function body, then from
+  // a directly-returned object literal with callable properties (#2033).
   const body = fnNode.childForFieldName('body');
   if (body) {
-    const inferred = findReturnNewExprType(body);
+    const inferred = findReturnNewExprType(body) ?? findReturnObjectLiteralSelfType(body, fnName);
     if (inferred) {
       const existing = returnTypeMap.get(fnName);
       if (!existing || INFERRED_RETURN_TYPE_CONFIDENCE > existing.confidence)
@@ -2397,6 +2511,53 @@ function findReturnNewExprType(bodyNode: TreeSitterNode): string | null {
     }
   }
   return null;
+}
+
+/**
+ * #2033: self-referential return-type inference for a factory function whose body
+ * directly returns an object literal with at least one callable property (function/
+ * arrow/method value) — paired with `handleReturnStmtObjectLiteral`'s qualified
+ * `fnName.propName` definitions so `const p = fnName(...); p.propName()` resolves:
+ * Phase 8.2's inter-procedural propagation (`resolveCallExprReturnType`) types `p` as
+ * `fnName`, and `resolveByReceiver`'s prototype-alias step then finds the qualified
+ * definition via the typeMap entry `handleObjectLiteralTypeMap` seeds for it.
+ *
+ * Only top-level return statements are checked, mirroring `findReturnNewExprType`.
+ * Returns `fnName` itself (the self-type) when found, else null.
+ */
+function findReturnObjectLiteralSelfType(bodyNode: TreeSitterNode, fnName: string): string | null {
+  for (let i = 0; i < bodyNode.childCount; i++) {
+    const child = bodyNode.child(i);
+    if (child?.type !== 'return_statement') continue;
+    const objNode = findReturnedObjectLiteral(child);
+    if (objNode && objectLiteralHasCallableProperty(objNode)) return fnName;
+  }
+  return null;
+}
+
+/**
+ * True when `objNode` (an object literal) has at least one function/arrow/method
+ * property — mirrors `extractObjectLiteralFunctions`' own shape detection so
+ * `findReturnObjectLiteralSelfType` only self-types functions that actually get a
+ * qualified definition.
+ */
+function objectLiteralHasCallableProperty(objNode: TreeSitterNode): boolean {
+  for (let i = 0; i < objNode.childCount; i++) {
+    const child = objNode.child(i);
+    if (!child) continue;
+    if (child.type === 'method_definition') return true;
+    if (child.type === 'pair') {
+      const valueNode = child.childForFieldName('value');
+      if (
+        valueNode?.type === 'arrow_function' ||
+        valueNode?.type === 'function_expression' ||
+        valueNode?.type === 'function'
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -4763,6 +4924,13 @@ function runCollectorWalk(rootNode: TreeSitterNode, targets: CollectorWalkTarget
           targets.typeMap,
           targets.valueRefCalls,
         );
+        break;
+      case 'return_statement':
+        // #2033: qualify object literals returned from a factory function's body
+        // against that function's name, so calls inside a returned property's
+        // closure attribute to the property (`makePartition.deltaCPM`), not the
+        // factory itself.
+        handleReturnStmtObjectLiteral(node, targets.definitions, targets.typeMap);
         break;
     }
     for (let i = 0; i < node.childCount; i++) {

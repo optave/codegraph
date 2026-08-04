@@ -1525,6 +1525,95 @@ function runDemo(reporter: Reporter, users: string[]): void {
       expect(symbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'local.f' }));
     });
 
+    // Issue #2033: object literals returned from a factory function's body
+    it('extracts qualified definitions from an object literal returned by a named function', () => {
+      const symbols = parseJS(`
+        function computeDeltaCPM(s, v) { return s + v; }
+        function makePartition(seed) {
+          const s = seed;
+          return {
+            deltaCPM: (v) => computeDeltaCPM(s, v),
+            deltaModularity(v) { return v; },
+          };
+        }
+      `);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'makePartition.deltaCPM', kind: 'function' }),
+      );
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'makePartition.deltaModularity', kind: 'function' }),
+      );
+      // The call inside the closure must attribute to the qualified property span
+      // (the `deltaCPM: (v) => ...` line), not the enclosing factory's own span.
+      const deltaCPM = symbols.definitions.find((d) => d.name === 'makePartition.deltaCPM');
+      expect(deltaCPM.line).toBe(6);
+    });
+
+    it('qualifies an object literal returned by a named function expression assigned to a const', () => {
+      // `const makePartition = function(seed) { return {...} }` — the enclosing
+      // function has no name of its own, so the qualifier falls back to the
+      // variable it's directly assigned to, mirroring handleVarFnAssignment.
+      const symbols = parseJS(`
+        const makePartition = function (seed) {
+          return { deltaCPM: (v) => v + seed };
+        };
+      `);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'makePartition.deltaCPM', kind: 'function' }),
+      );
+    });
+
+    it('qualifies an object literal returned by a method against ClassName.method', () => {
+      const symbols = parseJS(`
+        class Factory {
+          makePartition(seed) {
+            return { deltaCPM: (v) => v + seed };
+          }
+        }
+      `);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'Factory.makePartition.deltaCPM', kind: 'function' }),
+      );
+    });
+
+    it('does not qualify an object literal returned from an anonymous, non-assigned closure', () => {
+      // The returned object literal's nearest enclosing function scope is an
+      // anonymous callback passed directly to `array.map` — no resolvable
+      // qualifier, so no qualified definition should be created for it.
+      const symbols = parseJS(`
+        function outer() {
+          return [1].map(function (v) {
+            return { get: () => v };
+          });
+        }
+      `);
+      expect(symbols.definitions).not.toContainEqual(
+        expect.objectContaining({ name: expect.stringContaining('.get') }),
+      );
+    });
+
+    it('seeds a typeMap entry for the qualified return-statement object-literal property', () => {
+      const symbols = parseJS(`
+        function makePartition(seed) {
+          return { deltaCPM: (v) => v + seed };
+        }
+      `);
+      const entry = symbols.typeMap.get('makePartition.deltaCPM');
+      expect(entry).toBeDefined();
+      expect(entry.type).toBe('makePartition.deltaCPM');
+    });
+
+    it('self-types a factory function whose body directly returns an object literal with callable properties', () => {
+      const symbols = parseJS(`
+        function makePartition(seed) {
+          return { deltaCPM: (v) => v + seed };
+        }
+      `);
+      const entry = symbols.returnTypeMap.get('makePartition');
+      expect(entry).toBeDefined();
+      expect(entry.type).toBe('makePartition');
+    });
+
     // Line range verification
     it('sets correct line and endLine on callback definition', () => {
       const code = [

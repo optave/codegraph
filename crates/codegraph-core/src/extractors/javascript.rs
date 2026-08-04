@@ -2,6 +2,7 @@ use super::helpers::*;
 use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
+use crate::domain::graph::builder::stages::build_edges::PROPAGATION_HOP_PENALTY;
 use crate::types::*;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Tree};
@@ -39,8 +40,13 @@ impl SymbolExtractor for JsExtractor {
             match_js_node(node, source, symbols, depth, &callback_param_shapes)
         });
         walk_ast_nodes(&tree.root_node(), source, &mut symbols.ast_nodes);
-        walk_tree(&tree.root_node(), source, &mut symbols, match_js_type_map);
+        // #2033: return_type_map must be fully populated before match_js_type_map
+        // runs — its variable_declarator handler now reads the *complete* per-file
+        // return_type_map for same-file inter-procedural propagation (mirrors TS
+        // extractReturnTypeMapWalk running before runContextCollectorWalk for the
+        // identical reason, per that function's doc comment).
         walk_tree(&tree.root_node(), source, &mut symbols, match_js_return_type_map);
+        walk_tree(&tree.root_node(), source, &mut symbols, match_js_type_map);
         // Pre-ES6 prototype methods: `Foo.prototype.bar = fn` and `Foo.prototype = { bar: fn }`
         walk_tree(&tree.root_node(), source, &mut symbols, match_js_prototype_methods);
         // call_assignments runs after type_map is populated (needs receiver types)
@@ -139,6 +145,10 @@ fn match_js_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
         // TypeScript class field declarations.
         // Mirrors handleFieldDefTypeMap in src/extractors/javascript.ts.
         "public_field_definition" | "field_definition" => handle_field_def_type_map(node, source, symbols),
+        // #2033: seed composite typeMap keys for object literals returned from a
+        // factory function's body, mirroring the const/let/var declarator branch
+        // above. Mirrors TS handleReturnStmtObjectLiteral's typeMap half.
+        "return_statement" => handle_return_stmt_type_map(node, source, symbols),
         _ => {}
     }
 }
@@ -174,6 +184,37 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
     // Phase 8.3e: Object.create({ key: fn }) → composite pts key per property
     if value_n.kind() == "call_expression" {
         seed_object_create_entries(var_name, &value_n, source, symbols);
+        // Phase 8.2 (same-file): inter-procedural return-type propagation —
+        // `const p = makePartition(42)` resolves `p`'s type from this file's OWN
+        // return_type_map (already fully populated by match_js_return_type_map,
+        // which runs before this walk) so a directly-returned self-typed object
+        // literal (#2033's find_return_object_literal_self_type) — or any other
+        // same-file annotated/inferred return type — lets `p.method()` resolve
+        // through the qualified definition. Mirrors TS handleCallExprTypeMap's
+        // resolveCallExprReturnType(depth=0) identifier branch. Cross-file
+        // propagation (imported callees) is handled separately by
+        // propagate_return_types_across_files in pipeline.rs, which only sees
+        // imported names and therefore cannot cover this same-file case.
+        if let Some(fn_n) = value_n.child_by_field_name("function") {
+            if fn_n.kind() == "identifier" {
+                let callee_name = node_text(&fn_n, source);
+                let same_file_entry = symbols
+                    .return_type_map
+                    .iter()
+                    .find(|e| e.name == callee_name)
+                    .map(|e| (e.type_name.clone(), e.confidence));
+                if let Some((type_name, confidence)) = same_file_entry {
+                    let propagated = confidence - PROPAGATION_HOP_PENALTY;
+                    if propagated > 0.0 {
+                        symbols.type_map.push(TypeMapEntry {
+                            name: var_name.to_string(),
+                            type_name,
+                            confidence: propagated,
+                        });
+                    }
+                }
+            }
+        }
     }
     // Phase 8.3f parity: seed composite typeMap keys for ALL object-literal
     // declarations (`const`, `let`, `var`) when at non-function scope.
@@ -720,6 +761,108 @@ fn seed_objlit_type_map_entries(var_name: &str, obj_node: &Node, source: &[u8], 
     }
 }
 
+/// Return the qualifier name for the nearest enclosing function scope of `node` —
+/// walks up `VAR_DECL_FN_SCOPE_TYPES` ancestors and names the match the same way
+/// `extract_object_literal_functions`'s const/let/var declarator call sites name
+/// their `var_name` qualifier (#2033). Used to extend that qualified-definition
+/// mechanism to object literals `return`ed from a factory function's body, e.g.
+/// `function makePartition(seed) { return { deltaCPM: (v) => computeDeltaCPM(s, v) } }`
+/// qualifies the property as `makePartition.deltaCPM`. Mirrors TS
+/// `findEnclosingFunctionQualifier`.
+///
+/// Returns `None` when the enclosing scope has no resolvable name — an anonymous
+/// function expression/arrow that isn't directly assigned to a variable (e.g. an
+/// inline callback argument, an IIFE) — callers skip the qualified extraction in
+/// that case and fall back to the pre-existing generic caller-attribution behavior.
+fn find_enclosing_function_qualifier(node: &Node, source: &[u8]) -> Option<String> {
+    let fn_node = find_parent_of_types(node, &VAR_DECL_FN_SCOPE_TYPES)?;
+    qualifier_for_function_scope_node(&fn_node, source)
+}
+
+/// Derive the qualifier name for a single function-scope node — see
+/// `find_enclosing_function_qualifier`. Mirrors TS `qualifierForFunctionScopeNode`
+/// (and the naming convention `handle_method_def`/`handle_var_decl`'s arrow-value
+/// branch already use for the same node shapes).
+fn qualifier_for_function_scope_node(fn_node: &Node, source: &[u8]) -> Option<String> {
+    match fn_node.kind() {
+        "function_declaration" | "generator_function_declaration" => {
+            let name_n = fn_node.child_by_field_name("name")?;
+            if name_n.kind() != "identifier" { return None; }
+            Some(node_text(&name_n, source).to_string())
+        }
+        "method_definition" => {
+            let method_name = resolve_method_def_name(fn_node, source)?;
+            Some(match find_parent_class(fn_node, source) {
+                Some(cls) => format!("{}.{}", cls, method_name),
+                None => method_name,
+            })
+        }
+        _ => {
+            // function_expression / generator_function / arrow_function: prefer a
+            // named function expression's own name field, then fall back to the
+            // variable it's directly assigned to (`const foo = () => {...}`) —
+            // mirroring the arrow-value branch of `handle_var_decl`. Anonymous,
+            // non-assigned closures (inline callbacks, IIFEs) have no resolvable
+            // qualifier.
+            if let Some(name_n) = fn_node.child_by_field_name("name") {
+                if name_n.kind() == "identifier" {
+                    return Some(node_text(&name_n, source).to_string());
+                }
+            }
+            let parent = fn_node.parent()?;
+            if parent.kind() == "variable_declarator" {
+                let value_n = parent.child_by_field_name("value")?;
+                if value_n.id() == fn_node.id() {
+                    let name_n = parent.child_by_field_name("name")?;
+                    if name_n.kind() == "identifier" {
+                        return Some(node_text(&name_n, source).to_string());
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Return the object-literal expression of a `return { ... };` statement, or
+/// `None` when the statement doesn't return a bare object literal (#2033).
+/// Mirrors TS `findReturnedObjectLiteral` — no parenthesized-wrapper unwrapping,
+/// matching that function's existing scope.
+fn find_returned_object_literal<'a>(return_node: &Node<'a>) -> Option<Node<'a>> {
+    for i in 0..return_node.child_count() {
+        let Some(child) = return_node.child(i) else { continue };
+        if child.kind() == "object" { return Some(child); }
+    }
+    None
+}
+
+/// Qualify a `return { ... }` statement's object-literal properties against its
+/// enclosing named function (#2033) — Rust mirror of the definitions half of TS
+/// `handleReturnStmtObjectLiteral`. See that function's doc comment (in
+/// `src/extractors/javascript.ts`) for the full rationale: this extends
+/// `extract_object_literal_functions`'s qualified-definition mechanism
+/// (previously only reachable via a `const x = {...}` variable declarator) to
+/// object literals returned directly from a factory function's body, so
+/// `findCaller`/its Rust equivalent attribute calls inside the property's
+/// closure to the qualified property definition rather than the factory itself.
+fn handle_return_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(obj_node) = find_returned_object_literal(node) else { return };
+    let Some(qualifier) = find_enclosing_function_qualifier(node, source) else { return };
+    extract_object_literal_functions(&obj_node, source, &qualifier, symbols);
+}
+
+/// Type-map half of `handle_return_stmt` — mirrors TS
+/// `handleReturnStmtObjectLiteral`'s `handleObjectLiteralTypeMap` call, so
+/// `const p = makePartition(42); p.deltaModularity(1)` resolves through the
+/// qualified definition too, once `store_return_type`'s sibling self-type
+/// inference (see `find_return_object_literal_self_type`) types `p` as
+/// `makePartition`.
+fn handle_return_stmt_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(obj_node) = find_returned_object_literal(node) else { return };
+    let Some(qualifier) = find_enclosing_function_qualifier(node, source) else { return };
+    seed_objlit_type_map_entries(&qualifier, &obj_node, source, symbols);
+}
+
 // ── Return-type map extraction (Phase 8.2 parity) ───────────────────────────
 
 /// Walk the AST collecting function/method return types into `symbols.return_type_map`.
@@ -782,10 +925,13 @@ fn store_return_type(fn_node: &Node, fn_name: &str, source: &[u8], symbols: &mut
             return;
         }
     }
-    // Infer from first `return new Constructor()` in body
+    // Infer from first `return new Constructor()` in body, then from a
+    // directly-returned object literal with callable properties (#2033).
     if let Some(body) = fn_node.child_by_field_name("body") {
         if let Some(type_name) = find_return_new_expr_type(&body, source) {
             push_return_type_entry(symbols, fn_name, type_name, 0.85);
+        } else if find_return_object_literal_self_type(&body) {
+            push_return_type_entry(symbols, fn_name, fn_name, 0.85);
         }
     }
 }
@@ -803,6 +949,50 @@ fn find_return_new_expr_type<'a>(body: &Node<'a>, source: &'a [u8]) -> Option<&'
         }
     }
     None
+}
+
+/// #2033: self-referential return-type inference for a factory function whose body
+/// directly returns an object literal with at least one callable property (function/
+/// arrow/method value) — paired with `handle_return_stmt`'s qualified `fn_name.prop_name`
+/// definitions so `const p = fn_name(...); p.prop_name()` resolves: Phase 8.2's
+/// inter-procedural propagation types `p` as `fn_name`, and the resolver's
+/// prototype-alias step then finds the qualified definition via the typeMap entry
+/// `handle_return_stmt_type_map` seeds for it. Mirrors TS `findReturnObjectLiteralSelfType`.
+///
+/// Only top-level return statements are checked, mirroring `find_return_new_expr_type`.
+fn find_return_object_literal_self_type(body: &Node) -> bool {
+    for i in 0..body.child_count() {
+        let Some(child) = body.child(i) else { continue };
+        if child.kind() != "return_statement" { continue; }
+        if let Some(obj_node) = find_returned_object_literal(&child) {
+            if object_literal_has_callable_property(&obj_node) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True when `obj_node` (an object literal) has at least one function/arrow/method
+/// property — mirrors `extract_object_literal_functions`' own shape detection so
+/// `find_return_object_literal_self_type` only self-types functions that actually
+/// get a qualified definition. Mirrors TS `objectLiteralHasCallableProperty`.
+fn object_literal_has_callable_property(obj_node: &Node) -> bool {
+    for i in 0..obj_node.child_count() {
+        let Some(child) = obj_node.child(i) else { continue };
+        match child.kind() {
+            "method_definition" => return true,
+            "pair" => {
+                if let Some(value_n) = child.child_by_field_name("value") {
+                    if matches!(value_n.kind(), "arrow_function" | "function_expression" | "function") {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Append a `(fn_name → type_name)` entry to `return_type_map`.
@@ -1066,6 +1256,11 @@ fn match_js_node(
         }
         // #1784: `instanceof ClassName` checks, e.g. `err instanceof CodegraphError`.
         "binary_expression" => handle_instanceof_value_ref(node, source, &mut symbols.calls),
+        // #2033: qualify object literals returned from a factory function's body
+        // against that function's name, so calls inside a returned property's
+        // closure attribute to the property (`makePartition.deltaCPM`), not the
+        // factory itself.
+        "return_statement" => handle_return_stmt(node, source, symbols),
         _ => {}
     }
 }
@@ -6864,6 +7059,60 @@ mod tests {
             "no definition name should retain the bracketed/quoted form; got: {:?}",
             names
         );
+    }
+
+    /// Issue #2033: an object literal returned from a factory function's body must be
+    /// qualified against the factory's name, exactly like a `const x = {...}` declarator
+    /// — so calls inside a returned property's closure attribute to the qualified
+    /// property, not the enclosing factory (which never itself executes that call; only
+    /// invoking the returned object's property does).
+    #[test]
+    fn return_statement_object_literal_qualifies_against_factory_name() {
+        let s = parse_js(
+            "function computeDeltaCPM(s, v) { return s + v; }\n\
+             function computeDeltaModularity(s, v) { return s * v; }\n\
+             function makePartition(seed) {\n\
+               const s = seed;\n\
+               return {\n\
+                 deltaCPM: (v) => computeDeltaCPM(s, v),\n\
+                 deltaModularity: (v) => computeDeltaModularity(s, v),\n\
+               };\n\
+             }\n\
+             function useIt() {\n\
+               const p = makePartition(42);\n\
+               return p.deltaModularity(1);\n\
+             }",
+        );
+        let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            names.contains(&"makePartition.deltaCPM"),
+            "expected qualified 'makePartition.deltaCPM' definition; got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"makePartition.deltaModularity"),
+            "expected qualified 'makePartition.deltaModularity' definition; got: {:?}",
+            names
+        );
+        // typeMap entries mirror the const-case seeding, so `p.deltaModularity(1)`
+        // can resolve through the qualified definition once `p` is typed as
+        // `makePartition` (via the self-type return-type inference below).
+        let tm = s.type_map.iter().find(|e| e.name == "makePartition.deltaModularity");
+        assert!(tm.is_some(), "typeMap 'makePartition.deltaModularity' missing; got: {:?}", s.type_map);
+        assert_eq!(tm.unwrap().type_name, "makePartition.deltaModularity");
+        // Self-referential return-type inference: makePartition's body directly
+        // returns an object literal with callable properties, so its own name
+        // becomes its inferred return type (mirrors `return new Ctor()` inference).
+        let rt = s.return_type_map.iter().find(|e| e.name == "makePartition");
+        assert!(rt.is_some(), "return_type_map 'makePartition' missing; got: {:?}", s.return_type_map);
+        assert_eq!(rt.unwrap().type_name, "makePartition");
+        // Same-file Phase 8.2 propagation: `const p = makePartition(42)` resolves
+        // `p`'s type from makePartition's self-typed return_type_map entry above,
+        // so `p.deltaModularity(1)` in useIt can resolve through the qualified
+        // definition (confirmed end-to-end via the resolver, not re-tested here).
+        let p_type = s.type_map.iter().find(|e| e.name == "p");
+        assert!(p_type.is_some(), "type_map 'p' missing; got: {:?}", s.type_map);
+        assert_eq!(p_type.unwrap().type_name, "makePartition");
     }
 
     /// Issue #1764: a non-string computed pair key (`[Symbol.iterator]: () => {}`) has no

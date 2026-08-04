@@ -343,6 +343,29 @@ class Button extends React.Component {
 export default Button;
 `,
   },
+  {
+    // Issue #2033: an object literal returned from a factory function's body must be
+    // qualified against the factory's name (makePartition.deltaCPM), exactly like a
+    // `const x = {...}` declarator — both the shared collector walk (runCollectorWalk,
+    // used by both extraction paths) and the query path's dedicated dispatch must agree.
+    name: 'object literal returned from a factory function (#2033)',
+    file: 'test.ts',
+    code: `
+function computeDeltaCPM(s: number, v: number): number { return s + v; }
+function computeDeltaModularity(s: number, v: number): number { return s * v; }
+export function makePartition(seed: number) {
+  const s = seed;
+  return {
+    deltaCPM: (v: number) => computeDeltaCPM(s, v),
+    deltaModularity: (v: number) => computeDeltaModularity(s, v),
+  };
+}
+export function useIt(): number {
+  const p = makePartition(42);
+  return p.deltaModularity(1);
+}
+`,
+  },
 ];
 
 describe('Query vs Walk parity', () => {
