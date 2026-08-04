@@ -19,6 +19,15 @@
  * being processed. `matches`/`resolve`-style dispatch tables that ARE read
  * through a real `handler.resolve(...)` call site (the #1771 fixture) keep
  * their edges; a property that's wired up but never read does not.
+ *
+ * `run`/`makeTable` are real ESM exports (not CommonJS `module.exports`)
+ * so `run` has a genuine external root and `makeTable` is reached from it via
+ * a direct cross-file `calls` edge — #2032's transitive-reachability check
+ * requires the whole chain down to `isRead` to be reachable from a
+ * confirmed-live root, independent of (and in addition to) the value-ref
+ * invocation-evidence mechanism this test targets. `neverRead`/`isRead`/
+ * `shorthandNeverRead` stay unexported internal helpers, since the point is
+ * to tell them apart purely by invocation evidence, not by export status.
  */
 
 import fs from 'node:fs';
@@ -40,25 +49,21 @@ function neverRead(x) { return x + 1; }
 function isRead(x) { return x + 2; }
 function shorthandNeverRead(x) { return x + 3; }
 
-function makeTable() {
+export function makeTable() {
   return {
     resolve: neverRead,
     reject: isRead,
     shorthandNeverRead,
   };
 }
-
-module.exports = { makeTable };
 `,
   'consumer.js': `
-const { makeTable } = require('./factory.js');
+import { makeTable } from './factory.js';
 
-function run() {
+export function run() {
   const table = makeTable();
   return table.reject(1);
 }
-
-module.exports = { run };
 `,
 };
 

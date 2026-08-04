@@ -36,6 +36,22 @@
  * a data-shape declaration or config value — never invoked from outside the
  * codebase — so it can't be a real entry point; it's classified `leaf` instead
  * of inheriting `entry` merely from being exported (#1780).
+ *
+ * Direct fan-in > 0 is not, by itself, sufficient evidence that a
+ * `function`/`method` is live: a node whose only caller is itself unreachable
+ * from any confirmed-live root still has fan-in 1 despite being genuinely dead
+ * (#2032 — e.g. a helper called only from an object-literal-property closure
+ * that is never itself invoked). When `classifyRoles` is given the full
+ * graph's `calls`-edge adjacency, `applyReachabilityDowngrade` runs a
+ * worklist/BFS from confirmed-live roots (framework-dispatched entries,
+ * exported `function`/`method`s, Commander dispatch methods — see
+ * `isLiveRoot`) and downgrades any `function`/`method` outside the reachable
+ * set from its fan-shape verdict (`core`/`utility`/`adapter`/`leaf`) to a
+ * `dead-*` sub-role. This is deliberately a strictly-downgrading second pass,
+ * not a replacement for the direct fan-in check — see `applyReachabilityDowngrade`'s
+ * doc comment for why the other branches (`test-only`, interface members,
+ * `hasActiveFileSiblings` rescues, exported zero-fan-in entries) must not be
+ * revisited by it.
  */
 
 import type { DeadSubRole, Role } from '../../types.js';
@@ -340,11 +356,236 @@ function classifyNodeRole(
 }
 
 /**
+ * Roles produced by `classifyByFanShape` — the only roles that can result
+ * from the `fanIn > 0` branch of `classifyNodeRole`. Used by
+ * `applyReachabilityDowngrade` to recognize which verdicts are eligible for
+ * reconsideration (see its doc comment).
+ */
+const FAN_SHAPE_ROLES: ReadonlySet<Role> = new Set(['core', 'utility', 'adapter', 'leaf']);
+
+/**
+ * True when `node` is a confirmed-live reachability root for the transitive
+ * dead-code pass (#2032) — i.e. something external code can invoke directly,
+ * regardless of whether it currently has any inbound `calls` edges from
+ * elsewhere in the codebase:
+ *
+ *  - a framework-dispatched entry point (`route:`/`event:`/`command:`-prefixed name)
+ *  - an exported `function`/`method` — part of the public API surface, callable
+ *    from outside the codebase by construction
+ *  - a Commander.js dispatch method (`execute`/`validate`) in a framework directory
+ *
+ * This mirrors the `entry`-detection rules in `classifyNodeRole`, but
+ * deliberately drops their `fanIn === 0` gate: a root's liveness comes from
+ * *how* it can be invoked, not from whether it happens to currently have zero
+ * in-repo callers. An exported function that is ALSO called internally is
+ * still a live root, even though `classifyNodeRole` itself classifies it via
+ * fan-in shape (`core`/`utility`/etc.) rather than `entry` in that case.
+ *
+ * This only covers roots that are themselves `function`/`method` nodes
+ * present in `nodes`. `applyReachabilityDowngrade` separately seeds
+ * additional roots directly from `callEdges` for non-function/method call
+ * SOURCES (module-top-level `constant`/`class` initializers, bare top-level
+ * assignments attributed to the enclosing `file`) — see its doc comment.
+ */
+function isLiveRoot(
+  node: RoleClassificationNode,
+  typeDefNamesByFile: Map<string, Set<string>>,
+): boolean {
+  if (isTypeDeclarationMember(node, typeDefNamesByFile)) return false;
+  if (FRAMEWORK_ENTRY_PREFIXES.some((p) => node.name.startsWith(p))) return true;
+  if (node.kind !== 'function' && node.kind !== 'method') return false;
+  if (node.isExported) return true;
+  return !!(
+    node.file &&
+    COMMANDER_DISPATCH_NAMES.has(node.name) &&
+    ENTRY_PATH_PATTERNS.some((p) => p.test(node.file!))
+  );
+}
+
+/**
+ * Forward BFS over `calls` edges starting from `roots`, using a single
+ * array-backed queue (no `Array#shift`, which is O(n) per call) so the whole
+ * traversal is O(V+E) — safe to run on graphs with tens of thousands of nodes
+ * and edges (this repo's own self-build).
+ */
+function computeReachableIds(
+  roots: Iterable<string>,
+  callEdges: ReadonlyArray<readonly [string, string]>,
+): Set<string> {
+  const adjacency = new Map<string, string[]>();
+  for (const [source, target] of callEdges) {
+    let outs = adjacency.get(source);
+    if (!outs) {
+      outs = [];
+      adjacency.set(source, outs);
+    }
+    outs.push(target);
+  }
+
+  const visited = new Set<string>(roots);
+  const queue = Array.from(visited);
+  for (let head = 0; head < queue.length; head++) {
+    const outs = adjacency.get(queue[head]!);
+    if (!outs) continue;
+    for (const next of outs) {
+      if (!visited.has(next)) {
+        visited.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return visited;
+}
+
+/**
+ * True when `node` is a `method`-kind interface-dispatch implementation
+ * rescued by `classifyUnreferencedNode`'s Pattern-2 heuristic (fanIn === 0,
+ * fanOut > 0, `hasActiveFileSiblings`) — e.g. `enterNode`/`exitNode` on a
+ * Visitor-shaped object, invoked only via generic property-access dispatch
+ * (`if (v.enterNode) v.enterNode(...)`) that codegraph cannot trace to a
+ * concrete implementation. Such a method can never be the TARGET of a
+ * `calls` edge by construction — the same category as a constant/file-sourced
+ * value-ref edge — so it must be an unconditional root: otherwise everything
+ * it calls (other helpers in the same visitor file) would be wrongly treated
+ * as unreachable merely because the dispatch mechanism itself leaves no edge.
+ *
+ * Deliberately narrower than `classifyUnreferencedNode`'s sibling rescue for
+ * `function`-kind logical-or-fallback values (`kind === 'function' &&
+ * fanOut > 0`) just below it in that function — that heuristic is an
+ * explicitly acknowledged, imprecise last-resort fallback for value-reference
+ * shapes not yet given a real edge (ternary defaults, array-of-functions
+ * elements, default parameter values — see its comment), not a structural
+ * certainty like interface dispatch. Promoting it to root status here would
+ * silently rescue genuinely-dead intermediate functions (the exact #2032
+ * pattern) merely because they happen to call something in a file that also
+ * has unrelated active code.
+ */
+function isInterfaceDispatchMethodRoot(
+  node: RoleClassificationNode,
+  typeDefNamesByFile: Map<string, Set<string>>,
+): boolean {
+  return (
+    node.kind === 'method' &&
+    node.fanIn === 0 &&
+    node.fanOut > 0 &&
+    !!node.hasActiveFileSiblings &&
+    !isTypeDeclarationMember(node, typeDefNamesByFile)
+  );
+}
+
+/**
+ * Downgrade fan-in-based "not dead" verdicts to dead when the node is not
+ * transitively reachable from any confirmed-live root via `calls` edges
+ * (#2032) — "has at least one inbound `calls` edge" is not sufficient
+ * evidence of liveness when that edge's source is itself unreachable. A
+ * function whose only caller is itself dead code is still dead, regardless of
+ * its direct fan-in count.
+ *
+ * Roots come from three sources:
+ *
+ *  1. `isLiveRoot` — `function`/`method` nodes that are themselves confirmed
+ *     entry points (framework dispatch, exported, Commander dispatch).
+ *
+ *  2. `isInterfaceDispatchMethodRoot` — `method`-kind interface-dispatch
+ *     implementations (Visitor-pattern-style), which can never be the TARGET
+ *     of a `calls` edge by construction. See its doc comment for why this is
+ *     deliberately NOT extended to `function`-kind rescues.
+ *
+ *  3. Every `calls`-edge SOURCE that is not itself a `function`/`method` node
+ *     in `nodes`. Only `function`/`method` bodies have a genuine "was this
+ *     invoked" question — every other kind that can source a `calls` edge
+ *     represents code that runs unconditionally once its containing scope is
+ *     parsed, with no separate invocation to prove:
+ *       - `constant`: module-top-level `const` declarations (every extractor
+ *         excludes function-scope while walking for them) whose initializer
+ *         runs at module-load time — e.g. dispatch-table/handler-array object
+ *         literals (`const HANDLERS = [{ resolve: someFn }]`, #1771/#1895)
+ *         get a `calls` edge from the `constant` to each referenced function
+ *         once the extractor has validated invocation evidence for the
+ *         dispatch pattern.
+ *       - `file`: bare top-level assignments with no declared LHS binding
+ *         (e.g. Lua's builtin-reassignment `require = tracedFn`, #1776) are
+ *         attributed to the enclosing file/module scope, since there is no
+ *         narrower definition to attach them to.
+ *       - `class` and other structural kinds: static field/initializer-style
+ *         `calls` edges attributed to the type itself rather than a method.
+ *     `file`/`directory`/`parameter`/`property` nodes are excluded from
+ *     `nodes` entirely (see the module doc comment), so any edge source
+ *     absent from `nodes` is — by construction — one of these always-live
+ *     non-function/method sources, not a dangling reference.
+ *
+ * This is a strictly-downgrading second pass over the already-computed role
+ * map, not a replacement of the direct fan-in check — it never reconsiders
+ * roles produced by the `fanIn === 0` branch of `classifyNodeRole`
+ * (`entry`/`test-only`/`leaf`/`dead-*` via `classifyUnreferencedNode`,
+ * interface/type members, exported zero-fan-in entries). Those categories
+ * already correctly resolve liveness through signals reachability doesn't
+ * apply to (framework dispatch, the export surface, hasActiveFileSiblings
+ * rescues for call patterns that produce no edge at all) and must not be
+ * revisited here. It only reconsiders `function`/`method` nodes that received
+ * a `core`/`utility`/`adapter`/`leaf` verdict from `classifyByFanShape` — which
+ * requires `fanIn > 0` by construction — the exact case the direct fan-in
+ * check gets wrong. Nodes that are themselves confirmed-live roots are never
+ * downgraded (a root is always in its own reachable set).
+ */
+function applyReachabilityDowngrade(
+  nodes: RoleClassificationNode[],
+  result: Map<string, Role>,
+  callEdges: ReadonlyArray<readonly [string, string]>,
+  typeDefNamesByFile: Map<string, Set<string>>,
+): void {
+  const kindById = new Map<string, string>();
+  for (const node of nodes) kindById.set(node.id, node.kind);
+
+  const roots = new Set<string>();
+  for (const node of nodes) {
+    if (
+      isLiveRoot(node, typeDefNamesByFile) ||
+      isInterfaceDispatchMethodRoot(node, typeDefNamesByFile)
+    ) {
+      roots.add(node.id);
+    }
+  }
+  for (const [source] of callEdges) {
+    const kind = kindById.get(source);
+    if (kind !== 'function' && kind !== 'method') roots.add(source);
+  }
+  const reachable = computeReachableIds(roots, callEdges);
+
+  for (const node of nodes) {
+    if (node.kind !== 'function' && node.kind !== 'method') continue;
+    if (node.fanIn <= 0) continue;
+    // isTypeDeclarationMember returns 'leaf' unconditionally, independent of
+    // fanIn — an interface/type method-signature member can have fanIn > 0
+    // (real call sites resolve to it by name) and still land on 'leaf', which
+    // is indistinguishable from classifyByFanShape's 'leaf' by role string
+    // alone. Must be excluded explicitly, or a widely-referenced interface
+    // method (e.g. a native-binding surface like `NativeDatabase` in
+    // `types.ts`) gets wrongly reconsidered here.
+    if (isTypeDeclarationMember(node, typeDefNamesByFile)) continue;
+    const role = result.get(node.id);
+    if (!role || !FAN_SHAPE_ROLES.has(role)) continue;
+    if (reachable.has(node.id)) continue;
+    result.set(node.id, classifyDeadSubRole(node));
+  }
+}
+
+/**
  * Classify nodes into architectural roles based on fan-in/fan-out metrics.
+ *
+ * @param callEdges - Optional `calls`-edge adjacency (`[sourceId, targetId]`
+ *   pairs) spanning the FULL graph (not just `nodes`), used to run the
+ *   transitive-reachability dead-code downgrade (#2032). Omit (or pass an
+ *   empty array) to skip this pass entirely and preserve pre-#2032 behavior —
+ *   this is intentional for callers that only have a locally-scoped subgraph
+ *   available (see `classifyNodeRolesIncremental` in `features/structure.ts`
+ *   for why a partial edge set cannot safely feed a global reachability
+ *   check).
  */
 export function classifyRoles(
   nodes: RoleClassificationNode[],
   medianOverrides?: { fanIn: number; fanOut: number },
+  callEdges?: ReadonlyArray<readonly [string, string]>,
 ): Map<string, Role> {
   if (nodes.length === 0) return new Map();
 
@@ -355,5 +596,10 @@ export function classifyRoles(
   for (const node of nodes) {
     result.set(node.id, classifyNodeRole(node, medFanIn, medFanOut, typeDefNamesByFile));
   }
+
+  if (callEdges && callEdges.length > 0) {
+    applyReachabilityDowngrade(nodes, result, callEdges, typeDefNamesByFile);
+  }
+
   return result;
 }

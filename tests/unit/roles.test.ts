@@ -177,6 +177,15 @@ describe('classifyNodeRoles', () => {
     insertEdge(fn1, fn2, 'calls');
     insertEdge(fn2, fn1, 'calls');
 
+    // fn1 is exported — a confirmed-live reachability root (#2032) — so this
+    // mutually-recursive pair is reachable from outside the codebase via fn1.
+    // Without a root, fn1/fn2 would be a closed component unreachable from
+    // any live entry point and correctly downgraded to dead-unresolved,
+    // regardless of their mutual fan-in/fan-out — this test is specifically
+    // about median-based fan-shape classification, not reachability, so it
+    // needs a genuine root to keep exercising that.
+    db.prepare('UPDATE nodes SET exported = 1 WHERE id = ?').run(fn1);
+
     const summary = classifyNodeRoles(db);
     // Both have fan_in=1 (>= median 1) and fan_out=1 (>= median 1) → utility
     expect(summary.utility).toBe(2);

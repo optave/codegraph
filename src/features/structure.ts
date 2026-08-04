@@ -976,7 +976,25 @@ function classifyNodeRolesFull(db: BetterSqlite3Database, emptySummary: RoleSumm
     .map((n) => n.fanOut)
     .sort((a, b) => a - b);
   const globalMedians = { fanIn: median(nonZeroFanIn), fanOut: median(nonZeroFanOut) };
-  const roleMap = classifyRoles(classifierInput, globalMedians);
+  // Full graph `calls`-edge adjacency for the transitive-reachability
+  // dead-code pass (#2032). Only the full-build path supplies this — a
+  // single indexed full-table scan, consistent with the other full-graph
+  // scans this function already performs (exportedIds, reexportExported,
+  // prodFanInMap above). The incremental path (`classifyNodeRolesIncremental`)
+  // deliberately omits it: reachability is a whole-graph property that a
+  // changed-files-plus-one-hop-neighbour window cannot answer correctly (a
+  // node's only live path in could run through files outside that window),
+  // and re-running a full scan on every incremental build would reintroduce
+  // exactly the cost this function's median/exported-set caching was built to
+  // avoid (#1855). See #2032's follow-up issue for incremental parity.
+  const callEdgeRows = db
+    .prepare(`SELECT source_id, target_id FROM edges WHERE kind = 'calls'`)
+    .all() as { source_id: number; target_id: number }[];
+  const callEdges: Array<[string, string]> = callEdgeRows.map((r) => [
+    String(r.source_id),
+    String(r.target_id),
+  ]);
+  const roleMap = classifyRoles(classifierInput, globalMedians, callEdges);
   // Derive the edge count from already-loaded in-memory rows: summing fan_in
   // across all nodes equals COUNT(*) FROM edges WHERE kind IN ('calls','imports-type'),
   // since the full-build query left-joins every matching edge exactly once per target.
