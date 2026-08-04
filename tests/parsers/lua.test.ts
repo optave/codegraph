@@ -46,6 +46,44 @@ end`);
     );
   });
 
+  // ── #2036: anonymous function-expression assignment Definitions ──────
+
+  it('extracts a Definition for the module-table function-assignment idiom (M.foo = function() end)', () => {
+    const symbols = parseLua(`local M = {}
+M.foo = function(x)
+  if x then
+    return 1
+  else
+    return 2
+  end
+end`);
+    expect(symbols.definitions).toContainEqual(
+      expect.objectContaining({ name: 'M.foo', kind: 'method' }),
+    );
+  });
+
+  it('extracts a Definition for a local anonymous function assignment (local f = function() end)', () => {
+    const symbols = parseLua(`local f = function(x)
+  return x + 1
+end`);
+    expect(symbols.definitions).toContainEqual(
+      expect.objectContaining({ name: 'f', kind: 'function' }),
+    );
+  });
+
+  it('extracts a separate Definition for a nested anonymous function passed as a callback', () => {
+    const symbols = parseLua(`local function outer()
+  local cb = function()
+    if true then
+      return 1
+    end
+  end
+  return cb
+end`);
+    expect(symbols.definitions).toContainEqual(expect.objectContaining({ name: 'outer' }));
+    expect(symbols.definitions).toContainEqual(expect.objectContaining({ name: 'cb' }));
+  });
+
   it('extracts require calls as imports', () => {
     const symbols = parseLua(`local json = require("cjson")`);
     expect(symbols.imports).toContainEqual(expect.objectContaining({ source: 'cjson' }));

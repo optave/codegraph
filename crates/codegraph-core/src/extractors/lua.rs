@@ -110,6 +110,9 @@ fn extract_lua_params(func_node: &Node, source: &[u8]) -> Vec<Definition> {
 /// Detect `<builtin> = <identifier>` assignments — a locally declared
 /// function bound to a Lua global/builtin identifier (e.g.
 /// `require = traced_require`), the monkey-patch pattern from issue #1776.
+/// Also detects anonymous `function(...) end` values assigned via a plain
+/// `identifier`/dotted target (issue #2036) — see
+/// `handle_lua_function_expr_assignment` below.
 /// Mirrors `handleLuaAssignmentStatement` in `src/extractors/lua.ts` — see
 /// that function's doc comment for the full rationale.
 ///
@@ -135,6 +138,12 @@ fn handle_lua_assignment_statement(node: &Node, source: &[u8], symbols: &mut Fil
     for i in 0..pair_count {
         let Some(lhs) = variable_list.named_child(i) else { continue };
         let Some(rhs) = expression_list.named_child(i) else { continue };
+
+        if rhs.kind() == "function_definition" {
+            handle_lua_function_expr_assignment(&lhs, &rhs, source, symbols);
+            continue;
+        }
+
         if lhs.kind() != "identifier" || rhs.kind() != "identifier" {
             continue;
         }
@@ -151,6 +160,61 @@ fn handle_lua_assignment_statement(node: &Node, source: &[u8], symbols: &mut Fil
             ..Default::default()
         });
     }
+}
+
+/// Emit a `Definition` for the Lua module-table idiom `local M = {}; M.foo =
+/// function(...) end` — an anonymous `function_definition` assigned via a
+/// plain assignment (bare, or nested inside a `local` `variable_declaration`
+/// — both shapes dispatch through `handle_lua_assignment_statement` since
+/// tree-sitter aliases the `local`-declared form to the same
+/// `assignment_statement` node), rather than the named `function M.foo() end`
+/// form `handle_lua_function_decl` already covers. Without this the RHS
+/// function has no `Definition` at all and silently gets zero complexity/
+/// Halstead data (issue #2036) — a fair portion of real Lua codebases use
+/// this module-table-of-functions idiom.
+///
+/// Handles a plain identifier target (`local f = function() end`, kind
+/// `function`) and a dotted target (`M.foo = function() end`, kind
+/// `method`), matching the two forms `_function_name` supports for the named
+/// declaration. Other LHS shapes (e.g. computed `M[k] = function() end`) are
+/// not handled here — see #2036 for the scope of this fix.
+fn handle_lua_function_expr_assignment(
+    lhs: &Node,
+    rhs: &Node,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+) {
+    let (name, kind) = match lhs.kind() {
+        "identifier" => (node_text(lhs, source).to_string(), "function"),
+        "dot_index_expression" => {
+            let table = lhs.child_by_field_name("table");
+            let field = lhs.child_by_field_name("field");
+            match (table, field) {
+                (Some(t), Some(f)) => (
+                    format!("{}.{}", node_text(&t, source), node_text(&f, source)),
+                    "method",
+                ),
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+
+    let params = extract_lua_params(rhs, source);
+
+    symbols.definitions.push(Definition {
+        name,
+        kind: kind.to_string(),
+        line: start_line(rhs),
+        end_line: Some(end_line(rhs)),
+        decorators: None,
+        complexity: compute_all_metrics(rhs, source, "lua"),
+        cfg: build_function_cfg(rhs, "lua", source),
+        children: opt_children(params),
+        bodyless: None,
+        content_hash: None,
+        accessor_kind: None,
+    });
 }
 
 fn handle_lua_function_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
@@ -432,5 +496,70 @@ mod tests {
         assert!(s.calls.iter().any(|c| c.dynamic == Some(true)
             && c.dynamic_kind.as_deref() == Some("computed-key")
             && c.receiver.as_deref() == Some("handlers")));
+    }
+
+    // ── #2036: anonymous function-expression assignment Definitions ────────
+
+    #[test]
+    fn creates_method_definition_for_module_table_function_assignment() {
+        let s = parse_lua(
+            "local M = {}\nM.foo = function(x)\n  if x then\n    return 1\n  else\n    return 2\n  end\nend",
+        );
+        let def = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "M.foo")
+            .expect("expected a Definition for M.foo");
+        assert_eq!(def.kind, "method");
+        let complexity = def.complexity.as_ref().expect("expected complexity to be computed");
+        assert_eq!(complexity.cyclomatic, 2);
+        assert_eq!(complexity.cognitive, 2);
+        assert_eq!(complexity.max_nesting, 1);
+    }
+
+    #[test]
+    fn creates_function_definition_for_local_anonymous_function_assignment() {
+        let s = parse_lua("local f = function(x)\n  return x + 1\nend");
+        let def = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "f")
+            .expect("expected a Definition for f");
+        assert_eq!(def.kind, "function");
+        let complexity = def.complexity.as_ref().expect("expected complexity to be computed");
+        assert_eq!(complexity.cyclomatic, 1);
+        assert_eq!(complexity.cognitive, 0);
+    }
+
+    #[test]
+    fn nested_anonymous_function_gets_its_own_definition_and_scope() {
+        // The nested `function() ... end` passed as a callback must be its own
+        // Definition (not merged into the outer function's complexity).
+        let s = parse_lua(
+            "local function outer()\n  local cb = function()\n    if true then\n      return 1\n    end\n  end\n  return cb\nend",
+        );
+        let outer = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "outer")
+            .expect("expected a Definition for outer");
+        let outer_complexity = outer.complexity.as_ref().expect("expected complexity");
+        // A nested function's branches still contribute to the enclosing
+        // function's score at increased nesting depth (matches the
+        // pre-existing JS `nested_function` test) — the key regression this
+        // guards is that `cb` now also gets its own separate Definition
+        // (asserted below), not that outer's total is unaffected.
+        assert_eq!(outer_complexity.cyclomatic, 2);
+        assert_eq!(outer_complexity.cognitive, 2);
+        assert_eq!(outer_complexity.max_nesting, 2);
+
+        let cb = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "cb")
+            .expect("expected a Definition for cb");
+        let cb_complexity = cb.complexity.as_ref().expect("expected complexity");
+        assert_eq!(cb_complexity.cyclomatic, 2);
+        assert_eq!(cb_complexity.cognitive, 1);
     }
 }

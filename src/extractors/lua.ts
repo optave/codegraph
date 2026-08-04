@@ -220,6 +220,10 @@ function checkForRequire(node: TreeSitterNode, ctx: ExtractorOutput): void {
  * own assignment semantics — mixed variable kinds (`t.b, a = f, g`) do not
  * shift the pairing, since each side is indexed independently by position
  * rather than pre-filtered to identifiers first.
+ *
+ * Also detects anonymous `function(...) end` values assigned via a plain
+ * identifier/dotted target (issue #2036) — see
+ * `handleLuaFunctionExprAssignment` below.
  */
 function handleLuaAssignmentStatement(node: TreeSitterNode, ctx: ExtractorOutput): void {
   const variableList = findChild(node, 'variable_list');
@@ -234,6 +238,12 @@ function handleLuaAssignmentStatement(node: TreeSitterNode, ctx: ExtractorOutput
     const lhs = variables[i];
     const rhs = expressions[i];
     if (!lhs || !rhs) continue;
+
+    if (rhs.type === 'function_definition') {
+      handleLuaFunctionExprAssignment(lhs, rhs, ctx);
+      continue;
+    }
+
     if (lhs.type !== 'identifier' || rhs.type !== 'identifier') continue;
     if (!LUA_BUILTIN_GLOBALS.has(lhs.text) || LUA_BUILTIN_GLOBALS.has(rhs.text)) continue;
 
@@ -244,6 +254,58 @@ function handleLuaAssignmentStatement(node: TreeSitterNode, ctx: ExtractorOutput
       dynamicKind: 'value-ref',
     });
   }
+}
+
+/**
+ * Emit a Definition for the Lua module-table idiom `local M = {}; M.foo =
+ * function(...) end` — an anonymous `function_definition` assigned via a
+ * plain assignment (bare, or nested inside a `local` `variable_declaration`
+ * — both shapes dispatch through `handleLuaAssignmentStatement` since
+ * tree-sitter aliases the `local`-declared form to the same
+ * `assignment_statement` node), rather than the named `function M.foo() end`
+ * form `handleLuaFunctionDecl` already covers. Without this the RHS function
+ * has no Definition at all and silently gets zero complexity/Halstead data
+ * (issue #2036) — a fair portion of real Lua codebases use this
+ * module-table-of-functions idiom.
+ *
+ * Handles a plain identifier target (`local f = function() end`, kind
+ * 'function') and a dotted target (`M.foo = function() end`, kind
+ * 'method'), matching the two forms the named-declaration name field
+ * supports. Other LHS shapes (e.g. computed `M[k] = function() end`) are not
+ * handled here — see #2036 for the scope of this fix. Complexity/Halstead
+ * metrics are filled in later by the WASM complexity visitor (matched back
+ * to this Definition by line), mirroring the JS/TS `handleVarFnAssignment`
+ * split between extraction and analysis.
+ */
+function handleLuaFunctionExprAssignment(
+  lhs: TreeSitterNode,
+  rhs: TreeSitterNode,
+  ctx: ExtractorOutput,
+): void {
+  let name: string;
+  let kind: 'function' | 'method';
+
+  if (lhs.type === 'identifier') {
+    name = lhs.text;
+    kind = 'function';
+  } else if (lhs.type === 'dot_index_expression') {
+    const table = lhs.childForFieldName('table');
+    const field = lhs.childForFieldName('field');
+    if (!table || !field) return;
+    name = `${table.text}.${field.text}`;
+    kind = 'method';
+  } else {
+    return;
+  }
+
+  const params = extractLuaParams(rhs);
+  ctx.definitions.push({
+    name,
+    kind,
+    line: nodeStartLine(rhs),
+    endLine: nodeEndLine(rhs),
+    children: params.length > 0 ? params : undefined,
+  });
 }
 
 /**

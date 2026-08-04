@@ -507,7 +507,15 @@ pub static LUA_RULES: LangRules = LangRules {
     logical_node_types: &["binary_expression"],
     optional_chain_type: None,
     nesting_nodes: &["if_statement", "for_statement", "while_statement", "repeat_statement"],
-    function_nodes: &["function_declaration"],
+    // "function_declaration" covers named forms (`function f() end`,
+    // `local function f() end`, `function M.foo() end`). "function_definition"
+    // is the anonymous function *expression* node — the RHS of the common
+    // module-table idiom `local M = {}; M.foo = function(...) end` (issue
+    // #2036) as well as `local f = function() end` and any function literal
+    // passed as a callback argument. Both node types have the same
+    // `_function_body` shape (parameters/body fields), so every rule below
+    // (branch/nesting/Halstead scope detection) applies identically to either.
+    function_nodes: &["function_declaration", "function_definition"],
     if_node_type: Some("if_statement"),
     else_node_type: Some("else_statement"),
     elif_node_type: Some("elseif_statement"),
