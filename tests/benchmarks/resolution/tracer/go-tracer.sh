@@ -139,11 +139,11 @@ for gofile in "$TMP_DIR"/*.go; do
 
     # Use sed to inject traceCall() after function opening braces
     # Match: func ... { at end of line -> add traceCall() on next line
-    sedi -E 's/^(func [^{]*\{)\s*$/\1\n\ttraceCall()/' "$gofile"
+    sedi -E 's/^(func [^{]*\{)[[:space:]]*$/\1\n\ttraceCall()/' "$gofile"
 done
 
 # Inject defer dumpTrace() at start of main()
-sedi -E '/^func main\(\)\s*\{/{
+sedi -E '/^func main\(\)[[:space:]]*\{/{
     a\	defer dumpTrace()
 }' "$TMP_DIR/main.go"
 # Suppress any os.Exit calls that would skip deferred dumpTrace
