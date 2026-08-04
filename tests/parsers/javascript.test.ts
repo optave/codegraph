@@ -414,6 +414,25 @@ describe('JavaScript parser', () => {
     });
   });
 
+  describe('CJS require() destructuring rest binding (#2037)', () => {
+    // `extractCjsRequireBinding`'s object-pattern loop only recognized
+    // shorthand_property_identifier_pattern and pair_pattern children, so a
+    // rest element (`...rest`) was silently dropped from the CJS-require
+    // import-artifact classification (#1661) — a parity gap with Rust's
+    // collect_object_pattern_names, which the native require() path already
+    // reuses correctly (#2037).
+
+    it('includes the rest binding in cjsRequireBindings alongside plain names', () => {
+      const symbols: any = parseJS(`const { a, ...rest } = require('./mod');`);
+      expect(symbols.cjsRequireBindings).toEqual([{ names: ['a', 'rest'], source: './mod' }]);
+    });
+
+    it('includes a rest binding mixed with a renamed pair', () => {
+      const symbols: any = parseJS(`const { a: b, ...rest } = require('./mod');`);
+      expect(symbols.cjsRequireBindings).toEqual([{ names: ['b', 'rest'], source: './mod' }]);
+    });
+  });
+
   it('extracts call expressions', () => {
     const symbols = parseJS(`import { foo } from './bar'; foo(); baz();`);
     expect(symbols.calls).toContainEqual(expect.objectContaining({ name: 'foo' }));
