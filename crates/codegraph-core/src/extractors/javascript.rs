@@ -926,14 +926,56 @@ fn store_return_type(fn_node: &Node, fn_name: &str, source: &[u8], symbols: &mut
         }
     }
     // Infer from first `return new Constructor()` in body, then from a
-    // directly-returned object literal with callable properties (#2033).
-    if let Some(body) = fn_node.child_by_field_name("body") {
-        if let Some(type_name) = find_return_new_expr_type(&body, source) {
-            push_return_type_entry(symbols, fn_name, type_name, 0.85);
-        } else if find_return_object_literal_self_type(&body) {
-            push_return_type_entry(symbols, fn_name, fn_name, 0.85);
+    // directly-returned object literal with callable properties (#2033). Skipped
+    // for async/generator functions: their runtime return value is a Promise/
+    // Generator wrapper around the returned expression, not the expression
+    // itself, so `const p = asyncMakeThing(); p.method()` would otherwise
+    // wrongly resolve through a definition that only exists once the wrapper is
+    // unwrapped (`await`ed or iterated) — neither inference is valid without
+    // that unwrap. Mirrors TS storeReturnType's guard.
+    if !is_async_function_node(fn_node) && !is_generator_function_node(fn_node) {
+        if let Some(body) = fn_node.child_by_field_name("body") {
+            if let Some(type_name) = find_return_new_expr_type(&body, source) {
+                push_return_type_entry(symbols, fn_name, type_name, 0.85);
+            } else if find_return_object_literal_self_type(&body) {
+                push_return_type_entry(symbols, fn_name, fn_name, 0.85);
+            }
         }
     }
+}
+
+/// True when a function/method node carries an `async` modifier — tree-sitter
+/// represents `async` (like `get`/`set`/`static`) as a literal unnamed token
+/// child, not a dedicated field. Scans all direct children since only the
+/// modifier keyword itself ever has `kind() == "async"` (an identifier/
+/// parameter/statement named "async" has kind `identifier`, not `async`).
+/// Mirrors TS `isAsyncFunctionNode`.
+fn is_async_function_node(fn_node: &Node) -> bool {
+    for i in 0..fn_node.child_count() {
+        if fn_node.child(i).map(|c| c.kind()) == Some("async") {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when a function/method node is a generator — `function_declaration`/
+/// `function_expression` distinguish this via a dedicated node kind
+/// (`generator_function_declaration`/`generator_function`), but
+/// `method_definition` (ES6 shorthand `*method() {}`) has no such distinct kind
+/// and instead carries a literal `*` token child, mirroring
+/// `is_async_function_node`'s modifier-token scan. Mirrors TS
+/// `isGeneratorFunctionNode`.
+fn is_generator_function_node(fn_node: &Node) -> bool {
+    if matches!(fn_node.kind(), "generator_function_declaration" | "generator_function") {
+        return true;
+    }
+    for i in 0..fn_node.child_count() {
+        if fn_node.child(i).map(|c| c.kind()) == Some("*") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Scan direct children of `body` for the first `return new X()` and return the constructor name.
@@ -7113,6 +7155,71 @@ mod tests {
         let p_type = s.type_map.iter().find(|e| e.name == "p");
         assert!(p_type.is_some(), "type_map 'p' missing; got: {:?}", s.type_map);
         assert_eq!(p_type.unwrap().type_name, "makePartition");
+    }
+
+    /// Issue #2033 follow-up: an async factory's runtime return value is a Promise
+    /// wrapper around the returned expression, not the expression itself — so
+    /// `const p = makePartitionAsync(seed); p.deltaCPM(...)` must NOT resolve `p` as
+    /// `makePartitionAsync` (that would skip the required `await`). The qualified
+    /// property definition itself is still extracted; only self-typing is skipped.
+    #[test]
+    fn does_not_self_type_an_async_factory_function() {
+        let s = parse_js(
+            "async function makePartitionAsync(seed) {\n\
+               return { deltaCPM: (v) => v + seed };\n\
+             }",
+        );
+        assert!(
+            s.return_type_map.iter().all(|e| e.name != "makePartitionAsync"),
+            "async factory must not be self-typed; got: {:?}",
+            s.return_type_map
+        );
+        let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            names.contains(&"makePartitionAsync.deltaCPM"),
+            "expected qualified 'makePartitionAsync.deltaCPM' definition; got: {:?}",
+            names
+        );
+    }
+
+    /// Same as above, for a generator factory (`function*`) — its runtime return
+    /// value is a Generator object, not the returned expression directly.
+    #[test]
+    fn does_not_self_type_a_generator_factory_function() {
+        let s = parse_js(
+            "function* makePartitionGen(seed) {\n\
+               return { deltaCPM: (v) => v + seed };\n\
+             }",
+        );
+        assert!(
+            s.return_type_map.iter().all(|e| e.name != "makePartitionGen"),
+            "generator factory must not be self-typed; got: {:?}",
+            s.return_type_map
+        );
+        let names: Vec<_> = s.definitions.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            names.contains(&"makePartitionGen.deltaCPM"),
+            "expected qualified 'makePartitionGen.deltaCPM' definition; got: {:?}",
+            names
+        );
+    }
+
+    /// Regression guard for the pre-existing `return new Ctor()` inference, which has
+    /// the identical async-wrapper flaw and is gated by the same
+    /// is_async_function_node/is_generator_function_node check.
+    #[test]
+    fn does_not_apply_return_new_constructor_self_typing_to_an_async_function() {
+        let s = parse_js(
+            "class Foo {}\n\
+             async function makeFoo() {\n\
+               return new Foo();\n\
+             }",
+        );
+        assert!(
+            s.return_type_map.iter().all(|e| e.name != "makeFoo"),
+            "async function must not get return-new-Constructor type inference; got: {:?}",
+            s.return_type_map
+        );
     }
 
     /// Issue #1764: a non-string computed pair key (`[Symbol.iterator]: () => {}`) has no

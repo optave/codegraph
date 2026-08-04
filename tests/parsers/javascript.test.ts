@@ -1614,6 +1614,49 @@ function runDemo(reporter: Reporter, users: string[]): void {
       expect(entry.type).toBe('makePartition');
     });
 
+    it('does not self-type an async factory function — its runtime return value is a Promise wrapper', () => {
+      // `const p = makePartitionAsync(seed)` yields a Promise, not the object
+      // literal directly — self-typing `p` as the factory would let
+      // `p.deltaCPM(...)` wrongly resolve without an intervening `await`.
+      const symbols = parseJS(`
+        async function makePartitionAsync(seed) {
+          return { deltaCPM: (v) => v + seed };
+        }
+      `);
+      expect(symbols.returnTypeMap.get('makePartitionAsync')).toBeUndefined();
+      // The qualified property definition itself is still extracted — only the
+      // self-type inference (which would let a caller's receiver resolve to it
+      // without unwrapping the Promise) is skipped.
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'makePartitionAsync.deltaCPM', kind: 'function' }),
+      );
+    });
+
+    it('does not self-type a generator factory function — its runtime return value is a Generator wrapper', () => {
+      const symbols = parseJS(`
+        function* makePartitionGen(seed) {
+          return { deltaCPM: (v) => v + seed };
+        }
+      `);
+      expect(symbols.returnTypeMap.get('makePartitionGen')).toBeUndefined();
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'makePartitionGen.deltaCPM', kind: 'function' }),
+      );
+    });
+
+    it('does not apply return-new-Constructor self-typing to an async function either', () => {
+      // Regression guard for the pre-existing `return new Ctor()` inference,
+      // which has the identical async-wrapper flaw and is gated by the same
+      // isAsyncFunctionNode/isGeneratorFunctionNode check.
+      const symbols = parseJS(`
+        class Foo {}
+        async function makeFoo() {
+          return new Foo();
+        }
+      `);
+      expect(symbols.returnTypeMap.get('makeFoo')).toBeUndefined();
+    });
+
     // Line range verification
     it('sets correct line and endLine on callback definition', () => {
       const code = [

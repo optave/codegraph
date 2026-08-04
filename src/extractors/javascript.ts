@@ -2488,16 +2488,58 @@ function storeReturnType(
     }
   }
   // Infer from first `return new Constructor()` in the function body, then from
-  // a directly-returned object literal with callable properties (#2033).
-  const body = fnNode.childForFieldName('body');
-  if (body) {
-    const inferred = findReturnNewExprType(body) ?? findReturnObjectLiteralSelfType(body, fnName);
-    if (inferred) {
-      const existing = returnTypeMap.get(fnName);
-      if (!existing || INFERRED_RETURN_TYPE_CONFIDENCE > existing.confidence)
-        returnTypeMap.set(fnName, { type: inferred, confidence: INFERRED_RETURN_TYPE_CONFIDENCE });
+  // a directly-returned object literal with callable properties (#2033). Skipped
+  // for async/generator functions: their runtime return value is a Promise/
+  // Generator wrapper around the returned expression, not the expression itself,
+  // so `const p = asyncMakeThing(); p.method()` would otherwise wrongly resolve
+  // through a definition that only exists once the wrapper is unwrapped
+  // (`await`ed or iterated) — neither inference is valid without that unwrap.
+  if (!isAsyncFunctionNode(fnNode) && !isGeneratorFunctionNode(fnNode)) {
+    const body = fnNode.childForFieldName('body');
+    if (body) {
+      const inferred = findReturnNewExprType(body) ?? findReturnObjectLiteralSelfType(body, fnName);
+      if (inferred) {
+        const existing = returnTypeMap.get(fnName);
+        if (!existing || INFERRED_RETURN_TYPE_CONFIDENCE > existing.confidence)
+          returnTypeMap.set(fnName, {
+            type: inferred,
+            confidence: INFERRED_RETURN_TYPE_CONFIDENCE,
+          });
+      }
     }
   }
+}
+
+/**
+ * True when a function/method node carries an `async` modifier — tree-sitter
+ * represents `async` (like `get`/`set`/`static`) as a literal unnamed token
+ * child, not a dedicated field, mirroring `getMethodAccessorKind`'s `get`/`set`
+ * detection. Scans all direct children since only the modifier keyword itself
+ * ever has `type === 'async'` (an identifier/parameter/statement named "async"
+ * has type `identifier`, not `async`).
+ */
+function isAsyncFunctionNode(fnNode: TreeSitterNode): boolean {
+  for (let i = 0; i < fnNode.childCount; i++) {
+    if (fnNode.child(i)?.type === 'async') return true;
+  }
+  return false;
+}
+
+/**
+ * True when a function/method node is a generator — `function_declaration`/
+ * `function_expression` distinguish this via a dedicated node type
+ * (`generator_function_declaration`/`generator_function`), but `method_definition`
+ * (ES6 shorthand `*method() {}`) has no such distinct kind and instead carries a
+ * literal `*` token child, mirroring `isAsyncFunctionNode`'s modifier-token scan.
+ */
+function isGeneratorFunctionNode(fnNode: TreeSitterNode): boolean {
+  if (fnNode.type === 'generator_function_declaration' || fnNode.type === 'generator_function') {
+    return true;
+  }
+  for (let i = 0; i < fnNode.childCount; i++) {
+    if (fnNode.child(i)?.type === '*') return true;
+  }
+  return false;
 }
 
 /** Return the constructor name from the first `return new Constructor()` in a body, or null. */
