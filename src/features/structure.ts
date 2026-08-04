@@ -681,6 +681,7 @@ function buildClassifierInput(
   prodFanInMap: Map<number, number>,
   activeFiles: Set<string>,
   calledActiveFiles: Set<string>,
+  publicSurfaceIds: Set<number>,
 ): Array<{
   id: string;
   name: string;
@@ -691,6 +692,7 @@ function buildClassifierInput(
   isExported: boolean;
   productionFanIn: number;
   hasActiveFileSiblings: boolean | undefined;
+  isPublicSurface: boolean;
 }> {
   return rows.map((r) => ({
     id: String(r.id),
@@ -715,6 +717,16 @@ function buildClassifierInput(
       : r.kind === 'method' || r.kind === 'function'
         ? calledActiveFiles.has(r.file)
         : undefined,
+    // Narrower than `isExported`: only the explicit `export` keyword (the
+    // `exported` column) and confirmed production-reachable reexport chains —
+    // deliberately EXCLUDES `exportedIds`'s "some caller in a different file"
+    // component. That component is only ever a proxy for "has a cross-file
+    // caller", which is exactly the kind of unverified-caller evidence #2032's
+    // reachability check exists to see through — a symbol called only by an
+    // unreachable cross-file caller must not become an automatic BFS root
+    // merely because the call happens to cross a file boundary. See
+    // `isLiveRoot` in `graph/classifiers/roles.ts`.
+    isPublicSurface: publicSurfaceIds.has(r.id),
   }));
 }
 
@@ -939,6 +951,16 @@ function classifyNodeRolesFull(db: BetterSqlite3Database, emptySummary: RoleSumm
     .all() as { id: number }[];
   for (const r of explicitlyExported) exportedIds.add(r.id);
 
+  // Narrower "genuinely public" surface for #2032's reachability roots —
+  // explicit `export` keyword usage and confirmed production-reachable
+  // reexport chains only, deliberately excluding the cross-file-caller
+  // component of `exportedIds` above (see `buildClassifierInput`'s
+  // `isPublicSurface` doc comment for why that component must not grant
+  // automatic root status).
+  const publicSurfaceIds = new Set<number>();
+  for (const r of reexportExported) publicSurfaceIds.add(r.id);
+  for (const r of explicitlyExported) publicSurfaceIds.add(r.id);
+
   // Compute production fan-in (excluding callers in test files)
   const prodFanInMap = new Map<number, number>();
   const prodRows = db
@@ -966,6 +988,7 @@ function classifyNodeRolesFull(db: BetterSqlite3Database, emptySummary: RoleSumm
     prodFanInMap,
     activeFiles,
     calledActiveFiles,
+    publicSurfaceIds,
   );
   const nonZeroFanIn = classifierInput
     .filter((n) => n.fanIn > 0)
@@ -1227,6 +1250,15 @@ function classifyNodeRolesIncremental(
   // (see `isBarrelProdReachable`).
   //
   // `method` is excluded (#1780) — see classifyNodeRolesFull for rationale.
+  //
+  // `publicSurfaceIds` mirrors classifyNodeRolesFull's narrower "genuinely
+  // public" set for #2032's reachability roots (explicit `export` + confirmed
+  // reexport chains only, excluding the cross-file-caller component of
+  // `exportedIds`) — see `buildClassifierInput`'s `isPublicSurface` doc
+  // comment. Computed here too even though this path never actually runs the
+  // reachability downgrade (it doesn't pass `callEdges` to `classifyRoles`),
+  // so the field stays correct rather than silently stubbed if that ever changes.
+  const publicSurfaceIds = new Set<number>();
   const reexportBarrels = findDirectReexportBarrels(db, allAffectedFiles);
   const reachableBarrels = reexportBarrels.filter((b) => isBarrelProdReachable(db, b));
   if (reachableBarrels.length > 0) {
@@ -1243,7 +1275,10 @@ function classifyNodeRolesIncremental(
           AND n.file IN (${placeholders})`,
       )
       .all(...reachableBarrels, ...allAffectedFiles) as { id: number }[];
-    for (const r of reexportExported) exportedIds.add(r.id);
+    for (const r of reexportExported) {
+      exportedIds.add(r.id);
+      publicSurfaceIds.add(r.id);
+    }
   }
 
   // 3c. Mark symbols with exported=1 as exported — the extractor sets this flag when the
@@ -1259,7 +1294,10 @@ function classifyNodeRolesIncremental(
         AND file IN (${placeholders})`,
     )
     .all(...allAffectedFiles) as { id: number }[];
-  for (const r of explicitlyExported) exportedIds.add(r.id);
+  for (const r of explicitlyExported) {
+    exportedIds.add(r.id);
+    publicSurfaceIds.add(r.id);
+  }
 
   // 4. Production fan-in for affected nodes only
   const prodFanInMap = new Map<number, number>();
@@ -1287,6 +1325,7 @@ function classifyNodeRolesIncremental(
     prodFanInMap,
     activeFiles,
     calledActiveFiles,
+    publicSurfaceIds,
   );
   const roleMap = classifyRoles(classifierInput, globalMedians);
 

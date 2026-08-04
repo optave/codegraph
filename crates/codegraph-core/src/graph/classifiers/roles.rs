@@ -459,6 +459,13 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
     // abstract base class's zero-fan-in method declarations were promoted to
     // `entry` merely because some other symbol in the same file was re-exported
     // through a barrel.
+    //
+    // `public_surface_ids` mirrors the TS `publicSurfaceIds` narrower "genuinely
+    // public" set for #2032's reachability roots (explicit `export` + confirmed
+    // reexport chains only, excluding `exported_ids`'s cross-file-caller
+    // component above) — see `is_live_root`'s doc comment for why that
+    // component must not grant automatic root status.
+    let mut public_surface_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     {
         let sql = format!(
             "WITH RECURSIVE prod_reachable(file_id) AS (
@@ -489,6 +496,7 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
         let reexport_rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
         for r in reexport_rows.flatten() {
             exported_ids.insert(r);
+            public_surface_ids.insert(r);
         }
     }
 
@@ -506,6 +514,7 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
         let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
         for r in rows.flatten() {
             exported_ids.insert(r);
+            public_surface_ids.insert(r);
         }
     }
 
@@ -582,7 +591,7 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
     };
     apply_reachability_downgrade(
         &rows,
-        &exported_ids,
+        &public_surface_ids,
         &called_active_files,
         &type_def_names_by_file,
         &call_edges,
@@ -779,12 +788,28 @@ fn is_fan_shape_role(role: &str) -> bool {
     matches!(role, "core" | "utility" | "adapter" | "leaf")
 }
 
-/// True when (name, kind, file, is_exported) is a confirmed-live reachability
-/// root for the transitive dead-code pass (#2032) — mirrors TS `isLiveRoot`.
-/// Only covers roots that are themselves `function`/`method` rows;
-/// `apply_reachability_downgrade` separately seeds additional roots directly
-/// from `call_edges` for non-function/method call sources.
-fn is_live_root(name: &str, kind: &str, file: &str, is_exported: bool, is_type_member: bool) -> bool {
+/// True when (name, kind, file, is_public_surface) is a confirmed-live
+/// reachability root for the transitive dead-code pass (#2032) — mirrors TS
+/// `isLiveRoot`. Only covers roots that are themselves `function`/`method`
+/// rows; `apply_reachability_downgrade` separately seeds additional roots
+/// directly from `call_edges` for non-function/method call sources.
+///
+/// Deliberately takes `is_public_surface`, NOT the broader `is_exported` that
+/// `classify_node`'s own `entry` branch uses — `is_exported` also considers a
+/// node "exported" merely because SOME caller in a different file calls it,
+/// regardless of whether that caller is itself reachable. Using that signal
+/// here would let a symbol called only by an unreachable cross-file caller
+/// become an automatic root, defeating #2032's fix for exactly the cross-file
+/// case it's meant to catch. `is_public_surface` is narrower: only the
+/// explicit `export` keyword and confirmed production-reachable reexport
+/// chains — see its computation at the `do_classify_full` call site.
+fn is_live_root(
+    name: &str,
+    kind: &str,
+    file: &str,
+    is_public_surface: bool,
+    is_type_member: bool,
+) -> bool {
     if is_type_member {
         return false;
     }
@@ -794,22 +819,61 @@ fn is_live_root(name: &str, kind: &str, file: &str, is_exported: bool, is_type_m
     if kind != "function" && kind != "method" {
         return false;
     }
-    if is_exported {
+    if is_public_surface {
         return true;
     }
     COMMANDER_DISPATCH_NAMES.iter().any(|n| *n == name)
         && ENTRY_PATH_PATTERNS.iter().any(|p| file.contains(p))
 }
 
-/// True when (kind, fan_in, fan_out, has_active_siblings, is_type_member) is a
-/// `method`-kind interface-dispatch implementation rescued by
+/// Compute the set of bare (owner-prefix-stripped) member names declared by
+/// ANY interface/type-level declaration across `rows` — e.g. TS `interface
+/// Visitor { enter_node?(...): ...; exit_node?(...): ...; }` contributes
+/// `"enterNode"`/`"exitNode"`. Used by `is_interface_dispatch_method_root` to
+/// require that a candidate dispatch method's name corresponds to an actual
+/// declared interface contract SOMEWHERE in the codebase, rather than merely
+/// "any method with fan_out > 0 in a file that also has other active code" —
+/// the latter is indistinguishable from a genuinely-dead, ordinary class
+/// method that happens to call a helper. Mirrors TS `computeInterfaceMemberBareNames`.
+fn compute_interface_member_bare_names(
+    rows: &[(i64, String, String, String, u32, u32)],
+    type_def_names_by_file: &HashMap<String, std::collections::HashSet<String>>,
+) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for (_id, name, kind, file, _fan_in, _fan_out) in rows {
+        if !is_type_declaration_member(name, kind, file, type_def_names_by_file) {
+            continue;
+        }
+        let bare = match name.find('.') {
+            Some(dot_idx) => &name[dot_idx + 1..],
+            None => name.as_str(),
+        };
+        names.insert(bare.to_string());
+    }
+    names
+}
+
+/// True when (kind, fan_in, fan_out, has_active_siblings, is_type_member,
+/// name) is a `method`-kind interface-dispatch implementation rescued by
 /// `classify_node`'s Pattern-2 heuristic (fan_in == 0, fan_out > 0,
-/// has_active_siblings) — e.g. `enter_node`/`exit_node` on a Visitor-shaped
-/// object, invoked only via generic property-access dispatch that codegraph
-/// cannot trace to a concrete implementation. Such a method can never be the
-/// TARGET of a `calls` edge by construction, so it must be an unconditional
-/// root — otherwise everything it calls would be wrongly treated as
-/// unreachable merely because the dispatch mechanism itself leaves no edge.
+/// has_active_siblings) AND whose bare name corresponds to an actual
+/// interface/type declaration member somewhere in the codebase (matched via
+/// `interface_member_bare_names`) — e.g. `enter_node`/`exit_node` on a
+/// Visitor-shaped object, invoked only via generic property-access dispatch
+/// that codegraph cannot trace to a concrete implementation. Such a method
+/// can never be the TARGET of a `calls` edge by construction, so it must be
+/// an unconditional root — otherwise everything it calls would be wrongly
+/// treated as unreachable merely because the dispatch mechanism itself
+/// leaves no edge.
+///
+/// The name-match requirement exists specifically because the
+/// fan_in/fan_out/has_active_siblings shape ALONE is too broad: an ordinary,
+/// genuinely-dead class method that happens to call a helper and share its
+/// file with another called symbol satisfies that shape too. Tying the
+/// rescue to an actual declared contract elsewhere in the codebase makes an
+/// "ordinary unused method" false positive require a coincidental name
+/// collision with some unrelated interface's member, rather than being the
+/// default outcome for any such method.
 ///
 /// Deliberately narrower than the sibling rescue for `function`-kind
 /// logical-or-fallback values in `classify_node` — that heuristic is an
@@ -819,13 +883,27 @@ fn is_live_root(name: &str, kind: &str, file: &str, is_exported: bool, is_type_m
 /// pattern) merely because they happen to call something in an active file.
 /// Mirrors TS `isInterfaceDispatchMethodRoot`.
 fn is_interface_dispatch_method_root(
+    name: &str,
     kind: &str,
     fan_in: u32,
     fan_out: u32,
     has_active_siblings: bool,
     is_type_member: bool,
+    interface_member_bare_names: &std::collections::HashSet<String>,
 ) -> bool {
-    kind == "method" && fan_in == 0 && fan_out > 0 && has_active_siblings && !is_type_member
+    if kind != "method"
+        || fan_in != 0
+        || fan_out == 0
+        || !has_active_siblings
+        || is_type_member
+    {
+        return false;
+    }
+    let bare = match name.find('.') {
+        Some(dot_idx) => &name[dot_idx + 1..],
+        None => name,
+    };
+    interface_member_bare_names.contains(bare)
 }
 
 /// Forward BFS over `calls` edges starting from `roots`, using a single
@@ -884,7 +962,7 @@ fn compute_reachable_ids(
 #[allow(clippy::too_many_arguments)]
 fn apply_reachability_downgrade(
     rows: &[(i64, String, String, String, u32, u32)],
-    exported_ids: &std::collections::HashSet<i64>,
+    public_surface_ids: &std::collections::HashSet<i64>,
     called_active_files: &std::collections::HashSet<String>,
     type_def_names_by_file: &HashMap<String, std::collections::HashSet<String>>,
     call_edges: &[(i64, i64)],
@@ -894,18 +972,26 @@ fn apply_reachability_downgrade(
     for (id, _name, kind, _file, _fan_in, _fan_out) in rows {
         kind_by_id.insert(*id, kind.as_str());
     }
+    let interface_member_bare_names = compute_interface_member_bare_names(rows, type_def_names_by_file);
 
     let mut roots: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for (id, name, kind, file, fan_in, fan_out) in rows {
-        let is_exported = exported_ids.contains(id);
+        let is_public_surface = public_surface_ids.contains(id);
         let is_type_member = is_type_declaration_member(name, kind, file, type_def_names_by_file);
-        if is_live_root(name, kind, file, is_exported, is_type_member) {
+        if is_live_root(name, kind, file, is_public_surface, is_type_member) {
             roots.insert(*id);
             continue;
         }
         let has_active_siblings = called_active_files.contains(file);
-        if is_interface_dispatch_method_root(kind, *fan_in, *fan_out, has_active_siblings, is_type_member)
-        {
+        if is_interface_dispatch_method_root(
+            name,
+            kind,
+            *fan_in,
+            *fan_out,
+            has_active_siblings,
+            is_type_member,
+            &interface_member_bare_names,
+        ) {
             roots.insert(*id);
         }
     }
@@ -1534,13 +1620,61 @@ mod tests {
         // can never be the TARGET of a `calls` edge — fan_in stays 0
         // forever, yet it's rescued to "leaf" by classify_node's Pattern-2
         // heuristic. Whatever it calls must be reachable through it.
+        //
+        // The declared `Visitor` interface (mirroring src/types.ts) is
+        // required: is_interface_dispatch_method_root only promotes a method
+        // to root when its bare name matches an actual interface/type member
+        // somewhere in the codebase, not merely from the
+        // fan_in/fan_out/has_active_siblings shape alone.
         insert_node(conn, 1, "enterNode", "method", "visitor.ts", 0);
         insert_node(conn, 2, "classifyHalstead", "function", "visitor.ts", 0);
+        insert_node(conn, 3, "Visitor", "interface", "types.ts", 1);
+        insert_node(conn, 4, "Visitor.enterNode", "method", "types.ts", 0);
         insert_edge(conn, 1, 2, "calls", 0);
 
         do_classify_full(conn).expect("do_classify_full should succeed");
 
         assert_ne!(role_of(conn, 2).as_deref(), Some("dead-unresolved"));
+    }
+
+    #[test]
+    fn does_not_treat_ordinary_unused_class_method_as_interface_dispatch_root() {
+        let db = setup_db();
+        let conn = db.conn().expect("connection should still be open");
+
+        // Regression for a Greptile-flagged gap: without the interface-member
+        // name-match requirement, ANY method with fan_in=0, fan_out>0, and an
+        // active sibling in its file would be promoted to root — including a
+        // genuinely-dead class method that happens to call a helper. No
+        // interface/type declares a "deadMethod" member anywhere here.
+        insert_node(conn, 1, "MyClass.deadMethod", "method", "a.ts", 0);
+        insert_node(conn, 2, "helper", "function", "a.ts", 0);
+        insert_edge(conn, 1, 2, "calls", 0);
+
+        do_classify_full(conn).expect("do_classify_full should succeed");
+
+        assert_eq!(role_of(conn, 2).as_deref(), Some("dead-unresolved"));
+    }
+
+    #[test]
+    fn does_not_treat_a_symbol_as_root_merely_because_of_an_unreachable_cross_file_caller() {
+        let db = setup_db();
+        let conn = db.conn().expect("connection should still be open");
+
+        // Regression for a Greptile-flagged gap: exported_ids' cross-file-
+        // caller heuristic also marks a symbol "exported" merely because SOME
+        // caller in a different file calls it — regardless of whether that
+        // caller is itself reachable. is_live_root must key off the narrower
+        // public_surface_ids (explicit export / confirmed reexport chain),
+        // not that broader signal, or a cross-file dead call chain would
+        // evade #2032's fix entirely.
+        insert_node(conn, 1, "unreachableCrossFileCaller", "function", "a.ts", 0);
+        insert_node(conn, 2, "calleeInAnotherFile", "function", "b.ts", 0);
+        insert_edge(conn, 1, 2, "calls", 0);
+
+        do_classify_full(conn).expect("do_classify_full should succeed");
+
+        assert_eq!(role_of(conn, 2).as_deref(), Some("dead-unresolved"));
     }
 
     #[test]

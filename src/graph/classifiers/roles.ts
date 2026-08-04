@@ -223,6 +223,20 @@ export interface RoleClassificationNode {
    * `undefined` for all other kinds (e.g. `class`), which don't use this field.
    */
   hasActiveFileSiblings?: boolean;
+  /**
+   * Narrower than `isExported` — true only for the explicit `export` keyword
+   * (the `exported` column) and confirmed production-reachable reexport
+   * chains, deliberately EXCLUDING `isExported`'s "some caller in a different
+   * file" component (`exportedIds`'s base cross-file-caller heuristic in
+   * `features/structure.ts`). That component is only ever a proxy for "has a
+   * cross-file caller" — exactly the kind of unverified-caller evidence
+   * #2032's reachability check exists to see through. Used by `isLiveRoot`
+   * instead of `isExported` so a symbol called only by an unreachable
+   * cross-file caller doesn't become an automatic BFS root merely because the
+   * call happens to cross a file boundary. Defaults to `false` when omitted
+   * (safe: callers that don't supply `callEdges` never reach `isLiveRoot`).
+   */
+  isPublicSurface?: boolean;
 }
 
 /**
@@ -370,16 +384,28 @@ const FAN_SHAPE_ROLES: ReadonlySet<Role> = new Set(['core', 'utility', 'adapter'
  * elsewhere in the codebase:
  *
  *  - a framework-dispatched entry point (`route:`/`event:`/`command:`-prefixed name)
- *  - an exported `function`/`method` — part of the public API surface, callable
- *    from outside the codebase by construction
+ *  - a `function`/`method` on the genuinely public surface (`isPublicSurface`)
+ *    — part of the public API surface, callable from outside the codebase by
+ *    construction
  *  - a Commander.js dispatch method (`execute`/`validate`) in a framework directory
  *
  * This mirrors the `entry`-detection rules in `classifyNodeRole`, but
  * deliberately drops their `fanIn === 0` gate: a root's liveness comes from
  * *how* it can be invoked, not from whether it happens to currently have zero
- * in-repo callers. An exported function that is ALSO called internally is
- * still a live root, even though `classifyNodeRole` itself classifies it via
- * fan-in shape (`core`/`utility`/etc.) rather than `entry` in that case.
+ * in-repo callers. A publicly-surfaced function that is ALSO called
+ * internally is still a live root, even though `classifyNodeRole` itself
+ * classifies it via fan-in shape (`core`/`utility`/etc.) rather than `entry`
+ * in that case.
+ *
+ * Deliberately checks `isPublicSurface`, NOT the broader `isExported` that
+ * `classifyNodeRole`'s own `entry` branch uses — `isExported` also considers
+ * a node "exported" merely because SOME caller in a different file calls it,
+ * regardless of whether that caller is itself reachable. Using that signal
+ * here would let a symbol called only by an unreachable cross-file caller
+ * become an automatic root, defeating #2032's fix for exactly the
+ * cross-file case it's meant to catch. `isPublicSurface` is narrower: only
+ * the explicit `export` keyword and confirmed production-reachable reexport
+ * chains — see its doc comment on `RoleClassificationNode`.
  *
  * This only covers roots that are themselves `function`/`method` nodes
  * present in `nodes`. `applyReachabilityDowngrade` separately seeds
@@ -394,7 +420,7 @@ function isLiveRoot(
   if (isTypeDeclarationMember(node, typeDefNamesByFile)) return false;
   if (FRAMEWORK_ENTRY_PREFIXES.some((p) => node.name.startsWith(p))) return true;
   if (node.kind !== 'function' && node.kind !== 'method') return false;
-  if (node.isExported) return true;
+  if (node.isPublicSurface) return true;
   return !!(
     node.file &&
     COMMANDER_DISPATCH_NAMES.has(node.name) &&
@@ -438,9 +464,39 @@ function computeReachableIds(
 }
 
 /**
+ * Compute the set of bare (owner-prefix-stripped) member names declared by
+ * ANY interface/type-level declaration across `nodes` — e.g. TS `interface
+ * Visitor { enterNode?(...): ...; exitNode?(...): ...; }` contributes
+ * `'enterNode'`/`'exitNode'`. Used by `isInterfaceDispatchMethodRoot` to
+ * require that a candidate dispatch method's name corresponds to an actual
+ * declared interface contract SOMEWHERE in the codebase, rather than merely
+ * "any method with fanOut > 0 in a file that also has other active code" —
+ * the latter is indistinguishable from a genuinely-dead, ordinary class
+ * method that happens to call a helper (a real false-positive risk: an
+ * `interface`/`type`-less duck-typed dispatch method would fail this check
+ * and correctly fall back to full reachability scrutiny — a safe failure
+ * mode, unlike promoting an ordinary dead method to root status).
+ */
+function computeInterfaceMemberBareNames(
+  nodes: RoleClassificationNode[],
+  typeDefNamesByFile: Map<string, Set<string>>,
+): Set<string> {
+  const names = new Set<string>();
+  for (const node of nodes) {
+    if (!isTypeDeclarationMember(node, typeDefNamesByFile)) continue;
+    const dotIdx = node.name.indexOf('.');
+    names.add(dotIdx === -1 ? node.name : node.name.slice(dotIdx + 1));
+  }
+  return names;
+}
+
+/**
  * True when `node` is a `method`-kind interface-dispatch implementation
  * rescued by `classifyUnreferencedNode`'s Pattern-2 heuristic (fanIn === 0,
- * fanOut > 0, `hasActiveFileSiblings`) — e.g. `enterNode`/`exitNode` on a
+ * fanOut > 0, `hasActiveFileSiblings`) AND whose bare name corresponds to an
+ * actual interface/type declaration member somewhere in the codebase (e.g.
+ * TS `interface Visitor { enterNode?(...): ...; }`, matched via
+ * `interfaceMemberBareNames`) — e.g. `enterNode`/`exitNode` on a
  * Visitor-shaped object, invoked only via generic property-access dispatch
  * (`if (v.enterNode) v.enterNode(...)`) that codegraph cannot trace to a
  * concrete implementation. Such a method can never be the TARGET of a
@@ -448,6 +504,15 @@ function computeReachableIds(
  * value-ref edge — so it must be an unconditional root: otherwise everything
  * it calls (other helpers in the same visitor file) would be wrongly treated
  * as unreachable merely because the dispatch mechanism itself leaves no edge.
+ *
+ * The `interfaceMemberBareNames` requirement exists specifically because the
+ * fanIn/fanOut/hasActiveFileSiblings shape ALONE is too broad: an ordinary,
+ * genuinely-dead class method that happens to call a helper and share its
+ * file with another called symbol satisfies that shape too. Tying the rescue
+ * to an actual declared contract elsewhere in the codebase makes an
+ * "ordinary unused method" false positive require a coincidental name
+ * collision with some unrelated interface's member, rather than being the
+ * default outcome for any such method.
  *
  * Deliberately narrower than `classifyUnreferencedNode`'s sibling rescue for
  * `function`-kind logical-or-fallback values (`kind === 'function' &&
@@ -463,14 +528,20 @@ function computeReachableIds(
 function isInterfaceDispatchMethodRoot(
   node: RoleClassificationNode,
   typeDefNamesByFile: Map<string, Set<string>>,
+  interfaceMemberBareNames: Set<string>,
 ): boolean {
-  return (
-    node.kind === 'method' &&
-    node.fanIn === 0 &&
-    node.fanOut > 0 &&
-    !!node.hasActiveFileSiblings &&
-    !isTypeDeclarationMember(node, typeDefNamesByFile)
-  );
+  if (
+    node.kind !== 'method' ||
+    node.fanIn !== 0 ||
+    node.fanOut <= 0 ||
+    !node.hasActiveFileSiblings ||
+    isTypeDeclarationMember(node, typeDefNamesByFile)
+  ) {
+    return false;
+  }
+  const dotIdx = node.name.indexOf('.');
+  const bareName = dotIdx === -1 ? node.name : node.name.slice(dotIdx + 1);
+  return interfaceMemberBareNames.has(bareName);
 }
 
 /**
@@ -484,11 +555,16 @@ function isInterfaceDispatchMethodRoot(
  * Roots come from three sources:
  *
  *  1. `isLiveRoot` — `function`/`method` nodes that are themselves confirmed
- *     entry points (framework dispatch, exported, Commander dispatch).
+ *     entry points (framework dispatch, on the genuinely public surface via
+ *     `isPublicSurface`, Commander dispatch). Deliberately NOT the broader
+ *     `isExported`, whose cross-file-caller component would let a symbol
+ *     called only by an unreachable cross-file caller become a root.
  *
  *  2. `isInterfaceDispatchMethodRoot` — `method`-kind interface-dispatch
- *     implementations (Visitor-pattern-style), which can never be the TARGET
- *     of a `calls` edge by construction. See its doc comment for why this is
+ *     implementations whose bare name matches an actual declared
+ *     interface/type member somewhere in the codebase (Visitor-pattern-style),
+ *     which can never be the TARGET of a `calls` edge by construction. See its
+ *     doc comment for why the name-match requirement exists and why this is
  *     deliberately NOT extended to `function`-kind rescues.
  *
  *  3. Every `calls`-edge SOURCE that is not itself a `function`/`method` node
@@ -536,12 +612,13 @@ function applyReachabilityDowngrade(
 ): void {
   const kindById = new Map<string, string>();
   for (const node of nodes) kindById.set(node.id, node.kind);
+  const interfaceMemberBareNames = computeInterfaceMemberBareNames(nodes, typeDefNamesByFile);
 
   const roots = new Set<string>();
   for (const node of nodes) {
     if (
       isLiveRoot(node, typeDefNamesByFile) ||
-      isInterfaceDispatchMethodRoot(node, typeDefNamesByFile)
+      isInterfaceDispatchMethodRoot(node, typeDefNamesByFile, interfaceMemberBareNames)
     ) {
       roots.add(node.id);
     }
