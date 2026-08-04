@@ -371,11 +371,22 @@ function handleLuaFunctionCall(node: TreeSitterNode, ctx: ExtractorOutput): void
     // (undecidable statically — flagged `computed-key`). Mirrors
     // handle_lua_function_call's `bracket_index_expression` arm in
     // crates/codegraph-core/src/extractors/lua.rs.
+    //
+    // The literal-key case (`t["handler"]()`) is tagged `computed-literal`
+    // (ADR-002 Track A — resolvable) to match JS's extractSubscriptCallInfo
+    // convention for `obj["method"]()`, making it visible to dynamic_kind-
+    // based queries instead of looking identical to a static `t.handler()`
+    // call (issue #2042). Lua table indexing is not structurally different
+    // from JS member access here — both `t.handler()` and `t["handler"]()`
+    // are equally subject to metatable `__index` redirection — so there is
+    // no Lua-specific reason to diverge from JS's convention.
     const table = nameNode.childForFieldName('table');
     const key = nameNode.childForFieldName('field');
     if (key) {
       if (LUA_STRING_NODE_TYPES.has(key.type)) {
         call.name = key.text.replace(/^['"]|['"]$/g, '');
+        call.dynamic = true;
+        call.dynamicKind = 'computed-literal';
         if (table) call.receiver = table.text;
       } else {
         const dynamicCall: Call = {

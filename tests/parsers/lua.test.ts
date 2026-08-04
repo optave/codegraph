@@ -216,18 +216,31 @@ string.format("%s", name)`);
       );
     });
 
-    it('resolves a bracket-index call with a string-literal key directly', () => {
+    it('resolves a bracket-index call with a string-literal key directly, tagged computed-literal', () => {
+      // Resolves to the same target as `t.handler()`, but tagged Track A
+      // `computed-literal` (#2042) to match JS's `obj["method"]()` convention
+      // instead of looking identical to a static `t.handler()` call.
       const symbols = parseLua(`t["handler"]()`);
       expect(symbols.calls).toContainEqual(
-        expect.objectContaining({ name: 'handler', receiver: 't' }),
+        expect.objectContaining({
+          name: 'handler',
+          receiver: 't',
+          dynamic: true,
+          dynamicKind: 'computed-literal',
+        }),
       );
       expect(symbols.calls.some((c) => c.dynamicKind === 'computed-key')).toBe(false);
     });
 
-    it('resolves a bracket-index call with a single-quoted string-literal key directly', () => {
+    it('resolves a bracket-index call with a single-quoted string-literal key directly, tagged computed-literal', () => {
       const symbols = parseLua(`t['handler']()`);
       expect(symbols.calls).toContainEqual(
-        expect.objectContaining({ name: 'handler', receiver: 't' }),
+        expect.objectContaining({
+          name: 'handler',
+          receiver: 't',
+          dynamic: true,
+          dynamicKind: 'computed-literal',
+        }),
       );
     });
 

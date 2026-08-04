@@ -296,11 +296,23 @@ fn handle_lua_function_call(node: &Node, source: &[u8], symbols: &mut FileSymbol
             }
             if let Some(k) = key {
                 if k.kind() == "string" || k.kind() == "string_literal" {
+                    // t["handler"]() — literal-key bracket index; statically
+                    // resolvable to the same target as t.handler(), so it still
+                    // resolves to a normal edge. Tagged `computed-literal` (ADR-002
+                    // Track A) to match JS's extractSubscriptCallInfo convention for
+                    // obj["method"]() and make the call visible to dynamic_kind-based
+                    // queries — see issue #2042. Lua table indexing has no structural
+                    // difference from JS member access here: both `t.handler()` and
+                    // `t["handler"]()` are equally subject to metatable `__index`
+                    // redirection, so there's no Lua-specific reason the literal-key
+                    // form should be treated as more "static" than JS's equivalent.
                     let raw = node_text(&k, source);
                     let call_name = raw.trim_matches(|c| c == '\'' || c == '"').to_string();
                     symbols.calls.push(Call {
                         name: call_name,
                         line: start_line(node),
+                        dynamic: Some(true),
+                        dynamic_kind: Some("computed-literal".to_string()),
                         receiver: table.map(|t| node_text(&t, source).to_string()),
                         ..Default::default()
                     });
@@ -464,20 +476,23 @@ mod tests {
 
     #[test]
     fn resolves_bracket_index_call_with_string_literal_key_directly() {
+        // Resolves to the same target as `t.handler()`, but tagged Track A
+        // `computed-literal` (#2042) to match JS's `obj["method"]()` convention
+        // instead of looking identical to a static `t.handler()` call.
         let s = parse_lua("t[\"handler\"]()");
-        assert!(s
-            .calls
-            .iter()
-            .any(|c| c.name == "handler" && c.receiver.as_deref() == Some("t") && c.dynamic.is_none()));
+        assert!(s.calls.iter().any(|c| c.name == "handler"
+            && c.receiver.as_deref() == Some("t")
+            && c.dynamic == Some(true)
+            && c.dynamic_kind.as_deref() == Some("computed-literal")));
     }
 
     #[test]
     fn resolves_bracket_index_call_with_single_quoted_string_literal_key_directly() {
         let s = parse_lua("t['handler']()");
-        assert!(s
-            .calls
-            .iter()
-            .any(|c| c.name == "handler" && c.receiver.as_deref() == Some("t")));
+        assert!(s.calls.iter().any(|c| c.name == "handler"
+            && c.receiver.as_deref() == Some("t")
+            && c.dynamic == Some(true)
+            && c.dynamic_kind.as_deref() == Some("computed-literal")));
     }
 
     #[test]
