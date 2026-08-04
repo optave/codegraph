@@ -3,7 +3,8 @@
 # Handles: C, C++, Rust, Swift, Dart, Zig, Haskell, OCaml, F#, Gleam, Solidity, C#
 #
 # Uses language-specific instrumentation:
-#   C/C++:    -finstrument-functions (GCC/Clang)
+#   C/C++:    sed-injected trace calls (RAII in C++, GCC/Clang `cleanup`
+#             attribute in C) — same source-level strategy as Rust/Swift
 #   Rust:     Custom proc-macro or manual instrumentation
 #   C#/F#:    dotnet build + StackTrace instrumentation
 #   Others:   Language-specific approaches
@@ -185,6 +186,24 @@ inject_trace_calls() {
 }
 
 # ── C / C++ ──────────────────────────────────────────────────────────────
+# Like trace_rust/trace_swift below, this passes the literal source-file name
+# as an explicit string argument at each instrumented call site (sed
+# injection) instead of compiling with -finstrument-functions and resolving
+# the calling file at runtime via dladdr(). dladdr() can only map an address
+# to the dynamic linker's loaded *image* — since every fixture file here is
+# compiled into one executable ("traced"), dladdr() returned that same binary
+# path for every function regardless of which .c/.cpp file it was actually
+# defined in, so source_file/target_file were always wrong (see #2049).
+#
+# C has neither Rust's Drop guard nor Swift's `defer` for a scope-exit hook,
+# so one is built from the GCC/Clang `cleanup` variable attribute instead: a
+# dummy local, declared right after the opening brace, whose cleanup function
+# fires automatically when it goes out of scope (the same mechanism glib's
+# g_autoptr/g_auto use). This is a de facto standard extension supported by
+# both real GCC (Linux) and Clang, including Apple Clang aliased as "gcc" on
+# macOS, so it behaves identically across every CI platform this runs on.
+# C++ gets genuine RAII via a small TraceGuard class instead — real C++
+# destructors need no compiler extension at all.
 trace_c_cpp() {
     local compiler="$1"
     local ext="$2"
@@ -197,19 +216,113 @@ trace_c_cpp() {
     cp "$FIXTURE_DIR"/*.h "$TMP_DIR/" 2>/dev/null || true
     cp "$FIXTURE_DIR"/*.hpp "$TMP_DIR/" 2>/dev/null || true
 
-    # Snapshot the fixture's own source files *before* trace_support.c is
-    # written below — trace_support.c is itself a ".c" file, so for the C
-    # case (ext=c) computing this glob afterward would capture it too,
-    # causing it to be compiled+linked twice (see #1914).
+    # Snapshot the fixture's own source files *before* trace_support.$ext is
+    # written below — trace_support.$ext is itself a source file with this
+    # extension, so computing this glob afterward would capture it too.
     cd "$TMP_DIR"
     local src_files
     src_files="$(ls *."$ext" 2>/dev/null | tr '\n' ' ')"
 
-    # Create instrumentation support
-    cat > "$TMP_DIR/trace_support.c" <<'CTRACE'
+    local support_header entry_tmpl redirect_pattern
+    if [[ "$ext" == "cpp" ]]; then
+        support_header="trace_support.hpp"
+        entry_tmpl='    TraceGuard _tg("%s", "%s");'
+        # UserService::log_action's std::cout would otherwise interleave with
+        # dump_trace()'s JSON on stdout.
+        redirect_pattern='s/std::cout/std::cerr/g'
+
+        cat > "$TMP_DIR/trace_support.hpp" <<'CPPHDR'
+#pragma once
+
+// RAII scope guard: constructing records the call edge from whatever is
+// currently on top of the call stack to (name, file); destructing pops the
+// stack. Real C++ destructors, no compiler extension required — contrast
+// with trace_support.h's C version, which has no destructors to rely on.
+class TraceGuard {
+public:
+    TraceGuard(const char* name, const char* file);
+    ~TraceGuard();
+};
+
+void dump_trace();
+CPPHDR
+
+        cat > "$TMP_DIR/trace_support.cpp" <<'CPPIMPL'
+#include "trace_support.hpp"
+
+#include <cstdio>
+#include <string>
+#include <unordered_set>
+#include <vector>
+
+namespace {
+
+struct Edge {
+    std::string source_name, source_file, target_name, target_file;
+};
+
+struct Frame {
+    std::string name, file;
+};
+
+std::vector<Edge> g_edges;
+std::unordered_set<std::string> g_seen;
+std::vector<Frame> g_stack;
+
+}  // namespace
+
+TraceGuard::TraceGuard(const char* name, const char* file) {
+    if (!g_stack.empty()) {
+        const Frame& top = g_stack.back();
+        std::string key = top.name + "@" + top.file + "->" + name + "@" + file;
+        if (g_seen.insert(key).second) {
+            g_edges.push_back({top.name, top.file, name, file});
+        }
+    }
+    g_stack.push_back({name, file});
+}
+
+TraceGuard::~TraceGuard() {
+    if (!g_stack.empty()) g_stack.pop_back();
+}
+
+void dump_trace() {
+    printf("{\n  \"edges\": [\n");
+    for (size_t i = 0; i < g_edges.size(); i++) {
+        const Edge& e = g_edges[i];
+        printf("    {\n");
+        printf("      \"source_name\": \"%s\",\n", e.source_name.c_str());
+        printf("      \"source_file\": \"%s\",\n", e.source_file.c_str());
+        printf("      \"target_name\": \"%s\",\n", e.target_name.c_str());
+        printf("      \"target_file\": \"%s\"\n", e.target_file.c_str());
+        printf("    }%s\n", (i + 1 < g_edges.size()) ? "," : "");
+    }
+    printf("  ]\n}\n");
+}
+CPPIMPL
+    else
+        support_header="trace_support.h"
+        entry_tmpl='    int _tg __attribute__((cleanup(trace_exit))) = trace_enter("%s", "%s");'
+        # main.c's print_user() would otherwise interleave with dump_trace()'s
+        # JSON on stdout.
+        redirect_pattern='s/printf(/fprintf(stderr, /g'
+
+        cat > "$TMP_DIR/trace_support.h" <<'CHDR'
+#ifndef TRACE_SUPPORT_H
+#define TRACE_SUPPORT_H
+
+int trace_enter(const char* name, const char* file);
+void trace_exit(int *unused);
+void dump_trace(void);
+
+#endif
+CHDR
+
+        cat > "$TMP_DIR/trace_support.c" <<'CIMPL'
 #include <stdio.h>
 #include <string.h>
-#include <dlfcn.h>
+
+#include "trace_support.h"
 
 #define MAX_EDGES 1024
 #define MAX_STACK 256
@@ -230,49 +343,11 @@ typedef struct { char name[128]; char file[128]; } Frame;
 static Frame call_stack[MAX_STACK];
 static int stack_depth = 0;
 
-static const char* extract_name(void* addr) __attribute__((no_instrument_function));
-static const char* extract_file(void* addr) __attribute__((no_instrument_function));
-
-static const char* extract_name(void* addr) {
-    Dl_info info;
-    if (dladdr(addr, &info) && info.dli_sname) {
-        return info.dli_sname;
-    }
-    return "unknown";
-}
-
-static const char* extract_file(void* addr) {
-    Dl_info info;
-    if (dladdr(addr, &info) && info.dli_fname) {
-        const char* s = strrchr(info.dli_fname, '/');
-        return s ? s + 1 : info.dli_fname;
-    }
-    return "unknown";
-}
-
-// g++ compiles this file as C++ (unlike gcc, which treats .c input as C),
-// so without extern "C" these two hooks would be name-mangled and no longer
-// match the unmangled __cyg_profile_func_enter/_exit symbols the compiler
-// auto-inserts into every instrumented translation unit, including ones
-// compiled from .cpp fixture files (see #1914).
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-void __cyg_profile_func_enter(void* callee, void* caller)
-    __attribute__((no_instrument_function));
-void __cyg_profile_func_exit(void* callee, void* caller)
-    __attribute__((no_instrument_function));
-
-void __cyg_profile_func_enter(void* callee, void* caller) {
-    const char* callee_name = extract_name(callee);
-    const char* callee_file = extract_file(callee);
-
+int trace_enter(const char* name, const char* file) {
     if (stack_depth > 0 && edge_count < MAX_EDGES) {
         Frame* top = &call_stack[stack_depth - 1];
         char key[512];
-        snprintf(key, sizeof(key), "%s@%s->%s@%s",
-            top->name, top->file, callee_name, callee_file);
+        snprintf(key, sizeof(key), "%s@%s->%s@%s", top->name, top->file, name, file);
 
         int found = 0;
         for (int i = 0; i < seen_count; i++) {
@@ -282,28 +357,31 @@ void __cyg_profile_func_enter(void* callee, void* caller) {
             strncpy(seen[seen_count++], key, 511);
             strncpy(edges[edge_count].source_name, top->name, 127);
             strncpy(edges[edge_count].source_file, top->file, 127);
-            strncpy(edges[edge_count].target_name, callee_name, 127);
-            strncpy(edges[edge_count].target_file, callee_file, 127);
+            strncpy(edges[edge_count].target_name, name, 127);
+            strncpy(edges[edge_count].target_file, file, 127);
             edge_count++;
         }
     }
 
     if (stack_depth < MAX_STACK) {
-        strncpy(call_stack[stack_depth].name, callee_name, 127);
-        strncpy(call_stack[stack_depth].file, callee_file, 127);
+        strncpy(call_stack[stack_depth].name, name, 127);
+        strncpy(call_stack[stack_depth].file, file, 127);
         stack_depth++;
     }
+    return 0;
 }
 
-void __cyg_profile_func_exit(void* callee, void* caller) {
+// Cleanup-attribute target for the scope guard injected at each traced
+// function's entry (`int _tg __attribute__((cleanup(trace_exit))) = ...;`).
+// Plain C has no destructors, but this GCC/Clang extension calls trace_exit
+// automatically when `_tg` goes out of scope, giving C the same scope-exit
+// hook Rust's Drop guard and Swift's `defer` provide their own tracers.
+void trace_exit(int *unused) {
+    (void)unused;
     if (stack_depth > 0) stack_depth--;
 }
 
-#ifdef __cplusplus
-}
-#endif
-
-void __attribute__((destructor, no_instrument_function)) dump_trace() {
+void dump_trace(void) {
     printf("{\n  \"edges\": [\n");
     for (int i = 0; i < edge_count; i++) {
         printf("    {\n");
@@ -315,30 +393,49 @@ void __attribute__((destructor, no_instrument_function)) dump_trace() {
     }
     printf("  ]\n}\n");
 }
-CTRACE
-
-    # trace_support.c is tracer scaffolding, not code under test, and must
-    # never itself be built with -finstrument-functions: g++ compiles .c
-    # input as C++, and instrumenting this translation unit's own compiler-
-    # generated bookkeeping crashes at runtime (see #1914). Compile it as a
-    # separate, uninstrumented object and link it against the instrumented
-    # fixture sources.
-    if ! $compiler -x c -c trace_support.c -o trace_support.o 2>/dev/null; then
-        empty_result "$compiler trace_support.c compilation failed"
+CIMPL
     fi
 
-    if [[ "$compiler" == "gcc" || "$compiler" == "cc" ]]; then
-        if $compiler -finstrument-functions -rdynamic -ldl $src_files trace_support.o -o traced 2>/dev/null; then
-            ./traced 2>/dev/null || echo '{"edges":[]}'
-        else
-            empty_result "$compiler compilation failed"
-        fi
+    # Make trace_enter/TraceGuard visible to every fixture file, and keep the
+    # fixture's own stdout writes (printf/std::cout) from interleaving with
+    # dump_trace()'s JSON on stdout.
+    local srcfile base
+    for srcfile in "$TMP_DIR"/*."$ext"; do
+        [[ -e "$srcfile" ]] || continue
+        base="$(basename "$srcfile")"
+        [[ "$base" == "trace_support.$ext" ]] && continue
+        sedi "1s|^|#include \"$support_header\"\n|" "$srcfile"
+        sedi "$redirect_pattern" "$srcfile" 2>/dev/null || true
+    done
+
+    # Inject a trace-call scope guard into every function/method body. C/C++
+    # qualify out-of-line method definitions as "Class::method" right in the
+    # declaration line itself (unlike Rust's separate `impl Type {` block),
+    # so the single capture group below grabs the full (possibly qualified)
+    # name directly — no separate context-tracking pass is needed. The
+    # exclusion regex keeps control-flow lines that happen to end in "{"
+    # (e.g. "if (x) {", "for (...) {") from being mistaken for declarations.
+    inject_trace_calls \
+        "$TMP_DIR/*.$ext" \
+        "trace_support.$ext" \
+        '' 0 \
+        '([A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_~][A-Za-z0-9_]*)?)[[:space:]]*\(' 1 \
+        '^(if|else|for|while|switch|catch|do)[[:space:](]' \
+        raii \
+        "$entry_tmpl"
+
+    # Inject dump_trace() at the end of main() — immediately before its
+    # `return 0;`, not before the closing brace: unlike the void-returning
+    # main()s in the Swift/Zig/Dart tracers, both fixtures' main() actually
+    # returns a value, so inserting after the return would be dead code that
+    # never runs.
+    sedi_insert_before_end '/^int main/' '/^\}/' '/^[[:space:]]*return 0;[[:space:]]*$/' \
+        '    dump_trace();' "$TMP_DIR/main.$ext" 2>/dev/null || true
+
+    if $compiler $src_files "trace_support.$ext" -o traced 2>/dev/null; then
+        ./traced 2>/dev/null || echo '{"edges":[]}'
     else
-        if $compiler -finstrument-functions -rdynamic $src_files trace_support.o -o traced -ldl -lstdc++ 2>/dev/null; then
-            ./traced 2>/dev/null || echo '{"edges":[]}'
-        else
-            empty_result "$compiler compilation failed"
-        fi
+        empty_result "$compiler compilation failed"
     fi
 }
 
