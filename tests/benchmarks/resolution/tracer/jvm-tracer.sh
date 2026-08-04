@@ -142,7 +142,16 @@ case "$LANG" in
             # Match lines like: public void method(...) {
             # The first sed pass matches all method/constructor opening braces,
             # so a second pass is unnecessary (it would double-inject traceCall).
-            sedi_append_unless '/\)[[:space:]]*\{$/' '/class |interface /' \
+            # The negate pattern also excludes control-flow constructs that share
+            # the same "...) {" shape as a method signature (if/else if, while,
+            # for, switch, catch, synchronized, try-with-resources) -- see #2045.
+            # Unlike kotlin/scala, which anchor on the `fun `/`def ` keyword,
+            # java/groovy method signatures have no single leading keyword
+            # (`<modifiers> <returnType> <name>(...) {`), so a positive anchor
+            # isn't practical here; excluding the known control-flow keywords is
+            # the pragmatic option, matching how class/interface are already
+            # excluded below.
+            sedi_append_unless '/\)[[:space:]]*\{$/' '/class |interface |if |while |for |switch |catch |synchronized |try /' \
                 '        CallTracer.traceCall();' "$javafile"
         done
 
@@ -222,8 +231,10 @@ case "$LANG" in
         done
 
         # Inject CallTracer.traceCall() into every method body
+        # (see the java branch above for why the negate pattern also excludes
+        # control-flow keywords -- #2045)
         for grfile in "$TMP_DIR"/*.groovy; do
-            sedi_append_unless '/\)[[:space:]]*\{[[:space:]]*$/' '/class |interface /' \
+            sedi_append_unless '/\)[[:space:]]*\{[[:space:]]*$/' '/class |interface |if |while |for |switch |catch |synchronized |try /' \
                 '        CallTracer.traceCall();' "$grfile"
         done
 
