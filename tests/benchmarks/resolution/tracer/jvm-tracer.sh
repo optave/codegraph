@@ -151,7 +151,7 @@ case "$LANG" in
             # isn't practical here; excluding the known control-flow keywords is
             # the pragmatic option, matching how class/interface are already
             # excluded below.
-            sedi_append_unless '/\)[[:space:]]*\{$/' '/class |interface |if |while |for |switch |catch |synchronized |try /' \
+            sedi_append_unless '/\)[[:space:]]*\{$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]/' \
                 '        CallTracer.traceCall();' "$javafile"
         done
 
@@ -234,7 +234,7 @@ case "$LANG" in
         # (see the java branch above for why the negate pattern also excludes
         # control-flow keywords -- #2045)
         for grfile in "$TMP_DIR"/*.groovy; do
-            sedi_append_unless '/\)[[:space:]]*\{[[:space:]]*$/' '/class |interface |if |while |for |switch |catch |synchronized |try /' \
+            sedi_append_unless '/\)[[:space:]]*\{[[:space:]]*$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]/' \
                 '        CallTracer.traceCall();' "$grfile"
         done
 
