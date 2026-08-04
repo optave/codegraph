@@ -119,8 +119,17 @@ describe('barrel re-export role classification', () => {
     // re-exported file, with no callers and no outgoing calls (#1780).
     const _abstractHelper = insertNode(db, 'abstractHelper', 'method', 'src/inspect.ts', 50);
 
-    // Barrel re-exports inspect.ts
+    // Barrel re-exports inspect.ts. This fixture models a genuine wildcard
+    // reexport (`export * from './inspect'`) — the extractor emits BOTH the
+    // generic file-to-file 'reexports' edge AND a 'reexports-wildcard'
+    // marker edge for that shape (unlike a named `export { queryName } from`,
+    // which gets a symbol-level 'reexports' edge instead — see #2032's
+    // publicSurfaceIds fix). The wildcard marker is what justifies treating
+    // every top-level symbol in inspect.ts, not just queryName, as part of
+    // the exported surface (matching this describe block's other assertion
+    // that helperFn is also 'entry' despite having zero callers of its own).
     insertEdge(db, fBarrel, fInspect, 'reexports');
+    insertEdge(db, fBarrel, fInspect, 'reexports-wildcard');
     // Consumer imports from barrel
     insertEdge(db, fConsumer, fBarrel, 'imports');
     // Test file imports from inspect directly
@@ -232,6 +241,70 @@ describe('multi-level barrel re-export chain', () => {
     // 3-level deep re-export chain: inspect → index → queries-cli → query (consumer)
     // Should still be recognized as exported
     expect(queryNameResult!.role).toBe('entry');
+  });
+});
+
+// ─── Named reexport does not leak public-surface status to siblings (#2032) ──
+
+describe('named barrel reexport scoped to the actual symbol', () => {
+  let namedTmpDir: string, namedDbPath: string;
+
+  beforeAll(() => {
+    namedTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-named-reexport-'));
+    fs.mkdirSync(path.join(namedTmpDir, '.codegraph'));
+    namedDbPath = path.join(namedTmpDir, '.codegraph', 'graph.db');
+
+    const db = new Database(namedDbPath);
+    db.pragma('journal_mode = WAL');
+    initSchema(db);
+
+    const fLib = insertNode(db, 'src/lib.ts', 'file', 'src/lib.ts', 0);
+    const fBarrel = insertNode(db, 'src/index.ts', 'file', 'src/index.ts', 0);
+    const fConsumer = insertNode(db, 'src/app.ts', 'file', 'src/app.ts', 0);
+
+    const publicThing = insertNode(db, 'publicThing', 'function', 'src/lib.ts', 1);
+    // Two functions private to lib.ts, unrelated to publicThing: deadIntermediate
+    // is never called by anything, and deadHelper's only caller is
+    // deadIntermediate — the #2032 transitive-unreachability shape.
+    const deadIntermediate = insertNode(db, 'deadIntermediate', 'function', 'src/lib.ts', 10);
+    const deadHelper = insertNode(db, 'deadHelper', 'function', 'src/lib.ts', 20);
+
+    // `export { publicThing } from './lib'` — a NAMED reexport: the extractor
+    // emits the generic file-to-file 'reexports' edge (mirroring real
+    // extraction, which always emits this regardless of named/wildcard) PLUS
+    // a symbol-level 'reexports' edge targeting publicThing specifically —
+    // NOT a 'reexports-wildcard' marker, since only that one symbol is
+    // actually re-exported.
+    insertEdge(db, fBarrel, fLib, 'reexports');
+    insertEdge(db, fBarrel, publicThing, 'reexports');
+    insertEdge(db, fConsumer, fBarrel, 'imports');
+
+    insertEdge(db, deadIntermediate, deadHelper, 'calls');
+
+    classifyNodeRoles(db);
+    db.close();
+  });
+
+  afterAll(() => {
+    if (namedTmpDir) fs.rmSync(namedTmpDir, { recursive: true, force: true });
+  });
+
+  test('the actually-named symbol is on the public surface', () => {
+    const data = rolesData(namedDbPath);
+    const result = data.symbols.find((s) => s.name === 'publicThing');
+    expect(result).toBeDefined();
+    expect(result!.role).toBe('entry');
+  });
+
+  test('a private sibling reachable only through an unreachable caller stays dead, despite sharing a file with the re-exported symbol', () => {
+    // Regression for a Greptile-flagged gap: marking the WHOLE target file
+    // "exported" merely because it contains one named-reexported symbol would
+    // let deadHelper evade #2032's reachability check entirely, since
+    // deadIntermediate (its only caller) would wrongly count as a root too.
+    const data = rolesData(namedDbPath);
+    const result = data.symbols.find((s) => s.name === 'deadHelper');
+    expect(result).toBeDefined();
+    expect(result!.role).toBe('dead-unresolved');
   });
 });
 

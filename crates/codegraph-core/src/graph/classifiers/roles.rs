@@ -465,6 +465,19 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
     // reexport chains only, excluding `exported_ids`'s cross-file-caller
     // component above) — see `is_live_root`'s doc comment for why that
     // component must not grant automatic root status.
+    //
+    // Deliberately NOT reusing the whole-file `exported_ids` query above
+    // (Greptile review): that query treats ANY `reexports` edge — whether
+    // from `export { specificThing } from './b'` (which only re-exports
+    // `specificThing`) or `export * from './b'` (which genuinely re-exports
+    // everything) — as "every symbol in the target file is exported". For a
+    // named reexport that over-broadly marks every OTHER private symbol in
+    // that file as a public-surface root too, letting an unreachable private
+    // call chain sharing a file with one re-exported symbol evade the whole
+    // check. A named reexport gets its own symbol-level `reexports` edge
+    // (target = the specific symbol node, not the file) — use that directly;
+    // only a genuine wildcard reexport (kind `reexports-wildcard`) justifies
+    // marking the whole file.
     let mut public_surface_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     {
         let sql = format!(
@@ -496,6 +509,43 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
         let reexport_rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
         for r in reexport_rows.flatten() {
             exported_ids.insert(r);
+        }
+    }
+    {
+        let sql = format!(
+            "WITH RECURSIVE prod_reachable(file_id) AS (
+                SELECT DISTINCT e.target_id
+                FROM edges e
+                JOIN nodes src ON e.source_id = src.id
+                WHERE e.kind IN ('imports', 'dynamic-imports', 'imports-type')
+                  AND src.kind = 'file'
+                  {}
+                UNION
+                SELECT e.target_id
+                FROM edges e
+                JOIN prod_reachable pr ON e.source_id = pr.file_id
+                WHERE e.kind = 'reexports'
+              )
+              SELECT DISTINCT e.target_id AS id
+              FROM edges e
+              JOIN nodes n ON n.id = e.target_id
+              WHERE e.kind = 'reexports' AND n.kind != 'file'
+                AND e.source_id IN (SELECT file_id FROM prod_reachable)
+              UNION
+              SELECT DISTINCT n.id AS id
+              FROM nodes n
+              JOIN nodes f ON f.file = n.file AND f.kind = 'file'
+              WHERE f.id IN (
+                SELECT e.target_id FROM edges e
+                WHERE e.kind = 'reexports-wildcard'
+                  AND e.source_id IN (SELECT file_id FROM prod_reachable)
+              )
+              AND n.kind NOT IN ('file', 'directory', 'parameter', 'property', 'method')",
+            test_file_filter_col("src.file")
+        );
+        let mut stmt = tx.prepare(&sql)?;
+        let public_surface_rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        for r in public_surface_rows.flatten() {
             public_surface_ids.insert(r);
         }
     }
@@ -1695,6 +1745,40 @@ mod tests {
         do_classify_full(conn).expect("do_classify_full should succeed");
 
         assert_eq!(role_of(conn, 2).as_deref(), Some("dead-unresolved"));
+    }
+
+    #[test]
+    fn named_reexport_does_not_leak_public_surface_status_to_unreachable_siblings() {
+        let db = setup_db();
+        let conn = db.conn().expect("connection should still be open");
+
+        // Regression for a Greptile-flagged gap: the whole-file `exported_ids`
+        // query treats ANY 'reexports' edge as "every symbol in the target
+        // file is exported" — but `export { publicThing } from './lib'` only
+        // re-exports `publicThing`. public_surface_ids must not let
+        // deadHelper (whose only caller, deadIntermediate, is itself
+        // unreachable) evade the reachability check merely because it shares
+        // a file with the one actually re-exported symbol.
+        insert_node(conn, 1, "src/lib.ts", "file", "src/lib.ts", 0);
+        insert_node(conn, 2, "src/index.ts", "file", "src/index.ts", 0);
+        insert_node(conn, 3, "src/app.ts", "file", "src/app.ts", 0);
+        insert_node(conn, 4, "publicThing", "function", "src/lib.ts", 0);
+        insert_node(conn, 5, "deadIntermediate", "function", "src/lib.ts", 0);
+        insert_node(conn, 6, "deadHelper", "function", "src/lib.ts", 0);
+
+        // Generic file-to-file 'reexports' edge (emitted regardless of
+        // named/wildcard) plus the symbol-level edge targeting publicThing
+        // specifically — NOT a 'reexports-wildcard' marker.
+        insert_edge(conn, 2, 1, "reexports", 0);
+        insert_edge(conn, 2, 4, "reexports", 0);
+        insert_edge(conn, 3, 2, "imports", 0);
+
+        insert_edge(conn, 5, 6, "calls", 0);
+
+        do_classify_full(conn).expect("do_classify_full should succeed");
+
+        assert_ne!(role_of(conn, 4).as_deref(), Some("dead-unresolved"));
+        assert_eq!(role_of(conn, 6).as_deref(), Some("dead-unresolved"));
     }
 
     #[test]
