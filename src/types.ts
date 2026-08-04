@@ -3127,7 +3127,7 @@ export interface CommandContext {
   resolveNoTests: (opts: any) => boolean;
   resolveQueryOpts: (opts: any) => any;
   formatSize: (bytes: number) => string;
-  outputResult: (data: any, key: string, opts: any) => boolean;
+  outputResult: (data: object, key: string, opts: any) => boolean;
   program: import('commander').Command;
 }
 
