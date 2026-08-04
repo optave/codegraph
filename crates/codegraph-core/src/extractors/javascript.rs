@@ -3525,6 +3525,29 @@ fn extract_destructured_bindings(
                             content_hash: None,
                             accessor_kind: None,
                         });
+                    } else if value.kind() == "assignment_pattern" {
+                        // { original: renamed = defaultValue } — the local
+                        // binding is the assignment_pattern's left identifier
+                        // (Greptile follow-up to #2051, mirrors the identical
+                        // branch already in collect_object_pattern_names
+                        // since #1824).
+                        if let Some(left) = value.child_by_field_name("left") {
+                            if left.kind() == "identifier" {
+                                definitions.push(Definition {
+                                    name: node_text(&left, source).to_string(),
+                                    kind: "constant".to_string(),
+                                    line,
+                                    end_line: Some(end_line),
+                                    decorators: None,
+                                    complexity: None,
+                                    cfg: None,
+                                    children: None,
+                                    bodyless: None,
+                                    content_hash: None,
+                                    accessor_kind: None,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -6703,6 +6726,23 @@ mod tests {
             assert_eq!(def.kind, "constant");
         }
         assert!(!s.definitions.iter().any(|d| d.name == "b"), "should not use the original key");
+    }
+
+    #[test]
+    fn extracts_constant_definition_for_renamed_binding_with_default_value() {
+        // Greptile follow-up: { key: local = fallback } nests an
+        // assignment_pattern under pair_pattern's value field — a distinct
+        // shape from the plain shorthand default ({ a = 1 }) case above.
+        // Without this branch the pair_pattern handler rejected the nested
+        // assignment_pattern and `local` never got a Definition at all.
+        let s = parse_js("const { key: local = fallback } = someValue;");
+        let def = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "local")
+            .expect("should extract local definition");
+        assert_eq!(def.kind, "constant");
+        assert!(!s.definitions.iter().any(|d| d.name == "key"), "should not use the original key");
     }
 
     /// Regression test for issue #1271: native engine missing receiver edges.

@@ -1607,6 +1607,15 @@ function extractDestructuredBindings(
         (value.type === 'identifier' || value.type === 'shorthand_property_identifier_pattern')
       ) {
         definitions.push({ name: value.text, kind: 'constant', line, endLine });
+      } else if (value?.type === 'assignment_pattern') {
+        // { original: renamed = defaultValue } — the local binding is the
+        // assignment_pattern's left-hand identifier (Greptile follow-up to
+        // #2051, mirrors the identical branch already in
+        // extractDynamicImportNames since #1824).
+        const left = value.childForFieldName('left');
+        if (left?.type === 'identifier') {
+          definitions.push({ name: left.text, kind: 'constant', line, endLine });
+        }
       }
     } else if (child.type === 'object_assignment_pattern') {
       // { a = defaultValue } — shorthand binding with a default value; the

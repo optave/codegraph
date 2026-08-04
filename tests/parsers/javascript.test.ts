@@ -1548,6 +1548,19 @@ function runDemo(reporter: Reporter, users: string[]): void {
         }
         expect(symbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'b' }));
       });
+
+      it('extracts a constant Definition for a renamed binding with a default value', () => {
+        // Greptile follow-up: { key: local = fallback } nests an
+        // assignment_pattern under pair_pattern's value field — a distinct
+        // shape from the plain shorthand default ({ a = 1 }) case above.
+        // Without this branch the pair_pattern handler rejected the nested
+        // assignment_pattern and `local` never got a Definition at all.
+        const symbols = parseJS(`const { key: local = fallback } = someValue;`);
+        expect(symbols.definitions).toContainEqual(
+          expect.objectContaining({ name: 'local', kind: 'constant' }),
+        );
+        expect(symbols.definitions).not.toContainEqual(expect.objectContaining({ name: 'key' }));
+      });
     });
 
     // let/var object-literal method definitions
