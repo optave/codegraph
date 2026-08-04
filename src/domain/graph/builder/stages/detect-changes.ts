@@ -629,7 +629,7 @@ function handleScopedBuild(ctx: PipelineContext): void {
 }
 
 function handleFullBuild(ctx: PipelineContext): void {
-  const { db } = ctx;
+  const { db, rootDir } = ctx;
   const hasEmbeddings = detectHasEmbeddings(db, ctx.nativeDb);
   ctx.hasEmbeddings = hasEmbeddings;
   const deletions =
@@ -639,6 +639,17 @@ function handleFullBuild(ctx: PipelineContext): void {
       ? `${deletions.replace('PRAGMA foreign_keys = ON;', '')} DELETE FROM embeddings; PRAGMA foreign_keys = ON;`
       : deletions,
   );
+  // A full rebuild re-parses every currently-existing file from scratch, so
+  // none of them are "deleted" — clear any stale advisory left over from a
+  // prior removal at these paths before this build's fresh parse reinserts
+  // them. Without this, a file that was deleted (capturing an advisory),
+  // reappeared with fewer/no exports, and is later deleted again would
+  // resurface the OLD (pre-reappearance) advisory snapshot instead of a
+  // fresh one, misattributing a stale violation (#1938).
+  const changePaths = ctx.parseChanges.map(
+    (item) => item.relPath || normalizePath(path.relative(rootDir, item.file)),
+  );
+  clearDeletedExportAdvisories(db, changePaths);
 }
 
 function handleIncrementalBuild(ctx: PipelineContext): void {

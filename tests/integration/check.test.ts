@@ -992,7 +992,16 @@ describe('checkNoDeletedExportsInUse', () => {
 // snapshot (captured by that rebuild, before the purge) is what
 // `checkNoDeletedExportsInUse` must fall back to.
 
-function insertAdvisory(db, file, name, kind, line, consumerName, consumerFile, consumerLine) {
+function insertAdvisory(
+  db: Database.Database,
+  file: string,
+  name: string,
+  kind: string,
+  line: number,
+  consumerName: string,
+  consumerFile: string,
+  consumerLine: number,
+): void {
   db.prepare(
     `INSERT INTO deleted_export_advisories
        (file, name, kind, line, consumer_name, consumer_file, consumer_line, deleted_at)

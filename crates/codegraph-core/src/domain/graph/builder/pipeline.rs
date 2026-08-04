@@ -224,6 +224,17 @@ fn save_and_purge_changed(
     if change_result.is_full_build {
         let has_embeddings = detect_changes::has_embeddings(conn);
         detect_changes::clear_all_graph_data(conn, has_embeddings);
+        // A full rebuild re-parses every currently-existing file from
+        // scratch, so none of them are "deleted" — clear any stale advisory
+        // left over from a prior removal at these paths before this build's
+        // fresh parse reinserts them. Without this, a file that was deleted
+        // (capturing an advisory), reappeared with fewer/no exports, and is
+        // later deleted again would resurface the OLD (pre-reappearance)
+        // advisory snapshot instead of a fresh one, misattributing a stale
+        // violation (#1938). Mirrors the TS `handleFullBuild` fix.
+        let changed_paths: Vec<String> =
+            parse_changes.iter().map(|c| c.rel_path.clone()).collect();
+        detect_changes::clear_deleted_export_advisories(conn, &changed_paths);
         return (
             saved_reverse_dep_edges,
             saved_sibling_groups,

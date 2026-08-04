@@ -245,6 +245,50 @@ function runScenario(engine: 'wasm' | 'native'): void {
       expect(violation.reason).toBe('file-deleted');
       expect(violation.consumers.map((c) => c.file)).toContain('src/consumer.js');
     }, 60_000);
+
+    it('clears the advisory on a full (non-incremental) rebuild once the deleted file reappears', async () => {
+      // Regression test for the gap Greptile flagged on #2103: the
+      // full-rebuild path wiped nodes/edges/file_hashes but never cleared
+      // `deleted_export_advisories`, so a file that reappeared with fewer/no
+      // exports and was later deleted again would resurface the STALE
+      // pre-reappearance snapshot instead of a fresh (empty) one.
+      const projectDir = mkTmp(`cg-1938-fullbuild-${engine}-`);
+      fs.mkdirSync(path.join(projectDir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(projectDir, 'package.json'),
+        JSON.stringify({ name: 'test-1938-fullbuild', version: '1.0.0', type: 'module' }),
+      );
+      fs.writeFileSync(
+        path.join(projectDir, 'src', 'shared.js'),
+        'export function sharedHelper() {\n  return 1;\n}\n',
+      );
+      fs.writeFileSync(
+        path.join(projectDir, 'src', 'consumer.js'),
+        "import { sharedHelper } from './shared.js';\nexport function useShared() {\n  return sharedHelper();\n}\n",
+      );
+
+      await buildGraph(projectDir, { engine, incremental: false, skipRegistry: true });
+
+      // Delete shared.js, rebuild (purges + captures the advisory for
+      // sharedHelper), then bring it back with NO exports at all — but this
+      // time reinsert it via a FULL rebuild instead of an incremental one.
+      fs.rmSync(path.join(projectDir, 'src', 'shared.js'));
+      await buildGraph(projectDir, { engine, skipRegistry: true });
+
+      fs.writeFileSync(path.join(projectDir, 'src', 'shared.js'), '// no exports here\n');
+      await buildGraph(projectDir, { engine, incremental: false, skipRegistry: true });
+
+      const dbPath = path.join(projectDir, '.codegraph', 'graph.db');
+      const verifyDb = new Database(dbPath, { readonly: true });
+      try {
+        const advisoryRows = verifyDb
+          .prepare("SELECT * FROM deleted_export_advisories WHERE file = 'src/shared.js'")
+          .all();
+        expect(advisoryRows).toEqual([]);
+      } finally {
+        verifyDb.close();
+      }
+    }, 60_000);
   });
 }
 
