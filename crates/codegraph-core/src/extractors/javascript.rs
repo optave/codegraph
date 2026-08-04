@@ -5684,6 +5684,19 @@ mod tests {
         assert_eq!(dyn_imports[0].names, vec!["a".to_string(), "rest".to_string()]);
     }
 
+    /// Regression test for #2037: the native `require()` destructuring path
+    /// reuses `collect_object_pattern_names` (already fixed for #1920), so a
+    /// rest binding must come through correctly here — this locks in parity
+    /// with the WASM/TS `extractCjsRequireBinding` fix for the same issue.
+    #[test]
+    fn finds_cjs_require_with_object_rest_destructuring() {
+        let s = parse_js("const { a, ...rest } = require('./mod');");
+        let cjs_imports: Vec<_> = s.imports.iter().filter(|i| i.cjs_require == Some(true)).collect();
+        assert_eq!(cjs_imports.len(), 1);
+        assert_eq!(cjs_imports[0].source, "./mod");
+        assert_eq!(cjs_imports[0].names, vec!["a".to_string(), "rest".to_string()]);
+    }
+
     #[test]
     fn finds_dynamic_import_with_shorthand_default_destructuring() {
         let s = parse_js("const { a = 1 } = await import('./mod.js');");

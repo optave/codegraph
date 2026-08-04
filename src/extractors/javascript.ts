@@ -1093,6 +1093,13 @@ function extractCjsRequireBinding(
       if (val?.type === 'identifier' || val?.type === 'shorthand_property_identifier_pattern') {
         names.push(val.text);
       }
+    } else if (prop.type === 'rest_pattern' || prop.type === 'rest_element') {
+      // { a, ...rest } = require(...) — without this branch the rest binding
+      // was silently dropped from the CJS-require import-artifact classification
+      // (issue #2037), a parity gap with Rust's collect_object_pattern_names
+      // (which the native require() path already reuses correctly).
+      const inner = extractRestPatternIdentifier(prop);
+      if (inner) names.push(inner);
     }
   }
   if (names.length === 0) return null;
