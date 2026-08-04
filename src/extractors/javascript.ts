@@ -1577,6 +1577,12 @@ function handleTypeAliasDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
  * (`TOP_LEVEL_BINDING_KINDS` in call-resolver.ts) — so callback-style
  * destructured bindings (`const { handleToken } = router; handleToken(req)`)
  * still resolve correctly.
+ *
+ * Also handles a shorthand default value (`const { a = 1 } = value`, node
+ * type `object_assignment_pattern`) and a rest element (`const { a, ...rest }
+ * = value`, node type `rest_pattern`/`rest_element`) — both were previously
+ * dropped entirely, the same class of bug fixed for dynamic-import destructure
+ * extraction in #1920 (see `extractRestPatternIdentifier`) (#2051).
  */
 function extractDestructuredBindings(
   pattern: TreeSitterNode,
@@ -1602,6 +1608,19 @@ function extractDestructuredBindings(
       ) {
         definitions.push({ name: value.text, kind: 'constant', line, endLine });
       }
+    } else if (child.type === 'object_assignment_pattern') {
+      // { a = defaultValue } — shorthand binding with a default value; the
+      // bound name is the left-hand identifier (#2051, mirrors #1920's fix
+      // to extractDynamicImportNames).
+      const left = child.childForFieldName('left');
+      if (left?.type === 'shorthand_property_identifier_pattern' || left?.type === 'identifier') {
+        definitions.push({ name: left.text, kind: 'constant', line, endLine });
+      }
+    } else if (child.type === 'rest_pattern' || child.type === 'rest_element') {
+      // { a, ...rest } — the rest binding was silently dropped entirely
+      // before (#2051, mirrors #1920).
+      const inner = extractRestPatternIdentifier(child);
+      if (inner) definitions.push({ name: inner, kind: 'constant', line, endLine });
     }
   }
 }

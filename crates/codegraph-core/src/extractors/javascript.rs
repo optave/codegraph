@@ -3475,6 +3475,12 @@ fn handle_instanceof_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>
 /// destructured value (e.g. `const { dbPath } = workerData`). `constant`-kind
 /// nodes remain fully resolvable as call targets — call-target resolution is
 /// kind-agnostic — so callback-style destructured bindings still resolve.
+///
+/// Also handles a shorthand default value (`const { a = 1 } = value`, node
+/// kind `object_assignment_pattern`) and a rest element (`const { a, ...rest }
+/// = value`, node kind `rest_pattern`/`rest_element`) — both were previously
+/// dropped entirely, the same class of bug fixed for dynamic-import
+/// destructure extraction in #1920 (see `extract_rest_identifier`) (#2051).
 /// Mirrors the TS extractor's `extractDestructuredBindings`.
 fn extract_destructured_bindings(
     pattern: &Node,
@@ -3520,6 +3526,51 @@ fn extract_destructured_bindings(
                             accessor_kind: None,
                         });
                     }
+                }
+            }
+            "object_assignment_pattern" => {
+                // { a = defaultValue } — shorthand binding with a default
+                // value; the bound name is the left-hand identifier (#2051,
+                // mirrors #1920's fix to collect_object_pattern_names).
+                if let Some(left) = child.child_by_field_name("left") {
+                    if left.kind() == "shorthand_property_identifier_pattern"
+                        || left.kind() == "identifier"
+                    {
+                        definitions.push(Definition {
+                            name: node_text(&left, source).to_string(),
+                            kind: "constant".to_string(),
+                            line,
+                            end_line: Some(end_line),
+                            decorators: None,
+                            complexity: None,
+                            cfg: None,
+                            children: None,
+                            bodyless: None,
+                            content_hash: None,
+                            accessor_kind: None,
+                        });
+                    }
+                }
+            }
+            "rest_pattern" | "rest_element" => {
+                // { a, ...rest } — the rest binding was silently dropped
+                // entirely before (#2051, mirrors #1920).
+                let mut rest_names = Vec::new();
+                extract_rest_identifier(&child, source, &mut rest_names);
+                for name in rest_names {
+                    definitions.push(Definition {
+                        name,
+                        kind: "constant".to_string(),
+                        line,
+                        end_line: Some(end_line),
+                        decorators: None,
+                        complexity: None,
+                        cfg: None,
+                        children: None,
+                        bodyless: None,
+                        content_hash: None,
+                        accessor_kind: None,
+                    });
                 }
             }
             _ => {}
@@ -6609,6 +6660,49 @@ mod tests {
         // kind is "constant" (#1773) — see comment on extracts_destructured_const_bindings.
         assert_eq!(renamed.kind, "constant");
         assert!(!s.definitions.iter().any(|d| d.name == "original"), "should not use the original key");
+    }
+
+    // Regression tests for #2051: extract_destructured_bindings's object_pattern
+    // branch only recognized shorthand_property_identifier_pattern and
+    // pair_pattern children, so a rest element (`...rest`) never got a
+    // Definition at all and a shorthand default (`{ a = 1 }`) produced no
+    // Definition either — the same class of bug fixed for dynamic-import
+    // destructure extraction in #1920, but for the generic
+    // destructured-const-binding path used by any object destructure.
+
+    #[test]
+    fn extracts_constant_definition_for_rest_binding_alongside_plain_names() {
+        let s = parse_js("const { a, ...rest } = someValue;");
+        let names: Vec<&str> = s.definitions.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"a"), "should extract a definition");
+        assert!(names.contains(&"rest"), "should extract rest definition");
+        let rest = s.definitions.iter().find(|d| d.name == "rest").unwrap();
+        assert_eq!(rest.kind, "constant");
+    }
+
+    #[test]
+    fn extracts_constant_definition_for_shorthand_default_value_binding() {
+        let s = parse_js("const { a = 1 } = someValue;");
+        let def = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "a")
+            .expect("should extract a definition for the default-valued binding");
+        assert_eq!(def.kind, "constant");
+    }
+
+    #[test]
+    fn extracts_mixed_plain_renamed_default_and_rest_destructured_bindings() {
+        let s = parse_js("const { a, b: alias, c = 1, ...rest } = someValue;");
+        for expected in ["a", "alias", "c", "rest"] {
+            let def = s
+                .definitions
+                .iter()
+                .find(|d| d.name == expected)
+                .unwrap_or_else(|| panic!("should extract {expected} definition"));
+            assert_eq!(def.kind, "constant");
+        }
+        assert!(!s.definitions.iter().any(|d| d.name == "b"), "should not use the original key");
     }
 
     /// Regression test for issue #1271: native engine missing receiver edges.
