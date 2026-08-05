@@ -184,16 +184,31 @@ fn handle_trait_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 continue;
             }
             if let Some(meth_name) = child.child_by_field_name("name") {
+                // function_signature_item is a required trait method with no
+                // default implementation (no body) — skip CFG and complexity
+                // to mirror the WASM extractor and avoid fabricating a
+                // trivial-but-meaningless complexity entry for a function
+                // with no body. function_item (default impl) still gets full
+                // metrics.
+                let is_bodyless = child.kind() == "function_signature_item";
                 symbols.definitions.push(Definition {
                     name: format!("{}.{}", trait_name, node_text(&meth_name, source)),
                     kind: "method".to_string(),
                     line: start_line(&child),
                     end_line: Some(end_line(&child)),
                     decorators: None,
-                    complexity: compute_all_metrics(&child, source, "rust"),
-                    cfg: build_function_cfg(&child, "rust", source),
+                    complexity: if is_bodyless {
+                        None
+                    } else {
+                        compute_all_metrics(&child, source, "rust")
+                    },
+                    cfg: if is_bodyless {
+                        None
+                    } else {
+                        build_function_cfg(&child, "rust", source)
+                    },
                     children: None,
-                    bodyless: Some(child.kind() == "function_signature_item"),
+                    bodyless: Some(is_bodyless),
                     content_hash: None,
                     accessor_kind: None,
                 });
@@ -644,6 +659,31 @@ mod tests {
 
         let find = s.definitions.iter().find(|d| d.name == "Repo.find").unwrap();
         assert_ne!(find.bodyless, Some(true));
+    }
+
+    /// Regression test for #2053: a bodyless trait method must not get a
+    /// fabricated complexity/CFG entry (WASM produces none for it, since
+    /// `function_signature_item` is excluded from `functionNodes`); a
+    /// default-implemented trait method must still get real metrics.
+    #[test]
+    fn trait_required_method_has_no_complexity_default_method_does() {
+        let s = parse_rust(
+            "trait Repo {\n\
+               fn save(&mut self, id: &str, value: i32) -> bool;\n\
+               fn find(&self, id: &str) -> Option<i32> {\n\
+                 if id.is_empty() { return None; }\n\
+                 for i in 0..3 { if i == 1 { return Some(i); } }\n\
+                 None\n\
+               }\n\
+             }\n",
+        );
+        let save = s.definitions.iter().find(|d| d.name == "Repo.save").unwrap();
+        assert!(save.complexity.is_none());
+        assert!(save.cfg.is_none());
+
+        let find = s.definitions.iter().find(|d| d.name == "Repo.find").unwrap();
+        assert!(find.complexity.is_some());
+        assert!(find.cfg.is_some());
     }
 
     #[test]
