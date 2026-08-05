@@ -132,10 +132,11 @@ describe('storeComplexityResults', () => {
     // C#/Java shares one node type (method_declaration) between a bodied
     // class method and a bodyless interface/abstract signature — so the
     // visitor produces a trivial-but-real result for the bodyless one too.
-    // Without the hasFuncBody gate, this would fabricate a meaningless
+    // Without checking `bodyless`, this would fabricate a meaningless
     // complexity entry that native's csharp.rs/java.rs explicitly skip.
     // endLine (10) > line (5) deliberately, so this exercises the `bodyless`
-    // exclusion itself, not just the endLine-heuristic half of hasFuncBody.
+    // exclusion itself, not the endLine-heuristic (see the test below for why
+    // that heuristic must NOT be used here).
     const def = fakeDef({ bodyless: true });
     const results: WalkResults = {
       complexity: [
@@ -150,6 +151,31 @@ describe('storeComplexityResults', () => {
     storeComplexityResults(results, [def], 'csharp');
 
     expect(def.complexity).toBeUndefined();
+  });
+
+  it('attaches a result to a genuinely bodied single-line function (#2055 fix-of-a-fix)', () => {
+    // Regression guard: an earlier version of the #2055 fix gated this merge
+    // on `hasFuncBody(def)`, which ALSO requires `endLine > line` — wrongly
+    // discarding a real, already-computed visitor result for any function
+    // whose entire body fits on one line (`bool IsPositive(int x) { return
+    // x > 0; }`, a C# expression-bodied member, etc.), even though it is not
+    // bodyless at all. Caught by Greptile review before merge. The gate must
+    // check `bodyless` alone, never the line span.
+    const def = fakeDef({ bodyless: false, line: 5, endLine: 5 });
+    const results: WalkResults = {
+      complexity: [
+        {
+          funcNode: fakeFuncNode(4, 'foo'),
+          funcName: 'foo',
+          metrics: { cognitive: 0, cyclomatic: 1, maxNesting: 0 },
+        },
+      ],
+    };
+
+    storeComplexityResults(results, [def], 'csharp');
+
+    expect(def.complexity).toBeDefined();
+    expect(def.complexity?.cyclomatic).toBe(1);
   });
 });
 
@@ -218,6 +244,25 @@ describe('storeCfgResults', () => {
     storeCfgResults(results, [def]);
 
     expect(def.cfg).toBeUndefined();
+  });
+
+  it('attaches CFG blocks to a genuinely bodied single-line function (#2055 fix-of-a-fix)', () => {
+    // Same regression as storeComplexityResults' equivalent test above: the
+    // gate must check `bodyless` alone, never `endLine > line`.
+    const def = fakeDef({ bodyless: false, line: 5, endLine: 5 });
+    const results: WalkResults = {
+      cfg: [
+        {
+          funcNode: fakeFuncNode(4, 'foo'),
+          blocks: [{ id: 0, label: 'entry', startLine: 5, endLine: 5 }],
+          edges: [],
+        },
+      ],
+    };
+
+    storeCfgResults(results, [def]);
+
+    expect(def.cfg?.blocks).toHaveLength(1);
   });
 });
 

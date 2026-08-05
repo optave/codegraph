@@ -707,21 +707,23 @@ async function computeJsFallbackMetrics(
 
         if (def.complexity) {
           analyzed += upsertPrecomputedComplexity(db, upsert, def, relPath);
-        } else if (hasFuncBody(def)) {
+        } else if (def.bodyless !== true) {
+          // Checks `bodyless` directly rather than `hasFuncBody(def)`: that
+          // helper also requires `endLine > line`, which would wrongly skip
+          // upsertAstComplexity for a genuinely bodied single-line function
+          // (endLine === line) — losing real data rather than skipping a
+          // bodyless stub. Signature-only declarations (interface/abstract
+          // method stubs, marked `bodyless` by the extractor) correctly get
+          // no complexity row: without this gate, upsertAstComplexity's
+          // _findFunctionNode would match the same node type used for
+          // bodied methods (e.g. C#'s `method_declaration` covers both an
+          // interface signature and a real method body) and fabricate a
+          // trivial-but-meaningless entry (#2055) — storeComplexityResults
+          // (apply-results.ts) is the primary fix and already prevents
+          // `def.complexity` from being set wrong for these; this gate is
+          // defensive-in-depth for this independent fallback path.
           analyzed += upsertAstComplexity(db, upsert, def, relPath, tree, langId, rules);
         }
-        // Signature-only declarations (interface/abstract method stubs, marked
-        // `bodyless` by the extractor) correctly get no complexity row.
-        // storeComplexityResults (apply-results.ts) is the primary fix for
-        // #2055 and already prevents `def.complexity` from ever being set
-        // wrong for these; this gate is defensive-in-depth for this
-        // independent fallback path, which would otherwise call
-        // upsertAstComplexity's _findFunctionNode unconditionally — matching
-        // the same node type used for bodied methods (e.g. C#'s
-        // `method_declaration` covers both an interface signature and a real
-        // method body) — and fabricate a trivial-but-meaningless entry, the
-        // same way this file's own classifyDefinitionForNativeBulk /
-        // initWasmParsersIfNeeded already gate the native-bulk path.
       }
     }
   });
