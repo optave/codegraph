@@ -344,13 +344,21 @@ pub static PHP_RULES: LangRules = LangRules {
 // style: an else_clause node wraps either a nested if_statement for
 // `else if` or the plain else body), NOT Pattern C (Go/Java style, where the
 // `alternative` field holds the substatement directly with no wrapper node).
+// `walk()`'s node classification always returns after a `is_branch(kind)`
+// match, so a type listed in BOTH branch_nodes and case_nodes is always
+// treated as a generic branch — the case_nodes arm never fires (issue
+// #2058). `switch_statement` (the container) belongs in branch_nodes +
+// nesting_nodes (net-zero cyclomatic via switch_like_nodes, contributing
+// nesting once, matching JS/Java/C#/PHP/Ruby/Bash); `case_statement` (each
+// arm) belongs in case_nodes ONLY (flat `cyclomatic += 1`, no per-case
+// cognitive/nesting weight) — not in branch_nodes.
 pub static C_RULES: LangRules = LangRules {
-    branch_nodes: &["if_statement", "else_clause", "for_statement", "while_statement", "do_statement", "case_statement", "conditional_expression"],
+    branch_nodes: &["if_statement", "else_clause", "for_statement", "while_statement", "do_statement", "switch_statement", "conditional_expression"],
     case_nodes: &["case_statement"],
     logical_operators: &["&&", "||"],
     logical_node_types: &["binary_expression"],
     optional_chain_type: None,
-    nesting_nodes: &["if_statement", "for_statement", "while_statement", "do_statement", "conditional_expression"],
+    nesting_nodes: &["if_statement", "for_statement", "while_statement", "do_statement", "switch_statement", "conditional_expression"],
     function_nodes: &["function_definition"],
     if_node_type: Some("if_statement"),
     else_node_type: Some("else_clause"),
@@ -367,13 +375,14 @@ pub static C_RULES: LangRules = LangRules {
 // syntax), and parsing sample CUDA control flow confirms identical
 // if_statement/else_clause/for_statement/while_statement/switch_statement/
 // binary_expression node kinds to plain C++.
+// Same branch_nodes/case_nodes fix as C_RULES (issue #2058) — see comment there.
 pub static CPP_RULES: LangRules = LangRules {
-    branch_nodes: &["if_statement", "else_clause", "for_statement", "for_range_loop", "while_statement", "do_statement", "case_statement", "conditional_expression", "catch_clause"],
+    branch_nodes: &["if_statement", "else_clause", "for_statement", "for_range_loop", "while_statement", "do_statement", "switch_statement", "conditional_expression", "catch_clause"],
     case_nodes: &["case_statement"],
     logical_operators: &["&&", "||"],
     logical_node_types: &["binary_expression"],
     optional_chain_type: None,
-    nesting_nodes: &["if_statement", "for_statement", "for_range_loop", "while_statement", "do_statement", "catch_clause", "conditional_expression"],
+    nesting_nodes: &["if_statement", "for_statement", "for_range_loop", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression"],
     function_nodes: &["function_definition"],
     if_node_type: Some("if_statement"),
     else_node_type: Some("else_clause"),
@@ -397,13 +406,15 @@ pub static CPP_RULES: LangRules = LangRules {
 //     also models as a dedicated try_statement/catch_clause/finally_clause
 //     shape) is a branch/nesting node, same treatment as CPP_RULES's
 //     catch_clause.
+// Same branch_nodes/case_nodes fix as C_RULES (issue #2058) — see comment
+// there. Inherited the bug via copy from C_RULES when ObjC was added.
 pub static OBJC_RULES: LangRules = LangRules {
-    branch_nodes: &["if_statement", "else_clause", "for_statement", "while_statement", "do_statement", "case_statement", "conditional_expression", "catch_clause"],
+    branch_nodes: &["if_statement", "else_clause", "for_statement", "while_statement", "do_statement", "switch_statement", "conditional_expression", "catch_clause"],
     case_nodes: &["case_statement"],
     logical_operators: &["&&", "||"],
     logical_node_types: &["binary_expression"],
     optional_chain_type: None,
-    nesting_nodes: &["if_statement", "for_statement", "while_statement", "do_statement", "catch_clause", "conditional_expression"],
+    nesting_nodes: &["if_statement", "for_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression"],
     function_nodes: &["function_definition", "method_definition"],
     if_node_type: Some("if_statement"),
     else_node_type: Some("else_clause"),
@@ -412,8 +423,14 @@ pub static OBJC_RULES: LangRules = LangRules {
     switch_like_nodes: &["switch_statement"],
 };
 
+// `when_entry` (each case arm) must NOT also be in branch_nodes — `walk()`
+// always treats a branch_nodes match as a generic branch and never falls
+// through to the case_nodes arm, so having it in both shadowed the
+// intended flat case treatment with nesting-weighted branch treatment
+// (issue #2058). `when_expression` (the container) already correctly sits
+// in branch_nodes + nesting_nodes + switch_like_nodes.
 pub static KOTLIN_RULES: LangRules = LangRules {
-    branch_nodes: &["if_expression", "for_statement", "while_statement", "do_while_statement", "catch_block", "when_expression", "when_entry"],
+    branch_nodes: &["if_expression", "for_statement", "while_statement", "do_while_statement", "catch_block", "when_expression"],
     case_nodes: &["when_entry"],
     logical_operators: &["&&", "||"],
     logical_node_types: &["conjunction_expression", "disjunction_expression"],
@@ -432,13 +449,21 @@ pub static KOTLIN_RULES: LangRules = LangRules {
 // sharing one generic binary node — confirmed by parsing `a && b || a` and
 // inspecting the S-expression. `logical_node_types: &["binary_expression"]`
 // never matches either operator, so Swift && / || were never counted.
+// `switch_statement` (the container) was missing from branch_nodes AND
+// nesting_nodes entirely — only switch_like_nodes, which is only consulted
+// from inside the branch handler, so a Swift `switch` contributed zero
+// nesting for its cases. `switch_entry` (each case arm) was also
+// double-booked in branch_nodes + case_nodes, hitting the same shadowing
+// bug as Kotlin's when_entry (issue #2058). Fixed to match the
+// container-in-branch+nesting+switch_like / case-in-case_nodes-only
+// pattern every other switch-having language in this file uses.
 pub static SWIFT_RULES: LangRules = LangRules {
-    branch_nodes: &["if_statement", "for_in_statement", "while_statement", "repeat_while_statement", "catch_clause", "switch_entry", "ternary_expression", "guard_statement"],
+    branch_nodes: &["if_statement", "for_in_statement", "while_statement", "repeat_while_statement", "catch_clause", "switch_statement", "ternary_expression", "guard_statement"],
     case_nodes: &["switch_entry"],
     logical_operators: &["&&", "||"],
     logical_node_types: &["conjunction_expression", "disjunction_expression"],
     optional_chain_type: Some("optional_chaining_expression"),
-    nesting_nodes: &["if_statement", "for_in_statement", "while_statement", "repeat_while_statement", "catch_clause", "ternary_expression", "guard_statement"],
+    nesting_nodes: &["if_statement", "for_in_statement", "while_statement", "repeat_while_statement", "catch_clause", "switch_statement", "ternary_expression", "guard_statement"],
     function_nodes: &["function_declaration", "init_declaration"],
     if_node_type: Some("if_statement"),
     else_node_type: None,
@@ -447,8 +472,11 @@ pub static SWIFT_RULES: LangRules = LangRules {
     switch_like_nodes: &["switch_statement"],
 };
 
+// `case_clause` must NOT also be in branch_nodes — same shadowing bug as
+// Kotlin's when_entry (issue #2058). `match_expression` (the container)
+// already correctly sits in branch_nodes + nesting_nodes + switch_like_nodes.
 pub static SCALA_RULES: LangRules = LangRules {
-    branch_nodes: &["if_expression", "for_expression", "while_expression", "do_while_expression", "catch_clause", "case_clause", "match_expression"],
+    branch_nodes: &["if_expression", "for_expression", "while_expression", "do_while_expression", "catch_clause", "match_expression"],
     case_nodes: &["case_clause"],
     logical_operators: &["&&", "||"],
     logical_node_types: &["infix_expression"],
@@ -523,6 +551,52 @@ pub static LUA_RULES: LangRules = LangRules {
     switch_like_nodes: &[],
 };
 
+// tree-sitter-zig's if_statement wraps its else branch in an `else_clause`
+// node whose single named child is either a nested `if_statement` (else-if)
+// or the terminal else body — confirmed by parsing `if (..) {..} else if
+// (..) {..} else {..}` and inspecting the S-expression. Pattern A, same as
+// JS/C#/Rust, even though the grammar internally tags that child with an
+// `alternative` field name — the wrapper-node detection only checks the
+// parent node's type, not field names, so that's immaterial.
+//
+// `and`/`or`/`orelse` are keyword operators sharing the single generic
+// `binary_expression` node type (confirmed by parsing `a and b or c` and
+// `a orelse b`) — same shared-type pattern as Lua's `and`/`or`.
+//
+// `catch_expression` (`expr catch fallback`, `expr catch |err| { .. }`) is
+// a branch/nesting node, the same treatment C/C++/ObjC/C# give
+// `catch_clause` — its fallback can be an arbitrary block with its own
+// control flow, not just a coalescing value. `try_expression` (`try expr`)
+// is NOT a branch — it propagates the error up rather than branching
+// locally, mirroring how Rust's `?` operator is Halstead-only.
+pub static ZIG_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_statement",
+        "else_clause",
+        "for_statement",
+        "while_statement",
+        "switch_expression",
+        "catch_expression",
+    ],
+    case_nodes: &["switch_case"],
+    logical_operators: &["and", "or", "orelse"],
+    logical_node_types: &["binary_expression"],
+    optional_chain_type: None,
+    nesting_nodes: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "switch_expression",
+        "catch_expression",
+    ],
+    function_nodes: &["function_declaration"],
+    if_node_type: Some("if_statement"),
+    else_node_type: Some("else_clause"),
+    elif_node_type: None,
+    else_via_alternative: false,
+    switch_like_nodes: &["switch_expression"],
+};
+
 /// Look up complexity rules by language ID (matches `COMPLEXITY_RULES` keys in JS).
 pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
     match lang_id {
@@ -542,6 +616,7 @@ pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
         "scala" => Some(&SCALA_RULES),
         "bash" => Some(&BASH_RULES),
         "lua" => Some(&LUA_RULES),
+        "zig" => Some(&ZIG_RULES),
         _ => None,
     }
 }
@@ -1173,6 +1248,31 @@ pub static LUA_HALSTEAD: HalsteadRules = HalsteadRules {
     skip_types: &[],
 };
 
+// Zig has no `++`/`--` (increments are `x += 1`) and no `case` keyword in
+// switch arms (`1 => ..`, confirmed by parsing), so neither appears below.
+// Literal wrapper nodes (`character`, `string`, `boolean`) have non-empty
+// children, so their leaf *content* tokens (`character_content`,
+// `string_content`, `true`/`false`) are the operand leaves — same split
+// RUST_HALSTEAD already uses for `string_content`.
+pub static ZIG_HALSTEAD: HalsteadRules = HalsteadRules {
+    operator_leaf_types: &[
+        "+", "-", "*", "/", "%", "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
+        "==", "!=", "<", ">", "<=", ">=", "!",
+        "&", "|", "^", "~", "<<", ">>",
+        "and", "or", "orelse", "try", "catch",
+        "if", "else", "for", "while", "switch",
+        "return", "break", "continue", "unreachable", "defer",
+        "const", "var", "pub", "fn", "struct", "enum", "union", "error", "comptime",
+        ".", "..", ".?", ".*", ",", ";", ":", "?", "=>", "->",
+    ],
+    operand_leaf_types: &[
+        "identifier", "builtin_type", "integer", "float", "string_content", "character_content",
+        "true", "false", "null", "undefined",
+    ],
+    compound_operators: &["call_expression", "field_expression", "index_expression"],
+    skip_types: &[],
+};
+
 /// Look up Halstead rules by language ID.
 pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
     match lang_id {
@@ -1192,6 +1292,7 @@ pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
         "scala" => Some(&SCALA_HALSTEAD),
         "bash" => Some(&BASH_HALSTEAD),
         "lua" => Some(&LUA_HALSTEAD),
+        "zig" => Some(&ZIG_HALSTEAD),
         _ => None,
     }
 }
@@ -1199,17 +1300,17 @@ pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
 /// Comment line prefixes per language, used for LOC metrics.
 pub fn comment_prefixes(lang_id: &str) -> &'static [&'static str] {
     match lang_id {
-        "javascript" | "typescript" | "tsx" | "go" | "rust" | "java" | "csharp" => {
-            &["//", "/*", "*", "*/"]
-        }
+        // c/cpp/cuda/objc/kotlin/swift/scala all use the same `/** ... */`
+        // block-comment style as JS/Java/C# — the 2-entry list omitted
+        // bare `*`/`*/` continuation lines, undercounting commentLines for
+        // any multi-line Javadoc-style comment (issue #2058).
+        "javascript" | "typescript" | "tsx" | "go" | "rust" | "java" | "csharp" | "c" | "cpp"
+        | "cuda" | "objc" | "kotlin" | "swift" | "scala" => &["//", "/*", "*", "*/"],
         "python" | "ruby" => &["#"],
         "php" => &["//", "#", "/*", "*", "*/"],
-        "c" | "cpp" | "cuda" | "objc" => &["//", "/*"],
-        "kotlin" => &["//", "/*"],
-        "swift" => &["//", "/*"],
-        "scala" => &["//", "/*"],
         "bash" => &["#"],
         "lua" => &["--"],
+        "zig" => &["//"],
         _ => &["//", "/*", "*", "*/"],
     }
 }
@@ -1520,6 +1621,19 @@ fn walk_all(
 mod tests {
     use super::*;
     use tree_sitter::Parser;
+
+    #[test]
+    fn comment_prefixes_c_family_and_jvm_langs_match_continuation_lines() {
+        // Regression guard (issue #2058): c/cpp/cuda/objc/kotlin/swift/scala
+        // all use the same `/** ... */` block-comment style as JS/Java/C# —
+        // the old 2-entry list omitted bare `*`/`*/` continuation lines,
+        // undercounting commentLines for any multi-line Javadoc-style comment.
+        for lang in ["c", "cpp", "cuda", "objc", "kotlin", "swift", "scala"] {
+            let prefixes = comment_prefixes(lang);
+            assert!(prefixes.contains(&"*"), "{lang} should match bare '*' continuation lines");
+            assert!(prefixes.contains(&"*/"), "{lang} should match closing '*/' lines");
+        }
+    }
 
     fn compute_js(code: &str) -> ComplexityMetrics {
         let mut parser = Parser::new();
@@ -1931,6 +2045,23 @@ mod tests {
     }
 
     #[test]
+    fn c_switch_with_multi_value_case() {
+        // Regression guard (issue #2058): switch_statement (the container)
+        // must be in branch_nodes + nesting_nodes (net-zero cyclomatic,
+        // contributing nesting once), and case_statement (each arm) must be
+        // in case_nodes ONLY (flat cyclomatic += 1, no per-case
+        // cognitive/nesting weight) — not also in branch_nodes, which
+        // previously shadowed the case treatment with a nesting-weighted
+        // generic branch treatment for every arm.
+        let m = compute_c(
+            "int f(int x) {\n  switch (x) {\n    case 1:\n      return 1;\n    case 2:\n    case 3:\n      return 2;\n    default:\n      return 0;\n  }\n}",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 5);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
     fn cpp_if_elseif_else() {
         let m = compute_cpp(
             "int f(int x) {\n  if (x > 0) {\n    return 1;\n  } else if (x < 0) {\n    return -1;\n  } else {\n    return 0;\n  }\n}",
@@ -1945,6 +2076,17 @@ mod tests {
         let m = compute_cpp("void f(int xs[]) {\n  for (int x : xs) {\n    use(x);\n  }\n}");
         assert_eq!(m.cognitive, 1);
         assert_eq!(m.cyclomatic, 2);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn cpp_switch_with_multi_value_case() {
+        // Same branch_nodes/case_nodes fix as C's equivalent test — see comment there.
+        let m = compute_cpp(
+            "int f(int x) {\n  switch (x) {\n    case 1:\n      return 1;\n    case 2:\n    case 3:\n      return 2;\n    default:\n      return 0;\n  }\n}",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 5);
         assert_eq!(m.max_nesting, 1);
     }
 
@@ -2050,6 +2192,85 @@ mod tests {
         assert_eq!(m.cyclomatic, 2);
     }
 
+    #[test]
+    fn objc_switch_with_multi_value_case() {
+        // Same branch_nodes/case_nodes fix as C's equivalent test (see
+        // comment there) — inherited the bug via copy from C's rules when
+        // ObjC was added.
+        let m = compute_objc(
+            "@implementation Calculator\n- (NSInteger)classify:(NSInteger)x {\n  switch (x) {\n    case 1:\n      return 1;\n    case 2:\n    case 3:\n      return 2;\n    default:\n      return 0;\n  }\n}\n@end",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 5);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    // ─── Zig tests (issue #1923) ─────────────────────────────────────────────
+    //
+    // tree-sitter-zig wraps its else branch in an else_clause node (Pattern
+    // A, same as JS/C#/Rust/ObjC). and/or/orelse share the generic
+    // binary_expression node type. catch_expression is a branch/nesting
+    // node; try_expression is Halstead-only (mirrors Rust's `?`).
+
+    fn compute_zig(code: &str) -> ComplexityMetrics {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_zig::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &ZIG_RULES).expect("no function found");
+        compute_function_complexity(&func, &ZIG_RULES)
+    }
+
+    #[test]
+    fn zig_if_elseif_else() {
+        let m = compute_zig(
+            "pub fn classify(value: i32) i32 {\n    if (value > 0) {\n        return 1;\n    } else if (value < 0) {\n        return -1;\n    } else {\n        return 0;\n    }\n}",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn zig_while_with_orelse() {
+        let m = compute_zig(
+            "pub fn sum(n: i32, opt: ?i32) i32 {\n    var result: i32 = opt orelse 0;\n    var i: i32 = 0;\n    while (i < n) {\n        result += i;\n        i += 1;\n    }\n    return result;\n}",
+        );
+        assert_eq!(m.cognitive, 2);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn zig_for_range_with_switch() {
+        let m = compute_zig(
+            "pub fn tally(n: i32) i32 {\n    var total: i32 = 0;\n    for (0..n) |i| {\n        switch (i) {\n            0 => total += 1,\n            1, 2 => total += 2,\n            else => total += 0,\n        }\n    }\n    return total;\n}",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 5);
+        assert_eq!(m.max_nesting, 2);
+    }
+
+    #[test]
+    fn zig_catch_with_error_payload_block_is_a_branch() {
+        let m = compute_zig(
+            "pub fn risky() i32 {\n    const v = mayFail() catch |err| {\n        _ = err;\n        return -1;\n    };\n    return v;\n}",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn zig_try_is_not_a_branch() {
+        let m = compute_zig("pub fn wrapper() !i32 {\n    const v = try mayFail();\n    return v;\n}");
+        assert_eq!(m.cognitive, 0);
+        assert_eq!(m.cyclomatic, 1);
+        assert_eq!(m.max_nesting, 0);
+    }
+
     // ─── Kotlin tests (issue #1923) ─────────────────────────────────────────
 
     fn compute_kotlin(code: &str) -> ComplexityMetrics {
@@ -2083,12 +2304,30 @@ mod tests {
 
     #[test]
     fn kotlin_when_expression() {
+        // Regression guard (issue #2058): when_entry (each case arm) must
+        // not also be in branch_nodes — that shadowed the flat case
+        // treatment with nesting-weighted branch treatment, inflating
+        // cognitive from 1 to 7 for this fixture even though cyclomatic
+        // happened to stay 4 either way (each arm contributes +1 via
+        // either code path).
         let m = compute_kotlin(
             "fun f(x: Int): Int {\n  return when (x) {\n    1 -> 1\n    2 -> 2\n    else -> 0\n  }\n}",
         );
         // base 1 + when container (0, switch-like) + 3 when_entry cases (+1
         // each) = 4.
+        assert_eq!(m.cognitive, 1);
         assert_eq!(m.cyclomatic, 4);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn kotlin_when_expression_with_multi_value_case() {
+        let m = compute_kotlin(
+            "fun f(x: Int): Int {\n  return when (x) {\n    1 -> 1\n    2, 3 -> 2\n    else -> 0\n  }\n}",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 4);
+        assert_eq!(m.max_nesting, 1);
     }
 
     // ─── Swift tests (issue #1923) ──────────────────────────────────────────
@@ -2116,6 +2355,22 @@ mod tests {
     fn swift_logical_operators() {
         let m = compute_swift("func f(_ a: Bool, _ b: Bool) -> Bool {\n  return a && b\n}");
         assert_eq!(m.cyclomatic, 2);
+    }
+
+    #[test]
+    fn swift_switch_with_multi_value_case() {
+        // Regression guard (issue #2058): switch_statement (the container)
+        // was missing from branch_nodes AND nesting_nodes entirely — a
+        // Swift switch contributed ZERO nesting/cognitive from its own
+        // container, and switch_entry (each case arm) was double-booked in
+        // branch_nodes + case_nodes, hitting the same shadowing bug as
+        // Kotlin's when_entry.
+        let m = compute_swift(
+            "func f(_ x: Int) -> Int {\n  switch x {\n  case 1:\n    return 1\n  case 2, 3:\n    return 2\n  default:\n    return 0\n  }\n}",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 4);
+        assert_eq!(m.max_nesting, 1);
     }
 
     // ─── Scala tests (issue #1923) ──────────────────────────────────────────
@@ -2146,12 +2401,30 @@ mod tests {
 
     #[test]
     fn scala_match_expression() {
+        // Regression guard (issue #2058): case_clause (each case arm) must
+        // not also be in branch_nodes — that shadowed the flat case
+        // treatment with nesting-weighted branch treatment, inflating
+        // cognitive from 1 to 7 for this fixture even though cyclomatic
+        // happened to stay 4 either way (each arm contributes +1 via
+        // either code path).
         let m = compute_scala(
             "def f(x: Int): Int = {\n  x match {\n    case 1 => 1\n    case 2 => 2\n    case _ => 0\n  }\n}",
         );
         // base 1 + match container (0, switch-like) + 3 case_clause cases
         // (+1 each) = 4.
+        assert_eq!(m.cognitive, 1);
         assert_eq!(m.cyclomatic, 4);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn scala_match_expression_with_alternative_pattern_case() {
+        let m = compute_scala(
+            "def f(x: Int): Int = {\n  x match {\n    case 1 => 1\n    case 2 | 3 => 2\n    case _ => 0\n  }\n}",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 4);
+        assert_eq!(m.max_nesting, 1);
     }
 
     // ─── Bash tests (issue #1923) ───────────────────────────────────────────

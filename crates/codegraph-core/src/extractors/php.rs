@@ -196,6 +196,19 @@ fn handle_enum_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    // Skip interface methods — already emitted by handle_interface_decl's own
+    // inner loop. Re-emitting them here would duplicate the definition (and,
+    // since "interface_declaration" is absent from PHP_CLASS_KINDS, produce
+    // a spurious bare-named entry instead of a correctly dotted duplicate).
+    // Mirrors java.rs/csharp.rs's handle_method_decl and the WASM PHP
+    // extractor's `node.parent?.parent?.type === 'interface_declaration'` guard.
+    if let Some(parent) = node.parent() {
+        if let Some(grand) = parent.parent() {
+            if grand.kind() == "interface_declaration" {
+                return;
+            }
+        }
+    }
     if let Some(name_node) = node.child_by_field_name("name") {
         let parent_class = find_php_parent_class(node, source);
         let name = node_text(&name_node, source);
@@ -430,5 +443,47 @@ fn match_php_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _de
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_php(code: &str) -> FileSymbols {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        PhpExtractor.extract(&tree, code.as_bytes(), "Test.php")
+    }
+
+    /// Regression test for #2054: an interface method must be extracted exactly
+    /// once (by handle_interface_decl, dotted as `Interface.method`) — not a
+    /// second time by handle_method_decl's unconditional tree-walk dispatch,
+    /// which previously produced a spurious bare-named duplicate because
+    /// "interface_declaration" is absent from PHP_CLASS_KINDS.
+    #[test]
+    fn interface_method_is_not_duplicated_as_a_bare_name() {
+        let s = parse_php(
+            "<?php\n\
+             interface RepoInterface {\n\
+                 public function save(string $id, int $value): bool;\n\
+             }\n\
+             class Repo implements RepoInterface {\n\
+                 public function save(string $id, int $value): bool {\n\
+                     if ($value < 0) { return false; }\n\
+                     return true;\n\
+                 }\n\
+             }\n",
+        );
+
+        let bare_save_count = s.definitions.iter().filter(|d| d.name == "save").count();
+        assert_eq!(bare_save_count, 0);
+
+        assert!(s.definitions.iter().any(|d| d.name == "RepoInterface.save"));
+        let repo_save = s.definitions.iter().find(|d| d.name == "Repo.save").unwrap();
+        assert!(repo_save.complexity.is_some());
     }
 }

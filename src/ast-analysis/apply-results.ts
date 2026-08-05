@@ -87,7 +87,17 @@ export function matchResultToDef<T extends { funcNode: TreeSitterNode }>(
   );
 }
 
-/** Merge visitor-walk complexity results onto `defs`, matched by line + name. */
+/**
+ * Merge visitor-walk complexity results onto `defs`, matched by line + name.
+ *
+ * Deliberately checks `def.bodyless !== true` directly rather than calling
+ * `hasFuncBody()`: that helper also requires `endLine > line`, which is a
+ * fine coarse signal for "does this FILE contain anything worth a WASM
+ * fallback pass" (its other call sites), but wrongly excludes a genuinely
+ * bodied single-line function/method (`endLine === line`) from having an
+ * already-computed visitor result attached — losing real data rather than
+ * skipping a bodyless stub.
+ */
 export function storeComplexityResults(
   results: WalkResults,
   defs: Definition[],
@@ -95,7 +105,12 @@ export function storeComplexityResults(
 ): void {
   const byLine = indexByLine((results.complexity || []) as ComplexityFuncResult[]);
   for (const def of defs) {
-    if ((def.kind === 'function' || def.kind === 'method') && def.line && !def.complexity) {
+    if (
+      (def.kind === 'function' || def.kind === 'method') &&
+      def.line &&
+      !def.complexity &&
+      def.bodyless !== true
+    ) {
       const funcResult = matchResultToDef(byLine.get(def.line), def.name);
       if (!funcResult) continue;
       const { metrics } = funcResult;
@@ -127,6 +142,9 @@ export function storeComplexityResults(
  * metric for any function using `&&`/`||`/`??`/`?.` or containing a closure
  * (issue #1743) — CFG blocks/edges are stored here purely for CFG
  * queries/visualization (`codegraph cfg`), not as a complexity source.
+ *
+ * Uses `def.bodyless !== true` directly rather than `hasFuncBody()` for the
+ * same reason `storeComplexityResults` does, above.
  */
 export function storeCfgResults(results: WalkResults, defs: Definition[]): void {
   const byLine = indexByLine((results.cfg || []) as CfgFuncResult[]);
@@ -134,7 +152,8 @@ export function storeCfgResults(results: WalkResults, defs: Definition[]): void 
     if (
       (def.kind === 'function' || def.kind === 'method') &&
       def.line &&
-      !def.cfg?.blocks?.length
+      !def.cfg?.blocks?.length &&
+      def.bodyless !== true
     ) {
       const cfgResult = matchResultToDef(byLine.get(def.line), def.name);
       if (!cfgResult) continue;

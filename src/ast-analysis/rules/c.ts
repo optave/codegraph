@@ -18,6 +18,15 @@ import { makeDataflowRules } from '../shared.js';
 // `else if` or the plain else body), NOT Pattern C (Go/Java style, where the
 // `alternative` field holds the substatement directly with no wrapper node).
 
+// classifyNode's classifyBranchNode always returns after a branchNodes
+// match, so a type listed in BOTH branchNodes and caseNodes is always
+// treated as a generic branch — the caseNodes arm never fires (issue
+// #2058). switch_statement (the container) belongs in branchNodes +
+// nestingNodes (net-zero cyclomatic via switchLikeNodes, contributing
+// nesting once, matching JS/Java/C#/PHP/Ruby/Bash); case_statement (each
+// arm) belongs in caseNodes ONLY (flat cyclomatic += 1, no per-case
+// cognitive/nesting weight) — not in branchNodes. Mirrors the native
+// C_RULES fix in complexity.rs.
 export const complexity: ComplexityRules = {
   branchNodes: new Set([
     'if_statement',
@@ -25,7 +34,7 @@ export const complexity: ComplexityRules = {
     'for_statement',
     'while_statement',
     'do_statement',
-    'case_statement',
+    'switch_statement',
     'conditional_expression',
   ]),
   caseNodes: new Set(['case_statement']),
@@ -37,6 +46,7 @@ export const complexity: ComplexityRules = {
     'for_statement',
     'while_statement',
     'do_statement',
+    'switch_statement',
     'conditional_expression',
   ]),
   functionNodes: new Set(['function_definition']),
@@ -53,6 +63,7 @@ export const complexity: ComplexityRules = {
 // on top of the C rule set; uses the same else_clause wrapper (Pattern A) as
 // C, confirmed by parsing the same if/else-if/else shape with tree-sitter-cpp.
 
+// Same branchNodes/caseNodes fix as `complexity` above (issue #2058).
 export const complexityCpp: ComplexityRules = {
   branchNodes: new Set([
     'if_statement',
@@ -61,7 +72,7 @@ export const complexityCpp: ComplexityRules = {
     'for_range_loop',
     'while_statement',
     'do_statement',
-    'case_statement',
+    'switch_statement',
     'conditional_expression',
     'catch_clause',
   ]),
@@ -75,6 +86,7 @@ export const complexityCpp: ComplexityRules = {
     'for_range_loop',
     'while_statement',
     'do_statement',
+    'switch_statement',
     'catch_clause',
     'conditional_expression',
   ]),
@@ -258,6 +270,8 @@ export const halsteadCpp: HalsteadRules = {
 //     handling, which tree-sitter-objc also models with a dedicated
 //     try_statement/catch_clause/finally_clause shape) is a branch/nesting
 //     node, same treatment as C++'s catch_clause.
+// Same branchNodes/caseNodes fix as `complexity` above (issue #2058) —
+// inherited the bug via copy from C's rules when ObjC was added.
 export const complexityObjC: ComplexityRules = {
   branchNodes: new Set([
     'if_statement',
@@ -265,7 +279,7 @@ export const complexityObjC: ComplexityRules = {
     'for_statement',
     'while_statement',
     'do_statement',
-    'case_statement',
+    'switch_statement',
     'conditional_expression',
     'catch_clause',
   ]),
@@ -278,6 +292,7 @@ export const complexityObjC: ComplexityRules = {
     'for_statement',
     'while_statement',
     'do_statement',
+    'switch_statement',
     'catch_clause',
     'conditional_expression',
   ]),
