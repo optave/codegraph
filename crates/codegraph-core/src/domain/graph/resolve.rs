@@ -191,6 +191,184 @@ fn parse_bare_specifier(specifier: &str) -> Option<(String, String)> {
     Some((package_name, subpath))
 }
 
+// ── package.json `exports` field resolution (issue #2060) ──────────────
+//
+// Mirrors `resolveViaExports()` in resolve.ts. Deliberately reads
+// package.json directly from the filesystem (`std::fs`, not the
+// `known_files`-aware `file_exists()` helper): `exports` resolution reaches
+// into `node_modules`, which is never part of the project's tracked source
+// file list, so there is nothing for `known_files` to short-circuit against.
+
+/// Cache: packageDir → parsed `exports` field (`None` if absent/unreadable).
+fn exports_cache() -> &'static Mutex<HashMap<String, Option<serde_json::Value>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<serde_json::Value>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Clear the exports cache. Mirrors `clearExportsCache()`; call once per
+/// build alongside `reset_workspace_resolved_paths()`.
+pub fn clear_exports_cache() {
+    let mut cache = exports_cache().lock().unwrap_or_else(|p| p.into_inner());
+    cache.clear();
+}
+
+/// Find the package directory for a given package name, starting from
+/// `root_dir` and walking up through `node_modules` directories.
+fn find_package_dir(package_name: &str, root_dir: &str) -> Option<String> {
+    let mut dir = root_dir.to_string();
+    loop {
+        let candidate = format!("{}/node_modules/{}", dir.trim_end_matches('/'), package_name);
+        if Path::new(&candidate).join("package.json").exists() {
+            return Some(candidate);
+        }
+        match Path::new(&dir).parent() {
+            Some(parent) if parent != Path::new(&dir) => {
+                dir = parent.to_string_lossy().to_string();
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Read and cache the `exports` field from a package's package.json.
+fn get_package_exports(package_dir: &str) -> Option<serde_json::Value> {
+    {
+        let cache = exports_cache().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(cached) = cache.get(package_dir) {
+            return cached.clone();
+        }
+    }
+    let result = std::fs::read_to_string(format!("{package_dir}/package.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|pkg| pkg.get("exports").cloned());
+    exports_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(package_dir.to_string(), result.clone());
+    result
+}
+
+/// Condition names to try, in priority order. Mirrors `CONDITION_ORDER`.
+const EXPORTS_CONDITION_ORDER: &[&str] = &["import", "require", "default"];
+
+/// Resolve a conditional exports value (string, array fallback, or
+/// conditions object) to a single string target.
+fn resolve_export_condition(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(items) => items.iter().find_map(resolve_export_condition),
+        serde_json::Value::Object(map) => {
+            for cond in EXPORTS_CONDITION_ORDER {
+                if let Some(v) = map.get(*cond) {
+                    return resolve_export_condition(v);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Match a subpath against an exports map key that uses a wildcard pattern.
+/// Key `"./lib/*"` matches subpath `"./lib/foo/bar"` → substitution `"foo/bar"`.
+fn match_subpath_pattern(pattern: &str, subpath: &str) -> Option<String> {
+    let star_idx = pattern.find('*')?;
+    let prefix = &pattern[..star_idx];
+    let suffix = &pattern[star_idx + 1..];
+    if !subpath.starts_with(prefix) {
+        return None;
+    }
+    if !suffix.is_empty() && !subpath.ends_with(suffix) {
+        return None;
+    }
+    let end = if suffix.is_empty() {
+        subpath.len()
+    } else {
+        subpath.len() - suffix.len()
+    };
+    if suffix.is_empty() && subpath.len() <= prefix.len() {
+        return None;
+    }
+    Some(subpath[prefix.len()..end].to_string())
+}
+
+/// Try resolving a condition target (always package-relative, e.g. `"./index.js"`)
+/// to an existing absolute file path.
+fn try_resolve_export_target(target: Option<&str>, package_dir: &str) -> Option<String> {
+    let target = target?;
+    let resolved = normalize_path(&format!("{package_dir}/{target}"));
+    Path::new(&resolved).exists().then_some(resolved)
+}
+
+/// Resolve subpath against a subpath map (object with `.`-prefixed keys):
+/// exact match first, then wildcard pattern keys.
+fn resolve_subpath_map(
+    exports: &serde_json::Map<String, serde_json::Value>,
+    subpath: &str,
+    package_dir: &str,
+) -> Option<String> {
+    if let Some(value) = exports.get(subpath) {
+        return try_resolve_export_target(resolve_export_condition(value).as_deref(), package_dir);
+    }
+    for (pattern, value) in exports.iter() {
+        if !pattern.contains('*') {
+            continue;
+        }
+        let Some(matched) = match_subpath_pattern(pattern, subpath) else {
+            continue;
+        };
+        let Some(raw_target) = resolve_export_condition(value) else {
+            continue;
+        };
+        if let Some(resolved) =
+            try_resolve_export_target(Some(&raw_target.replace('*', &matched)), package_dir)
+        {
+            return Some(resolved);
+        }
+    }
+    None
+}
+
+/// Resolve a bare specifier through the package.json `exports` field.
+/// Mirrors `resolveViaExports()` in resolve.ts.
+fn resolve_via_exports(specifier: &str, root_dir: &str) -> Option<String> {
+    let (package_name, subpath) = parse_bare_specifier(specifier)?;
+    let package_dir = find_package_dir(&package_name, root_dir)?;
+    let exports = get_package_exports(&package_dir)?;
+
+    match &exports {
+        // Simple string exports: "exports": "./index.js"
+        serde_json::Value::String(target) => {
+            if subpath != "." {
+                return None;
+            }
+            try_resolve_export_target(Some(target), &package_dir)
+        }
+        // Array form at top level (condition fallback list)
+        serde_json::Value::Array(_) => {
+            if subpath != "." {
+                return None;
+            }
+            try_resolve_export_target(resolve_export_condition(&exports).as_deref(), &package_dir)
+        }
+        serde_json::Value::Object(map) => {
+            let is_subpath_map = map.keys().any(|k| k.starts_with('.'));
+            if !is_subpath_map {
+                if subpath != "." {
+                    return None;
+                }
+                return try_resolve_export_target(
+                    resolve_export_condition(&exports).as_deref(),
+                    &package_dir,
+                );
+            }
+            resolve_subpath_map(map, &subpath, &package_dir)
+        }
+        _ => None,
+    }
+}
+
 /// Extensions probed when resolving a workspace subpath import against the
 /// filesystem. Mirrors the extension list in `resolveViaWorkspace()`.
 const WORKSPACE_PROBE_EXTENSIONS: &[&str] = &[
@@ -207,16 +385,11 @@ const WORKSPACE_PROBE_EXTENSIONS: &[&str] = &[
 
 /// Resolve a bare specifier through monorepo workspace packages.
 ///
-/// For `"@myorg/utils"` → finds the workspace package dir → resolves to its
-/// entry point. For `"@myorg/utils/sub"` → finds the package dir → filesystem
-/// probes `dir/sub` then `dir/src/sub`.
-///
-/// Unlike `resolveViaWorkspace()` in resolve.ts, this does not attempt a
-/// `package.json` `exports`-field lookup first — the native engine has no
-/// `exports`-field resolver at all (tracked separately; see
-/// `resolveViaExports()`'s absence from this module). This only affects
-/// workspace packages that rely on a conditional `exports` map instead of
-/// `main`/`source`/index-file resolution.
+/// For `"@myorg/utils"` → finds the workspace package dir → tries the
+/// `exports` field, falling back to its entry point. For
+/// `"@myorg/utils/sub"` → finds the package dir → tries `exports`, then
+/// filesystem probes `dir/sub` then `dir/src/sub`. Mirrors
+/// `resolveViaWorkspace()` in resolve.ts (issue #2060).
 fn resolve_via_workspace(
     specifier: &str,
     workspaces: &HashMap<String, WorkspaceEntry>,
@@ -230,7 +403,17 @@ fn resolve_via_workspace(
     let info = workspaces.get(&package_name)?;
 
     if subpath == "." {
+        // Try the exports field first (reuses existing exports logic),
+        // matching resolveViaWorkspace()'s root-import branch.
+        if let Some(exports_result) = resolve_via_exports(specifier, root_dir) {
+            return Some(exports_result);
+        }
         return info.entry.clone();
+    }
+
+    // Subpath import — try exports, then filesystem probe.
+    if let Some(exports_result) = resolve_via_exports(specifier, root_dir) {
+        return Some(exports_result);
     }
 
     let sub_rel = &subpath[2..]; // strip leading "./"
@@ -620,6 +803,12 @@ fn resolve_non_relative_import(
             return rel;
         }
     }
+    // Plain node_modules bare specifiers whose package only exposes an entry
+    // via `exports` (no matching `main`/index-file convention) — matching
+    // resolveImportPathJS()'s fallback order (issue #2060).
+    if let Some(exports_resolved) = resolve_via_exports(import_source, root_dir) {
+        return relativize_to_root(&exports_resolved, root_dir);
+    }
     import_source.to_string()
 }
 
@@ -906,6 +1095,7 @@ pub fn resolve_imports_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn clean_path_collapses_parent_dirs() {
@@ -1644,5 +1834,195 @@ mod tests {
             None,
         );
         assert_eq!(resolved, "crate::service::build_service");
+    }
+
+    // ── package.json `exports` field resolution (issue #2060) ──────────
+
+    /// Build `<tmp>/node_modules/<package_name>/package.json` with the given
+    /// exports value and other package.json fields, plus any extra files
+    /// (relative to the package dir) the exports targets should resolve to.
+    fn make_exports_fixture(
+        tmp_name: &str,
+        package_name: &str,
+        package_json_body: &str,
+        extra_files: &[(&str, &str)],
+    ) -> PathBuf {
+        let tmp = std::env::temp_dir().join(tmp_name);
+        let _ = fs::remove_dir_all(&tmp);
+        let pkg_dir = tmp.join("node_modules").join(package_name);
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("package.json"), package_json_body).unwrap();
+        for (rel_path, contents) in extra_files {
+            let file_path = pkg_dir.join(rel_path);
+            fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+            fs::write(file_path, contents).unwrap();
+        }
+        tmp
+    }
+
+    #[test]
+    fn resolve_via_exports_resolves_simple_string_exports_with_no_main_field() {
+        let tmp = make_exports_fixture(
+            "codegraph_exports_simple_string_test",
+            "some-pkg",
+            r#"{"name": "some-pkg", "exports": "./dist/index.js"}"#,
+            &[("dist/index.js", "module.exports = {};")],
+        );
+        clear_exports_cache();
+
+        let resolved = resolve_via_exports("some-pkg", tmp.to_str().unwrap());
+        assert_eq!(
+            resolved,
+            Some(
+                tmp.join("node_modules/some-pkg/dist/index.js")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            )
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_via_exports_resolves_subpath_via_wildcard_pattern() {
+        let tmp = make_exports_fixture(
+            "codegraph_exports_wildcard_test",
+            "some-pkg",
+            r#"{"name": "some-pkg", "exports": {".": "./index.js", "./lib/*": "./dist/lib/*.js"}}"#,
+            &[
+                ("index.js", "module.exports = {};"),
+                ("dist/lib/sub.js", "module.exports = {};"),
+            ],
+        );
+        clear_exports_cache();
+
+        let resolved = resolve_via_exports("some-pkg/lib/sub", tmp.to_str().unwrap());
+        assert_eq!(
+            resolved,
+            Some(
+                tmp.join("node_modules/some-pkg/dist/lib/sub.js")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            )
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_via_exports_resolves_conditional_exports_preferring_import_over_require() {
+        let tmp = make_exports_fixture(
+            "codegraph_exports_conditional_test",
+            "some-pkg",
+            r#"{"name": "some-pkg", "exports": {"import": "./esm/index.js", "require": "./cjs/index.js"}}"#,
+            &[
+                ("esm/index.js", "export default {};"),
+                ("cjs/index.js", "module.exports = {};"),
+            ],
+        );
+        clear_exports_cache();
+
+        let resolved = resolve_via_exports("some-pkg", tmp.to_str().unwrap());
+        assert_eq!(
+            resolved,
+            Some(
+                tmp.join("node_modules/some-pkg/esm/index.js")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            )
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_via_exports_returns_none_when_package_has_no_exports_field() {
+        let tmp = make_exports_fixture(
+            "codegraph_exports_no_exports_field_test",
+            "some-pkg",
+            r#"{"name": "some-pkg", "main": "./index.js"}"#,
+            &[("index.js", "module.exports = {};")],
+        );
+        clear_exports_cache();
+
+        assert_eq!(resolve_via_exports("some-pkg", tmp.to_str().unwrap()), None);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_non_relative_import_resolves_via_package_exports_when_no_main_field() {
+        // End-to-end regression test for #2060: a package that only exposes
+        // its entry via `exports` (no `main` field, no index.js convention)
+        // must resolve identically to the JS/WASM engine's resolveImportPathJS().
+        let tmp = make_exports_fixture(
+            "codegraph_exports_e2e_test",
+            "exports-only-pkg",
+            r#"{"name": "exports-only-pkg", "exports": "./dist/entry.js"}"#,
+            &[("dist/entry.js", "module.exports = {};")],
+        );
+        clear_exports_cache();
+
+        let aliases = PathAliases {
+            base_url: None,
+            paths: vec![],
+        };
+        let resolved = resolve_non_relative_import(
+            &tmp.join("src/main.js").to_string_lossy(),
+            "exports-only-pkg",
+            tmp.to_str().unwrap(),
+            &aliases,
+            None,
+            None,
+        );
+        assert_eq!(resolved, "node_modules/exports-only-pkg/dist/entry.js");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_via_workspace_prefers_exports_field_over_registered_entry() {
+        // A workspace package whose `exports` field points somewhere other
+        // than its registered entry — exports must win, matching
+        // resolveViaWorkspace()'s root-import branch. Workspace tools
+        // (npm/yarn/pnpm workspaces) symlink workspace packages into
+        // node_modules, which is what find_package_dir()'s node_modules
+        // walk (used by resolve_via_exports) actually discovers — so only
+        // the node_modules copy needs to exist for this test; the
+        // WorkspaceEntry's own `dir`/`entry` are deliberately bogus paths to
+        // prove they're never consulted when exports resolves successfully.
+        let tmp = std::env::temp_dir().join("codegraph_workspace_exports_test");
+        let _ = fs::remove_dir_all(&tmp);
+        let pkg_dir = tmp.join("node_modules/@myorg/core");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(
+            pkg_dir.join("package.json"),
+            r#"{"name": "@myorg/core", "exports": "./dist/index.js"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(pkg_dir.join("dist")).unwrap();
+        fs::write(pkg_dir.join("dist/index.js"), "module.exports = {};").unwrap();
+        clear_exports_cache();
+
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "@myorg/core".to_string(),
+            WorkspaceEntry {
+                dir: "/nonexistent/packages/core".to_string(),
+                entry: Some("/nonexistent/packages/core/some-other-entry.js".to_string()),
+            },
+        );
+
+        let resolved =
+            resolve_via_workspace("@myorg/core", &workspaces, tmp.to_str().unwrap(), None);
+        assert_eq!(
+            resolved,
+            Some(pkg_dir.join("dist/index.js").to_string_lossy().to_string())
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
