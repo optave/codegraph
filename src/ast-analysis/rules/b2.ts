@@ -57,6 +57,13 @@ export const dataflowKotlin: DataflowRulesConfig = makeDataflowRules({
 // languages, which share one generic binary-expression node for every
 // operator) — both must be listed in logicalNodeTypes for cyclomatic/cognitive
 // counting to see both operators. Mirrors the native `KOTLIN_RULES`.
+// when_entry (each case arm) must NOT also be in branchNodes —
+// classifyBranchNode always treats a branchNodes match as a generic
+// branch and never falls through to the caseNodes arm, so having it in
+// both shadowed the intended flat case treatment with nesting-weighted
+// branch treatment (issue #2058). when_expression (the container) already
+// correctly sits in branchNodes + nestingNodes + switchLikeNodes. Mirrors
+// the native KOTLIN_RULES fix.
 export const complexityKotlin: ComplexityRules = {
   branchNodes: new Set([
     'if_expression',
@@ -65,7 +72,6 @@ export const complexityKotlin: ComplexityRules = {
     'do_while_statement',
     'catch_block',
     'when_expression',
-    'when_entry',
   ]),
   caseNodes: new Set(['when_entry']),
   logicalOperators: new Set(['&&', '||']),
@@ -215,6 +221,14 @@ export const dataflowSwift: DataflowRulesConfig = makeDataflowRules({
 // node types (conjunction_expression / disjunction_expression) rather than
 // sharing one generic binary node — confirmed by parsing `a && b || a` and
 // inspecting the S-expression. Mirrors the native `SWIFT_RULES`/`SWIFT_HALSTEAD`.
+// switch_statement (the container) was missing from branchNodes AND
+// nestingNodes entirely — only switchLikeNodes, which is only consulted
+// from inside the branch handler, so a Swift `switch` contributed zero
+// nesting for its cases. switch_entry (each case arm) was also
+// double-booked in branchNodes + caseNodes, hitting the same shadowing
+// bug as Kotlin's when_entry (issue #2058). Fixed to match the
+// container-in-branch+nesting+switchLike / case-in-caseNodes-only pattern
+// every other switch-having language uses. Mirrors the native SWIFT_RULES fix.
 export const complexitySwift: ComplexityRules = {
   branchNodes: new Set([
     'if_statement',
@@ -222,7 +236,7 @@ export const complexitySwift: ComplexityRules = {
     'while_statement',
     'repeat_while_statement',
     'catch_clause',
-    'switch_entry',
+    'switch_statement',
     'ternary_expression',
     'guard_statement',
   ]),
@@ -236,6 +250,7 @@ export const complexitySwift: ComplexityRules = {
     'while_statement',
     'repeat_while_statement',
     'catch_clause',
+    'switch_statement',
     'ternary_expression',
     'guard_statement',
   ]),
@@ -366,6 +381,10 @@ export const dataflowScala: DataflowRulesConfig = makeDataflowRules({
 });
 
 // Mirrors the native `SCALA_RULES`/`SCALA_HALSTEAD`.
+// case_clause must NOT also be in branchNodes — same shadowing bug as
+// Kotlin's when_entry (issue #2058). match_expression (the container)
+// already correctly sits in branchNodes + nestingNodes + switchLikeNodes.
+// Mirrors the native SCALA_RULES fix.
 export const complexityScala: ComplexityRules = {
   branchNodes: new Set([
     'if_expression',
@@ -373,7 +392,6 @@ export const complexityScala: ComplexityRules = {
     'while_expression',
     'do_while_expression',
     'catch_clause',
-    'case_clause',
     'match_expression',
   ]),
   caseNodes: new Set(['case_clause']),

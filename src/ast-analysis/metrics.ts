@@ -60,14 +60,9 @@ export function computeHalsteadDerived(
 
 const C_STYLE_PREFIXES = ['//', '/*', '*', '*/'];
 
-// c/cpp/cuda/objc/kotlin/swift/scala intentionally mirror the native `comment_prefixes()`
-// 2-entry list (`//`, `/*`) rather than the 4-entry C_STYLE_PREFIXES used by
-// javascript/go/rust/java/csharp — see native `comment_prefixes()` in
-// crates/codegraph-core/src/ast_analysis/complexity.rs for the source of truth
-// this must stay byte-for-byte identical to (both engines must agree on which
-// lines count as comments for the MI calculation).
-const C_LIKE_PREFIXES = ['//', '/*'];
-
+// See native `comment_prefixes()` in crates/codegraph-core/src/ast_analysis/complexity.rs
+// for the source of truth this must stay byte-for-byte identical to (both
+// engines must agree on which lines count as comments for the MI calculation).
 const COMMENT_PREFIXES = new Map<string, string[]>([
   ['javascript', C_STYLE_PREFIXES],
   ['typescript', C_STYLE_PREFIXES],
@@ -79,13 +74,17 @@ const COMMENT_PREFIXES = new Map<string, string[]>([
   ['python', ['#']],
   ['ruby', ['#']],
   ['php', ['//', '#', '/*', '*', '*/']],
-  ['c', C_LIKE_PREFIXES],
-  ['cpp', C_LIKE_PREFIXES],
-  ['cuda', C_LIKE_PREFIXES],
-  ['objc', C_LIKE_PREFIXES],
-  ['kotlin', C_LIKE_PREFIXES],
-  ['swift', C_LIKE_PREFIXES],
-  ['scala', C_LIKE_PREFIXES],
+  // c/cpp/cuda/objc/kotlin/swift/scala use the same `/** ... */` block-comment
+  // style as JS/Java/C# — the old 2-entry list omitted bare `*`/`*/`
+  // continuation lines, undercounting commentLines for any multi-line
+  // Javadoc-style comment (issue #2058).
+  ['c', C_STYLE_PREFIXES],
+  ['cpp', C_STYLE_PREFIXES],
+  ['cuda', C_STYLE_PREFIXES],
+  ['objc', C_STYLE_PREFIXES],
+  ['kotlin', C_STYLE_PREFIXES],
+  ['swift', C_STYLE_PREFIXES],
+  ['scala', C_STYLE_PREFIXES],
   ['bash', ['#']],
   ['lua', ['--']],
   ['zig', ['//']],

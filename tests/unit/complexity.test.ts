@@ -1104,6 +1104,19 @@ describe('C complexity', () => {
     expect(r.cyclomatic).toBe(2);
   });
 
+  it('switch with a multi-value case (issue #2058)', () => {
+    // Regression guard: switch_statement (the container) must be in
+    // branchNodes + nestingNodes (net-zero cyclomatic, contributing nesting
+    // once), and case_statement (each arm) must be in caseNodes ONLY (flat
+    // cyclomatic += 1, no per-case cognitive/nesting weight) — not also in
+    // branchNodes, which previously shadowed the case treatment with a
+    // nesting-weighted generic branch treatment for every arm.
+    const r = analyze(
+      'int classify(int x) {\n  switch (x) {\n    case 1:\n      return 1;\n    case 2:\n    case 3:\n      return 2;\n    default:\n      return 0;\n  }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 5, maxNesting: 1 });
+  });
+
   it('halstead: positive volume', () => {
     const h = halstead('int add(int a, int b) {\n  return a + b;\n}\n');
     expect(h).not.toBeNull();
@@ -1113,6 +1126,17 @@ describe('C complexity', () => {
   it('LOC: // and /* comments detected', () => {
     const l = loc('int f() {\n  // slash comment\n  return 1;\n}\n');
     expect(l.commentLines).toBeGreaterThanOrEqual(1);
+  });
+
+  it('LOC: /** ... */ continuation lines counted as comments (issue #2058)', () => {
+    // Regression guard: c/cpp/objc/kotlin/swift/scala previously used a
+    // 2-entry ["//", "/*"] prefix list that missed bare `*`/`*/`
+    // continuation lines, undercounting commentLines for any multi-line
+    // Javadoc-style comment.
+    const l = loc(
+      'int f() {\n  /**\n   * Multi-line comment.\n   * Second line.\n   */\n  return 1;\n}\n',
+    );
+    expect(l.commentLines).toBe(4);
   });
 });
 
@@ -1133,6 +1157,14 @@ describe('C++ complexity', () => {
   it('for-range loop', () => {
     const r = analyze('void f(int xs[]) {\n  for (int x : xs) {\n    use(x);\n  }\n}\n');
     expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it('switch with a multi-value case (issue #2058)', () => {
+    // Same branchNodes/caseNodes fix as C's equivalent test — see comment there.
+    const r = analyze(
+      'int classify(int x) {\n  switch (x) {\n    case 1:\n      return 1;\n    case 2:\n    case 3:\n      return 2;\n    default:\n      return 0;\n  }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 5, maxNesting: 1 });
   });
 
   it('halstead: positive volume', () => {
@@ -1222,6 +1254,15 @@ describe('ObjC complexity', () => {
     expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
   });
 
+  it('switch with a multi-value case (issue #2058)', () => {
+    // Same branchNodes/caseNodes fix as C's equivalent test (see comment
+    // there) — inherited the bug via copy from C's rules when ObjC was added.
+    const r = analyze(
+      '@implementation Calculator\n- (NSInteger)classify:(NSInteger)x {\n  switch (x) {\n    case 1:\n      return 1;\n    case 2:\n    case 3:\n      return 2;\n    default:\n      return 0;\n  }\n}\n@end\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 5, maxNesting: 1 });
+  });
+
   it('halstead: message send and positive volume', () => {
     const h = halstead(
       '@implementation Calculator\n- (NSInteger)sum {\n  return [self compute];\n}\n@end\n',
@@ -1309,11 +1350,23 @@ describe('Kotlin complexity', () => {
   });
 
   it('when expression', () => {
+    // Regression guard (issue #2058): when_entry (each case arm) must not
+    // also be in branchNodes — that shadowed the flat case treatment with
+    // nesting-weighted branch treatment, inflating cognitive from 1 to 7 for
+    // this fixture even though cyclomatic happened to stay 4 either way
+    // (each arm contributes +1 via either code path).
     const r = analyze(
       'fun classify(x: Int): Int {\n  return when (x) {\n    1 -> 1\n    2 -> 2\n    else -> 0\n  }\n}\n',
     );
     // base 1 + when container (0, switch-like) + 3 when_entry cases (+1 each) = 4
-    expect(r.cyclomatic).toBe(4);
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 4, maxNesting: 1 });
+  });
+
+  it('when expression with a multi-value case (issue #2058)', () => {
+    const r = analyze(
+      'fun classify(x: Int): Int {\n  return when (x) {\n    1 -> 1\n    2, 3 -> 2\n    else -> 0\n  }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 4, maxNesting: 1 });
   });
 
   it('halstead: positive volume', () => {
@@ -1347,6 +1400,18 @@ describe('Swift complexity', () => {
     expect(r.cyclomatic).toBe(2);
   });
 
+  it('switch with a multi-value case (issue #2058)', () => {
+    // Regression guard: switch_statement (the container) was missing from
+    // branchNodes AND nestingNodes entirely — a Swift switch contributed
+    // ZERO nesting/cognitive from its own container, and switch_entry (each
+    // case arm) was double-booked in branchNodes + caseNodes, hitting the
+    // same shadowing bug as Kotlin's when_entry.
+    const r = analyze(
+      'func classify(_ x: Int) -> Int {\n  switch x {\n  case 1:\n    return 1\n  case 2, 3:\n    return 2\n  default:\n    return 0\n  }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 4, maxNesting: 1 });
+  });
+
   it('halstead: positive volume', () => {
     const h = halstead('func add(_ a: Int, _ b: Int) -> Int {\n  return a + b\n}\n');
     expect(h).not.toBeNull();
@@ -1375,11 +1440,23 @@ describe('Scala complexity', () => {
   });
 
   it('match expression', () => {
+    // Regression guard (issue #2058): case_clause (each case arm) must not
+    // also be in branchNodes — that shadowed the flat case treatment with
+    // nesting-weighted branch treatment, inflating cognitive from 1 to 7 for
+    // this fixture even though cyclomatic happened to stay 4 either way
+    // (each arm contributes +1 via either code path).
     const r = analyze(
       'def classify(x: Int): Int = {\n  x match {\n    case 1 => 1\n    case 2 => 2\n    case _ => 0\n  }\n}\n',
     );
     // base 1 + match container (0, switch-like) + 3 case_clause cases (+1 each) = 4
-    expect(r.cyclomatic).toBe(4);
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 4, maxNesting: 1 });
+  });
+
+  it('match expression with an alternative-pattern case (issue #2058)', () => {
+    const r = analyze(
+      'def classify(x: Int): Int = {\n  x match {\n    case 1 => 1\n    case 2 | 3 => 2\n    case _ => 0\n  }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 4, maxNesting: 1 });
   });
 
   it('halstead: positive volume', () => {
