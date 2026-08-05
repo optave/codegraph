@@ -17,6 +17,7 @@ import * as php from './php.js';
 import * as python from './python.js';
 import * as ruby from './ruby.js';
 import * as rust from './rust.js';
+import * as zig from './zig.js';
 
 // ─── Complexity Rules ─────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ export const COMPLEXITY_RULES: Map<string, ComplexityRules> = new Map([
   ['scala', b2.complexityScala],
   ['bash', b3.complexityBash],
   ['lua', b3.complexityLua],
+  ['zig', zig.complexity],
 ]);
 
 // ─── Halstead Rules ───────────────────────────────────────────────────────
@@ -67,6 +69,7 @@ export const HALSTEAD_RULES: Map<string, HalsteadRules> = new Map([
   ['scala', b2.halsteadScala],
   ['bash', b3.halsteadBash],
   ['lua', b3.halsteadLua],
+  ['zig', zig.halstead],
 ]);
 
 // ─── CFG Rules ────────────────────────────────────────────────────────────

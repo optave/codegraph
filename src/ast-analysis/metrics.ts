@@ -88,6 +88,7 @@ const COMMENT_PREFIXES = new Map<string, string[]>([
   ['scala', C_LIKE_PREFIXES],
   ['bash', ['#']],
   ['lua', ['--']],
+  ['zig', ['//']],
 ]);
 
 /**

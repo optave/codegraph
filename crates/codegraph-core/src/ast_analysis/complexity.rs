@@ -523,6 +523,52 @@ pub static LUA_RULES: LangRules = LangRules {
     switch_like_nodes: &[],
 };
 
+// tree-sitter-zig's if_statement wraps its else branch in an `else_clause`
+// node whose single named child is either a nested `if_statement` (else-if)
+// or the terminal else body — confirmed by parsing `if (..) {..} else if
+// (..) {..} else {..}` and inspecting the S-expression. Pattern A, same as
+// JS/C#/Rust, even though the grammar internally tags that child with an
+// `alternative` field name — the wrapper-node detection only checks the
+// parent node's type, not field names, so that's immaterial.
+//
+// `and`/`or`/`orelse` are keyword operators sharing the single generic
+// `binary_expression` node type (confirmed by parsing `a and b or c` and
+// `a orelse b`) — same shared-type pattern as Lua's `and`/`or`.
+//
+// `catch_expression` (`expr catch fallback`, `expr catch |err| { .. }`) is
+// a branch/nesting node, the same treatment C/C++/ObjC/C# give
+// `catch_clause` — its fallback can be an arbitrary block with its own
+// control flow, not just a coalescing value. `try_expression` (`try expr`)
+// is NOT a branch — it propagates the error up rather than branching
+// locally, mirroring how Rust's `?` operator is Halstead-only.
+pub static ZIG_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_statement",
+        "else_clause",
+        "for_statement",
+        "while_statement",
+        "switch_expression",
+        "catch_expression",
+    ],
+    case_nodes: &["switch_case"],
+    logical_operators: &["and", "or", "orelse"],
+    logical_node_types: &["binary_expression"],
+    optional_chain_type: None,
+    nesting_nodes: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "switch_expression",
+        "catch_expression",
+    ],
+    function_nodes: &["function_declaration"],
+    if_node_type: Some("if_statement"),
+    else_node_type: Some("else_clause"),
+    elif_node_type: None,
+    else_via_alternative: false,
+    switch_like_nodes: &["switch_expression"],
+};
+
 /// Look up complexity rules by language ID (matches `COMPLEXITY_RULES` keys in JS).
 pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
     match lang_id {
@@ -542,6 +588,7 @@ pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
         "scala" => Some(&SCALA_RULES),
         "bash" => Some(&BASH_RULES),
         "lua" => Some(&LUA_RULES),
+        "zig" => Some(&ZIG_RULES),
         _ => None,
     }
 }
@@ -1173,6 +1220,31 @@ pub static LUA_HALSTEAD: HalsteadRules = HalsteadRules {
     skip_types: &[],
 };
 
+// Zig has no `++`/`--` (increments are `x += 1`) and no `case` keyword in
+// switch arms (`1 => ..`, confirmed by parsing), so neither appears below.
+// Literal wrapper nodes (`character`, `string`, `boolean`) have non-empty
+// children, so their leaf *content* tokens (`character_content`,
+// `string_content`, `true`/`false`) are the operand leaves — same split
+// RUST_HALSTEAD already uses for `string_content`.
+pub static ZIG_HALSTEAD: HalsteadRules = HalsteadRules {
+    operator_leaf_types: &[
+        "+", "-", "*", "/", "%", "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
+        "==", "!=", "<", ">", "<=", ">=", "!",
+        "&", "|", "^", "~", "<<", ">>",
+        "and", "or", "orelse", "try", "catch",
+        "if", "else", "for", "while", "switch",
+        "return", "break", "continue", "unreachable", "defer",
+        "const", "var", "pub", "fn", "struct", "enum", "union", "error", "comptime",
+        ".", "..", ".?", ".*", ",", ";", ":", "?", "=>", "->",
+    ],
+    operand_leaf_types: &[
+        "identifier", "builtin_type", "integer", "float", "string_content", "character_content",
+        "true", "false", "null", "undefined",
+    ],
+    compound_operators: &["call_expression", "field_expression", "index_expression"],
+    skip_types: &[],
+};
+
 /// Look up Halstead rules by language ID.
 pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
     match lang_id {
@@ -1192,6 +1264,7 @@ pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
         "scala" => Some(&SCALA_HALSTEAD),
         "bash" => Some(&BASH_HALSTEAD),
         "lua" => Some(&LUA_HALSTEAD),
+        "zig" => Some(&ZIG_HALSTEAD),
         _ => None,
     }
 }
@@ -1210,6 +1283,7 @@ pub fn comment_prefixes(lang_id: &str) -> &'static [&'static str] {
         "scala" => &["//", "/*"],
         "bash" => &["#"],
         "lua" => &["--"],
+        "zig" => &["//"],
         _ => &["//", "/*", "*", "*/"],
     }
 }
