@@ -707,9 +707,21 @@ async function computeJsFallbackMetrics(
 
         if (def.complexity) {
           analyzed += upsertPrecomputedComplexity(db, upsert, def, relPath);
-        } else {
+        } else if (hasFuncBody(def)) {
           analyzed += upsertAstComplexity(db, upsert, def, relPath, tree, langId, rules);
         }
+        // Signature-only declarations (interface/abstract method stubs, marked
+        // `bodyless` by the extractor) correctly get no complexity row.
+        // storeComplexityResults (apply-results.ts) is the primary fix for
+        // #2055 and already prevents `def.complexity` from ever being set
+        // wrong for these; this gate is defensive-in-depth for this
+        // independent fallback path, which would otherwise call
+        // upsertAstComplexity's _findFunctionNode unconditionally — matching
+        // the same node type used for bodied methods (e.g. C#'s
+        // `method_declaration` covers both an interface signature and a real
+        // method body) — and fabricate a trivial-but-meaningless entry, the
+        // same way this file's own classifyDefinitionForNativeBulk /
+        // initWasmParsersIfNeeded already gate the native-bulk path.
       }
     }
   });

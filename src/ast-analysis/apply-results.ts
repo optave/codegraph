@@ -95,7 +95,12 @@ export function storeComplexityResults(
 ): void {
   const byLine = indexByLine((results.complexity || []) as ComplexityFuncResult[]);
   for (const def of defs) {
-    if ((def.kind === 'function' || def.kind === 'method') && def.line && !def.complexity) {
+    if (
+      (def.kind === 'function' || def.kind === 'method') &&
+      def.line &&
+      !def.complexity &&
+      hasFuncBody(def)
+    ) {
       const funcResult = matchResultToDef(byLine.get(def.line), def.name);
       if (!funcResult) continue;
       const { metrics } = funcResult;
@@ -134,7 +139,8 @@ export function storeCfgResults(results: WalkResults, defs: Definition[]): void 
     if (
       (def.kind === 'function' || def.kind === 'method') &&
       def.line &&
-      !def.cfg?.blocks?.length
+      !def.cfg?.blocks?.length &&
+      hasFuncBody(def)
     ) {
       const cfgResult = matchResultToDef(byLine.get(def.line), def.name);
       if (!cfgResult) continue;

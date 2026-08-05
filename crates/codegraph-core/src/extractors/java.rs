@@ -167,16 +167,30 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
             let Some(child) = body.child(i) else { continue };
             if child.kind() != "method_declaration" { continue; }
             if let Some(meth_name) = child.child_by_field_name("name") {
+                // Interface method declarations have no body (unless it's a
+                // default/static method with one) — skip CFG and complexity
+                // for the bodyless case to mirror the WASM extractor and
+                // avoid producing meaningless metrics for body-less
+                // declarations. Mirrors csharp.rs's handle_interface_decl.
+                let is_bodyless = child.child_by_field_name("body").is_none();
                 symbols.definitions.push(Definition {
                     name: format!("{}.{}", iface_name, node_text(&meth_name, source)),
                     kind: "method".to_string(),
                     line: start_line(&child),
                     end_line: Some(end_line(&child)),
                     decorators: None,
-                    complexity: compute_all_metrics(&child, source, "java"),
-                    cfg: build_function_cfg(&child, "java", source),
+                    complexity: if is_bodyless {
+                        None
+                    } else {
+                        compute_all_metrics(&child, source, "java")
+                    },
+                    cfg: if is_bodyless {
+                        None
+                    } else {
+                        build_function_cfg(&child, "java", source)
+                    },
                     children: None,
-                    bodyless: Some(child.child_by_field_name("body").is_none()),
+                    bodyless: Some(is_bodyless),
                     content_hash: None,
                     accessor_kind: None,
                 });
@@ -578,6 +592,34 @@ mod tests {
             .find(|d| d.name == "Repo.save")
             .unwrap();
         assert_ne!(concrete_save.bodyless, Some(true));
+    }
+
+    /// Regression test for #2055: an interface method with no body must not
+    /// get a fabricated complexity/CFG entry — mirrors csharp.rs's
+    /// handle_interface_decl, which already skips these. A default method
+    /// (has a body) must still get real metrics.
+    #[test]
+    fn interface_method_has_no_complexity_default_method_does() {
+        let s = parse_java(
+            "interface Repo {\n\
+               boolean save(String id, int value);\n\
+               default boolean saveOrDefault(String id, int value) {\n\
+                 if (value < 0) { return false; }\n\
+                 return true;\n\
+               }\n\
+             }\n",
+        );
+        let save = s.definitions.iter().find(|d| d.name == "Repo.save").unwrap();
+        assert!(save.complexity.is_none());
+        assert!(save.cfg.is_none());
+
+        let default_method = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Repo.saveOrDefault")
+            .unwrap();
+        assert!(default_method.complexity.is_some());
+        assert!(default_method.cfg.is_some());
     }
 
     #[test]
