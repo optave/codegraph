@@ -1231,6 +1231,59 @@ describe('ObjC complexity', () => {
   });
 });
 
+// ─── Zig (#1923) ──────────────────────────────────────────────────────────
+//
+// tree-sitter-zig wraps its else branch in an else_clause node (Pattern A,
+// same as JS/C#/Rust/ObjC), confirmed by parsing if/else-if/else and
+// inspecting the S-expression. and/or/orelse are keyword operators sharing
+// the generic binary_expression node type (same shared-type pattern as
+// Lua's and/or). catch_expression is a branch/nesting node (its fallback
+// can be an arbitrary block with its own control flow); try_expression is
+// Halstead-only, mirroring Rust's `?` operator.
+
+describe('Zig complexity', () => {
+  const { analyze, halstead } = makeHelpers('zig', sharedParsers());
+
+  it('function with if/else-if/else chain', () => {
+    const r = analyze(
+      'pub fn classify(value: i32) i32 {\n    if (value > 0) {\n        return 1;\n    } else if (value < 0) {\n        return -1;\n    } else {\n        return 0;\n    }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('while loop with orelse', () => {
+    const r = analyze(
+      'pub fn sum(n: i32, opt: ?i32) i32 {\n    var result: i32 = opt orelse 0;\n    var i: i32 = 0;\n    while (i < n) {\n        result += i;\n        i += 1;\n    }\n    return result;\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 2, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('for-range loop with switch (multi-value case)', () => {
+    const r = analyze(
+      'pub fn tally(n: i32) i32 {\n    var total: i32 = 0;\n    for (0..n) |i| {\n        switch (i) {\n            0 => total += 1,\n            1, 2 => total += 2,\n            else => total += 0,\n        }\n    }\n    return total;\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 5, maxNesting: 2 });
+  });
+
+  it('catch with error-payload block is a branch', () => {
+    const r = analyze(
+      'pub fn risky() i32 {\n    const v = mayFail() catch |err| {\n        _ = err;\n        return -1;\n    };\n    return v;\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it("try is Halstead-only, not a branch (mirrors Rust's ?)", () => {
+    const r = analyze('pub fn wrapper() !i32 {\n    const v = try mayFail();\n    return v;\n}\n');
+    expect(r).toEqual({ cognitive: 0, cyclomatic: 1, maxNesting: 0 });
+  });
+
+  it('halstead: positive volume', () => {
+    const h = halstead('pub fn add(a: i32, b: i32) i32 {\n    return a + b;\n}\n');
+    expect(h).not.toBeNull();
+    expect(h.volume).toBeGreaterThan(0);
+  });
+});
+
 // ─── Kotlin (#1923) ───────────────────────────────────────────────────────
 
 describe('Kotlin complexity', () => {

@@ -2124,6 +2124,72 @@ mod tests {
         assert_eq!(m.cyclomatic, 2);
     }
 
+    // ─── Zig tests (issue #1923) ─────────────────────────────────────────────
+    //
+    // tree-sitter-zig wraps its else branch in an else_clause node (Pattern
+    // A, same as JS/C#/Rust/ObjC). and/or/orelse share the generic
+    // binary_expression node type. catch_expression is a branch/nesting
+    // node; try_expression is Halstead-only (mirrors Rust's `?`).
+
+    fn compute_zig(code: &str) -> ComplexityMetrics {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_zig::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &ZIG_RULES).expect("no function found");
+        compute_function_complexity(&func, &ZIG_RULES)
+    }
+
+    #[test]
+    fn zig_if_elseif_else() {
+        let m = compute_zig(
+            "pub fn classify(value: i32) i32 {\n    if (value > 0) {\n        return 1;\n    } else if (value < 0) {\n        return -1;\n    } else {\n        return 0;\n    }\n}",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn zig_while_with_orelse() {
+        let m = compute_zig(
+            "pub fn sum(n: i32, opt: ?i32) i32 {\n    var result: i32 = opt orelse 0;\n    var i: i32 = 0;\n    while (i < n) {\n        result += i;\n        i += 1;\n    }\n    return result;\n}",
+        );
+        assert_eq!(m.cognitive, 2);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn zig_for_range_with_switch() {
+        let m = compute_zig(
+            "pub fn tally(n: i32) i32 {\n    var total: i32 = 0;\n    for (0..n) |i| {\n        switch (i) {\n            0 => total += 1,\n            1, 2 => total += 2,\n            else => total += 0,\n        }\n    }\n    return total;\n}",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 5);
+        assert_eq!(m.max_nesting, 2);
+    }
+
+    #[test]
+    fn zig_catch_with_error_payload_block_is_a_branch() {
+        let m = compute_zig(
+            "pub fn risky() i32 {\n    const v = mayFail() catch |err| {\n        _ = err;\n        return -1;\n    };\n    return v;\n}",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn zig_try_is_not_a_branch() {
+        let m = compute_zig("pub fn wrapper() !i32 {\n    const v = try mayFail();\n    return v;\n}");
+        assert_eq!(m.cognitive, 0);
+        assert_eq!(m.cyclomatic, 1);
+        assert_eq!(m.max_nesting, 0);
+    }
+
     // ─── Kotlin tests (issue #1923) ─────────────────────────────────────────
 
     fn compute_kotlin(code: &str) -> ComplexityMetrics {
