@@ -26,6 +26,7 @@ describe('update-graph.sh hook fallback build path', () => {
   });
 
   it("invokes package.json's bin.codegraph entry point in the fallback branch", () => {
-    expect(script).toContain(`/${cliEntry}" build`);
+    expect(script).toContain(`/${cliEntry}"`);
+    expect(script).toContain('"$CLI_ENTRY" build');
   });
 });

@@ -92,12 +92,28 @@ else
   fi
 fi
 
-# Run the build
+# Run the build. Stderr is captured (not discarded) so a failure has a
+# diagnosable trail instead of silently no-oping — on a genuinely fresh
+# checkout `dist/cli.js` doesn't exist yet (before the first `npm run
+# build`), and even once it exists the native better-sqlite3 binding may
+# not be installed yet either. Both used to fail identically silent
+# (stderr -> /dev/null, exit code swallowed by `|| true`), giving a
+# contributor no signal that graph auto-rebuild isn't active (issue #2074).
 BUILD_OK=0
+BUILD_ERR=""
 if command -v codegraph &>/dev/null; then
-  codegraph build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>/dev/null && BUILD_OK=1 || true
+  BUILD_ERR=$(codegraph build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>&1 1>/dev/null) && BUILD_OK=1 || true
 else
-  node "${CLAUDE_PROJECT_DIR:-$PROJECT_DIR}/dist/cli.js" build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>/dev/null && BUILD_OK=1 || true
+  CLI_ENTRY="${CLAUDE_PROJECT_DIR:-$PROJECT_DIR}/dist/cli.js"
+  if [ ! -f "$CLI_ENTRY" ]; then
+    echo "[codegraph] $CLI_ENTRY not found — run 'npm install' (or 'npm run build') to enable graph auto-rebuild" >&2
+    exit 0
+  fi
+  BUILD_ERR=$(node "$CLI_ENTRY" build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>&1 1>/dev/null) && BUILD_OK=1 || true
+fi
+
+if [ "$BUILD_OK" -eq 0 ]; then
+  echo "[codegraph] graph rebuild failed — run 'npm run doctor' to diagnose (first line: $(printf '%s\n' "$BUILD_ERR" | head -1))" >&2
 fi
 
 # Update marker only if we did a full rebuild AND it succeeded
