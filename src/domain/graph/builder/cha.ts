@@ -19,6 +19,7 @@
 import type { BetterSqlite3Database, ClassRelation, ExtractorOutput } from '../../../types.js';
 import type { ResolvedCandidate } from '../resolver/strategy.js';
 import type { CallNodeLookup } from './call-resolver.js';
+import { RECEIVER_KINDS } from './call-resolver.js';
 
 // ── CHA context ──────────────────────────────────────────────────────────────
 
@@ -225,10 +226,30 @@ export function resolveThisDispatch(
       // When the caller's file is known, prefer same-file nodes to avoid
       // emitting cross-file edges to identically-named methods in unrelated
       // files.  Only fall back to the full set when no same-file node exists.
-      if (callerFile && found.some((n) => n.file === callerFile)) {
-        return found.filter((n) => n.file === callerFile);
+      if (callerFile) {
+        const sameFile = found.filter((n) => n.file === callerFile);
+        if (sameFile.length > 0) return sameFile;
+        // No same-file candidate. `chaCtx.parents` is keyed by bare class
+        // name, so `current` may be an unrelated class that merely shares a
+        // name with the caller's real ancestor (issue #2062) — e.g. two
+        // independent files each defining their own `Shape` class. Before
+        // accepting a cross-file match, check whether a class named
+        // `current` is ALSO declared in the caller's own file: if so, that
+        // same-file class IS the caller's real ancestor at this step (it
+        // simply doesn't define `methodName` — an implicit default
+        // constructor, for instance), so a same-named method from a
+        // different file is a false match, not a legitimate inherited
+        // method. Keep walking instead of accepting it. Only accept the
+        // cross-file match when `current` is NOT declared anywhere in the
+        // caller's own file — a genuine cross-file heritage reference
+        // (e.g. `import { Base } from './base'; class Foo extends Base`).
+        const sameNameInCallerFile = lookup
+          .byNameAndFile(current, callerFile)
+          .some((n) => RECEIVER_KINDS.has(n.kind ?? ''));
+        if (!sameNameInCallerFile) return found;
+      } else {
+        return found;
       }
-      return found;
     }
     current = chaCtx.parents.get(current);
   }
