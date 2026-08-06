@@ -58,4 +58,20 @@ describe('tarjan', () => {
     g.addNode('a');
     expect(tarjan(g)).toHaveLength(0);
   });
+
+  it('returns byte-identical node order within a cycle across repeated calls (#2064, #2067, #2076)', () => {
+    // Regression coverage: SCC node order must be a deterministic function of
+    // the cycle's member set alone, not of incidental traversal order. Mirrors
+    // the same guarantee added to the native Rust implementation
+    // (crates/codegraph-core/src/graph/algorithms/tarjan.rs) and to the
+    // edge-list-based JS fallback (src/domain/graph/cycles.ts).
+    const g = new CodeGraph();
+    g.addEdge('a', 'b');
+    g.addEdge('b', 'c');
+    g.addEdge('c', 'a');
+    const first = tarjan(g);
+    for (let i = 0; i < 25; i++) {
+      expect(tarjan(g)).toEqual(first);
+    }
+  });
 });

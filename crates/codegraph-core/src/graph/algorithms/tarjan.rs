@@ -81,6 +81,17 @@ fn strongconnect<'a>(
             }
         }
         if scc.len() > 1 {
+            // Canonicalize node order within the SCC before returning it. The
+            // adjacency map above is a HashMap, whose default hasher reseeds
+            // per construction — so the DFS entry point (and therefore the
+            // stack-pop order reconstructed here) is not stable across
+            // separate calls on the exact same logical graph, even though SCC
+            // *membership* always is. Sorting makes the returned node array a
+            // deterministic function of the SCC's member set alone, matching
+            // the JS/WASM fallback (see cycles.ts's tarjanFromEdges and
+            // graph/algorithms/tarjan.ts) so both engines agree byte-for-byte.
+            // See issues #2064, #2067, #2076.
+            scc.sort();
             state.sccs.push(scc);
         }
     }
@@ -166,5 +177,59 @@ mod tests {
         ];
         let cycles = detect_cycles(&edges);
         assert_eq!(cycles.len(), 2);
+    }
+
+    /// Regression test for issues #2064, #2067, #2076: the adjacency map is a
+    /// `HashMap`, whose default hasher reseeds per construction, so the DFS
+    /// entry point (and therefore the pre-sort stack-pop order) is not stable
+    /// across separate calls on the exact same logical graph. Each SCC's node
+    /// array must come back sorted regardless, so repeated calls agree
+    /// byte-for-byte and match the JS/WASM fallback's output.
+    #[test]
+    fn test_node_order_is_deterministic_across_repeated_calls() {
+        let edges = vec![
+            GraphEdge {
+                source: "src/math.js".to_string(),
+                target: "src/utils.js".to_string(),
+            },
+            GraphEdge {
+                source: "src/utils.js".to_string(),
+                target: "src/math.js".to_string(),
+            },
+        ];
+        let first = detect_cycles(&edges);
+        for _ in 0..25 {
+            assert_eq!(detect_cycles(&edges), first);
+        }
+        assert_eq!(
+            first,
+            vec![vec!["src/math.js".to_string(), "src/utils.js".to_string()]]
+        );
+    }
+
+    #[test]
+    fn test_scc_nodes_are_returned_sorted() {
+        let edges = vec![
+            GraphEdge {
+                source: "c".to_string(),
+                target: "a".to_string(),
+            },
+            GraphEdge {
+                source: "a".to_string(),
+                target: "b".to_string(),
+            },
+            GraphEdge {
+                source: "b".to_string(),
+                target: "c".to_string(),
+            },
+        ];
+        let cycles = detect_cycles(&edges);
+        assert_eq!(cycles.len(), 1);
+        let mut sorted = cycles[0].clone();
+        sorted.sort();
+        assert_eq!(
+            cycles[0], sorted,
+            "SCC node array must already be in sorted order"
+        );
     }
 }

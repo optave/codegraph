@@ -219,7 +219,17 @@ function tarjanFromEdges(edges: Edge[]): string[][] {
         onStack.delete(w);
         scc.push(w);
       } while (w !== v);
-      if (scc.length > 1) sccs.push(scc);
+      if (scc.length > 1) {
+        // Canonicalize node order within the SCC before returning it — see
+        // the matching comment in crates/codegraph-core/src/graph/algorithms/
+        // tarjan.rs. `allNodes` here is a Set built from edge insertion order,
+        // so this JS path is already deterministic call-to-call in isolation,
+        // but sorting keeps it byte-identical to the native engine's output
+        // for the same logical graph regardless of either side's internal
+        // traversal order. See issues #2064, #2067, #2076.
+        scc.sort();
+        sccs.push(scc);
+      }
     }
   }
 

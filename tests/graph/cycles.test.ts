@@ -391,3 +391,60 @@ describe.skipIf(!hasNative)('Cycle detection: native vs JS parity', () => {
     db.close();
   });
 });
+
+// ── Deterministic node order within a cycle (#2064, #2067, #2076) ─────────
+
+describe('Cycle detection: node order is deterministic across repeated calls', () => {
+  // Regression coverage: Tarjan's SCC node order within a cycle must be a
+  // deterministic function of the cycle's member set alone. Before this fix,
+  // the native engine's HashMap-backed adjacency map reseeds its hasher per
+  // construction, so the DFS entry point — and therefore the stack-pop order
+  // reconstructed into each SCC's node array — varied across separate calls
+  // on the exact same logical graph. That is what made the "excludeSpeculative
+  // has no effect..." test above flaky: two back-to-back calls on identical
+  // input reported the same cycle with a different node order.
+  const twoNodeEdges = [
+    { source: 'src/math.js', target: 'src/utils.js' },
+    { source: 'src/utils.js', target: 'src/math.js' },
+  ];
+  const threeNodeEdges = [
+    { source: 'a.js', target: 'b.js' },
+    { source: 'b.js', target: 'c.js' },
+    { source: 'c.js', target: 'a.js' },
+  ];
+
+  it.each([
+    ['2-node cycle', twoNodeEdges],
+    ['3-node cycle', threeNodeEdges],
+  ])(
+    'findCyclesJS returns byte-identical node order across repeated calls (%s)',
+    (_label, edges) => {
+      const first = findCyclesJS(edges);
+      for (let i = 0; i < 25; i++) {
+        expect(findCyclesJS(edges)).toEqual(first);
+      }
+    },
+  );
+
+  it.skipIf(!hasNative).each([
+    ['2-node cycle', twoNodeEdges],
+    ['3-node cycle', threeNodeEdges],
+  ])(
+    'native detectCycles returns byte-identical node order across repeated calls (%s)',
+    (_label, edges) => {
+      const native = loadNative()!;
+      const first = native.detectCycles(edges);
+      for (let i = 0; i < 25; i++) {
+        expect(native.detectCycles(edges)).toEqual(first);
+      }
+    },
+  );
+
+  it.skipIf(!hasNative).each([
+    ['2-node cycle', twoNodeEdges],
+    ['3-node cycle', threeNodeEdges],
+  ])('native and JS engines agree on node order, not just membership (%s)', (_label, edges) => {
+    const native = loadNative()!;
+    expect(native.detectCycles(edges)).toEqual(findCyclesJS(edges));
+  });
+});
