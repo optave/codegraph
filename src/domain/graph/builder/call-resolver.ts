@@ -603,6 +603,13 @@ export function resolveCallTargets(
  *    or no same-file node exists at all, fall back to global candidates filtered
  *    by RECEIVER_KINDS.  This preserves the pre-#1539 behaviour for cases where
  *    an imported name appears as kind='function' in the importer file.
+ *
+ * `importedNames` is only ever probed with `.has()` here — the classification
+ * only needs key presence, never the value — so callers may pass either the
+ * plain ESM `importedNames` map (`string` values) or the richer per-name
+ * `BarrelExportResolution` map `buildImportArtifactNames` builds for CJS
+ * `require()` bindings (#2071). The value type is intentionally untyped
+ * (`unknown`) to reflect that.
  */
 export function resolveReceiverEdge(
   lookup: CallNodeLookup,
@@ -611,7 +618,7 @@ export function resolveReceiverEdge(
   relPath: string,
   typeMap: Map<string, unknown>,
   seenCallEdges: Set<string>,
-  importedNames: ReadonlyMap<string, string>,
+  importedNames: ReadonlyMap<string, unknown>,
 ): { callerId: number; receiverId: number; confidence: number } | null {
   const typeEntry = typeMap.get(call.receiver);
   const typeName = typeEntry

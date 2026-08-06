@@ -206,6 +206,32 @@ export function resolveBarrelExportCached(
 }
 
 /**
+ * Resolve `symbolName` through a possible barrel hop at `resolvedPath` to
+ * the file that actually declares it and the name declared there. Falls
+ * back to `resolvedPath`/`symbolName` unchanged when `resolvedPath` isn't a
+ * barrel, or when barrel resolution finds nothing.
+ *
+ * Single source of truth for this fallback (#2071). Before this helper
+ * existed, `buildImportedNamesMap` (ESM imports) and `buildImportArtifactNames`
+ * (CJS `require()` destructuring) in build-edges.ts each maintained their own
+ * copy of this exact pattern under the same local name (`traceBarrel`), and
+ * the copies silently diverged: the CJS copy kept only `resolved.file`,
+ * dropping `resolved.name` (the declared name after a barrel-rename
+ * translation, e.g. `export { real as friendly } from './x'`), while the
+ * ESM copy correctly threaded both through. Both call sites now share this
+ * implementation so they can never drift apart again.
+ */
+export function traceBarrelTarget(
+  ctx: PipelineContext,
+  resolvedPath: string,
+  symbolName: string,
+): BarrelExportResolution {
+  if (!isBarrelFile(ctx, resolvedPath)) return { file: resolvedPath, name: symbolName };
+  const resolved = resolveBarrelExportCached(ctx, resolvedPath, symbolName);
+  return resolved ?? { file: resolvedPath, name: symbolName };
+}
+
+/**
  * Persist barrel re-export rename pairs (`export { X as Y } from …`) from
  * `ctx.reexportMap` into the `reexport_renames` table (#1967).
  *

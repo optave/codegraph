@@ -62,7 +62,13 @@ import {
   runChaPostPass,
 } from '../helpers.js';
 import { importNamePairs } from '../import-utils.js';
-import { getResolved, isBarrelFile, resolveBarrelExportCached } from './resolve-imports.js';
+import type { BarrelExportResolution } from './resolve-imports.js';
+import {
+  getResolved,
+  isBarrelFile,
+  resolveBarrelExportCached,
+  traceBarrelTarget,
+} from './resolve-imports.js';
 
 // ── Local types ──────────────────────────────────────────────────────────
 
@@ -1009,6 +1015,7 @@ function buildCallEdgesJS(
     // import shadows — does NOT affect call-target resolution or DB edges (#1661).
     const importArtifactNames = buildImportArtifactNames(
       importedNames,
+      importedOriginalNames,
       symbols,
       ctx,
       relPath,
@@ -1063,18 +1070,12 @@ function buildImportedNamesMap(
   const importedOriginalNames = new Map<string, string>();
   // Phase 8.4: trace through barrel files so that symbol names map to their
   // actual definition file, not the re-exporting barrel. Mirrors the tracing
-  // already done in buildImportedNamesForNative (the native path).
-  const traceBarrel = (
-    resolvedPath: string,
-    originalName: string,
-  ): { file: string; name: string } => {
-    if (!isBarrelFile(ctx, resolvedPath)) return { file: resolvedPath, name: originalName };
-    const resolved = resolveBarrelExportCached(ctx, resolvedPath, originalName);
-    return resolved ?? { file: resolvedPath, name: originalName };
-  };
+  // already done in buildImportedNamesForNative (the native path), and
+  // shares its implementation with buildImportArtifactNames's CJS require
+  // path via traceBarrelTarget (#2071).
   const addImportNames = (imp: (typeof symbols.imports)[number], resolvedPath: string) => {
     for (const { local, original } of importNamePairs(imp)) {
-      const { file, name } = traceBarrel(resolvedPath, original);
+      const { file, name } = traceBarrelTarget(ctx, resolvedPath, original);
       importedNames.set(local, file);
       if (name !== local) importedOriginalNames.set(local, name);
     }
@@ -1102,26 +1103,37 @@ function buildImportedNamesMap(
  * bindings (`const { X } = require('./path')`). Used exclusively by resolveReceiverEdge
  * to classify same-file function-kind nodes as import artifacts vs. local definitions.
  * Does NOT affect call resolution or DB edge creation (#1661).
+ *
+ * Values carry both the resolved target file and the name actually declared
+ * there, post barrel-tracing (`BarrelExportResolution`, mirroring
+ * `buildImportedNamesMap`'s `importedNames`/`importedOriginalNames` pair) —
+ * a CJS require() binding that flows through a renamed barrel re-export
+ * (`export { real as friendly } from './x'`) traces via the same
+ * `traceBarrelTarget` helper as the ESM path, so it resolves to the correct
+ * declared name instead of the barrel's external rename (#2071). No current
+ * caller reads the `name` field (only `.has()`, for artifact classification),
+ * but keeping it correct here means a future consumer that needs the
+ * declared name — not just the target file — gets the right value instead of
+ * silently inheriting this asymmetry.
  */
 function buildImportArtifactNames(
   importedNames: Map<string, string>,
+  importedOriginalNames: ReadonlyMap<string, string>,
   symbols: ExtractorOutput,
   ctx: PipelineContext,
   relPath: string,
   rootDir: string,
-): ReadonlyMap<string, string> {
-  if (!symbols.cjsRequireBindings?.length) return importedNames;
-  const combined = new Map(importedNames);
-  const traceBarrel = (resolvedPath: string, cleanName: string): string => {
-    if (!isBarrelFile(ctx, resolvedPath)) return resolvedPath;
-    const resolved = resolveBarrelExportCached(ctx, resolvedPath, cleanName);
-    return resolved?.file ?? resolvedPath;
-  };
+): ReadonlyMap<string, BarrelExportResolution> {
+  const combined = new Map<string, BarrelExportResolution>();
+  for (const [name, file] of importedNames) {
+    combined.set(name, { file, name: importedOriginalNames.get(name) ?? name });
+  }
+  if (!symbols.cjsRequireBindings?.length) return combined;
   for (const binding of symbols.cjsRequireBindings) {
     const resolvedPath = getResolved(ctx, path.join(rootDir, relPath), binding.source);
     for (const name of binding.names) {
       if (!combined.has(name)) {
-        combined.set(name, traceBarrel(resolvedPath, name));
+        combined.set(name, traceBarrelTarget(ctx, resolvedPath, name));
       }
     }
   }
@@ -1690,7 +1702,7 @@ function buildFileCallEdges(
   invokedPropertyNames: ReadonlySet<string>,
   ptsMap?: PointsToMap | null,
   chaCtx?: ChaContext,
-  importArtifactNames?: ReadonlyMap<string, string>,
+  importArtifactNames?: ReadonlyMap<string, BarrelExportResolution>,
   importedOriginalNames?: ReadonlyMap<string, string>,
 ): void {
   // Tracks edges that were inserted by the pts fallback (edgeKey → allEdgeRows index).
