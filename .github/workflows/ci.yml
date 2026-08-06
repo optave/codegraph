@@ -102,9 +102,15 @@ jobs:
   native-host-build:
     needs: detect-changes
     # Fail open: only skip when detect-changes positively confirmed nothing
-    # native-relevant changed. Any other outcome (failure, skip) still builds,
-    # so a broken change-detector can't silently hide a real Rust regression.
-    if: needs.detect-changes.result != 'success' || needs.detect-changes.outputs.native_changed == 'true'
+    # native-relevant changed. Any other outcome (failure, cancelled, skip)
+    # still builds, so a broken or cancelled change-detector can't silently
+    # hide a real Rust regression. always() is required here — without it,
+    # GitHub Actions skips this job outright (never evaluating the condition
+    # below) whenever detect-changes is cancelled, e.g. by runner-pool
+    # congestion (issue #2306) — a plain `!= 'success'` check never even runs.
+    if: |
+      always() &&
+      (needs.detect-changes.result != 'success' || needs.detect-changes.outputs.native_changed == 'true')
     strategy:
       fail-fast: false
       matrix:
