@@ -1018,29 +1018,34 @@ const JS_TS_EXTS = new Set(['.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs', '.mts'
 // ── this/super dispatch post-pass helpers ───────────────────────────────────
 
 /**
- * Build parents map: child class → direct parent class (from `extends` edges).
- * May be empty when only func-prop methods exist (no class inheritance) —
+ * Build parents maps: child class → direct parent class (from `extends`
+ * edges), both bare-name-keyed (ambiguous across same-named classes in
+ * different files) and file-scoped (`${childName}|${file}`, disambiguated —
+ * see `resolveThisDispatch`'s issue #2062 collision handling). May be empty
+ * when only func-prop methods exist (no class inheritance) —
  * resolveThisDispatch handles that case via direct class-prefix lookup.
  */
 function buildThisDispatchParentsMap(
   db: BetterSqlite3Database,
   hasExtends: unknown,
-): Map<string, string> {
+): { parents: Map<string, string>; parentsByFile: Map<string, string> } {
   const parents = new Map<string, string>();
-  if (!hasExtends) return parents;
+  const parentsByFile = new Map<string, string>();
+  if (!hasExtends) return { parents, parentsByFile };
   const parentRows = db
     .prepare(`
-      SELECT src.name AS child_name, tgt.name AS parent_name
+      SELECT src.name AS child_name, src.file AS child_file, tgt.name AS parent_name
       FROM edges e
       JOIN nodes src ON e.source_id = src.id
       JOIN nodes tgt ON e.target_id = tgt.id
       WHERE e.kind = 'extends'
     `)
-    .all() as Array<{ child_name: string; parent_name: string }>;
+    .all() as Array<{ child_name: string; child_file: string; parent_name: string }>;
   for (const row of parentRows) {
     if (!parents.has(row.child_name)) parents.set(row.child_name, row.parent_name);
+    parentsByFile.set(`${row.child_name}|${row.child_file}`, row.parent_name);
   }
-  return parents;
+  return { parents, parentsByFile };
 }
 
 /**
@@ -1325,7 +1330,7 @@ async function runPostNativeThisDispatch(
   };
   if (!hasExtends && !hasFuncPropMethod) return emptyResult;
 
-  const parents = buildThisDispatchParentsMap(db, hasExtends);
+  const { parents, parentsByFile } = buildThisDispatchParentsMap(db, hasExtends);
   // Note: parents may be empty when hasFuncPropMethod but !hasExtends — that is
   // intentional. resolveThisDispatch still resolves `this.g()` inside `f.h` by
   // treating `f` (the dot-prefix of callerName `f.h`) as the class and looking
@@ -1334,6 +1339,7 @@ async function runPostNativeThisDispatch(
   const chaCtx: ChaContext = {
     implementors: new Map(), // not needed for this/super resolution
     parents,
+    parentsByFile,
     instantiatedTypes: new Set(), // not needed for this/super resolution
   };
 
