@@ -4368,7 +4368,30 @@ fn collect_array_pattern_names(pattern: &Node, source: &[u8]) -> Vec<String> {
                 }
             }
             "rest_pattern" | "rest_element" => {
-                extract_rest_identifier(&child, source, &mut names);
+                // `[...rest]` binds a plain identifier; `[...[a, b]]` nests
+                // another array pattern whose own bound names must each be
+                // collected too — plain `extract_rest_identifier` only ever
+                // extracts a single identifier, which left nested-rest names
+                // (created as Definitions by extract_array_pattern_bindings's
+                // own rest_pattern branch below) with no matching Export,
+                // diverging from the Definition side for e.g.
+                // `export const [x, ...[a, b]] = value` (#2070). Mirrors
+                // extract_array_pattern_bindings's rest_pattern handling
+                // instead of the plain-identifier-only extract_rest_identifier.
+                for j in 0..child.child_count() {
+                    let Some(inner) = child.child(j) else { continue };
+                    match inner.kind() {
+                        "identifier" => {
+                            names.push(node_text(&inner, source).to_string());
+                            break;
+                        }
+                        "array_pattern" => {
+                            names.extend(collect_array_pattern_names(&inner, source));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
             }
             _ => {}
         }
@@ -6688,6 +6711,25 @@ mod tests {
     fn marks_exported_destructured_array_pattern_bindings_as_exports() {
         let s = parse_js("export const [a, b] = computePair();");
         for name in ["a", "b"] {
+            assert!(
+                s.exports.iter().any(|e| e.name == name && e.kind == "constant"),
+                "{name} should be listed as an exported constant; got: {:?}",
+                s.exports
+            );
+        }
+    }
+
+    #[test]
+    fn marks_exported_nested_array_pattern_rest_bindings_as_exports() {
+        // Greptile review (#2070): collect_array_pattern_names's rest_pattern
+        // branch used to call the plain-identifier-only extract_rest_identifier,
+        // so a rest element that itself nests another array pattern
+        // (`...[a, b]`) got Definitions (see
+        // extracts_nested_array_pattern_rest_bindings_as_own_definitions) but no
+        // matching Export at all, diverging from the Definition side and from
+        // the TS engine (which already recursed here).
+        let s = parse_js("export const [x, ...[a, b]] = computeList();");
+        for name in ["x", "a", "b"] {
             assert!(
                 s.exports.iter().any(|e| e.name == name && e.kind == "constant"),
                 "{name} should be listed as an exported constant; got: {:?}",

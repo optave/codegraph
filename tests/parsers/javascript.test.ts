@@ -1487,6 +1487,22 @@ function runDemo(reporter: Reporter, users: string[]): void {
       );
     });
 
+    it('marks exported nested array-pattern rest bindings as exports (#2070)', () => {
+      // Greptile review on the PR for #2070: a rest element that itself nests
+      // another array pattern (`...[a, b]`) must have its recursive names
+      // reach the Export side too, not just the Definition side (see
+      // "extracts nested array_pattern rest bindings as own definitions"
+      // elsewhere in this file) — the exported=1 UPDATE matches by
+      // (name, kind, file, line), so a name present only in one side never
+      // gets marked exported.
+      const symbols = parseJS(`export const [x, ...[a, b]] = computeList();`);
+      for (const name of ['x', 'a', 'b']) {
+        expect(symbols.exports).toContainEqual(
+          expect.objectContaining({ name, kind: 'constant', line: 1 }),
+        );
+      }
+    });
+
     it('does not export let/var destructured bindings (#2070)', () => {
       // Mirrors "does not extract definitions from let/var destructured
       // bindings" above — the Export side must stay restricted to const too,
