@@ -1838,6 +1838,19 @@ mod tests {
 
     // ── package.json `exports` field resolution (issue #2060) ──────────
 
+    /// `resolve_via_exports`/`resolve_via_workspace` always return a
+    /// forward-slash-normalized path (via `normalize_path`'s
+    /// `.replace('\\', "/")`), but `PathBuf::join` on Windows renders its
+    /// OS-native temp-dir portion with backslashes while any forward slashes
+    /// already present in a joined literal (e.g. `"node_modules/pkg/x.js"`)
+    /// pass through unchanged — producing a MIXED-separator string that
+    /// never equals the function's fully-normalized output. Apply the same
+    /// normalization to test expectations so assertions compare
+    /// like-for-like on every OS.
+    fn normalized(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     /// Build `<tmp>/node_modules/<package_name>/package.json` with the given
     /// exports value and other package.json fields, plus any extra files
     /// (relative to the package dir) the exports targets should resolve to.
@@ -1873,12 +1886,7 @@ mod tests {
         let resolved = resolve_via_exports("some-pkg", tmp.to_str().unwrap());
         assert_eq!(
             resolved,
-            Some(
-                tmp.join("node_modules/some-pkg/dist/index.js")
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-            )
+            Some(normalized(&tmp.join("node_modules/some-pkg/dist/index.js")))
         );
 
         let _ = fs::remove_dir_all(&tmp);
@@ -1900,12 +1908,7 @@ mod tests {
         let resolved = resolve_via_exports("some-pkg/lib/sub", tmp.to_str().unwrap());
         assert_eq!(
             resolved,
-            Some(
-                tmp.join("node_modules/some-pkg/dist/lib/sub.js")
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-            )
+            Some(normalized(&tmp.join("node_modules/some-pkg/dist/lib/sub.js")))
         );
 
         let _ = fs::remove_dir_all(&tmp);
@@ -1927,12 +1930,7 @@ mod tests {
         let resolved = resolve_via_exports("some-pkg", tmp.to_str().unwrap());
         assert_eq!(
             resolved,
-            Some(
-                tmp.join("node_modules/some-pkg/esm/index.js")
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-            )
+            Some(normalized(&tmp.join("node_modules/some-pkg/esm/index.js")))
         );
 
         let _ = fs::remove_dir_all(&tmp);
@@ -2018,10 +2016,7 @@ mod tests {
 
         let resolved =
             resolve_via_workspace("@myorg/core", &workspaces, tmp.to_str().unwrap(), None);
-        assert_eq!(
-            resolved,
-            Some(pkg_dir.join("dist/index.js").to_string_lossy().to_string())
-        );
+        assert_eq!(resolved, Some(normalized(&pkg_dir.join("dist/index.js"))));
 
         let _ = fs::remove_dir_all(&tmp);
     }
