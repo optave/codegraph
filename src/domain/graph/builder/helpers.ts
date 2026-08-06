@@ -372,8 +372,14 @@ function getNodeStmt(db: BetterSqlite3Database, chunkSize: number): SqliteStatem
 function getEdgeStmt(db: BetterSqlite3Database, chunkSize: number): SqliteStatement {
   return getOrCreatePerDbChunkStmt(edgeStmtCache, db, chunkSize, (n) => {
     const ph = '(?,?,?,?,?,?,?)';
+    // OR IGNORE: mirrors native's insert_edge_chunk now that
+    // idx_edges_content_unique (#2072) actually backs it — a duplicate
+    // content row (e.g. two import statements in the same file resolving to
+    // the same target+kind, see emitEdgesForImport in build-edges.ts) is
+    // silently deduplicated instead of throwing a hard UNIQUE-constraint
+    // SqliteError and aborting the whole batch.
     return (
-      'INSERT INTO edges (source_id,target_id,kind,confidence,dynamic,technique,dynamic_kind) VALUES ' +
+      'INSERT OR IGNORE INTO edges (source_id,target_id,kind,confidence,dynamic,technique,dynamic_kind) VALUES ' +
       Array.from({ length: n }, () => ph).join(',')
     );
   });

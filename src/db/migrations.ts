@@ -442,6 +442,79 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_nodes_accessor_kind ON nodes(accessor_kind) WHERE accessor_kind IS NOT NULL;
     `,
   },
+  {
+    // Content-level uniqueness for `edges` (issue #2072): every edge-insertion
+    // call site relies on `INSERT OR IGNORE` to silently drop duplicate-content
+    // rows, and several nearby comments assert that's exactly what happens —
+    // but unlike `nodes` (real UNIQUE(name, kind, file, line), see v1 above),
+    // `edges` never had a constraint backing that assumption. `OR IGNORE` was
+    // therefore dead/misleading code: safe today only because every insert
+    // path is guarded elsewhere by a purge-before-insert pattern (full builds
+    // wipe `edges` first; incremental builds delete-then-reinsert per changed
+    // file), not because SQLite was actually deduping anything. A future
+    // change that narrows or skips that purge step would silently start
+    // producing duplicate/mixed edge rows with nothing to catch it — and (as
+    // discovered while building this migration — see below) at least one
+    // real path already does, independent of any purge-step regression.
+    //
+    // The content key is EVERY non-id column — (source_id, target_id, kind,
+    // confidence, dynamic, dynamic_kind, technique) — not the narrower
+    // (source_id, target_id, kind) the issue first suggested. That narrower
+    // key looks right until `graph/cycles.ts`'s speculative-cycle
+    // classification (issue #1844): two edges between the very same
+    // (source_id, target_id, kind='calls') pair can be legitimate at once —
+    // one confirmed direct call and one independent low-confidence dynamic
+    // guess — distinguished ONLY by `confidence`/`dynamic`
+    // (`buildLabelEdges`'s doc comment spells this out, and
+    // `tests/graph/cycles.test.ts` pins it down). A constraint narrower than
+    // "every column" would silently collapse that pair down to one row and
+    // break speculative-vs-confirmed classification. Similarly, flag-only
+    // dynamic calls with no resolved target emit a "sink" edge (kind='calls',
+    // target=the file node) distinguished only by `dynamic_kind` (e.g.
+    // 'reflection' vs 'value-ref') — the in-memory `seenCallEdges`/
+    // `seen_sink_edges` dedup in build-edges.ts/build_edges.rs already treats
+    // both dimensions as part of an edge's identity, so the DB constraint
+    // must match or it would wrongly collapse genuinely distinct edges.
+    // `dynamic_kind` and `technique` are NULL far more often than not, and
+    // SQL UNIQUE treats every NULL as distinct from every other NULL, so
+    // both are wrapped in COALESCE(..., '') — otherwise the constraint would
+    // enforce nothing for the common NULL case, defeating the point of
+    // adding it. `confidence`/`dynamic`/`kind` need no such wrapping: they're
+    // NOT NULL (dynamic and kind always; confidence defaults to 1.0 and every
+    // insert call site sets it explicitly).
+    //
+    // That "every column" key is exactly what genuinely duplicate content
+    // means, and it caught a real bug during development of this migration:
+    // `emitEdgesForImport` (build-edges.ts) and `emit_edges_for_import`
+    // (import_edges.rs) push an identical file-level import/reexport/
+    // dynamic-import edge once per *import statement*, not once per distinct
+    // (file, target, kind) — so a file with two `import()`/`export {…} from`
+    // statements resolving to the same target emits the same edge twice.
+    // Rust's own insert path already used `INSERT OR IGNORE`, so it silently
+    // absorbed the duplicate; the WASM path's `batchInsertEdges` used a plain
+    // `INSERT`, so it just accumulated duplicate rows forever (harmless
+    // bloat, until this migration's new constraint turned it into a hard
+    // UNIQUE-constraint failure — see the `OR IGNORE` fix in
+    // `builder/helpers.ts`'s `getEdgeStmt` and `graph/watcher.ts`'s
+    // `insertEdge`, both updated alongside this migration for exactly that
+    // reason). The redundant computation itself is a separate, tracked
+    // cleanup (issue #2297) — out of scope here since `OR IGNORE` + this
+    // constraint already make the persisted result correct.
+    //
+    // The DELETE runs first so this migration can never fail on a database
+    // that happens to have accumulated duplicate content rows already (ties
+    // are broken by keeping the lowest id). Mirrored in
+    // crates/codegraph-core/src/db/connection.rs.
+    version: 28,
+    up: `
+      DELETE FROM edges WHERE id NOT IN (
+        SELECT MIN(id) FROM edges
+        GROUP BY source_id, target_id, kind, confidence, dynamic, COALESCE(dynamic_kind, ''), COALESCE(technique, '')
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_content_unique
+        ON edges(source_id, target_id, kind, confidence, dynamic, COALESCE(dynamic_kind, ''), COALESCE(technique, ''));
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {

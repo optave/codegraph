@@ -441,6 +441,42 @@ const MIGRATIONS: &[Migration] = &[
       CREATE INDEX IF NOT EXISTS idx_nodes_accessor_kind ON nodes(accessor_kind) WHERE accessor_kind IS NOT NULL;
     "#,
     },
+    Migration {
+        // Content-level uniqueness for `edges` (issue #2072). Mirrors
+        // src/db/migrations.ts v28 — see that migration's comment for the
+        // full rationale. Summary: `INSERT OR IGNORE` into `edges` had no
+        // constraint behind it (unlike `nodes`' real UNIQUE(name, kind,
+        // file, line)), so several comments claiming it deduped edge
+        // content were wrong — safe today only because every insert path is
+        // separately guarded by a purge-before-insert pattern.
+        //
+        // The content key is EVERY non-id column — (source_id, target_id,
+        // kind, confidence, dynamic, dynamic_kind, technique) — not the
+        // narrower (source_id, target_id, kind) the issue first suggested.
+        // graph/cycles.ts's speculative-cycle classification (#1844)
+        // legitimately keeps two edges for the same (source_id, target_id,
+        // kind='calls') pair at once — one confirmed direct call, one
+        // independent low-confidence dynamic guess — distinguished only by
+        // confidence/dynamic. Flag-only dynamic calls similarly emit
+        // multiple "sink" edges to the same file distinguished only by
+        // dynamic_kind (see `seen_sink_edges` in build_edges.rs). A
+        // constraint narrower than "every column" would silently collapse
+        // either case. dynamic_kind/technique are NULL far more often than
+        // not, and SQL UNIQUE treats every NULL as distinct, so both are
+        // wrapped in COALESCE(..., '') — confidence/dynamic/kind need no
+        // such wrapping (never NULL). The DELETE runs first (keeping the
+        // lowest id per group) so this can never fail on a database that
+        // already has duplicate content rows.
+        version: 28,
+        up: r#"
+      DELETE FROM edges WHERE id NOT IN (
+        SELECT MIN(id) FROM edges
+        GROUP BY source_id, target_id, kind, confidence, dynamic, COALESCE(dynamic_kind, ''), COALESCE(technique, '')
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_content_unique
+        ON edges(source_id, target_id, kind, confidence, dynamic, COALESCE(dynamic_kind, ''), COALESCE(technique, ''));
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────
@@ -727,6 +763,38 @@ impl NativeDatabase {
             conn.execute("INSERT INTO schema_version (version) VALUES (0)", [])
                 .map_err(|e| {
                     napi::Error::from_reason(format!("insert schema_version failed: {e}"))
+                })?;
+        }
+
+        // #2072: migration v28 below (edges content-uniqueness index) assumes
+        // `edges.dynamic_kind` already exists once the versioned loop reaches
+        // it — true for every ordinary database, since v20 (further down)
+        // adds that column and always runs first for any `current_version <
+        // 20`. It is NOT true for the one anomalous case the post-loop
+        // "legacy column compat" block further below already exists to
+        // repair (see its own comment on `edges.dynamic_kind` for the full
+        // #2001/#2066 history): a native-only database whose
+        // `schema_version` was already stamped past 20 by the pre-fix
+        // MIGRATIONS array, which jumped straight from v19 to v21 and never
+        // actually applied v20. The loop's `migration.version >
+        // current_version` gate means it will never revisit v20 to add the
+        // column for such a database — so without this, v28 would fail with
+        // "no such column: dynamic_kind" before the post-loop repair ever
+        // gets a chance to run. Guarding on `current_version > 20` (rather
+        // than an unconditional add) is what keeps this a no-op for every
+        // normal database: those have `current_version <= 20` here, so the
+        // loop's own v20 migration is the one and only place that adds the
+        // column — adding it here too would collide with that unconditional
+        // `ALTER TABLE ... ADD COLUMN` and fail with "duplicate column name".
+        if current_version > 20
+            && has_table(conn, "edges")
+            && !has_column(conn, "edges", "dynamic_kind")
+        {
+            conn.execute_batch("ALTER TABLE edges ADD COLUMN dynamic_kind TEXT")
+                .map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "pre-migration repair: add edges.dynamic_kind failed: {e}"
+                    ))
                 })?;
         }
 
@@ -1853,9 +1921,15 @@ mod tests {
         {
             let conn = db.conn().expect("connection should still be open");
             // Simulate the pre-fix native-only end state: schema stamped past
-            // v20, but the column itself never actually got added.
+            // v20, but the column itself never actually got added. #2072's
+            // v28 added a second index over the same column
+            // (idx_edges_content_unique) — SQLite refuses to DROP COLUMN
+            // while any index still references it, so both must be dropped
+            // first, exactly as a real pre-fix database (which predates both
+            // indexes) would never have had either one to begin with.
             conn.execute_batch(&format!(
                 "DROP INDEX IF EXISTS idx_edges_dynamic_kind; \
+                 DROP INDEX IF EXISTS idx_edges_content_unique; \
                  ALTER TABLE edges DROP COLUMN dynamic_kind; \
                  UPDATE schema_version SET version = {max_version};"
             ))
@@ -1927,6 +2001,195 @@ mod tests {
             technique, "cha",
             "legacy 'cha-expanded' edge was not relabeled 'cha' by migration v26"
         );
+    }
+
+    /// #2072: `edges` never had a constraint backing the `INSERT OR IGNORE`
+    /// dedup several nearby comments claimed happened. Migration v28 adds a
+    /// real one — this proves it actually rejects duplicate content instead
+    /// of merely being present in the schema.
+    #[test]
+    fn migration_v28_deduplicates_calls_edges_on_insert() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("init_schema should succeed");
+        let conn = db.conn().expect("connection should still be open");
+
+        conn.execute_batch(
+            "INSERT INTO nodes (name, kind, file, line) VALUES ('a', 'function', 'a.ts', 1), ('b', 'function', 'b.ts', 1);",
+        )
+        .expect("node setup should succeed");
+
+        for _ in 0..3 {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) \
+                 SELECT (SELECT id FROM nodes WHERE name = 'a'), (SELECT id FROM nodes WHERE name = 'b'), \
+                        'calls', 0.9, 0;",
+            )
+            .expect("repeated insert of identical edge content should not error");
+        }
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .expect("count query should succeed");
+        assert_eq!(
+            count, 1,
+            "three inserts of byte-identical edge content should collapse to one row now \
+             that idx_edges_content_unique backs OR IGNORE"
+        );
+    }
+
+    /// #2072/#1844: `idx_edges_content_unique`'s key includes confidence and
+    /// dynamic precisely so this keeps working — `graph/cycles.ts`'s
+    /// speculative-cycle classification relies on being able to hold two
+    /// edges between the very same (source_id, target_id, kind='calls') pair
+    /// at once: one confirmed direct call and one independent low-confidence
+    /// dynamic guess. A narrower key (e.g. just source/target/kind) would
+    /// silently collapse this pair down to one row and break that
+    /// classification — see `tests/graph/cycles.test.ts`'s "treats a node
+    /// pair as confirmed if any edge between them is non-speculative, even
+    /// with a duplicate speculative edge" for the TS-side pin of the same
+    /// invariant.
+    #[test]
+    fn migration_v28_keeps_confirmed_and_speculative_calls_edges_distinct() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("init_schema should succeed");
+        let conn = db.conn().expect("connection should still be open");
+
+        conn.execute_batch(
+            "INSERT INTO nodes (name, kind, file, line) VALUES ('a', 'function', 'a.ts', 1), ('b', 'function', 'b.ts', 1);",
+        )
+        .expect("node setup should succeed");
+
+        conn.execute_batch(
+            // One confirmed direct call (confidence=1.0, dynamic=0) and one
+            // independent low-confidence dynamic guess (confidence=0.3,
+            // dynamic=1) for the SAME (source, target, kind) pair.
+            "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) \
+             SELECT (SELECT id FROM nodes WHERE name = 'a'), (SELECT id FROM nodes WHERE name = 'b'), 'calls', 1.0, 0; \
+             INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) \
+             SELECT (SELECT id FROM nodes WHERE name = 'a'), (SELECT id FROM nodes WHERE name = 'b'), 'calls', 0.3, 1;",
+        )
+        .expect("a confirmed edge and a speculative edge for the same pair should both insert");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .expect("count query should succeed");
+        assert_eq!(
+            count, 2,
+            "a confirmed edge and a speculative edge between the same (source, target, kind) \
+             pair must not be collapsed by idx_edges_content_unique"
+        );
+    }
+
+    /// #2072: the content key backing `idx_edges_content_unique` is
+    /// (source_id, target_id, kind, dynamic_kind) — not just
+    /// (source_id, target_id, kind). Flag-only dynamic calls with no
+    /// resolved target emit "sink" edges (kind='calls', target=the file
+    /// node) distinguished only by `dynamic_kind`; `seen_sink_edges` in
+    /// build_edges.rs already treats two different dynamic_kind values
+    /// targeting the same file as distinct edges, so the DB constraint must
+    /// not collapse them or it would silently drop real dynamic-call
+    /// classifications.
+    #[test]
+    fn migration_v28_keeps_sink_edges_with_different_dynamic_kind_distinct() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+        db.init_schema().expect("init_schema should succeed");
+        let conn = db.conn().expect("connection should still be open");
+
+        conn.execute_batch(
+            "INSERT INTO nodes (name, kind, file, line) VALUES ('caller', 'function', 'a.ts', 1), ('a.ts', 'file', 'a.ts', 0);",
+        )
+        .expect("node setup should succeed");
+
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic, dynamic_kind) \
+             SELECT (SELECT id FROM nodes WHERE name = 'caller'), (SELECT id FROM nodes WHERE name = 'a.ts' AND kind = 'file'), \
+                    'calls', 0.0, 1, 'reflection'; \
+             INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic, dynamic_kind) \
+             SELECT (SELECT id FROM nodes WHERE name = 'caller'), (SELECT id FROM nodes WHERE name = 'a.ts' AND kind = 'file'), \
+                    'calls', 0.0, 1, 'value-ref';",
+        )
+        .expect("two sink edges with different dynamic_kind should both insert");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .expect("count query should succeed");
+        assert_eq!(
+            count, 2,
+            "sink edges to the same file with distinct dynamic_kind must not be collapsed by \
+             idx_edges_content_unique"
+        );
+    }
+
+    /// #2072: if a database somehow already has duplicate edge content
+    /// before upgrading (none are expected in practice, given the
+    /// purge-before-insert protection every insert path relies on — but the
+    /// migration must be safe regardless), v28's DELETE must clear them
+    /// before CREATE UNIQUE INDEX runs, keeping the lowest id per group
+    /// rather than failing the whole migration.
+    #[test]
+    fn migration_v28_deletes_pre_existing_duplicate_edges_before_indexing() {
+        let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
+            .expect("open_read_write should succeed for :memory:");
+
+        // Stamp the DB at v27 (pre-v28) and hand-insert duplicate content
+        // directly, bypassing OR IGNORE, so the migration must contend with
+        // rows that already violate the constraint it's about to add.
+        conn_at_v27_with_duplicate_edges(&db);
+
+        db.init_schema()
+            .expect("migration v28 should tolerate pre-existing duplicate content");
+
+        let conn = db.conn().expect("connection should still be open");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .expect("count query should succeed");
+        assert_eq!(
+            count, 1,
+            "pre-existing duplicate edge content should be deduplicated by v28's DELETE, \
+             keeping exactly one row"
+        );
+
+        let min_id: i64 = conn
+            .query_row("SELECT MIN(id) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .expect("min id query should succeed");
+        let surviving_id: i64 = conn
+            .query_row("SELECT id FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .expect("surviving row id query should succeed");
+        assert_eq!(surviving_id, min_id, "the surviving row should be the lowest-id duplicate");
+    }
+
+    /// Shared setup for [`migration_v28_deletes_pre_existing_duplicate_edges_before_indexing`]:
+    /// a database stamped at v27 with two identical-content `calls` edges
+    /// already present, simulating a pre-v28 database that (hypothetically)
+    /// accumulated duplicate content before this migration existed.
+    fn conn_at_v27_with_duplicate_edges(db: &NativeDatabase) {
+        db.init_schema().expect("initial init_schema should succeed");
+        let conn = db.conn().expect("connection should still be open");
+        conn.execute_batch(
+            // idx_edges_content_unique must be dropped BEFORE the duplicate
+            // inserts below, not after — it already exists at this point
+            // (the init_schema() call above ran the full up-to-date
+            // MIGRATIONS set, v28 included, on this fresh database) and
+            // would otherwise reject the second identical-content insert
+            // immediately, defeating the simulation.
+            // Both duplicate rows use the SAME confidence/dynamic (0.9/0) —
+            // the content key is every non-id column, so a difference in
+            // confidence would make these legitimately distinct edges (see
+            // the v28 migration's own comment on graph/cycles.ts's
+            // speculative-cycle classification) rather than the true
+            // byte-identical duplicate this test means to simulate.
+            "DROP INDEX IF EXISTS idx_edges_content_unique; \
+             INSERT INTO nodes (name, kind, file, line) VALUES ('a', 'function', 'a.ts', 1), ('b', 'function', 'b.ts', 1); \
+             INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) \
+               SELECT (SELECT id FROM nodes WHERE name = 'a'), (SELECT id FROM nodes WHERE name = 'b'), 'calls', 0.9, 0; \
+             INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) \
+               SELECT (SELECT id FROM nodes WHERE name = 'a'), (SELECT id FROM nodes WHERE name = 'b'), 'calls', 0.9, 0; \
+             UPDATE schema_version SET version = 27;",
+        )
+        .expect("simulating a pre-v28 database with duplicate edge content should succeed");
     }
 
     // ── pragma() (#2019) ─────────────────────────────────────────────────

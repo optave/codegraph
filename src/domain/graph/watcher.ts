@@ -28,8 +28,15 @@ function prepareWatcherStatements(db: ReturnType<typeof openDb>): IncrementalStm
         return id != null ? { id } : undefined;
       },
     },
+    // OR IGNORE: mirrors every other edge-insert statement (native's
+    // insert_edge_chunk, build-edges.ts's getEdgeStmt) now that
+    // idx_edges_content_unique (#2072) actually backs it. Without this, a
+    // duplicate content row — e.g. two import statements in the same file
+    // resolving to the same target+kind, see emitEdgesForImport below —
+    // throws a hard UNIQUE-constraint SqliteError instead of being silently
+    // deduplicated like every other insert path already tolerates.
     insertEdge: db.prepare(
-      'INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, ?, ?)',
     ),
     countNodes: db.prepare('SELECT COUNT(*) as c FROM nodes WHERE file = ?'),
     countEdges: db.prepare(

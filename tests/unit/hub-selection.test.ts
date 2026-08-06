@@ -22,10 +22,10 @@ function insertNode(db, name, kind, file, line) {
     .run(name, kind, file, line).lastInsertRowid;
 }
 
-function insertEdge(db, sourceId, targetId, kind) {
+function insertEdge(db, sourceId, targetId, kind, confidence = 1.0) {
   db.prepare(
-    'INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, 1.0, 0)',
-  ).run(sourceId, targetId, kind);
+    'INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, ?, 0)',
+  ).run(sourceId, targetId, kind, confidence);
 }
 
 let tmpDir: string, dbPath: string;
@@ -42,6 +42,17 @@ let tmpDir: string, dbPath: string;
 // node — a query without a `kind` filter would be tempted to rank it highest
 // (or, for the pinned-candidate lookup, return it at all just from a
 // name match). A correct implementation must exclude it everywhere.
+//
+// The 3 edges from orchestrator to constBuildGraph use distinct confidence
+// values (1.0/0.9/0.8), not 3 byte-identical rows — the edges table's
+// content-uniqueness constraint (#2072) rejects true duplicate content
+// (same source, target, kind, confidence, dynamic, dynamic_kind, technique),
+// and a single caller genuinely calling the same target 3 times collapses
+// to one edge in the real graph anyway (call-site granularity isn't tracked
+// in the schema). Varying confidence gives this fixture the same
+// COUNT(e.id)-of-3 fan-in property `selectHubTargets` ranks by, without
+// relying on duplicate rows or introducing extra qualifying nodes that
+// would shift the mid/leaf rank indices in the test below.
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-hub-selection-'));
   dbPath = path.join(tmpDir, 'graph.db');
@@ -61,9 +72,9 @@ beforeAll(() => {
   const leafHelper = insertNode(db, 'leafHelper', 'method', 'src/domain/leaf.ts', 5);
   const orchestrator = insertNode(db, 'orchestrator', 'function', 'src/cli.ts', 1);
 
-  insertEdge(db, orchestrator, constBuildGraph, 'calls');
-  insertEdge(db, orchestrator, constBuildGraph, 'calls');
-  insertEdge(db, orchestrator, constBuildGraph, 'calls');
+  insertEdge(db, orchestrator, constBuildGraph, 'calls', 1.0);
+  insertEdge(db, orchestrator, constBuildGraph, 'calls', 0.9);
+  insertEdge(db, orchestrator, constBuildGraph, 'calls', 0.8);
   insertEdge(db, orchestrator, realBuildGraph, 'calls');
   insertEdge(db, orchestrator, midHelper, 'calls');
   insertEdge(db, orchestrator, leafHelper, 'calls');
