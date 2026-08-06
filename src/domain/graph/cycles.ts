@@ -1,6 +1,7 @@
 import { getCallableNodes, getCallEdges, getFileNodesAll, getImportEdges } from '../../db/index.js';
 import { loadNative } from '../../infrastructure/native.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
+import { compareByCodePoint } from '../../shared/compare.js';
 import type { BetterSqlite3Database } from '../../types.js';
 
 type Edge = { source: string; target: string; speculative?: boolean };
@@ -227,7 +228,9 @@ function tarjanFromEdges(edges: Edge[]): string[][] {
         // but sorting keeps it byte-identical to the native engine's output
         // for the same logical graph regardless of either side's internal
         // traversal order. See issues #2064, #2067, #2076.
-        scc.sort();
+        // compareByCodePoint (not the default comparator) so supplementary-
+        // plane Unicode labels sort the same way Rust's UTF-8 byte order does.
+        scc.sort(compareByCodePoint);
         sccs.push(scc);
       }
     }

@@ -1,3 +1,4 @@
+import { compareByCodePoint } from '../../shared/compare.js';
 import type { CodeGraph } from '../model.js';
 
 /**
@@ -51,7 +52,9 @@ export function tarjan(graph: CodeGraph): string[][] {
         // separate calls on the same logical graph. Sorting makes the
         // returned array a deterministic function of SCC membership alone,
         // so both engines agree byte-for-byte. See issues #2064, #2067, #2076.
-        scc.sort();
+        // compareByCodePoint (not the default comparator) so supplementary-
+        // plane Unicode labels sort the same way Rust's UTF-8 byte order does.
+        scc.sort(compareByCodePoint);
         sccs.push(scc);
       }
     }
