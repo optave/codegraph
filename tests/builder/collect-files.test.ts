@@ -16,6 +16,8 @@ beforeAll(() => {
   fs.mkdirSync(path.join(tmpDir, 'src'));
   fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), 'export const a = 1;');
   fs.writeFileSync(path.join(tmpDir, 'src', 'b.ts'), 'export const b = 2;');
+  fs.writeFileSync(path.join(tmpDir, 'src', 'c.mts'), 'export const c = 3;');
+  fs.writeFileSync(path.join(tmpDir, 'src', 'd.cts'), 'export const d = 4;');
   fs.writeFileSync(path.join(tmpDir, 'src', 'style.css'), 'body {}');
 });
 
@@ -32,10 +34,14 @@ describe('collectFiles stage', () => {
 
     await collectFiles(ctx);
 
-    expect(ctx.allFiles.length).toBe(2); // a.js + b.ts, not style.css
+    expect(ctx.allFiles.length).toBe(4); // a.js + b.ts + c.mts + d.cts, not style.css
     const basenames = ctx.allFiles.map((f) => path.basename(f));
     expect(basenames).toContain('a.js');
     expect(basenames).toContain('b.ts');
+    // .mts/.cts are TypeScript's ESM/CJS module extensions — must be walked
+    // like any other TypeScript file, not silently skipped (#2073).
+    expect(basenames).toContain('c.mts');
+    expect(basenames).toContain('d.cts');
     expect(basenames).not.toContain('style.css');
     expect(ctx.discoveredDirs).toBeInstanceOf(Set);
     expect(ctx.discoveredDirs.size).toBeGreaterThan(0);

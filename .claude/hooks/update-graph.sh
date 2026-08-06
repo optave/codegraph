@@ -46,7 +46,7 @@ if [ -f "$GENERATED_EXT_LIST" ]; then
   grep -qxF "$EXT" "$GENERATED_EXT_LIST" || exit 0
 else
   case "$EXT" in
-    .R|.bash|.c|.cc|.cjs|.clj|.cljc|.cljs|.cpp|.cs|.cu|.cuh|.cxx|.dart|.erl|.ex|.exs|.fs|.fsi|.fsx|.gemspec|.gleam|.go|.groovy|.gvy|.h|.hcl|.hpp|.hrl|.hs|.java|.jl|.js|.jsx|.kt|.kts|.lua|.m|.mjs|.ml|.mli|.php|.phtml|.py|.pyi|.r|.rake|.rb|.rs|.scala|.sh|.sol|.sv|.swift|.tf|.ts|.tsx|.v|.zig)
+    .R|.bash|.c|.cc|.cjs|.clj|.cljc|.cljs|.cpp|.cs|.cts|.cu|.cuh|.cxx|.dart|.erl|.ex|.exs|.fs|.fsi|.fsx|.gemspec|.gleam|.go|.groovy|.gvy|.h|.hcl|.hpp|.hrl|.hs|.java|.jl|.js|.jsx|.kt|.kts|.lua|.m|.mjs|.ml|.mli|.mts|.php|.phtml|.py|.pyi|.r|.rake|.rb|.rs|.scala|.sh|.sol|.sv|.swift|.tf|.ts|.tsx|.v|.zig)
       ;;
     *)
       exit 0

@@ -499,6 +499,8 @@ export const NATIVE_SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set([
   '.cjs',
   '.ts',
   '.tsx',
+  '.mts',
+  '.cts',
   '.py',
   '.pyi',
   '.tf',
@@ -823,7 +825,14 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   },
   {
     id: 'typescript',
-    extensions: ['.ts'],
+    // .mts/.cts are TypeScript's ESM/CJS module extensions — same grammar as
+    // .ts (tree-sitter-typescript, not tsx), since TS forbids JSX in both
+    // (#2073). Downstream extension-aware logic (TYPESCRIPT_EXTENSIONS,
+    // NATIVE_SUPPORTED_EXTENSIONS, resolver/strategy.ts,
+    // resolver/ts-resolver.ts, native-orchestrator.ts) already anticipates
+    // these extensions; this registry entry was the missing gate that kept
+    // .mts/.cts files from ever being walked or parsed.
+    extensions: ['.ts', '.mts', '.cts'],
     grammarFile: 'tree-sitter-typescript.wasm',
     extractor: extractSymbols,
     required: true,

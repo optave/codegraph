@@ -159,7 +159,9 @@ const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   },
   {
     id: 'typescript',
-    extensions: ['.ts'],
+    // .mts/.cts are TypeScript's ESM/CJS module extensions — mirrors the
+    // 'typescript' entry in domain/parser.ts's LANGUAGE_REGISTRY (#2073).
+    extensions: ['.ts', '.mts', '.cts'],
     grammarFile: 'tree-sitter-typescript.wasm',
     extractor: extractSymbols,
     required: true,

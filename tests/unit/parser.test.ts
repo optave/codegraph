@@ -9,6 +9,8 @@ import {
   computeDeclarationHashes,
   isWasmAvailable,
   LANGUAGE_REGISTRY,
+  NATIVE_SUPPORTED_EXTENSIONS,
+  SUPPORTED_EXTENSIONS,
 } from '../../src/domain/parser.js';
 import type { Definition } from '../../src/types.js';
 
@@ -63,6 +65,32 @@ describe('isWasmAvailable', () => {
     for (const call of spy.mock.calls) {
       expect(call[0]).toContain('grammars');
     }
+  });
+});
+
+// ─── .mts/.cts recognition (#2073) ──────────────────────────────────────
+
+describe('.mts/.cts TypeScript extension recognition', () => {
+  it('LANGUAGE_REGISTRY routes .mts and .cts to the typescript entry', () => {
+    const tsEntry = LANGUAGE_REGISTRY.find((e) => e.id === 'typescript');
+    expect(tsEntry).toBeDefined();
+    expect(tsEntry!.extensions).toContain('.mts');
+    expect(tsEntry!.extensions).toContain('.cts');
+    // .mts/.cts forbid JSX just like .ts — they must not be routed to the
+    // tsx grammar entry.
+    const tsxEntry = LANGUAGE_REGISTRY.find((e) => e.id === 'tsx');
+    expect(tsxEntry!.extensions).not.toContain('.mts');
+    expect(tsxEntry!.extensions).not.toContain('.cts');
+  });
+
+  it('SUPPORTED_EXTENSIONS (derived from LANGUAGE_REGISTRY) includes .mts and .cts', () => {
+    expect(SUPPORTED_EXTENSIONS.has('.mts')).toBe(true);
+    expect(SUPPORTED_EXTENSIONS.has('.cts')).toBe(true);
+  });
+
+  it('NATIVE_SUPPORTED_EXTENSIONS includes .mts and .cts', () => {
+    expect(NATIVE_SUPPORTED_EXTENSIONS.has('.mts')).toBe(true);
+    expect(NATIVE_SUPPORTED_EXTENSIONS.has('.cts')).toBe(true);
   });
 });
 

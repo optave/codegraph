@@ -95,7 +95,11 @@ impl LanguageKind {
         if file_path.ends_with(".tsx") {
             return Some(Self::Tsx);
         }
-        if file_path.ends_with(".d.ts") || ext == "ts" {
+        // .mts/.cts are TypeScript's ESM/CJS module extensions — same
+        // LanguageKind as .ts (TS forbids JSX in both, so neither routes to
+        // Tsx). Mirrors the 'typescript' entry in LANGUAGE_REGISTRY
+        // (src/domain/parser.ts) (#2073).
+        if file_path.ends_with(".d.ts") || ext == "ts" || ext == "mts" || ext == "cts" {
             return Some(Self::TypeScript);
         }
         match ext {
@@ -332,6 +336,36 @@ mod tests {
             EXPECTED_LEN,
             "A LanguageKind variant is in the exhaustive match but missing from \
              `all()` (or vice-versa). Update `all()` and bump EXPECTED_LEN.",
+        );
+    }
+
+    /// .mts/.cts are TypeScript's ESM/CJS module extensions — they must
+    /// resolve to `LanguageKind::TypeScript` (same grammar as `.ts`, since TS
+    /// forbids JSX in both), not fall through to `None` and be dropped by
+    /// the file collector (#2073).
+    #[test]
+    fn from_extension_recognizes_mts_and_cts() {
+        assert_eq!(
+            LanguageKind::from_extension("src/module.mts"),
+            Some(LanguageKind::TypeScript)
+        );
+        assert_eq!(
+            LanguageKind::from_extension("src/module.cts"),
+            Some(LanguageKind::TypeScript)
+        );
+        // Declaration-file variants must also resolve, mirroring `.d.ts`.
+        assert_eq!(
+            LanguageKind::from_extension("src/module.d.mts"),
+            Some(LanguageKind::TypeScript)
+        );
+        assert_eq!(
+            LanguageKind::from_extension("src/module.d.cts"),
+            Some(LanguageKind::TypeScript)
+        );
+        // Must not be misrouted to the JSX-capable Tsx grammar.
+        assert_ne!(
+            LanguageKind::from_extension("src/module.mts"),
+            Some(LanguageKind::Tsx)
         );
     }
 }

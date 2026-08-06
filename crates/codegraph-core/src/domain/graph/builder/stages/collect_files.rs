@@ -47,11 +47,11 @@ const DEFAULT_IGNORE_DIRS: &[&str] = &[
 ///   vs MATLAB keywords like `function`/`classdef`).
 /// - `.h` (C vs Objective-C) is unambiguous here — routed to C parser.
 const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "js", "jsx", "mjs", "cjs", "ts", "tsx", "d.ts", "py", "pyi", "go", "rs", "java", "cs", "rb",
-    "rake", "gemspec", "php", "phtml", "tf", "hcl", "c", "h", "cpp", "cc", "cxx", "hpp", "cu",
-    "cuh", "kt", "kts", "swift", "scala", "sh", "bash", "ex", "exs", "lua", "dart", "zig", "hs",
-    "ml", "mli", "fs", "fsx", "fsi", "m", "jl", "gleam", "clj", "cljs", "cljc", "erl", "hrl",
-    "groovy", "gvy", "sol",
+    "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "d.ts", "py", "pyi", "go", "rs", "java",
+    "cs", "rb", "rake", "gemspec", "php", "phtml", "tf", "hcl", "c", "h", "cpp", "cc", "cxx",
+    "hpp", "cu", "cuh", "kt", "kts", "swift", "scala", "sh", "bash", "ex", "exs", "lua", "dart",
+    "zig", "hs", "ml", "mli", "fs", "fsx", "fsi", "m", "jl", "gleam", "clj", "cljs", "cljc", "erl",
+    "hrl", "groovy", "gvy", "sol",
     // R is case-sensitive: both `.r` and `.R` are conventional.
     "r", "R", "v", "sv",
 ];
@@ -407,6 +407,36 @@ mod tests {
 
         assert!(names.contains("main.ts"));
         assert!(names.contains("util.js"));
+        assert!(!names.contains("readme.md"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn collect_finds_mts_and_cts_files() {
+        // .mts/.cts are TypeScript's ESM/CJS module extensions — they must be
+        // walked exactly like .ts, not silently skipped (#2073).
+        let tmp = std::env::temp_dir().join("codegraph_collect_mts_cts_test");
+        let _ = fs::remove_dir_all(&tmp);
+        let src = tmp.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("esm.mts"), "export const x = 1;").unwrap();
+        fs::write(src.join("cjs.cts"), "export const y = 2;").unwrap();
+        fs::write(src.join("readme.md"), "# Hello").unwrap();
+
+        let result = collect_files(tmp.to_str().unwrap(), &[], &[], &[]);
+        let names: HashSet<String> = result
+            .files
+            .iter()
+            .filter_map(|f| {
+                Path::new(f)
+                    .file_name()
+                    .map(|n| n.to_str().unwrap().to_string())
+            })
+            .collect();
+
+        assert!(names.contains("esm.mts"));
+        assert!(names.contains("cjs.cts"));
         assert!(!names.contains("readme.md"));
 
         let _ = fs::remove_dir_all(&tmp);

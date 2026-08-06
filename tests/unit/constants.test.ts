@@ -20,6 +20,8 @@ describe('EXTENSIONS', () => {
       '.jsx',
       '.ts',
       '.tsx',
+      '.mts',
+      '.cts',
       '.mjs',
       '.cjs',
       '.tf',

@@ -501,7 +501,7 @@ A user-level config file at `~/.config/codegraph/config.json` (XDG) or `~/.codeg
 | Language | Extensions | Imports | Exports | Call Sites | Heritage¹ | Type Inference² | Dataflow |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|
 | ![JavaScript](https://img.shields.io/badge/-JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black) | `.js`, `.jsx`, `.mjs`, `.cjs` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| ![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) | `.ts`, `.tsx` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| ![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) | `.ts`, `.tsx`, `.mts`, `.cts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | ![Python](https://img.shields.io/badge/-Python-3776AB?style=flat-square&logo=python&logoColor=white) | `.py`, `.pyi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | ![Go](https://img.shields.io/badge/-Go-00ADD8?style=flat-square&logo=go&logoColor=white) | `.go` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | ![Rust](https://img.shields.io/badge/-Rust-000000?style=flat-square&logo=rust&logoColor=white) | `.rs` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
