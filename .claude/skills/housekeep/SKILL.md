@@ -180,6 +180,8 @@ git worktree prune
   ```
 - **Never run `npm install` / `cargo clean` inside the target worktree** — it may be in use by another Claude Code session
 
+> **Follow-on risk this creates: stripped worktrees now silently fall back to the root repo's `node_modules`.** Node's module resolution walks up the directory tree, so once `<worktree>/node_modules` is gone, anything run from inside that worktree resolves packages from the root repo's `node_modules` instead — until that worktree's own `node_modules` is reinstalled. This matters beyond this phase: if *any* later work in the same session manually copies, links, or patches something into `node_modules` for local testing (a rebuilt native addon, `npm link`, a manually patched dependency, a locally built package tarball), **never target the root repo's `node_modules`** — only the specific worktree that needs it, and only if that worktree still has (or is being given back) its own `node_modules`. Overwriting the root's shared copy silently changes behavior for every worktree currently falling back to it, including ones this exact cleanup just stripped and any other session using them. If this happens, restore the original immediately (e.g. `npm install <package>@<original-version> --no-save` for an npm-distributed package, or reinstall/relink whatever else was overwritten) and verify `git status --short` in the root repo shows no unexpected changes.
+
 **If `DRY_RUN`:** List everything that would be removed with sizes, don't do it.
 
 > **Never force-remove** a worktree with uncommitted changes. List it as "has uncommitted work" and skip — but still report its disk size so the user knows what it's costing.
@@ -424,6 +426,7 @@ Status: CLEAN ✓
 - **Never delete worktrees with uncommitted changes** — warn and skip
 - **Always report worktree disk usage** — even when nothing is removed, the total must appear in the report. Worktree bloat is the #1 source of disk waste in this repo
 - **Bloated-but-active worktrees:** only delete the four regeneratable artifact paths (`node_modules/`, `target/`, `dist/`, `.codegraph/graph.db*`). Never touch source files in a worktree you don't own
+- **Never target the root repo's shared `node_modules`** when manually copying/linking something in for local testing (a rebuilt native addon, `npm link`, a patched dependency) — after stripping a worktree's own `node_modules` in this phase, that worktree silently falls back to the root's copy, so touching the root affects every worktree currently depending on that fallback, not just the one you're working on
 - **Ask before deleting large untracked files** — they might be intentional
 - **This is a local-only operation** — no pushes, no remote modifications, no PR creation
 - **Idempotent** — running twice should be safe (second run finds nothing to clean)
