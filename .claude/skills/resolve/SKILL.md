@@ -407,13 +407,20 @@ while IFS= read -r FILE; do
       if [ -f "$SOURCE_PR_FILE" ]; then
         # 2>/dev/null: suppress jq parse errors if the file was written as a stub {} — the || true means we skip this commit
         SOURCE_PR_NUMS=$(jq -r '.[].number' "$SOURCE_PR_FILE" 2>/dev/null || true)
-        for SOURCE_PR in $SOURCE_PR_NUMS; do
+        # while/read on a here-string, not `for SOURCE_PR in $SOURCE_PR_NUMS`: an unquoted
+        # multi-line variable only word-splits on newlines under bash's default IFS. zsh
+        # does NOT split unquoted expansions unless SH_WORD_SPLIT is set, so under zsh this
+        # would collapse every PR number into a single iteration where $SOURCE_PR is the
+        # whole multi-line blob instead of one number per iteration. while/read is portable
+        # across both shells; the empty-string guard handles SOURCE_PR_NUMS being empty.
+        while IFS= read -r SOURCE_PR; do
+          [ -z "$SOURCE_PR" ] && continue
           META=".codegraph/resolve/source-pr-diffs/$SOURCE_PR.json"
           if [ -f "$META" ]; then
             echo "  Source PR #$SOURCE_PR: $(jq -r '.title // "(no title)"' "$META")"
             echo "  Purpose: $(jq -r '.body // "(no description)"' "$META" | head -5)"
           fi
-        done
+        done <<< "$SOURCE_PR_NUMS"
       fi
     done < "$COMMIT_FILE"
   else

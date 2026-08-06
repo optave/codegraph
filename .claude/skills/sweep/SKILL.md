@@ -329,17 +329,22 @@ If `trigger_count` is under 50, proceed:
 # Step 0: Verify every Greptile inline comment has at least one reply from us
 all_comments=$(gh api repos/<repo>/pulls/<number>/comments --paginate)
 
-greptile_comment_ids=$(echo "$all_comments" \
-  | jq -r '[.[] | select(.user.login == "greptile-apps[bot]" and .in_reply_to_id == null)] | .[].id')
-
+# while/read on a process substitution, not `for cid in $(...)`: an unquoted multi-line
+# command substitution only word-splits on newlines under bash's default IFS. zsh does
+# NOT split unquoted expansions unless SH_WORD_SPLIT is set, so under zsh `for cid in
+# $greptile_comment_ids` collapses every id into a single iteration where $cid is the
+# whole multi-line blob — the subsequent jq call then fails to parse, reply_count comes
+# back empty, and the numeric comparison below silently fails open, reporting "all
+# comments answered" even when none are. while/read is portable across both shells.
 unanswered=()
-for cid in $greptile_comment_ids; do
+while IFS= read -r cid; do
+  [ -z "$cid" ] && continue
   reply_count=$(echo "$all_comments" \
     | jq -s "[.[][] | select(.in_reply_to_id == $cid and .user.login != \"greptile-apps[bot]\")] | length")
   if [ "$reply_count" -eq 0 ]; then
     unanswered+=("$cid")
   fi
-done
+done < <(echo "$all_comments" | jq -r '[.[] | select(.user.login == "greptile-apps[bot]" and .in_reply_to_id == null)] | .[].id')
 
 if [ ${#unanswered[@]} -gt 0 ]; then
   echo "BLOCKED — ${#unanswered[@]} Greptile comments have no reply: ${unanswered[*]}"
