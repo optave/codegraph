@@ -1462,6 +1462,44 @@ function runDemo(reporter: Reporter, users: string[]): void {
       );
     });
 
+    it('marks exported destructured object-pattern bindings as exports (#2070)', () => {
+      // Regression guard for #2070: collectExportedDeclarations used to skip
+      // any declarator whose name field wasn't a plain identifier, so
+      // `export const { a, b } = value` produced Definitions for a/b (above)
+      // but no matching Export entries at all — the exported=1 UPDATE never
+      // fired, leaving genuinely exported destructured bindings unmarked.
+      const symbols = parseJS(`export const { handleToken, checkPermissions } = initAuth(config);`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'handleToken', kind: 'constant', line: 1 }),
+      );
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'checkPermissions', kind: 'constant', line: 1 }),
+      );
+    });
+
+    it('marks exported destructured array-pattern bindings as exports (#2070)', () => {
+      const symbols = parseJS(`export const [a, b] = computePair();`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'a', kind: 'constant', line: 1 }),
+      );
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'b', kind: 'constant', line: 1 }),
+      );
+    });
+
+    it('does not export let/var destructured bindings (#2070)', () => {
+      // Mirrors "does not extract definitions from let/var destructured
+      // bindings" above — the Export side must stay restricted to const too,
+      // never diverging from which bindings get a Definition in the first place.
+      const letSymbols = parseJS(`export let { userId, email } = parseRequest(req);`);
+      expect(letSymbols.exports.some((e) => e.name === 'userId')).toBe(false);
+      expect(letSymbols.exports.some((e) => e.name === 'email')).toBe(false);
+
+      const varSymbols = parseJS(`export var [foo, bar] = getConfig();`);
+      expect(varSymbols.exports.some((e) => e.name === 'foo')).toBe(false);
+      expect(varSymbols.exports.some((e) => e.name === 'bar')).toBe(false);
+    });
+
     it('extracts non-renamed destructured const bindings with kind constant (#1773)', () => {
       // Regression guard for issue #1773: plain (non-renamed) destructured
       // bindings from a non-call RHS (e.g. `workerData`) must not default to

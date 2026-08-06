@@ -2373,6 +2373,14 @@ fn handle_export_declaration(node: &Node, decl: &Node, source: &[u8], symbols: &
 /// marks `exported = 1` by matching (name, kind, file, line) against
 /// already-inserted definition rows, so a mismatched kind here silently
 /// no-ops the UPDATE instead of marking the symbol exported (#1728).
+///
+/// `export const { a, b } = value` / `export const [a, b] = value` have no
+/// `identifier` name field either — the name is an `object_pattern`/
+/// `array_pattern` — so they walk `collect_object_pattern_names`/
+/// `collect_array_pattern_names`, the same name-collection `handle_var_decl`
+/// uses to build the matching Definitions, and push one "constant" ExportInfo
+/// per bound name. Restricted to `const` for the same reason the Definition
+/// side is (#2070).
 fn collect_exported_var_declarations(
     node: &Node,
     decl: &Node,
@@ -2390,20 +2398,34 @@ fn collect_exported_var_declarations(
         let name_n = declarator.child_by_field_name("name");
         let value_n = declarator.child_by_field_name("value");
         let (Some(name_n), Some(value_n)) = (name_n, value_n) else { continue };
-        if name_n.kind() != "identifier" { continue; }
-        let vt = value_n.kind();
-        if vt == "arrow_function" || vt == "function_expression" || vt == "function" || vt == "generator_function" {
-            symbols.exports.push(ExportInfo {
-                name: node_text(&name_n, source).to_string(),
-                kind: "function".to_string(),
-                line,
-            });
-        } else if is_const {
-            symbols.exports.push(ExportInfo {
-                name: node_text(&name_n, source).to_string(),
-                kind: "constant".to_string(),
-                line,
-            });
+        match name_n.kind() {
+            "identifier" => {
+                let vt = value_n.kind();
+                if vt == "arrow_function" || vt == "function_expression" || vt == "function" || vt == "generator_function" {
+                    symbols.exports.push(ExportInfo {
+                        name: node_text(&name_n, source).to_string(),
+                        kind: "function".to_string(),
+                        line,
+                    });
+                } else if is_const {
+                    symbols.exports.push(ExportInfo {
+                        name: node_text(&name_n, source).to_string(),
+                        kind: "constant".to_string(),
+                        line,
+                    });
+                }
+            }
+            "object_pattern" if is_const => {
+                for name in collect_object_pattern_names(&name_n, source, &mut Vec::new()) {
+                    symbols.exports.push(ExportInfo { name, kind: "constant".to_string(), line });
+                }
+            }
+            "array_pattern" if is_const => {
+                for name in collect_array_pattern_names(&name_n, source) {
+                    symbols.exports.push(ExportInfo { name, kind: "constant".to_string(), line });
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -6643,6 +6665,49 @@ mod tests {
         let names: Vec<&str> = s.definitions.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"handleToken"));
         assert!(names.contains(&"checkPermissions"));
+    }
+
+    #[test]
+    fn marks_exported_destructured_object_pattern_bindings_as_exports() {
+        // Regression guard for #2070: collect_exported_var_declarations used
+        // to skip any declarator whose name field wasn't a plain identifier,
+        // so `export const { a, b } = value` produced Definitions for a/b
+        // (see extracts_exported_destructured_const_bindings above) but no
+        // matching ExportInfo at all — the exported=1 UPDATE never fired.
+        let s = parse_js("export const { handleToken, checkPermissions } = initAuth(config);");
+        for name in ["handleToken", "checkPermissions"] {
+            assert!(
+                s.exports.iter().any(|e| e.name == name && e.kind == "constant"),
+                "{name} should be listed as an exported constant; got: {:?}",
+                s.exports
+            );
+        }
+    }
+
+    #[test]
+    fn marks_exported_destructured_array_pattern_bindings_as_exports() {
+        let s = parse_js("export const [a, b] = computePair();");
+        for name in ["a", "b"] {
+            assert!(
+                s.exports.iter().any(|e| e.name == name && e.kind == "constant"),
+                "{name} should be listed as an exported constant; got: {:?}",
+                s.exports
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_export_let_var_destructured_bindings() {
+        // Mirrors skips_let_var_destructured_bindings below — the Export side
+        // must stay restricted to const too, never diverging from which
+        // bindings get a Definition in the first place (#2070).
+        let s = parse_js("export let { userId, email } = parseRequest(req);");
+        assert!(!s.exports.iter().any(|e| e.name == "userId"));
+        assert!(!s.exports.iter().any(|e| e.name == "email"));
+
+        let s2 = parse_js("export var [foo, bar] = getConfig();");
+        assert!(!s2.exports.iter().any(|e| e.name == "foo"));
+        assert!(!s2.exports.iter().any(|e| e.name == "bar"));
     }
 
     #[test]

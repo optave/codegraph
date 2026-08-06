@@ -215,6 +215,14 @@ const EXPORT_DECL_KIND: Record<string, string> = {
  * Definition-building one: the exported=1 UPDATE it feeds matches DB rows by
  * (name, kind, file, line), so a mismatched kind silently no-ops instead of
  * marking the symbol exported (#1728).
+ *
+ * `export const { a, b } = value` / `export const [a, b] = value` have no
+ * `identifier` name field either — the name is an `object_pattern`/
+ * `array_pattern` — so they walk `collectObjectPatternNames`/
+ * `collectArrayPatternNames`, the exact same name-collection `handleVariable-
+ * Declarator`'s object_pattern/array_pattern branches use to build the
+ * matching Definitions, and push one 'constant' Export per bound name.
+ * Restricted to `const` for the same reason the Definition side is (#2070).
  */
 function collectExportedDeclarations(
   decl: TreeSitterNode,
@@ -234,17 +242,27 @@ function collectExportedDeclarations(
     if (declarator?.type !== 'variable_declarator') continue;
     const nameN = declarator.childForFieldName('name');
     const valueN = declarator.childForFieldName('value');
-    if (nameN?.type !== 'identifier' || !valueN) continue;
-    const valType = valueN.type;
-    if (
-      valType === 'arrow_function' ||
-      valType === 'function_expression' ||
-      valType === 'function' ||
-      valType === 'generator_function'
-    ) {
-      exps.push({ name: nameN.text, kind: 'function', line: exportLine });
-    } else if (isConst) {
-      exps.push({ name: nameN.text, kind: 'constant', line: exportLine });
+    if (!nameN || !valueN) continue;
+    if (nameN.type === 'identifier') {
+      const valType = valueN.type;
+      if (
+        valType === 'arrow_function' ||
+        valType === 'function_expression' ||
+        valType === 'function' ||
+        valType === 'generator_function'
+      ) {
+        exps.push({ name: nameN.text, kind: 'function', line: exportLine });
+      } else if (isConst) {
+        exps.push({ name: nameN.text, kind: 'constant', line: exportLine });
+      }
+    } else if (isConst && nameN.type === 'object_pattern') {
+      for (const name of collectObjectPatternNames(nameN)) {
+        exps.push({ name, kind: 'constant', line: exportLine });
+      }
+    } else if (isConst && nameN.type === 'array_pattern') {
+      for (const name of collectArrayPatternNames(nameN)) {
+        exps.push({ name, kind: 'constant', line: exportLine });
+      }
     }
   }
 }
@@ -1590,6 +1608,24 @@ function extractDestructuredBindings(
   endLine: number,
   definitions: Definition[],
 ): void {
+  for (const name of collectObjectPatternNames(pattern)) {
+    definitions.push({ name, kind: 'constant', line, endLine });
+  }
+}
+
+/**
+ * Collect the bound local names from an object-destructuring pattern
+ * (`{ a, b: renamed, c = default, ...rest }`), in declaration order — the
+ * name-only core of `extractDestructuredBindings`'s per-property Definition
+ * building, shared with `collectExportedDeclarations` (#2070) so `export
+ * const { a, b } = value` walks exactly the same cases when deciding which
+ * names are exported that `extractDestructuredBindings` walks when creating
+ * their Definition rows. Any drift between the two would silently leave a
+ * genuinely exported binding unmarked — the exported=1 UPDATE matches DB rows
+ * by (name, kind, file, line), see #1728.
+ */
+function collectObjectPatternNames(pattern: TreeSitterNode): string[] {
+  const names: string[] = [];
   for (let i = 0; i < pattern.childCount; i++) {
     const child = pattern.child(i);
     if (!child) continue;
@@ -1598,7 +1634,7 @@ function extractDestructuredBindings(
       child.type === 'shorthand_property_identifier'
     ) {
       // { handleToken } — shorthand binding
-      definitions.push({ name: child.text, kind: 'constant', line, endLine });
+      names.push(child.text);
     } else if (child.type === 'pair_pattern' || child.type === 'pair') {
       // { original: renamed } — renamed binding, use the local alias
       const value = child.childForFieldName('value');
@@ -1606,7 +1642,7 @@ function extractDestructuredBindings(
         value &&
         (value.type === 'identifier' || value.type === 'shorthand_property_identifier_pattern')
       ) {
-        definitions.push({ name: value.text, kind: 'constant', line, endLine });
+        names.push(value.text);
       } else if (value?.type === 'assignment_pattern') {
         // { original: renamed = defaultValue } — the local binding is the
         // assignment_pattern's left-hand identifier (Greptile follow-up to
@@ -1614,7 +1650,7 @@ function extractDestructuredBindings(
         // extractDynamicImportNames since #1824).
         const left = value.childForFieldName('left');
         if (left?.type === 'identifier') {
-          definitions.push({ name: left.text, kind: 'constant', line, endLine });
+          names.push(left.text);
         }
       }
     } else if (child.type === 'object_assignment_pattern') {
@@ -1623,15 +1659,16 @@ function extractDestructuredBindings(
       // to extractDynamicImportNames).
       const left = child.childForFieldName('left');
       if (left?.type === 'shorthand_property_identifier_pattern' || left?.type === 'identifier') {
-        definitions.push({ name: left.text, kind: 'constant', line, endLine });
+        names.push(left.text);
       }
     } else if (child.type === 'rest_pattern' || child.type === 'rest_element') {
       // { a, ...rest } — the rest binding was silently dropped entirely
       // before (#2051, mirrors #1920).
       const inner = extractRestPatternIdentifier(child);
-      if (inner) definitions.push({ name: inner, kind: 'constant', line, endLine });
+      if (inner) names.push(inner);
     }
   }
+  return names;
 }
 
 /**
@@ -1650,17 +1687,31 @@ function extractArrayPatternBindings(
   endLine: number,
   definitions: Definition[],
 ): void {
+  for (const name of collectArrayPatternNames(pattern)) {
+    definitions.push({ name, kind: 'constant', line, endLine });
+  }
+}
+
+/**
+ * Collect the bound local names from an array-destructuring pattern
+ * (`[a, b = default, ...rest]`), in declaration order — the name-only core
+ * of `extractArrayPatternBindings`'s per-element Definition building, shared
+ * with `collectExportedDeclarations` (#2070) for the same reason
+ * `collectObjectPatternNames` is.
+ */
+function collectArrayPatternNames(pattern: TreeSitterNode): string[] {
+  const names: string[] = [];
   for (let i = 0; i < pattern.childCount; i++) {
     const child = pattern.child(i);
     if (!child) continue;
     if (child.type === 'identifier') {
       // [a, b] — plain positional binding
-      definitions.push({ name: child.text, kind: 'constant', line, endLine });
+      names.push(child.text);
     } else if (child.type === 'assignment_pattern') {
       // [a = defaultValue] — the bound name is the left-hand identifier
       const left = child.childForFieldName('left');
       if (left && left.type === 'identifier') {
-        definitions.push({ name: left.text, kind: 'constant', line, endLine });
+        names.push(left.text);
       }
     } else if (child.type === 'rest_pattern' || child.type === 'rest_element') {
       // `rest_pattern`/`rest_element` has no named fields at all (verified against
@@ -1675,17 +1726,18 @@ function extractArrayPatternBindings(
         const inner = child.child(j);
         if (!inner) continue;
         if (inner.type === 'identifier') {
-          definitions.push({ name: inner.text, kind: 'constant', line, endLine });
+          names.push(inner.text);
           break;
         } else if (inner.type === 'array_pattern') {
           // [...[a, b]] — recurse so the nested pattern's own bound
-          // identifiers each get their own Definition.
-          extractArrayPatternBindings(inner, line, endLine, definitions);
+          // identifiers each get their own name.
+          names.push(...collectArrayPatternNames(inner));
           break;
         }
       }
     }
   }
+  return names;
 }
 
 function handleVariableDecl(node: TreeSitterNode, ctx: ExtractorOutput): void {
