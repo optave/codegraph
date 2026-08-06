@@ -68,55 +68,66 @@ function runHook(
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', status: result.status };
 }
 
-describe('update-graph.sh surfaces a diagnostic instead of silently no-oping', () => {
-  let tmpRoot: string;
-  let binDir: string;
+// This suite proves the diagnostic fires by hiding a `codegraph` binary from
+// PATH and forcing the hook's fallback branch — a mechanism that only makes
+// sense against a POSIX-style, colon-delimited PATH and `/usr/bin`+`/bin`.
+// Skipped on win32 (CI's windows-2022 job runs `npm test` too): `which`,
+// `fs.symlinkSync`, and absolute POSIX paths are not reliably available
+// there (symlink creation needs elevated privileges without Developer Mode,
+// and there is no `/usr/bin`), so this harness would fail before ever
+// reaching its assertions rather than exercising the hook logic under test.
+describe.skipIf(process.platform === 'win32')(
+  'update-graph.sh surfaces a diagnostic instead of silently no-oping',
+  () => {
+    let tmpRoot: string;
+    let binDir: string;
 
-  beforeEach(() => {
-    tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'update-graph-test-')));
-    binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-graph-bin-'));
-  });
+    beforeEach(() => {
+      tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'update-graph-test-')));
+      binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-graph-bin-'));
+    });
 
-  afterEach(() => {
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
-    fs.rmSync(binDir, { recursive: true, force: true });
-  });
+    afterEach(() => {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(binDir, { recursive: true, force: true });
+    });
 
-  it('hints at npm install/build when dist/cli.js does not exist yet, and still exits 0', () => {
-    const repo = path.join(tmpRoot, 'fresh-checkout');
-    initRepo(repo);
-    // No dist/ directory at all — the state of a genuinely fresh clone
-    // before `npm run build` has ever produced dist/cli.js.
-    const targetFile = path.join(repo, 'src', 'thing.ts');
-    fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-    fs.writeFileSync(targetFile, '// content\n');
+    it('hints at npm install/build when dist/cli.js does not exist yet, and still exits 0', () => {
+      const repo = path.join(tmpRoot, 'fresh-checkout');
+      initRepo(repo);
+      // No dist/ directory at all — the state of a genuinely fresh clone
+      // before `npm run build` has ever produced dist/cli.js.
+      const targetFile = path.join(repo, 'src', 'thing.ts');
+      fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+      fs.writeFileSync(targetFile, '// content\n');
 
-    const { stderr, status } = runHook(targetFile, repo, binDir);
+      const { stderr, status } = runHook(targetFile, repo, binDir);
 
-    expect(status).toBe(0);
-    expect(stderr).toMatch(/dist\/cli\.js not found/);
-    expect(stderr).toMatch(/npm install|npm run build/);
-  });
+      expect(status).toBe(0);
+      expect(stderr).toMatch(/dist\/cli\.js not found/);
+      expect(stderr).toMatch(/npm install|npm run build/);
+    });
 
-  it('surfaces the captured build error (not /dev/null) when dist/cli.js exists but fails', () => {
-    const repo = path.join(tmpRoot, 'broken-build');
-    initRepo(repo);
-    // dist/cli.js exists but is not a working CLI (simulates, e.g., a
-    // missing native better-sqlite3 binding blowing up at require-time).
-    fs.mkdirSync(path.join(repo, 'dist'), { recursive: true });
-    fs.writeFileSync(
-      path.join(repo, 'dist', 'cli.js'),
-      "process.stderr.write('simulated native binding load failure\\n'); process.exit(1);\n",
-    );
-    const targetFile = path.join(repo, 'src', 'thing.ts');
-    fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-    fs.writeFileSync(targetFile, '// content\n');
+    it('surfaces the captured build error (not /dev/null) when dist/cli.js exists but fails', () => {
+      const repo = path.join(tmpRoot, 'broken-build');
+      initRepo(repo);
+      // dist/cli.js exists but is not a working CLI (simulates, e.g., a
+      // missing native better-sqlite3 binding blowing up at require-time).
+      fs.mkdirSync(path.join(repo, 'dist'), { recursive: true });
+      fs.writeFileSync(
+        path.join(repo, 'dist', 'cli.js'),
+        "process.stderr.write('simulated native binding load failure\\n'); process.exit(1);\n",
+      );
+      const targetFile = path.join(repo, 'src', 'thing.ts');
+      fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+      fs.writeFileSync(targetFile, '// content\n');
 
-    const { stderr, status } = runHook(targetFile, repo, binDir);
+      const { stderr, status } = runHook(targetFile, repo, binDir);
 
-    expect(status).toBe(0);
-    expect(stderr).toMatch(/graph rebuild failed/);
-    expect(stderr).toMatch(/npm run doctor/);
-    expect(stderr).toContain('simulated native binding load failure');
-  });
-});
+      expect(status).toBe(0);
+      expect(stderr).toMatch(/graph rebuild failed/);
+      expect(stderr).toMatch(/npm run doctor/);
+      expect(stderr).toContain('simulated native binding load failure');
+    });
+  },
+);
