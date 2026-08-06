@@ -130,10 +130,15 @@ pub fn resolve_import(
 /// Batch resolve multiple imports.
 ///
 /// Resets the process-lifetime workspace-resolved-paths cache (read by
-/// `compute_confidence()`) before resolving — this is the once-per-build
-/// entry point on the per-call FFI path (called exactly once per build by
-/// `resolveImportsBatch()` in resolve.ts); see
-/// `reset_workspace_resolved_paths()`'s doc comment for the full contract.
+/// `compute_confidence()`) and the package.json `exports` cache before
+/// resolving — this is the once-per-build entry point on the per-call FFI
+/// path (called exactly once per build by `resolveImportsBatch()` in
+/// resolve.ts); see `reset_workspace_resolved_paths()`'s doc comment for the
+/// full contract. Clearing `exports` here too matters for any long-lived
+/// native process (MCP server, watch mode) that runs multiple builds: a
+/// dependency's `package.json` can change between builds, and a stale
+/// cached `exports` value would keep resolving to the previous build's
+/// target (issue #2060, caught by Greptile review).
 #[napi]
 pub fn resolve_imports(
     inputs: Vec<ImportResolutionInput>,
@@ -150,6 +155,7 @@ pub fn resolve_imports(
         known_files.map(|v| v.into_iter().collect::<std::collections::HashSet<String>>());
     let workspace_map = workspaces.map(|w| domain::graph::resolve::workspaces_from_packages(&w));
     domain::graph::resolve::reset_workspace_resolved_paths();
+    domain::graph::resolve::clear_exports_cache();
     domain::graph::resolve::resolve_imports_batch(
         &inputs,
         &root_dir,

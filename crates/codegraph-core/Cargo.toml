@@ -11,7 +11,16 @@ crate-type = ["cdylib"]
 napi = { version = "3", features = ["serde-json"] }
 napi-derive = "3"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps object keys in JSON-source declaration order (an
+# IndexMap internally) instead of the default sorted-by-key BTreeMap. Needed
+# for package.json `exports` subpath-map wildcard resolution (resolve.rs) to
+# match resolveViaExports()'s `Object.entries()` iteration order in
+# resolve.ts — when overlapping wildcard patterns both match, whichever
+# pattern is declared first in the manifest wins on both engines; without
+# this feature, native would silently pick the lexicographically-first
+# pattern instead, diverging from WASM for any manifest where declaration
+# order differs from sort order.
+serde_json = { version = "1", features = ["preserve_order"] }
 tree-sitter = "0.25"
 tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"

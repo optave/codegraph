@@ -1915,6 +1915,37 @@ mod tests {
     }
 
     #[test]
+    fn resolve_via_exports_wildcard_selection_follows_manifest_declaration_order() {
+        // Regression guard (issue #2060, caught by Greptile review):
+        // resolveSubpathMap()/resolve_subpath_map() must check overlapping
+        // wildcard keys in the manifest's DECLARATION order (matching
+        // JS's Object.entries()), not sorted-by-key order. "./lib/zeta-*" is
+        // declared FIRST here but sorts AFTER "./lib/*" lexicographically
+        // ('*' < 'z' in ASCII) — so a subpath matching both must resolve via
+        // the first-declared pattern regardless of key sort order. Requires
+        // serde_json's `preserve_order` feature (Cargo.toml); without it,
+        // serde_json::Map iterates as a sorted BTreeMap and this test fails.
+        let tmp = make_exports_fixture(
+            "codegraph_exports_wildcard_order_test",
+            "some-pkg",
+            r#"{"name": "some-pkg", "exports": {"./lib/zeta-*": "./dist/zeta/*.js", "./lib/*": "./dist/generic/*.js"}}"#,
+            &[
+                ("dist/zeta/foo.js", "module.exports = {};"),
+                ("dist/generic/zeta-foo.js", "module.exports = {};"),
+            ],
+        );
+        clear_exports_cache();
+
+        let resolved = resolve_via_exports("some-pkg/lib/zeta-foo", tmp.to_str().unwrap());
+        assert_eq!(
+            resolved,
+            Some(normalized(&tmp.join("node_modules/some-pkg/dist/zeta/foo.js")))
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn resolve_via_exports_resolves_conditional_exports_preferring_import_over_require() {
         let tmp = make_exports_fixture(
             "codegraph_exports_conditional_test",

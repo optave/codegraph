@@ -150,9 +150,13 @@ fn pipeline_setup(
     let force_full_rebuild = check_version_mismatch(conn);
     let workspaces = resolve::workspaces_from_packages(&workspace_packages);
     // Reset once per build, mirroring `setWorkspaces()`'s
-    // `_workspaceResolvedPaths.clear()` in resolve.ts — must happen before
-    // Stage 6/6b resolve any imports below.
+    // `_workspaceResolvedPaths.clear()`/`clearExportsCache()` in resolve.ts —
+    // must happen before Stage 6/6b resolve any imports below. Clearing the
+    // exports cache here too matters for a long-lived native process (MCP
+    // server, watch mode) running multiple builds: a dependency's
+    // `package.json` can change between builds (issue #2060).
     resolve::reset_workspace_resolved_paths();
+    resolve::clear_exports_cache();
 
     Ok(PipelineSetup {
         config,
