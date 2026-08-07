@@ -142,11 +142,20 @@ fn glob_cache() -> &'static Mutex<GlobCache> {
 /// Clear the compiled-glob cache. Exposed for tests; production hosts
 /// don't need to invalidate because the cache is keyed on exact pattern
 /// contents (a changed config produces a fresh key).
+///
+/// Recovers the inner data via `unwrap_or_else` instead of silently no-op'ing
+/// on a poisoned lock (`if let Ok(...)`, #2098) — mirrors
+/// `reset_workspace_resolved_paths` in `domain/graph/resolve.rs` (#2061). A
+/// poisoned cache here is lower severity than that one (a missed read/write
+/// just means recomputing a `GlobSet`, not incorrect results), but recovering
+/// keeps the cache usable instead of every subsequent `.lock()` call
+/// returning `Err` forever after a single panic.
 #[cfg(test)]
 pub(crate) fn clear_glob_cache() {
-    if let Ok(mut cache) = glob_cache().lock() {
-        cache.clear();
-    }
+    let mut cache = glob_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.clear();
 }
 
 /// Compile a list of glob patterns into a `GlobSet`.
@@ -159,7 +168,10 @@ fn build_glob_set(patterns: &[String]) -> Option<Arc<GlobSet>> {
     if patterns.is_empty() {
         return None;
     }
-    if let Ok(cache) = glob_cache().lock() {
+    {
+        let cache = glob_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(set) = cache.get(patterns) {
             return Some(set);
         }
@@ -183,9 +195,10 @@ fn build_glob_set(patterns: &[String]) -> Option<Arc<GlobSet>> {
     match builder.build() {
         Ok(set) => {
             let arc = Arc::new(set);
-            if let Ok(mut cache) = glob_cache().lock() {
-                cache.insert(patterns.to_vec(), arc.clone());
-            }
+            let mut cache = glob_cache()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.insert(patterns.to_vec(), arc.clone());
             Some(arc)
         }
         Err(e) => {
@@ -580,6 +593,47 @@ mod tests {
             !Arc::ptr_eq(&a, &b),
             "different pattern lists must get independent cache entries"
         );
+    }
+
+    #[test]
+    fn build_glob_set_recovers_from_a_poisoned_cache_instead_of_silently_no_oping() {
+        // #2098: a thread panicking while holding glob_cache()'s lock must not
+        // permanently disable the cache for every later caller — read/write
+        // must recover the poisoned guard (unwrap_or_else(|p| p.into_inner()))
+        // rather than silently no-op'ing via `if let Ok(...)`.
+        let _guard = GLOB_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_glob_cache();
+
+        // Poison the mutex: panic on a separate thread while holding the lock.
+        let poison_result = std::panic::catch_unwind(|| {
+            let _cache = glob_cache().lock().unwrap();
+            panic!("deliberately poisoning glob_cache for #2098 regression test");
+        });
+        assert!(
+            poison_result.is_err(),
+            "the panic must have actually occurred"
+        );
+        assert!(
+            glob_cache().lock().is_err(),
+            "the mutex must actually be poisoned before testing recovery"
+        );
+
+        // A write after poisoning must still succeed (not silently drop the insert).
+        let patterns = vec!["src/**/*.ts".to_string()];
+        let set = build_glob_set(&patterns).expect("compiles despite poisoned cache");
+
+        // A subsequent read must actually hit the cache (same Arc), proving the
+        // write path recovered the guard and inserted rather than no-op'ing.
+        let second = build_glob_set(&patterns).expect("compiles");
+        assert!(
+            Arc::ptr_eq(&set, &second),
+            "the cache must still work after recovering from poisoning, not \
+             silently and permanently miss on every call thereafter"
+        );
+
+        clear_glob_cache();
     }
 
     #[test]
