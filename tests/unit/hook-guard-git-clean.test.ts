@@ -66,6 +66,28 @@ describe('guard-git.sh git clean dry-run/force distinction (#2099)', () => {
   it('still blocks a force-clean chained after another command', () => {
     expect(isDenied('git push -f && git clean -fd')).toBe(true);
   });
+
+  it('recognizes a dry-run flag bundled with other short options', () => {
+    // Greptile review on this PR: -ndf/-fnd bundle -n (dry-run) with -d/-f —
+    // git's own arg parser treats every letter in a bundled short-opt group
+    // independently, so this must NOT block despite -f being present.
+    expect(isDenied('git clean -ndf')).toBe(false);
+    expect(isDenied('git clean -fnd')).toBe(false);
+  });
+
+  it('recognizes a force flag bundled with other short options (no dry-run present)', () => {
+    expect(isDenied('git clean -fd')).toBe(true);
+    expect(isDenied('git clean -df')).toBe(true);
+  });
+
+  it('does not let a flag on a different, non-&&-separated command suppress the block', () => {
+    // Greptile review: an earlier version split segments only on `&&`, so a
+    // `;`/`|`/newline-separated command's own -n could be misread as
+    // belonging to the git clean invocation.
+    expect(isDenied('git clean -fd; ls -n')).toBe(true);
+    expect(isDenied('git clean -fd | cat -n')).toBe(true);
+    expect(isDenied('git clean -fd\nls -n')).toBe(true);
+  });
 });
 
 describe('guard-git.sh does not false-positive on quoted text (#2099)', () => {
@@ -93,6 +115,18 @@ describe('guard-git.sh does not false-positive on quoted text (#2099)', () => {
   it('still allows the safe forms of those same commands', () => {
     expect(isDenied('git add foo.txt')).toBe(false);
     expect(isDenied('git restore --staged foo.txt')).toBe(false);
+  });
+
+  it('still blocks a real invocation nested inside bash -c / sh -c / eval (Greptile review)', () => {
+    // A quote immediately after -c/-e/eval is executable code, not inert
+    // data — masking it would hide a real destructive invocation.
+    expect(isDenied('bash -c "git clean -fd"')).toBe(true);
+    expect(isDenied("sh -c 'git add -A'")).toBe(true);
+    expect(isDenied('eval "git reset --hard"')).toBe(true);
+  });
+
+  it('still allows inert quoted text passed to -c-like flags when it names no dangerous verb', () => {
+    expect(isDenied('bash -c "echo hello"')).toBe(false);
   });
 
   it('does not block a commit whose heredoc-authored message body mentions git clean', () => {
