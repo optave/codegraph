@@ -163,7 +163,19 @@ function dartFunctionEndLine(signatureNode: TreeSitterNode): number {
   if (parent) {
     for (let i = 0; i < parent.childCount; i++) {
       if (parent.child(i)?.id === signatureNode.id) {
-        const next = parent.child(i + 1);
+        // A `comment` can appear as its own intervening sibling BETWEEN the
+        // signature and its body (confirmed by parsing a signature followed
+        // by a same-line-or-not `//` comment then `{ ... }` — Greptile
+        // review on #2082), since tree-sitter-dart's comment rule is an
+        // `extra` production that can surface anywhere in the tree, not
+        // just a token folded into an adjacent node. Skip past any number
+        // of them to find the real next sibling.
+        let j = i + 1;
+        let next = parent.child(j);
+        while (next && next.type === 'comment') {
+          j++;
+          next = parent.child(j);
+        }
         if (next && next.type !== ';') return nodeEndLine(next);
         break;
       }

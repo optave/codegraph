@@ -217,7 +217,26 @@ fn dart_function_end_line(signature_node: &Node) -> u32 {
         for i in 0..parent.child_count() {
             if let Some(child) = parent.child(i) {
                 if child.id() == signature_node.id() {
-                    if let Some(next) = parent.child(i + 1) {
+                    // A `comment` can appear as its own intervening sibling
+                    // BETWEEN the signature and its body (confirmed by
+                    // parsing a signature followed by a same-line-or-not
+                    // `//` comment then `{ ... }` — Greptile review on
+                    // #2082), since tree-sitter-dart's comment rule is an
+                    // `extra` production that can surface anywhere in the
+                    // tree, not just a token folded into an adjacent node.
+                    // Skip past any number of them to find the real next
+                    // sibling. Mirrors `dartFunctionEndLine` in
+                    // `src/extractors/dart.ts`.
+                    let mut j = i + 1;
+                    let mut next = parent.child(j);
+                    while let Some(n) = next {
+                        if n.kind() != "comment" {
+                            break;
+                        }
+                        j += 1;
+                        next = parent.child(j);
+                    }
+                    if let Some(next) = next {
                         if next.kind() != ";" {
                             return end_line(&next);
                         }
@@ -596,6 +615,22 @@ mod tests {
             let def = s.definitions.iter().find(|d| d.name == "Shape.area");
             assert!(def.is_some(), "missing Shape.area; got: {:?}", s.definitions);
             assert_eq!(def.unwrap().end_line, Some(2));
+        }
+
+        // Review finding: a comment between the signature and its body is
+        // its own intervening SIBLING node (tree-sitter-dart's comment rule
+        // is an `extra` production, not folded into an adjacent node),
+        // which the naive "next sibling" lookup mistook for the body itself.
+        #[test]
+        fn skips_a_comment_between_the_signature_and_its_body() {
+            let s = parse_dart(
+                "Foo makeWaldo()\n// a comment between signature and body\n{\n  return Foo();\n}",
+            );
+            let def = s.definitions.iter().find(|d| d.name == "makeWaldo");
+            assert!(def.is_some(), "missing makeWaldo; got: {:?}", s.definitions);
+            let def = def.unwrap();
+            assert_eq!(def.line, 1);
+            assert_eq!(def.end_line, Some(5));
         }
     }
 

@@ -149,6 +149,34 @@ import 'package:flutter/material.dart';`);
       expect(def).toBeDefined();
       expect(def!.endLine).toBe(2);
     });
+
+    // Review finding: a comment between the signature and its body is its
+    // own intervening SIBLING node (tree-sitter-dart's comment rule is an
+    // `extra` production, not folded into an adjacent node), which the
+    // naive "next sibling" lookup mistook for the body itself.
+    it('skips a comment between the signature and its body', () => {
+      const symbols = parseDart(`Foo makeWaldo()
+// a comment between signature and body
+{
+  return Foo();
+}`);
+      const def = symbols.definitions.find((d) => d.name === 'makeWaldo');
+      expect(def).toBeDefined();
+      expect(def!.line).toBe(1);
+      expect(def!.endLine).toBe(5);
+    });
+
+    it('skips multiple consecutive comments between the signature and its body', () => {
+      const symbols = parseDart(`Foo makeWaldo()
+// comment one
+// comment two
+{
+  return Foo();
+}`);
+      const def = symbols.definitions.find((d) => d.name === 'makeWaldo');
+      expect(def).toBeDefined();
+      expect(def!.endLine).toBe(6);
+    });
   });
 
   // #2082: bodyless (semicolon-only) constructors — the idiomatic short
