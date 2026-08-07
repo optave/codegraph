@@ -3250,6 +3250,51 @@ function runDemo(reporter: Reporter, users: string[]): void {
         expect.objectContaining({ name: 'version', receiver: 'this' }),
       );
     });
+
+    // #2086: `this` inside an instance method never refers to the
+    // class/constructor object (where static members live) — only `this`
+    // inside a static method does — so the registry must not conflate the
+    // two when matching a bare `this.prop` read.
+    it('does not attribute an instance-context this read to a static-only accessor', () => {
+      const symbols = parseJS(`
+        class Config {
+          static get version() { return Config._v; }
+          static _v = '1.0';
+          describe() {
+            return this.version;
+          }
+        }
+      `);
+      expect(symbols.calls).not.toContainEqual(expect.objectContaining({ name: 'version' }));
+    });
+
+    it('does not attribute a static-context this read to an instance-only accessor', () => {
+      const symbols = parseJS(`
+        class Widget {
+          get value() { return this._v; }
+          _v = 1;
+          static describe() {
+            return this.value;
+          }
+        }
+      `);
+      expect(symbols.calls).not.toContainEqual(expect.objectContaining({ name: 'value' }));
+    });
+
+    it('still attributes an instance-context this read to an instance accessor', () => {
+      const symbols = parseJS(`
+        class Widget {
+          get value() { return this._v; }
+          _v = 1;
+          useOther() {
+            return this.value;
+          }
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'value', receiver: 'this' }),
+      );
+    });
   });
 
   describe('ES6 getter/setter cross-file property-read call attribution (#2030)', () => {

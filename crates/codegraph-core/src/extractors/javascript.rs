@@ -1521,11 +1521,18 @@ fn handle_method_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 //      this file — emitted as a tagged candidate for the resolver's global
 //      accessor-kind filter to confirm once every file's accessors are known.
 
-/// Per-property record of which accessor kinds a same-file class declares.
+/// Per-property record of which accessor kinds a same-file class declares —
+/// instance and static accessors tracked separately (#2086). `this` inside
+/// an instance method never refers to the class/constructor object (where
+/// `static` members live) — only `this` inside a static method does — so a
+/// bare `this.prop` read must only ever match the bucket corresponding to
+/// its own calling context, never the other one.
 #[derive(Default, Clone, Copy)]
 struct LocalAccessorInfo {
     get: bool,
     set: bool,
+    static_get: bool,
+    static_set: bool,
 }
 
 /// `ClassName.propName` → which accessor kinds are declared, for this file only.
@@ -1551,6 +1558,46 @@ fn get_method_accessor_kind(meth_node: &Node) -> Option<&'static str> {
     None
 }
 
+/// True when `meth_node` (a method_definition) carries a `static` modifier —
+/// same unnamed-token-child shape `get_method_accessor_kind` scans for (#2086).
+fn is_static_method_definition(meth_node: &Node) -> bool {
+    let name_node = meth_node.child_by_field_name("name");
+    for i in 0..meth_node.child_count() {
+        let Some(child) = meth_node.child(i) else { continue };
+        if Some(child.id()) == name_node.map(|n| n.id()) {
+            break;
+        }
+        if child.kind() == "static" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Walk up from `node` to the nearest enclosing `method_definition` and
+/// report whether it is static — determines whether a `this.prop` read's
+/// calling context refers to the class object (static) or an instance
+/// (#2086). Only meaningful once the caller has already confirmed (via
+/// `find_parent_class_for_this_binding`) that no this-rebinding boundary
+/// (#2085) sits between `node` and its enclosing class — an arrow function
+/// is transparent to both walks, so the nearest `method_definition` found
+/// here is the same function whose `this` binding actually governs `node`.
+///
+/// Returns false (instance) when `node` isn't inside any method_definition
+/// at all — e.g. a class field initializer or `static { }` block — which
+/// can misclassify a static field initializer's `this` as instance-context;
+/// not handled here (see #2085/#2086 follow-up discussion).
+fn is_enclosing_method_static(node: &Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "method_definition" {
+            return is_static_method_definition(&parent);
+        }
+        current = parent.parent();
+    }
+    false
+}
+
 /// Pre-scan pass: collect every ES6 get/set class-accessor declared in this
 /// file, keyed by its qualified `ClassName.propName` name — the same
 /// qualification `handle_method_def` already gives the accessor's own
@@ -1570,10 +1617,13 @@ fn collect_local_accessors(root: &Node, source: &[u8]) -> LocalAccessorRegistry 
                 {
                     let key = format!("{}.{}", class_name, prop_name);
                     let entry = registry.entry(key).or_default();
-                    if kind == "get" {
-                        entry.get = true;
-                    } else {
-                        entry.set = true;
+                    let is_static = is_static_method_definition(node);
+                    match (kind, is_static) {
+                        ("get", true) => entry.static_get = true,
+                        ("set", true) => entry.static_set = true,
+                        ("get", false) => entry.get = true,
+                        (_, false) => entry.set = true,
+                        _ => {}
                     }
                 }
             }
@@ -1742,13 +1792,19 @@ fn handle_accessor_property_read(
         let Some(class_name) = find_parent_class_for_this_binding(node, source) else { return };
         let key = format!("{}.{}", class_name, prop_name);
         let Some(accessor_info) = local_accessors.get(&key) else { return };
-        if accessor_info.get && accessor_info.set {
+        // #2086: `this` only reaches the class/constructor object (where
+        // static members live) from inside a static method — match only the
+        // bucket corresponding to the read site's own calling context.
+        let is_static_context = is_enclosing_method_static(node);
+        let relevant_get = if is_static_context { accessor_info.static_get } else { accessor_info.get };
+        let relevant_set = if is_static_context { accessor_info.static_set } else { accessor_info.set };
+        if relevant_get && relevant_set {
             return;
         }
-        if needed_get && !accessor_info.get {
+        if needed_get && !relevant_get {
             return;
         }
-        if !needed_get && !accessor_info.set {
+        if !needed_get && !relevant_set {
             return;
         }
         symbols.calls.push(Call {
@@ -8465,6 +8521,62 @@ mod tests {
         assert!(
             s.calls.iter().any(|c| c.name == "version" && c.receiver.as_deref() == Some("this")),
             "expected a call to version via this; got: {:?}",
+            s.calls
+        );
+    }
+
+    // ── Accessor registry static vs instance distinction (#2086) ──
+
+    #[test]
+    fn does_not_attribute_instance_context_this_read_to_a_static_only_accessor() {
+        let s = parse_js(
+            "class Config {\n\
+               static get version() { return Config._v; }\n\
+               static _v = '1.0';\n\
+               describe() { return this.version; }\n\
+             }",
+        );
+        assert!(
+            !s.calls.iter().any(|c| c.name == "version"),
+            "this.version inside an INSTANCE method must not resolve to a \
+             static-only accessor — `this` there is the instance, not the \
+             class object; got: {:?}",
+            s.calls
+        );
+    }
+
+    #[test]
+    fn does_not_attribute_static_context_this_read_to_an_instance_only_accessor() {
+        let s = parse_js(
+            "class Widget {\n\
+               get value() { return this._v; }\n\
+               _v = 1;\n\
+               static describe() { return this.value; }\n\
+             }",
+        );
+        assert!(
+            !s.calls.iter().any(|c| c.name == "value"),
+            "this.value inside a STATIC method must not resolve to an \
+             instance-only accessor — `this` there is the class object, not \
+             an instance; got: {:?}",
+            s.calls
+        );
+    }
+
+    #[test]
+    fn still_attributes_instance_context_this_read_to_an_instance_accessor() {
+        let s = parse_js(
+            "class Widget {\n\
+               get value() { return this._v; }\n\
+               _v = 1;\n\
+               useOther() { return this.value; }\n\
+             }",
+        );
+        assert!(
+            s.calls
+                .iter()
+                .any(|c| c.name == "value" && c.receiver.as_deref() == Some("this")),
+            "instance-to-instance accessor attribution must keep working; got: {:?}",
             s.calls
         );
     }

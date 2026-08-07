@@ -717,10 +717,19 @@ function buildMethodDefinition(node: TreeSitterNode, name: string): Definition {
 // reads (the accessor's class declared in a different file than the read
 // site) are not yet covered — see #2030.
 
-/** Per-property record of which accessor kinds a same-file class declares. */
+/**
+ * Per-property record of which accessor kinds a same-file class declares —
+ * instance and static accessors tracked separately (#2086). `this` inside an
+ * instance method never refers to the class/constructor object (where
+ * `static` members live) — only `this` inside a static method does — so a
+ * bare `this.prop` read must only ever match the bucket corresponding to its
+ * own calling context, never the other one.
+ */
 interface LocalAccessorInfo {
   get: boolean;
   set: boolean;
+  staticGet: boolean;
+  staticSet: boolean;
 }
 
 /** `ClassName.propName` → which accessor kinds are declared, for this file only. */
@@ -748,6 +757,44 @@ function getMethodAccessorKind(methNode: TreeSitterNode): 'get' | 'set' | null {
 }
 
 /**
+ * True when `methNode` (a method_definition) carries a `static` modifier —
+ * same unnamed-token-child shape `getMethodAccessorKind` scans for (#2086).
+ */
+function isStaticMethodDefinition(methNode: TreeSitterNode): boolean {
+  const nameNode = methNode.childForFieldName('name');
+  for (let i = 0; i < methNode.childCount; i++) {
+    const child = methNode.child(i);
+    if (!child || child.id === nameNode?.id) break;
+    if (child.type === 'static') return true;
+  }
+  return false;
+}
+
+/**
+ * Walk up from `node` to the nearest enclosing `method_definition` and
+ * report whether it is static — determines whether a `this.prop` read's
+ * calling context refers to the class object (static) or an instance
+ * (#2086). Only meaningful once the caller has already confirmed (via
+ * `findParentClassForThisBinding`) that no this-rebinding boundary (#2085)
+ * sits between `node` and its enclosing class — an arrow function is
+ * transparent to both walks, so the nearest `method_definition` found here
+ * is the same function whose `this` binding actually governs `node`.
+ *
+ * Returns false (instance) when `node` isn't inside any method_definition at
+ * all — e.g. a class field initializer or `static { }` block — which can
+ * misclassify a static field initializer's `this` as instance-context; not
+ * handled here (see #2085/#2086 follow-up discussion).
+ */
+function isEnclosingMethodStatic(node: TreeSitterNode): boolean {
+  let current = node.parent;
+  while (current) {
+    if (current.type === 'method_definition') return isStaticMethodDefinition(current);
+    current = current.parent;
+  }
+  return false;
+}
+
+/**
  * Pre-scan pass: collect every ES6 get/set class-accessor declared in this
  * file, keyed by its qualified `ClassName.propName` name — the same
  * qualification `buildMethodDefinition`'s caller already gives the accessor's
@@ -767,8 +814,18 @@ function collectLocalAccessors(rootNode: TreeSitterNode): LocalAccessorRegistry 
         const propName = nameNode ? resolveMethodDefinitionName(nameNode) : '';
         if (className && propName) {
           const key = `${className}.${propName}`;
-          const entry = registry.get(key) ?? { get: false, set: false };
-          entry[accessorKind] = true;
+          const entry = registry.get(key) ?? {
+            get: false,
+            set: false,
+            staticGet: false,
+            staticSet: false,
+          };
+          const bucketKey = isStaticMethodDefinition(node)
+            ? accessorKind === 'get'
+              ? 'staticGet'
+              : 'staticSet'
+            : accessorKind;
+          entry[bucketKey] = true;
           registry.set(key, entry);
         }
       }
@@ -935,7 +992,15 @@ function collectAccessorPropertyRead(
     const className = findParentClassForThisBinding(node);
     if (!className) return;
     const accessorInfo = localAccessors.get(`${className}.${propName}`);
-    if (!accessorInfo || (accessorInfo.get && accessorInfo.set) || !accessorInfo[neededKind]) {
+    if (!accessorInfo) return;
+    // #2086: `this` only reaches the class/constructor object (where static
+    // members live) from inside a static method — match only the bucket
+    // corresponding to the read site's own calling context.
+    const isStaticContext = isEnclosingMethodStatic(node);
+    const relevantGet = isStaticContext ? accessorInfo.staticGet : accessorInfo.get;
+    const relevantSet = isStaticContext ? accessorInfo.staticSet : accessorInfo.set;
+    const relevantForKind = neededKind === 'get' ? relevantGet : relevantSet;
+    if ((relevantGet && relevantSet) || !relevantForKind) {
       return;
     }
     valueRefCalls.push({ name: propName, receiver: 'this', line: nodeStartLine(node) });
