@@ -1019,8 +1019,10 @@ impl NativeDatabase {
     ) -> napi::Result<Vec<serde_json::Value>> {
         let conn = self.conn()?;
         let rusqlite_params = json_to_rusqlite_params(&params)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            rusqlite_params.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = rusqlite_params
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let mut stmt = conn
             .prepare(&sql)
@@ -1056,8 +1058,10 @@ impl NativeDatabase {
     ) -> napi::Result<Option<serde_json::Value>> {
         let conn = self.conn()?;
         let rusqlite_params = json_to_rusqlite_params(&params)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            rusqlite_params.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = rusqlite_params
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let mut stmt = conn
             .prepare(&sql)
@@ -1117,17 +1121,18 @@ impl NativeDatabase {
     /// finished rebuilding the affected files' edges (see
     /// `insertNodes.commitFileHashes` on the JS side, or
     /// `insert_nodes::commit_file_hashes` for the all-Rust orchestrator).
-    #[napi(ts_args_type = "batches: Array<{ file: string; definitions: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string; children: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string }> }>; exports: Array<{ name: string; kind: string; line: number }> }>, fileHashes: FileHashEntry[], removedFiles: string[]")]
+    #[napi(
+        ts_args_type = "batches: Array<{ file: string; definitions: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string; children: Array<{ name: string; kind: string; line: number; endLine?: number; visibility?: string }> }>; exports: Array<{ name: string; kind: string; line: number }> }>, fileHashes: FileHashEntry[], removedFiles: string[]"
+    )]
     pub fn bulk_insert_nodes(
         &self,
         batches: serde_json::Value,
         file_hashes: Vec<FileHashEntry>,
         removed_files: Vec<String>,
     ) -> napi::Result<bool> {
-        let batches: Vec<InsertNodesBatch> = serde_json::from_value(batches)
-            .map_err(|e| {
-                napi::Error::from_reason(format!("bulk_insert_nodes: invalid batches: {e}"))
-            })?;
+        let batches: Vec<InsertNodesBatch> = serde_json::from_value(batches).map_err(|e| {
+            napi::Error::from_reason(format!("bulk_insert_nodes: invalid batches: {e}"))
+        })?;
         let conn = self.conn()?;
         let insert_ok = insert_nodes::do_insert_nodes(conn, &batches, &removed_files)
             .inspect_err(|e| eprintln!("[NativeDatabase] bulk_insert_nodes failed: {e}"))
@@ -1136,7 +1141,9 @@ impl NativeDatabase {
             return Ok(false);
         }
         let hashes_ok = insert_nodes::commit_file_hashes(conn, &file_hashes)
-            .inspect_err(|e| eprintln!("[NativeDatabase] bulk_insert_nodes hash commit failed: {e}"))
+            .inspect_err(|e| {
+                eprintln!("[NativeDatabase] bulk_insert_nodes hash commit failed: {e}")
+            })
             .is_ok();
         Ok(hashes_ok)
     }
@@ -1179,8 +1186,9 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("complexity tx failed: {e}")))?;
         let mut total = 0u32;
         {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO function_complexity \
+            let mut stmt = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO function_complexity \
                  (node_id, cognitive, cyclomatic, max_nesting, \
                   loc, sloc, comment_lines, \
                   halstead_n1, halstead_n2, halstead_big_n1, halstead_big_n2, \
@@ -1188,8 +1196,8 @@ impl NativeDatabase {
                   halstead_difficulty, halstead_effort, halstead_bugs, \
                   maintainability_index) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("complexity prepare failed: {e}")))?;
+                )
+                .map_err(|e| napi::Error::from_reason(format!("complexity prepare failed: {e}")))?;
 
             for r in &rows {
                 if stmt
@@ -1240,37 +1248,43 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("cfg tx failed: {e}")))?;
         let mut total = 0u32;
         {
-            let mut block_stmt = tx.prepare(
-                "INSERT INTO cfg_blocks \
+            let mut block_stmt = tx
+                .prepare(
+                    "INSERT INTO cfg_blocks \
                  (function_node_id, block_index, block_type, start_line, end_line, label) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("cfg_blocks prepare failed: {e}")))?;
+                )
+                .map_err(|e| napi::Error::from_reason(format!("cfg_blocks prepare failed: {e}")))?;
 
-            let mut edge_stmt = tx.prepare(
-                "INSERT INTO cfg_edges \
+            let mut edge_stmt = tx
+                .prepare(
+                    "INSERT INTO cfg_edges \
                  (function_node_id, source_block_id, target_block_id, kind) \
                  VALUES (?1, ?2, ?3, ?4)",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("cfg_edges prepare failed: {e}")))?;
+                )
+                .map_err(|e| napi::Error::from_reason(format!("cfg_edges prepare failed: {e}")))?;
 
-            let mut del_edges = tx.prepare(
-                "DELETE FROM cfg_edges WHERE function_node_id = ?1",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("cfg_edges del prepare failed: {e}")))?;
-            let mut del_blocks = tx.prepare(
-                "DELETE FROM cfg_blocks WHERE function_node_id = ?1",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("cfg_blocks del prepare failed: {e}")))?;
+            let mut del_edges = tx
+                .prepare("DELETE FROM cfg_edges WHERE function_node_id = ?1")
+                .map_err(|e| {
+                    napi::Error::from_reason(format!("cfg_edges del prepare failed: {e}"))
+                })?;
+            let mut del_blocks = tx
+                .prepare("DELETE FROM cfg_blocks WHERE function_node_id = ?1")
+                .map_err(|e| {
+                    napi::Error::from_reason(format!("cfg_blocks del prepare failed: {e}"))
+                })?;
 
             for entry in &entries {
                 // Delete existing CFG data for this node so the caller doesn't
                 // need to perform deletes on a separate (JS) connection, which
                 // would cause a WAL conflict with the native connection.
-                del_edges.execute(params![entry.node_id])
-                    .map_err(|e| napi::Error::from_reason(format!("cfg_edges delete failed: {e}")))?;
-                del_blocks.execute(params![entry.node_id])
-                    .map_err(|e| napi::Error::from_reason(format!("cfg_blocks delete failed: {e}")))?;
+                del_edges.execute(params![entry.node_id]).map_err(|e| {
+                    napi::Error::from_reason(format!("cfg_edges delete failed: {e}"))
+                })?;
+                del_blocks.execute(params![entry.node_id]).map_err(|e| {
+                    napi::Error::from_reason(format!("cfg_blocks delete failed: {e}"))
+                })?;
 
                 let mut block_db_ids: std::collections::HashMap<u32, i64> =
                     std::collections::HashMap::new();
@@ -1318,12 +1332,13 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("dataflow tx failed: {e}")))?;
         let mut total = 0u32;
         {
-            let mut stmt = tx.prepare(
-                "INSERT INTO dataflow \
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO dataflow \
                  (source_id, target_id, kind, param_index, expression, line, confidence) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            )
-            .map_err(|e| napi::Error::from_reason(format!("dataflow prepare failed: {e}")))?;
+                )
+                .map_err(|e| napi::Error::from_reason(format!("dataflow prepare failed: {e}")))?;
 
             for e in &edges {
                 if stmt
@@ -1382,7 +1397,9 @@ impl NativeDatabase {
         }
         let mut stmt = conn
             .prepare_cached("SELECT file, hash, mtime, size FROM file_hashes")
-            .map_err(|e| napi::Error::from_reason(format!("getFileHashData prepare failed: {e}")))?;
+            .map_err(|e| {
+                napi::Error::from_reason(format!("getFileHashData prepare failed: {e}"))
+            })?;
         let mut rows = Vec::new();
         let mut max_mtime: i64 = 0;
         let mapped = stmt
@@ -1421,8 +1438,10 @@ impl NativeDatabase {
     pub fn check_pending_analysis(&self) -> napi::Result<PendingAnalysisCounts> {
         let conn = self.conn()?;
         let cfg_count = if has_table(conn, "cfg_blocks") {
-            conn.query_row("SELECT COUNT(*) FROM cfg_blocks", [], |r| r.get::<_, i64>(0))
-                .unwrap_or(-1)
+            conn.query_row("SELECT COUNT(*) FROM cfg_blocks", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(-1)
         } else {
             -1
         };
@@ -1469,7 +1488,10 @@ impl NativeDatabase {
     /// Find files that have edges pointing to any of the changed files.
     /// Returns deduplicated list of reverse-dependency file paths.
     #[napi]
-    pub fn find_reverse_dependencies(&self, changed_files: Vec<String>) -> napi::Result<Vec<String>> {
+    pub fn find_reverse_dependencies(
+        &self,
+        changed_files: Vec<String>,
+    ) -> napi::Result<Vec<String>> {
         if changed_files.is_empty() {
             return Ok(vec![]);
         }
@@ -1490,9 +1512,7 @@ impl NativeDatabase {
         for file in &changed_files {
             let rows = stmt
                 .query_map(params![file], |row| row.get::<_, String>(0))
-                .map_err(|e| {
-                    napi::Error::from_reason(format!("reverseDeps query failed: {e}"))
-                })?;
+                .map_err(|e| napi::Error::from_reason(format!("reverseDeps query failed: {e}")))?;
             for row in rows {
                 if let Ok(dep_file) = row {
                     if !changed_set.contains(dep_file.as_str()) {
@@ -1591,10 +1611,7 @@ impl NativeDatabase {
             .map_err(|e| napi::Error::from_reason(format!("collectFiles query failed: {e}")))?;
         let files: Vec<String> = rows.filter_map(|r| r.ok()).collect();
         let count = files.len() as i64;
-        Ok(CollectFilesData {
-            count,
-            files,
-        })
+        Ok(CollectFilesData { count, files })
     }
 
     /// Cascade-delete all graph data for the specified files across all tables.
@@ -1673,12 +1690,11 @@ impl NativeDatabase {
             for file in rev_files {
                 // Optional — column absent in pre-v18 schemas; ignore errors.
                 let _ = tx.execute(dfcall_sql, params![file]);
-                tx.execute(edge_sql, params![file])
-                    .map_err(|e| {
-                        napi::Error::from_reason(format!(
-                            "reverse-dep edge purge failed for \"{file}\": {e}"
-                        ))
-                    })?;
+                tx.execute(edge_sql, params![file]).map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "reverse-dep edge purge failed for \"{file}\": {e}"
+                    ))
+                })?;
             }
         }
 
@@ -1940,7 +1956,8 @@ mod tests {
     fn init_schema_repairs_edges_dynamic_kind_on_a_database_already_past_v20() {
         let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
             .expect("open_read_write should succeed for :memory:");
-        db.init_schema().expect("initial init_schema should succeed");
+        db.init_schema()
+            .expect("initial init_schema should succeed");
 
         let max_version = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
         {
@@ -1986,7 +2003,8 @@ mod tests {
     fn init_schema_relabels_legacy_cha_expanded_edges_on_a_database_already_past_v25() {
         let db = NativeDatabase::open_read_write(":memory:".to_string(), None)
             .expect("open_read_write should succeed for :memory:");
-        db.init_schema().expect("initial init_schema should succeed");
+        db.init_schema()
+            .expect("initial init_schema should succeed");
 
         {
             let conn = db.conn().expect("connection should still be open");
@@ -2020,7 +2038,11 @@ mod tests {
 
         let conn = db.conn().expect("connection should still be open");
         let technique: String = conn
-            .query_row("SELECT technique FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .query_row(
+                "SELECT technique FROM edges WHERE kind = 'calls'",
+                [],
+                |row| row.get(0),
+            )
             .expect("the edge inserted above should still exist");
         assert_eq!(
             technique, "cha",
@@ -2054,7 +2076,11 @@ mod tests {
         }
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE kind = 'calls'",
+                [],
+                |row| row.get(0),
+            )
             .expect("count query should succeed");
         assert_eq!(
             count, 1,
@@ -2098,7 +2124,11 @@ mod tests {
         .expect("a confirmed edge and a speculative edge for the same pair should both insert");
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE kind = 'calls'",
+                [],
+                |row| row.get(0),
+            )
             .expect("count query should succeed");
         assert_eq!(
             count, 2,
@@ -2139,7 +2169,11 @@ mod tests {
         .expect("two sink edges with different dynamic_kind should both insert");
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE kind = 'calls'",
+                [],
+                |row| row.get(0),
+            )
             .expect("count query should succeed");
         assert_eq!(
             count, 2,
@@ -2169,7 +2203,11 @@ mod tests {
 
         let conn = db.conn().expect("connection should still be open");
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE kind = 'calls'",
+                [],
+                |row| row.get(0),
+            )
             .expect("count query should succeed");
         assert_eq!(
             count, 1,
@@ -2178,12 +2216,21 @@ mod tests {
         );
 
         let min_id: i64 = conn
-            .query_row("SELECT MIN(id) FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .query_row(
+                "SELECT MIN(id) FROM edges WHERE kind = 'calls'",
+                [],
+                |row| row.get(0),
+            )
             .expect("min id query should succeed");
         let surviving_id: i64 = conn
-            .query_row("SELECT id FROM edges WHERE kind = 'calls'", [], |row| row.get(0))
+            .query_row("SELECT id FROM edges WHERE kind = 'calls'", [], |row| {
+                row.get(0)
+            })
             .expect("surviving row id query should succeed");
-        assert_eq!(surviving_id, min_id, "the surviving row should be the lowest-id duplicate");
+        assert_eq!(
+            surviving_id, min_id,
+            "the surviving row should be the lowest-id duplicate"
+        );
     }
 
     /// Shared setup for [`migration_v28_deletes_pre_existing_duplicate_edges_before_indexing`]:
@@ -2191,7 +2238,8 @@ mod tests {
     /// already present, simulating a pre-v28 database that (hypothetically)
     /// accumulated duplicate content before this migration existed.
     fn conn_at_v27_with_duplicate_edges(db: &NativeDatabase) {
-        db.init_schema().expect("initial init_schema should succeed");
+        db.init_schema()
+            .expect("initial init_schema should succeed");
         let conn = db.conn().expect("connection should still be open");
         conn.execute_batch(
             // idx_edges_content_unique must be dropped BEFORE the duplicate
@@ -2234,7 +2282,10 @@ mod tests {
             .pragma("busy_timeout".to_string())
             .expect("pragma('busy_timeout') should not throw");
         // open_read_write applies DEFAULT_BUSY_TIMEOUT_MS (5000) when none is given.
-        assert_eq!(busy_timeout, Some(serde_json::json!(DEFAULT_BUSY_TIMEOUT_MS)));
+        assert_eq!(
+            busy_timeout,
+            Some(serde_json::json!(DEFAULT_BUSY_TIMEOUT_MS))
+        );
 
         let page_count = db
             .pragma("page_count".to_string())

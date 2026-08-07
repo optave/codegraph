@@ -223,13 +223,18 @@ impl<'a> EdgeContext<'a> {
         }
         let builtin_set: HashSet<&str> = builtin_receivers.iter().map(|s| s.as_str()).collect();
         let receiver_kinds: HashSet<&str> = ["class", "struct", "interface", "type", "module"]
-            .iter().copied().collect();
+            .iter()
+            .copied()
+            .collect();
         Self {
             nodes_by_name,
             nodes_by_name_and_file,
             builtin_set,
             receiver_kinds,
-            invoked_property_names: collect_invoked_property_names(files, extra_invoked_property_names),
+            invoked_property_names: collect_invoked_property_names(
+                files,
+                extra_invoked_property_names,
+            ),
             cha_implementors: build_cha_implementors_map(files),
             cha_instantiated_types: collect_cha_instantiated_types(files),
         }
@@ -252,11 +257,15 @@ fn build_cha_implementors_map<'a>(files: &'a [FileEdgeInput]) -> HashMap<&'a str
         for cls in &file.classes {
             if let Some(ref parent) = cls.implements {
                 let list = implementors.entry(parent.as_str()).or_default();
-                if !list.contains(&cls.name.as_str()) { list.push(&cls.name); }
+                if !list.contains(&cls.name.as_str()) {
+                    list.push(&cls.name);
+                }
             }
             if let Some(ref parent) = cls.extends {
                 let list = implementors.entry(parent.as_str()).or_default();
-                if !list.contains(&cls.name.as_str()) { list.push(&cls.name); }
+                if !list.contains(&cls.name.as_str()) {
+                    list.push(&cls.name);
+                }
             }
         }
     }
@@ -302,9 +311,13 @@ fn resolve_cha_dispatch<'a>(
     visited.insert(type_name);
 
     while let Some(current) = queue.pop_front() {
-        let Some(children) = ctx.cha_implementors.get(current) else { continue };
+        let Some(children) = ctx.cha_implementors.get(current) else {
+            continue;
+        };
         for &cls in children {
-            if visited.contains(cls) { continue; }
+            if visited.contains(cls) {
+                continue;
+            }
             visited.insert(cls);
 
             if ctx.cha_instantiated_types.contains(cls) {
@@ -410,21 +423,29 @@ fn build_points_to_map(
 ) -> HashMap<String, HashSet<String>> {
     let mut pts: HashMap<String, HashSet<String>> = HashMap::new();
     for name in def_names {
-        pts.entry(name.to_string()).or_default().insert(name.to_string());
+        pts.entry(name.to_string())
+            .or_default()
+            .insert(name.to_string());
     }
     for name in imported_names.keys() {
-        pts.entry(name.to_string()).or_default().insert(name.to_string());
+        pts.entry(name.to_string())
+            .or_default()
+            .insert(name.to_string());
     }
 
     // Constraint list: pts(lhs) ⊇ pts(rhsKey). Member-expression rhs keys are
     // composite ("obj.method") and only flow when a prior seed exists — safe.
-    let mut constraints: Vec<(String, String)> = bindings.fn_ref_bindings.iter().map(|b| {
-        let rhs_key = match &b.rhs_receiver {
-            Some(recv) => format!("{}.{}", recv, b.rhs),
-            None => b.rhs.clone(),
-        };
-        (b.lhs.clone(), rhs_key)
-    }).collect();
+    let mut constraints: Vec<(String, String)> = bindings
+        .fn_ref_bindings
+        .iter()
+        .map(|b| {
+            let rhs_key = match &b.rhs_receiver {
+                Some(recv) => format!("{}.{}", recv, b.rhs),
+                None => b.rhs.clone(),
+            };
+            (b.lhs.clone(), rhs_key)
+        })
+        .collect();
 
     // Phase 8.3c: parameter-flow constraints — `f(x)` at argIndex i adds
     // pts(f::param_i) ⊇ pts(x). Keys are scoped "callee::paramName" to prevent
@@ -432,7 +453,10 @@ fn build_points_to_map(
     for pb in bindings.param_bindings {
         if let Some(params) = definition_params.get(pb.callee.as_str()) {
             if let Some(param_name) = params.get(pb.arg_index as usize) {
-                constraints.push((format!("{}::{}", pb.callee, param_name), pb.arg_name.clone()));
+                constraints.push((
+                    format!("{}::{}", pb.callee, param_name),
+                    pb.arg_name.clone(),
+                ));
             }
         }
     }
@@ -441,7 +465,9 @@ fn build_points_to_map(
     // `arr[*]` collects all elements via constraints.
     for ab in bindings.array_elem_bindings {
         let elem_key = format!("{}[{}]", ab.array_name, ab.index);
-        pts.entry(elem_key.clone()).or_default().insert(ab.elem_name.clone());
+        pts.entry(elem_key.clone())
+            .or_default()
+            .insert(ab.elem_name.clone());
         constraints.push((format!("{}[*]", ab.array_name), elem_key));
     }
 
@@ -451,17 +477,26 @@ fn build_points_to_map(
         let mut array_max_index: HashMap<&str, i64> = HashMap::new();
         for ab in bindings.array_elem_bindings {
             let cur = array_max_index.entry(ab.array_name.as_str()).or_insert(-1);
-            if i64::from(ab.index) > *cur { *cur = i64::from(ab.index); }
+            if i64::from(ab.index) > *cur {
+                *cur = i64::from(ab.index);
+            }
         }
         for sb in bindings.spread_arg_bindings {
-            let Some(params) = definition_params.get(sb.callee.as_str()) else { continue };
-            let max_idx = array_max_index.get(sb.array_name.as_str()).copied().unwrap_or(-1);
+            let Some(params) = definition_params.get(sb.callee.as_str()) else {
+                continue;
+            };
+            let max_idx = array_max_index
+                .get(sb.array_name.as_str())
+                .copied()
+                .unwrap_or(-1);
             // Safety: the cast to usize is only reached inside the `max_idx >= 0` guard,
             // so max_idx is non-negative here and cannot wrap to usize::MAX.
             if max_idx >= 0 {
                 for i in 0..=(max_idx as usize) {
                     let param_idx = sb.start_index as usize + i;
-                    let Some(param) = params.get(param_idx) else { break };
+                    let Some(param) = params.get(param_idx) else {
+                        break;
+                    };
                     constraints.push((
                         format!("{}::{}", sb.callee, param),
                         format!("{}[{}]", sb.array_name, i),
@@ -489,7 +524,10 @@ fn build_points_to_map(
 
     // Phase 8.3e: Array.from(source, cb) — pts(cb::param0) ⊇ pts(source[*]).
     for cb in bindings.array_callback_bindings {
-        if let Some(param0) = definition_params.get(cb.callee_name.as_str()).and_then(|p| p.first()) {
+        if let Some(param0) = definition_params
+            .get(cb.callee_name.as_str())
+            .and_then(|p| p.first())
+        {
             constraints.push((
                 format!("{}::{}", cb.callee_name, param0),
                 format!("{}[*]", cb.source_name),
@@ -518,11 +556,14 @@ fn build_points_to_map(
                 .push((ob.prop_name.as_str(), ob.value_name.as_str()));
         }
         for rb in bindings.object_rest_param_bindings {
-            let Some(arg_names) = param_by_callee_idx.get(&(rb.callee.as_str(), rb.arg_index)) else {
+            let Some(arg_names) = param_by_callee_idx.get(&(rb.callee.as_str(), rb.arg_index))
+            else {
                 continue;
             };
             for arg_name in arg_names {
-                let Some(props) = props_by_object.get(arg_name) else { continue };
+                let Some(props) = props_by_object.get(arg_name) else {
+                    continue;
+                };
                 for (prop_name, value_name) in props {
                     if !def_names.contains(value_name) && !imported_names.contains_key(value_name) {
                         continue;
@@ -543,17 +584,22 @@ fn build_points_to_map(
     for _ in 0..max_iterations {
         let mut changed = false;
         for (lhs, rhs_key) in &constraints {
-            let rhs_pts: Option<Vec<String>> = pts.get(rhs_key.as_str())
+            let rhs_pts: Option<Vec<String>> = pts
+                .get(rhs_key.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.iter().cloned().collect());
             if let Some(targets) = rhs_pts {
                 let entry = pts.entry(lhs.clone()).or_default();
                 for t in targets {
-                    if entry.insert(t) { changed = true; }
+                    if entry.insert(t) {
+                        changed = true;
+                    }
                 }
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
     pts
 }
@@ -566,7 +612,8 @@ fn resolve_via_points_to<'a>(
 ) -> Vec<&'a str> {
     match pts.get(call_name) {
         None => vec![],
-        Some(targets) => targets.iter()
+        Some(targets) => targets
+            .iter()
             .filter(|t| t.as_str() != call_name)
             .map(|t| t.as_str())
             .collect(),
@@ -615,15 +662,31 @@ fn emit_pts_alias_edges<'a>(
         // `None` here — discarded rather than threaded further.
         let mut alias_confidence_override: Option<f64> = None;
         let mut alias_targets = resolve_call_targets(
-            ctx, &alias_call, alias_ctx.rel_path, alias_imported_from, alias_ctx.type_map, alias_ctx.caller_name,
-            alias_ctx.imported_names, alias_ctx.imported_original_names, &mut alias_confidence_override,
+            ctx,
+            &alias_call,
+            alias_ctx.rel_path,
+            alias_imported_from,
+            alias_ctx.type_map,
+            alias_ctx.caller_name,
+            alias_ctx.imported_names,
+            alias_ctx.imported_original_names,
+            &mut alias_confidence_override,
         );
-        sort_targets_by_confidence(&mut alias_targets, alias_ctx.rel_path, alias_imported_from, alias_confidence_override);
+        sort_targets_by_confidence(
+            &mut alias_targets,
+            alias_ctx.rel_path,
+            alias_imported_from,
+            alias_confidence_override,
+        );
         for t in &alias_targets {
             let edge_key = ((alias_ctx.caller_id as u64) << 32) | (t.id as u64);
-            if t.id != alias_ctx.caller_id && !seen_edges.contains(&edge_key) && !pts_edge_map.contains_key(&edge_key) {
-                let conf = resolve::compute_confidence(alias_ctx.rel_path, &t.file, alias_imported_from)
-                    - PROPAGATION_HOP_PENALTY;
+            if t.id != alias_ctx.caller_id
+                && !seen_edges.contains(&edge_key)
+                && !pts_edge_map.contains_key(&edge_key)
+            {
+                let conf =
+                    resolve::compute_confidence(alias_ctx.rel_path, &t.file, alias_imported_from)
+                        - PROPAGATION_HOP_PENALTY;
                 if conf > 0.0 {
                     pts_edge_map.insert(edge_key, edges.len());
                     edges.push(ComputedEdge {
@@ -740,7 +803,10 @@ fn build_pts_map_for_file(
         spread_arg_bindings: file_input.spread_arg_bindings.as_deref().unwrap_or(&[]),
         for_of_bindings: file_input.for_of_bindings.as_deref().unwrap_or(&[]),
         array_callback_bindings: file_input.array_callback_bindings.as_deref().unwrap_or(&[]),
-        object_rest_param_bindings: file_input.object_rest_param_bindings.as_deref().unwrap_or(&[]),
+        object_rest_param_bindings: file_input
+            .object_rest_param_bindings
+            .as_deref()
+            .unwrap_or(&[]),
         object_prop_bindings: file_input.object_prop_bindings.as_deref().unwrap_or(&[]),
     };
     let has_pts_inputs = !bindings.fn_ref_bindings.is_empty()
@@ -756,16 +822,23 @@ fn build_pts_map_for_file(
         return None;
     }
 
-    let def_names: HashSet<&str> = file_input.definitions.iter()
+    let def_names: HashSet<&str> = file_input
+        .definitions
+        .iter()
         .filter(|d| d.kind == "function" || d.kind == "method")
         .map(|d| d.name.as_str())
         .collect();
     // First-wins on duplicate names — mirrors buildDefinitionParamsMap.
     let mut definition_params: HashMap<&str, Vec<&str>> = HashMap::new();
     for d in &file_input.definitions {
-        if d.kind != "function" && d.kind != "method" { continue; }
-        let Some(params) = d.params.as_ref().filter(|p| !p.is_empty()) else { continue };
-        definition_params.entry(d.name.as_str())
+        if d.kind != "function" && d.kind != "method" {
+            continue;
+        }
+        let Some(params) = d.params.as_ref().filter(|p| !p.is_empty()) else {
+            continue;
+        };
+        definition_params
+            .entry(d.name.as_str())
             .or_insert_with(|| params.iter().map(|s| s.as_str()).collect());
     }
 
@@ -783,7 +856,10 @@ fn build_pts_map_for_file(
             rhs_receiver: None,
         }));
         merged_fn_ref = merged;
-        PtsBindings { fn_ref_bindings: &merged_fn_ref, ..bindings }
+        PtsBindings {
+            fn_ref_bindings: &merged_fn_ref,
+            ..bindings
+        }
     };
 
     Some(build_points_to_map(
@@ -803,27 +879,34 @@ fn build_file_context<'a>(
 ) -> FileContext<'a> {
     let rel_path = file_input.file.as_str();
     let imported_names: HashMap<&str, &str> = file_input
-        .imported_names.iter()
+        .imported_names
+        .iter()
         .map(|im| (im.name.as_str(), im.file.as_str()))
         .collect();
     let imported_original_names: HashMap<&str, &str> = file_input
-        .imported_names.iter()
+        .imported_names
+        .iter()
         .filter_map(|im| im.imported.as_deref().map(|orig| (im.name.as_str(), orig)))
         .collect();
     let type_map = build_type_map(file_input);
     let file_nodes: Vec<&NodeInfo> = all_nodes.iter().filter(|n| n.file == rel_path).collect();
-    let defs_with_ids: Vec<DefWithId> = file_input.definitions.iter().map(|d| {
-        let node_id = file_nodes.iter()
-            .find(|n| n.name == d.name && n.kind == d.kind && n.line == d.line)
-            .map(|n| n.id);
-        DefWithId {
-            name: &d.name,
-            kind: &d.kind,
-            line: d.line,
-            end_line: d.end_line.unwrap_or(u32::MAX),
-            node_id,
-        }
-    }).collect();
+    let defs_with_ids: Vec<DefWithId> = file_input
+        .definitions
+        .iter()
+        .map(|d| {
+            let node_id = file_nodes
+                .iter()
+                .find(|n| n.name == d.name && n.kind == d.kind && n.line == d.line)
+                .map(|n| n.id);
+            DefWithId {
+                name: &d.name,
+                kind: &d.kind,
+                line: d.line,
+                end_line: d.end_line.unwrap_or(u32::MAX),
+                node_id,
+            }
+        })
+        .collect();
     let pts_map = build_pts_map_for_file(file_input, &imported_names, max_iterations);
     let raw_fn_ref: &[FnRefBinding] = file_input.fn_ref_bindings.as_deref().unwrap_or(&[]);
     // Case (c) flat-key gate set: lhs names from the *raw* fnRefBindings only
@@ -861,15 +944,18 @@ fn emit_no_receiver_pts_edges<'a>(
     pts_edge_map: &mut HashMap<u64, usize>,
     edges: &mut Vec<ComputedEdge>,
 ) {
-    let pts = match fc.pts_map.as_ref() { Some(p) => p, None => return };
+    let pts = match fc.pts_map.as_ref() {
+        Some(p) => p,
+        None => return,
+    };
     let is_dyn_call = call.dynamic.unwrap_or(false);
-    let scoped_key = if caller_name.is_empty() { None } else {
-        Some(format!("{}::{}", caller_name, call.name))
-            .filter(|k| pts.contains_key(k.as_str()))
+    let scoped_key = if caller_name.is_empty() {
+        None
+    } else {
+        Some(format!("{}::{}", caller_name, call.name)).filter(|k| pts.contains_key(k.as_str()))
     };
     let module_key = if caller_name.is_empty() {
-        Some(format!("<module>::{}", call.name))
-            .filter(|k| pts.contains_key(k.as_str()))
+        Some(format!("<module>::{}", call.name)).filter(|k| pts.contains_key(k.as_str()))
     } else {
         None
     };
@@ -928,9 +1014,13 @@ fn emit_receiver_pts_edges<'a>(
         (Some(r), Some(p)) => (r, p),
         _ => return,
     };
-    if receiver == "this" || receiver == "self" || receiver == "super" { return; }
+    if receiver == "this" || receiver == "self" || receiver == "super" {
+        return;
+    }
     let receiver_key = format!("{}.{}", receiver, call.name);
-    if !pts.contains_key(receiver_key.as_str()) { return; }
+    if !pts.contains_key(receiver_key.as_str()) {
+        return;
+    }
     emit_pts_alias_edges(
         ctx,
         &PtsAliasCtx {
@@ -975,11 +1065,18 @@ fn process_file<'a>(
 
     for call in &file_input.calls {
         if let Some(ref receiver) = call.receiver {
-            if ctx.builtin_set.contains(receiver.as_str()) { continue; }
+            if ctx.builtin_set.contains(receiver.as_str()) {
+                continue;
+            }
         }
 
-        let (caller_id, caller_name) = find_enclosing_caller(&fc.defs_with_ids, call.line, fc.file_node_id);
-        let is_dynamic = if call.dynamic.unwrap_or(false) { 1u32 } else { 0u32 };
+        let (caller_id, caller_name) =
+            find_enclosing_caller(&fc.defs_with_ids, call.line, fc.file_node_id);
+        let is_dynamic = if call.dynamic.unwrap_or(false) {
+            1u32
+        } else {
+            0u32
+        };
         let imported_from = fc.imported_names.get(call.name.as_str()).copied();
 
         // Out-param set by the CHA typed-dispatch fallback (#1949) when it
@@ -987,8 +1084,15 @@ fn process_file<'a>(
         // interface lookup missed — see `resolve_call_targets` doc comment.
         let mut confidence_override: Option<f64> = None;
         let mut targets = resolve_call_targets(
-            ctx, call, fc.rel_path, imported_from, &fc.type_map, caller_name, &fc.imported_names,
-            &fc.imported_original_names, &mut confidence_override,
+            ctx,
+            call,
+            fc.rel_path,
+            imported_from,
+            &fc.type_map,
+            caller_name,
+            &fc.imported_names,
+            &fc.imported_original_names,
+            &mut confidence_override,
         );
         // #1771/#1784: value-ref references (object-literal property values,
         // Lua builtin reassignment, `instanceof ClassName`) resolve against
@@ -1018,18 +1122,62 @@ fn process_file<'a>(
                 }
             }
         }
-        sort_targets_by_confidence(&mut targets, fc.rel_path, imported_from, confidence_override);
-        emit_call_edges(&targets, caller_id, is_dynamic, fc.rel_path, imported_from, confidence_override, &mut seen_edges, &mut pts_edge_map, edges);
+        sort_targets_by_confidence(
+            &mut targets,
+            fc.rel_path,
+            imported_from,
+            confidence_override,
+        );
+        emit_call_edges(
+            &targets,
+            caller_id,
+            is_dynamic,
+            fc.rel_path,
+            imported_from,
+            confidence_override,
+            &mut seen_edges,
+            &mut pts_edge_map,
+            edges,
+        );
 
         if targets.is_empty() && call.receiver.is_none() {
-            emit_no_receiver_pts_edges(ctx, &fc, call, caller_id, caller_name, is_dynamic, &seen_edges, &mut pts_edge_map, edges);
+            emit_no_receiver_pts_edges(
+                ctx,
+                &fc,
+                call,
+                caller_id,
+                caller_name,
+                is_dynamic,
+                &seen_edges,
+                &mut pts_edge_map,
+                edges,
+            );
         }
 
         if targets.is_empty() {
-            emit_receiver_pts_edges(ctx, &fc, call, caller_id, caller_name, is_dynamic, &seen_edges, &mut pts_edge_map, edges);
+            emit_receiver_pts_edges(
+                ctx,
+                &fc,
+                call,
+                caller_id,
+                caller_name,
+                is_dynamic,
+                &seen_edges,
+                &mut pts_edge_map,
+                edges,
+            );
         }
 
-        emit_receiver_edge(ctx, call, caller_id, fc.rel_path, &fc.type_map, &fc.imported_names, &mut seen_edges, edges);
+        emit_receiver_edge(
+            ctx,
+            call,
+            caller_id,
+            fc.rel_path,
+            &fc.type_map,
+            &fc.imported_names,
+            &mut seen_edges,
+            edges,
+        );
 
         // Sink edge: flag-only dynamic calls with no resolved target are emitted as
         // a (caller → file_node) edge at confidence=0.0 with dynamic_kind set.
@@ -1055,7 +1203,14 @@ fn process_file<'a>(
         }
     }
 
-    emit_hierarchy_edges(ctx, file_input, fc.rel_path, &fc.imported_names, &fc.imported_original_names, edges);
+    emit_hierarchy_edges(
+        ctx,
+        file_input,
+        fc.rel_path,
+        &fc.imported_names,
+        &fc.imported_original_names,
+        edges,
+    );
 }
 
 /// Callable definition kinds — only function/method bodies act as enclosing
@@ -1094,7 +1249,11 @@ fn is_top_level_binding_kind(kind: &str) -> bool {
 ///
 /// Returns `(caller_id, caller_name)` — `caller_name` is `""` when the call
 /// falls back to file scope.
-fn find_enclosing_caller<'a>(defs: &[DefWithId<'a>], call_line: u32, file_node_id: u32) -> (u32, &'a str) {
+fn find_enclosing_caller<'a>(
+    defs: &[DefWithId<'a>],
+    call_line: u32,
+    file_node_id: u32,
+) -> (u32, &'a str) {
     let mut fn_caller_id: Option<u32> = None;
     let mut fn_caller_name = "";
     let mut fn_caller_span = u32::MAX;
@@ -1182,22 +1341,35 @@ fn resolve_exact_global_match<'a>(
     rel_path: &str,
     receiver: Option<&str>,
 ) -> Vec<&'a NodeInfo> {
-    let scored: Vec<(&'a NodeInfo, f64)> = ctx.nodes_by_name
+    let scored: Vec<(&'a NodeInfo, f64)> = ctx
+        .nodes_by_name
         .get(call_name)
-        .map(|v| v.iter()
-            .filter(|&&n| receiver.is_none() || is_callable_kind(&n.kind))
-            .map(|&n| (n, resolve::compute_confidence(rel_path, &n.file, None)))
-            .filter(|&(_, confidence)| confidence >= 0.5)
-            .collect())
+        .map(|v| {
+            v.iter()
+                .filter(|&&n| receiver.is_none() || is_callable_kind(&n.kind))
+                .map(|&n| (n, resolve::compute_confidence(rel_path, &n.file, None)))
+                .filter(|&(_, confidence)| confidence >= 0.5)
+                .collect()
+        })
         .unwrap_or_default();
-    if scored.is_empty() { return Vec::new(); }
+    if scored.is_empty() {
+        return Vec::new();
+    }
 
-    let best_confidence = scored.iter().map(|&(_, confidence)| confidence).fold(f64::MIN, f64::max);
-    let best: Vec<&'a NodeInfo> = scored.iter()
+    let best_confidence = scored
+        .iter()
+        .map(|&(_, confidence)| confidence)
+        .fold(f64::MIN, f64::max);
+    let best: Vec<&'a NodeInfo> = scored
+        .iter()
         .filter(|&&(_, confidence)| confidence == best_confidence)
         .map(|&(n, _)| n)
         .collect();
-    if best.len() == 1 { best } else { Vec::new() }
+    if best.len() == 1 {
+        best
+    } else {
+        Vec::new()
+    }
 }
 
 /// Reconcile a same-file bare-name match against a type-aware receiver match
@@ -1293,8 +1465,15 @@ fn resolve_call_targets<'a>(
     confidence_override: &mut Option<f64>,
 ) -> Vec<&'a NodeInfo> {
     let targets = resolve_call_targets_core(
-        ctx, call, rel_path, imported_from, type_map, caller_name, imported_names,
-        imported_original_names, confidence_override,
+        ctx,
+        call,
+        rel_path,
+        imported_from,
+        type_map,
+        caller_name,
+        imported_names,
+        imported_original_names,
+        confidence_override,
     );
     if call.receiver.is_some() {
         return targets;
@@ -1341,12 +1520,17 @@ fn resolve_call_targets_core<'a>(
     // the exact false-positive class #1893's same-file registry was designed
     // to prevent. Mirrors resolveCallTargets in call-resolver.ts.
     if let Some(ref needed_kind) = call.accessor_read {
-        let Some(receiver) = call.receiver.as_deref() else { return vec![] };
+        let Some(receiver) = call.receiver.as_deref() else {
+            return vec![];
+        };
         // The resolved class name can itself be a renamed import binding
         // (`import { Original as Alias }` — the extractor's type_map only
         // knows the local alias), so de-alias before building the qualified
         // lookup key exactly like the general cascade below does (#1730).
-        let dealiased_class_name = imported_original_names.get(receiver).copied().unwrap_or(receiver);
+        let dealiased_class_name = imported_original_names
+            .get(receiver)
+            .copied()
+            .unwrap_or(receiver);
         let qualified = format!("{}.{}", dealiased_class_name, call.name);
         // When the class is a known import, commit to the specific file it
         // resolves to rather than falling through to the unscoped global
@@ -1392,14 +1576,21 @@ fn resolve_call_targets_core<'a>(
     // When the call site uses a renamed import binding (`import { X as Y }`),
     // the imported file's actual symbol is declared under the *original* name
     // (X) — look that up instead of the local alias the call site wrote (#1730).
-    let target_name = imported_original_names.get(call.name.as_str()).copied().unwrap_or(call.name.as_str());
+    let target_name = imported_original_names
+        .get(call.name.as_str())
+        .copied()
+        .unwrap_or(call.name.as_str());
 
     // 1. Import-aware resolution
     if let Some(imp_file) = imported_from {
-        let targets = ctx.nodes_by_name_and_file
+        let targets = ctx
+            .nodes_by_name_and_file
             .get(&(target_name, imp_file))
-            .cloned().unwrap_or_default();
-        if !targets.is_empty() { return targets; }
+            .cloned()
+            .unwrap_or_default();
+        if !targets.is_empty() {
+            return targets;
+        }
     }
 
     // RES-4: Kotlin member callable reference — `Greeter::greet` emits
@@ -1416,13 +1607,19 @@ fn resolve_call_targets_core<'a>(
     {
         let receiver = call.receiver.as_deref().unwrap();
         let qualified = format!("{}.{}", receiver, call.name);
-        let pre_qualified: Vec<&NodeInfo> = ctx.nodes_by_name_and_file
+        let pre_qualified: Vec<&NodeInfo> = ctx
+            .nodes_by_name_and_file
             .get(&(qualified.as_str(), rel_path))
-            .map(|v| v.iter()
-                .filter(|n| n.kind == "method" || n.kind == "function")
-                .copied().collect())
+            .map(|v| {
+                v.iter()
+                    .filter(|n| n.kind == "method" || n.kind == "function")
+                    .copied()
+                    .collect()
+            })
             .unwrap_or_default();
-        if !pre_qualified.is_empty() { return pre_qualified; }
+        if !pre_qualified.is_empty() {
+            return pre_qualified;
+        }
     }
 
     // 2. Same-file resolution. A receiver — concrete (`obj.x()`) or
@@ -1438,11 +1635,16 @@ fn resolve_call_targets_core<'a>(
     // invocation, which legitimately targets a class-kind definition —
     // kind-filtering it would break constructor-call resolution (#1888).
     // Mirrors resolveCallTargets in call-resolver.ts.
-    let bare_matches = ctx.nodes_by_name_and_file
+    let bare_matches = ctx
+        .nodes_by_name_and_file
         .get(&(call.name.as_str(), rel_path))
-        .cloned().unwrap_or_default();
+        .cloned()
+        .unwrap_or_default();
     let bare_targets: Vec<&NodeInfo> = if call.receiver.is_some() {
-        bare_matches.into_iter().filter(|n| is_callable_kind(&n.kind)).collect()
+        bare_matches
+            .into_iter()
+            .filter(|n| is_callable_kind(&n.kind))
+            .collect()
     } else {
         bare_matches
     };
@@ -1476,17 +1678,26 @@ fn resolve_call_targets_core<'a>(
         // field annotations — prevents false edges when multiple classes define the same
         // property name (issues #1323, #1458). Consulted first for `this.`/`self.` receivers
         // so bare fallback keys (confidence 0.6) don't shadow the correct per-class entry.
-        let class_scoped_key = if effective_receiver != receiver.as_str() && !caller_name.is_empty() {
+        let class_scoped_key = if effective_receiver != receiver.as_str() && !caller_name.is_empty()
+        {
             caller_name
                 .rfind('.')
                 .map(|dot| format!("{}.{}", &caller_name[..dot], effective_receiver))
         } else {
             None
         };
-        let type_lookup = class_scoped_key.as_deref().and_then(|k| type_map.get(k))
+        let type_lookup = class_scoped_key
+            .as_deref()
+            .and_then(|k| type_map.get(k))
             .or_else(|| type_map.get(effective_receiver))
             .or_else(|| type_map.get(receiver.as_str()))
-            .or_else(|| if caller_name.is_empty() { None } else { type_map.get(rest_param_key.as_str()) });
+            .or_else(|| {
+                if caller_name.is_empty() {
+                    None
+                } else {
+                    type_map.get(rest_param_key.as_str())
+                }
+            });
         // Inline new-expression receiver: `(new Foo).bar()` — extract the constructor name
         // when no typeMap entry exists for the complex receiver expression.
         // Mirrors the regex `/^\(?\s*new\s+([A-Z_$][A-Za-z0-9_$]*)/` in call-resolver.ts.
@@ -1504,28 +1715,45 @@ fn resolve_call_targets_core<'a>(
             // building the qualified lookup key, since the symbol table
             // stores definitions under the declared name (`Foo.method`),
             // not the local alias (#1825).
-            let type_name = imported_original_names.get(type_name).copied().unwrap_or(type_name);
+            let type_name = imported_original_names
+                .get(type_name)
+                .copied()
+                .unwrap_or(type_name);
             let qualified = format!("{}.{}", type_name, call.name);
-            let typed: Vec<&NodeInfo> = ctx.nodes_by_name
+            let typed: Vec<&NodeInfo> = ctx
+                .nodes_by_name
                 .get(qualified.as_str())
-                .map(|v| v.iter()
-                    .filter(|n| n.kind == "method"
-                        && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
-                    .copied().collect())
+                .map(|v| {
+                    v.iter()
+                        .filter(|n| {
+                            n.kind == "method"
+                                && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5
+                        })
+                        .copied()
+                        .collect()
+                })
                 .unwrap_or_default();
-            if !typed.is_empty() { return prefer_type_aware_over_bare(&bare_targets, typed); }
+            if !typed.is_empty() {
+                return prefer_type_aware_over_bare(&bare_targets, typed);
+            }
             // Prototype alias: `Foo.prototype.bar = identifier` seeds typeMap['Foo.bar'] = identifier.
             // After the direct method lookup misses (no definition emitted for this method),
             // check if the typeMap holds an alias to a standalone function.
             // Mirrors the protoAlias fallback in resolveByMethodOrGlobal in call-resolver.ts.
             if let Some(&(proto_target, _)) = type_map.get(qualified.as_str()) {
-                let resolved: Vec<&NodeInfo> = ctx.nodes_by_name
+                let resolved: Vec<&NodeInfo> = ctx
+                    .nodes_by_name
                     .get(proto_target)
-                    .map(|v| v.iter()
-                        .filter(|n| resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
-                        .copied().collect())
+                    .map(|v| {
+                        v.iter()
+                            .filter(|n| resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
+                            .copied()
+                            .collect()
+                    })
                     .unwrap_or_default();
-                if !resolved.is_empty() { return prefer_type_aware_over_bare(&bare_targets, resolved); }
+                if !resolved.is_empty() {
+                    return prefer_type_aware_over_bare(&bare_targets, resolved);
+                }
             }
 
             // 3.7. Native CHA typed-dispatch fallback (#1949). The direct
@@ -1569,26 +1797,40 @@ fn resolve_call_targets_core<'a>(
                 .copied()
                 .unwrap_or(effective_receiver);
             let qualified = format!("{}.{}", dealiased_receiver, call.name);
-            let direct: Vec<&NodeInfo> = ctx.nodes_by_name
+            let direct: Vec<&NodeInfo> = ctx
+                .nodes_by_name
                 .get(qualified.as_str())
-                .map(|v| v.iter()
-                    .filter(|n| (n.kind == "method" || n.kind == "function")
-                        && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
-                    .copied().collect())
+                .map(|v| {
+                    v.iter()
+                        .filter(|n| {
+                            (n.kind == "method" || n.kind == "function")
+                                && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5
+                        })
+                        .copied()
+                        .collect()
+                })
                 .unwrap_or_default();
-            if !direct.is_empty() { return prefer_type_aware_over_bare(&bare_targets, direct); }
+            if !direct.is_empty() {
+                return prefer_type_aware_over_bare(&bare_targets, direct);
+            }
         }
 
         // 3.6. Phase 8.3d: composite pts key — `obj.prop = fn` seeds typeMap['obj.prop']
         let composite_key = format!("{}.{}", receiver, call.name);
         if let Some(&(pts_target, _)) = type_map.get(composite_key.as_str()) {
-            let resolved: Vec<&NodeInfo> = ctx.nodes_by_name
+            let resolved: Vec<&NodeInfo> = ctx
+                .nodes_by_name
                 .get(pts_target)
-                .map(|v| v.iter()
-                    .filter(|n| resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
-                    .copied().collect())
+                .map(|v| {
+                    v.iter()
+                        .filter(|n| resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
+                        .copied()
+                        .collect()
+                })
                 .unwrap_or_default();
-            if !resolved.is_empty() { return prefer_type_aware_over_bare(&bare_targets, resolved); }
+            if !resolved.is_empty() {
+                return prefer_type_aware_over_bare(&bare_targets, resolved);
+            }
         }
     }
 
@@ -1612,30 +1854,49 @@ fn resolve_call_targets_core<'a>(
         // RES-3.1: typeMap[receiver] → resolvedType.keyExpr
         if let Some(&(resolved_type, _)) = type_map.get(receiver) {
             let qualified = format!("{}.{}", resolved_type, key_expr);
-            let typed: Vec<&NodeInfo> = ctx.nodes_by_name
+            let typed: Vec<&NodeInfo> = ctx
+                .nodes_by_name
                 .get(qualified.as_str())
-                .map(|v| v.iter()
-                    .filter(|n| (n.kind == "method" || n.kind == "function")
-                        && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
-                    .copied().collect())
+                .map(|v| {
+                    v.iter()
+                        .filter(|n| {
+                            (n.kind == "method" || n.kind == "function")
+                                && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5
+                        })
+                        .copied()
+                        .collect()
+                })
                 .unwrap_or_default();
-            if !typed.is_empty() { return prefer_type_aware_over_bare(&bare_targets, typed); }
+            if !typed.is_empty() {
+                return prefer_type_aware_over_bare(&bare_targets, typed);
+            }
         }
 
         // RES-3.2: callerName class prefix → CallerClass.keyExpr
         if !caller_name.is_empty() {
             if let Some(last_dot) = caller_name.rfind('.') {
-                let seg_start = caller_name[..last_dot].rfind('.').map(|p| p + 1).unwrap_or(0);
+                let seg_start = caller_name[..last_dot]
+                    .rfind('.')
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
                 let caller_class = &caller_name[seg_start..last_dot];
                 let qualified = format!("{}.{}", caller_class, key_expr);
-                let class_scoped: Vec<&NodeInfo> = ctx.nodes_by_name
+                let class_scoped: Vec<&NodeInfo> = ctx
+                    .nodes_by_name
                     .get(qualified.as_str())
-                    .map(|v| v.iter()
-                        .filter(|n| (n.kind == "method" || n.kind == "function")
-                            && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
-                        .copied().collect())
+                    .map(|v| {
+                        v.iter()
+                            .filter(|n| {
+                                (n.kind == "method" || n.kind == "function")
+                                    && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5
+                            })
+                            .copied()
+                            .collect()
+                    })
                     .unwrap_or_default();
-                if !class_scoped.is_empty() { return prefer_type_aware_over_bare(&bare_targets, class_scoped); }
+                if !class_scoped.is_empty() {
+                    return prefer_type_aware_over_bare(&bare_targets, class_scoped);
+                }
             }
         }
     }
@@ -1658,25 +1919,39 @@ fn resolve_call_targets_core<'a>(
         // accessor for `obj`, typeMap seeds 'callerName:this' = 'obj'. Resolve this.method()
         // via typeMap['obj.method'] → the concrete definition. Runs before the broad exact-name
         // lookup to avoid false positives from unrelated same-file definitions.
-        if call.receiver.as_deref() == Some("this") && !caller_name.is_empty() && !caller_name.contains('.') {
+        if call.receiver.as_deref() == Some("this")
+            && !caller_name.is_empty()
+            && !caller_name.contains('.')
+        {
             let accessor_key = format!("{}:this", caller_name);
             if let Some(&(obj_name, _)) = type_map.get(accessor_key.as_str()) {
                 let obj_method_key = format!("{}.{}", obj_name, call.name);
                 if let Some(&(target_fn, _)) = type_map.get(obj_method_key.as_str()) {
-                    let accessor_resolved: Vec<&NodeInfo> = ctx.nodes_by_name
+                    let accessor_resolved: Vec<&NodeInfo> = ctx
+                        .nodes_by_name
                         .get(target_fn)
-                        .map(|v| v.iter()
-                            .filter(|n| resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
-                            .copied().collect())
+                        .map(|v| {
+                            v.iter()
+                                .filter(|n| {
+                                    resolve::compute_confidence(rel_path, &n.file, None) >= 0.5
+                                })
+                                .copied()
+                                .collect()
+                        })
                         .unwrap_or_default();
-                    if !accessor_resolved.is_empty() { return accessor_resolved; }
+                    if !accessor_resolved.is_empty() {
+                        return accessor_resolved;
+                    }
                 }
             }
         }
 
         // First try exact name match (e.g. an unqualified function named "area").
-        let exact = resolve_exact_global_match(ctx, call.name.as_str(), rel_path, call.receiver.as_deref());
-        if !exact.is_empty() { return exact; }
+        let exact =
+            resolve_exact_global_match(ctx, call.name.as_str(), rel_path, call.receiver.as_deref());
+        if !exact.is_empty() {
+            return exact;
+        }
 
         // Class-scoped exact lookup: prefer `ClassName.method` when the caller is a qualified
         // method (e.g. `this.area()` or plain `area()` in `Shape.describe` → try `Shape.area`).
@@ -1695,17 +1970,28 @@ fn resolve_call_targets_core<'a>(
                 // Extract only the segment immediately before the method name so that
                 // 'Namespace.ClassName.method' yields 'ClassName', not 'Namespace.ClassName'.
                 // Symbols are stored under their bare class name, not their qualified path.
-                let seg_start = caller_name[..dot_idx].rfind('.').map(|p| p + 1).unwrap_or(0);
+                let seg_start = caller_name[..dot_idx]
+                    .rfind('.')
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
                 let class_prefix = &caller_name[seg_start..dot_idx];
                 let qualified = format!("{}.{}", class_prefix, call.name);
-                let class_scoped: Vec<&NodeInfo> = ctx.nodes_by_name
+                let class_scoped: Vec<&NodeInfo> = ctx
+                    .nodes_by_name
                     .get(qualified.as_str())
-                    .map(|v| v.iter()
-                        .filter(|n| n.kind == "method"
-                            && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5)
-                        .copied().collect())
+                    .map(|v| {
+                        v.iter()
+                            .filter(|n| {
+                                n.kind == "method"
+                                    && resolve::compute_confidence(rel_path, &n.file, None) >= 0.5
+                            })
+                            .copied()
+                            .collect()
+                    })
                     .unwrap_or_default();
-                if !class_scoped.is_empty() { return class_scoped; }
+                if !class_scoped.is_empty() {
+                    return class_scoped;
+                }
             }
         }
 
@@ -1806,7 +2092,10 @@ fn attach_constructor_targets<'a>(
 /// Mirrors `MODULE_SCOPED_BARE_CALL_EXTENSIONS` in call-resolver.ts.
 fn is_module_scoped_language(rel_path: &str) -> bool {
     match rel_path.rsplit_once('.') {
-        Some((_, ext)) => matches!(ext, "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "mts" | "cts"),
+        Some((_, ext)) => matches!(
+            ext,
+            "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "mts" | "cts"
+        ),
         None => false,
     }
 }
@@ -1835,12 +2124,17 @@ fn strip_instance_prefix(receiver: &str) -> &str {
 fn extract_inline_new_type(receiver: &str) -> Option<String> {
     let s = receiver.strip_prefix('(').unwrap_or(receiver).trim_start();
     let s = s.strip_prefix("new")?;
-    if !s.starts_with(|c: char| c.is_whitespace()) { return None; }
+    if !s.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
     let s = s.trim_start();
-    let end = s.find(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
+    let end = s
+        .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
         .unwrap_or(s.len());
     let name = &s[..end];
-    if name.is_empty() { return None; }
+    if name.is_empty() {
+        return None;
+    }
     let first = name.chars().next()?;
     if first.is_uppercase() || first == '_' || first == '$' {
         Some(name.to_string())
@@ -1862,7 +2156,9 @@ fn sort_targets_by_confidence(
         targets.sort_by(|a, b| {
             let conf_a = resolve::compute_confidence(rel_path, &a.file, imported_from);
             let conf_b = resolve::compute_confidence(rel_path, &b.file, imported_from);
-            conf_b.partial_cmp(&conf_a).unwrap_or(std::cmp::Ordering::Equal)
+            conf_b
+                .partial_cmp(&conf_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
 }
@@ -1872,9 +2168,15 @@ fn sort_targets_by_confidence(
 /// target uses that flat confidence instead of `resolve::compute_confidence`
 /// — file proximity is not meaningful for virtual dispatch confidence.
 fn emit_call_edges(
-    targets: &[&NodeInfo], caller_id: u32, is_dynamic: u32,
-    rel_path: &str, imported_from: Option<&str>, confidence_override: Option<f64>,
-    seen_edges: &mut HashSet<u64>, pts_edge_map: &mut HashMap<u64, usize>, edges: &mut Vec<ComputedEdge>,
+    targets: &[&NodeInfo],
+    caller_id: u32,
+    is_dynamic: u32,
+    rel_path: &str,
+    imported_from: Option<&str>,
+    confidence_override: Option<f64>,
+    seen_edges: &mut HashSet<u64>,
+    pts_edge_map: &mut HashMap<u64, usize>,
+    edges: &mut Vec<ComputedEdge>,
 ) {
     for t in targets {
         let edge_key = ((caller_id as u64) << 32) | (t.id as u64);
@@ -1897,8 +2199,11 @@ fn emit_call_edges(
             } else {
                 seen_edges.insert(edge_key);
                 edges.push(ComputedEdge {
-                    source_id: caller_id, target_id: t.id,
-                    kind: "calls".to_string(), confidence, dynamic: is_dynamic,
+                    source_id: caller_id,
+                    target_id: t.id,
+                    kind: "calls".to_string(),
+                    confidence,
+                    dynamic: is_dynamic,
                     dynamic_kind: None,
                     technique: None,
                 });
@@ -1909,15 +2214,25 @@ fn emit_call_edges(
 
 /// Emit a receiver edge from caller to the receiver's type node (if applicable).
 fn emit_receiver_edge(
-    ctx: &EdgeContext, call: &CallInfo, caller_id: u32, rel_path: &str,
+    ctx: &EdgeContext,
+    call: &CallInfo,
+    caller_id: u32,
+    rel_path: &str,
     type_map: &HashMap<&str, (&str, f64)>,
     imported_names: &HashMap<&str, &str>,
-    seen_edges: &mut HashSet<u64>, edges: &mut Vec<ComputedEdge>,
+    seen_edges: &mut HashSet<u64>,
+    edges: &mut Vec<ComputedEdge>,
 ) {
-    let Some(ref receiver) = call.receiver else { return };
+    let Some(ref receiver) = call.receiver else {
+        return;
+    };
     if ctx.builtin_set.contains(receiver.as_str())
-        || receiver == "this" || receiver == "self" || receiver == "super"
-    { return; }
+        || receiver == "this"
+        || receiver == "self"
+        || receiver == "super"
+    {
+        return;
+    }
 
     let type_entry = type_map.get(receiver.as_str());
     let effective_receiver = type_entry.map(|&(t, _)| t).unwrap_or(receiver.as_str());
@@ -1927,12 +2242,15 @@ fn emit_receiver_edge(
     // kind="function" node in the importer but the real class lives elsewhere).
     // A locally-defined `function C(){}` owns the name — no cross-file class
     // should shadow it (issue #1539).  Mirror of JS resolveReceiverEdge logic.
-    let samefile_all: Vec<&NodeInfo> = ctx.nodes_by_name_and_file
+    let samefile_all: Vec<&NodeInfo> = ctx
+        .nodes_by_name_and_file
         .get(&(effective_receiver, rel_path))
-        .cloned().unwrap_or_default();
-    let is_local_definition = !samefile_all.is_empty()
-        && !imported_names.contains_key(effective_receiver);
-    let samefile_candidates: Vec<&NodeInfo> = samefile_all.iter()
+        .cloned()
+        .unwrap_or_default();
+    let is_local_definition =
+        !samefile_all.is_empty() && !imported_names.contains_key(effective_receiver);
+    let samefile_candidates: Vec<&NodeInfo> = samefile_all
+        .iter()
         .copied()
         .filter(|n| ctx.receiver_kinds.contains(n.kind.as_str()))
         .collect();
@@ -1943,10 +2261,15 @@ fn emit_receiver_edge(
         // Cross-language candidates are never legitimate receiver targets
         // (#1783) — a `new Foo()` in one language can't statically resolve to
         // an unrelated same-named class in another. Mirrors JS resolveReceiverEdge.
-        ctx.nodes_by_name.get(effective_receiver).cloned().unwrap_or_default()
+        ctx.nodes_by_name
+            .get(effective_receiver)
+            .cloned()
+            .unwrap_or_default()
             .into_iter()
-            .filter(|n| ctx.receiver_kinds.contains(n.kind.as_str())
-                && resolve::is_same_language_family(rel_path, &n.file))
+            .filter(|n| {
+                ctx.receiver_kinds.contains(n.kind.as_str())
+                    && resolve::is_same_language_family(rel_path, &n.file)
+            })
             .collect()
     };
 
@@ -1959,8 +2282,11 @@ fn emit_receiver_edge(
             // mirroring `typeConfidence ?? (typeName ? 0.9 : 0.7)` in resolveReceiverEdge.
             let confidence = type_entry.map(|&(_, c)| c).unwrap_or(0.7);
             edges.push(ComputedEdge {
-                source_id: caller_id, target_id: recv_target.id,
-                kind: "receiver".to_string(), confidence, dynamic: 0,
+                source_id: caller_id,
+                target_id: recv_target.id,
+                kind: "receiver".to_string(),
+                confidence,
+                dynamic: 0,
                 dynamic_kind: None,
                 technique: None,
             });
@@ -1990,21 +2316,26 @@ fn resolve_hierarchy_targets<'a>(
     target_kinds: &[&str],
     imported_original_names: &HashMap<&str, &str>,
 ) -> Vec<&'a NodeInfo> {
-    let samefile_all: Vec<&NodeInfo> = ctx.nodes_by_name_and_file
+    let samefile_all: Vec<&NodeInfo> = ctx
+        .nodes_by_name_and_file
         .get(&(name, rel_path))
-        .cloned().unwrap_or_default();
+        .cloned()
+        .unwrap_or_default();
     let is_local_definition = !samefile_all.is_empty() && !imported_names.contains_key(name);
     if is_local_definition {
-        return samefile_all.into_iter()
+        return samefile_all
+            .into_iter()
             .filter(|n| target_kinds.contains(&n.kind.as_str()))
             .collect();
     }
 
     if let Some(imported_from) = imported_names.get(name) {
         let target_name = imported_original_names.get(name).copied().unwrap_or(name);
-        let imported_candidates: Vec<&NodeInfo> = ctx.nodes_by_name_and_file
+        let imported_candidates: Vec<&NodeInfo> = ctx
+            .nodes_by_name_and_file
             .get(&(target_name, *imported_from))
-            .cloned().unwrap_or_default()
+            .cloned()
+            .unwrap_or_default()
             .into_iter()
             .filter(|n| target_kinds.contains(&n.kind.as_str()))
             .collect();
@@ -2013,44 +2344,76 @@ fn resolve_hierarchy_targets<'a>(
         }
     }
 
-    ctx.nodes_by_name.get(name).cloned().unwrap_or_default()
+    ctx.nodes_by_name
+        .get(name)
+        .cloned()
+        .unwrap_or_default()
         .into_iter()
-        .filter(|n| target_kinds.contains(&n.kind.as_str()) && resolve::is_same_language_family(rel_path, &n.file))
+        .filter(|n| {
+            target_kinds.contains(&n.kind.as_str())
+                && resolve::is_same_language_family(rel_path, &n.file)
+        })
         .take(1)
         .collect()
 }
 
 /// Emit extends and implements edges for class hierarchy declarations.
 fn emit_hierarchy_edges(
-    ctx: &EdgeContext, file_input: &FileEdgeInput, rel_path: &str,
+    ctx: &EdgeContext,
+    file_input: &FileEdgeInput,
+    rel_path: &str,
     imported_names: &HashMap<&str, &str>,
     imported_original_names: &HashMap<&str, &str>,
     edges: &mut Vec<ComputedEdge>,
 ) {
     for cls in &file_input.classes {
-        let source_row = ctx.nodes_by_name_and_file
+        let source_row = ctx
+            .nodes_by_name_and_file
             .get(&(cls.name.as_str(), rel_path))
-            .and_then(|v| v.iter().find(|n| HIERARCHY_SOURCE_KINDS.contains(&n.kind.as_str())));
+            .and_then(|v| {
+                v.iter()
+                    .find(|n| HIERARCHY_SOURCE_KINDS.contains(&n.kind.as_str()))
+            });
 
         let Some(source) = source_row else { continue };
 
         if let Some(ref extends_name) = cls.extends {
-            let targets = resolve_hierarchy_targets(ctx, extends_name, rel_path, imported_names, EXTENDS_TARGET_KINDS, imported_original_names);
+            let targets = resolve_hierarchy_targets(
+                ctx,
+                extends_name,
+                rel_path,
+                imported_names,
+                EXTENDS_TARGET_KINDS,
+                imported_original_names,
+            );
             for t in targets {
                 edges.push(ComputedEdge {
-                    source_id: source.id, target_id: t.id,
-                    kind: "extends".to_string(), confidence: 1.0, dynamic: 0,
+                    source_id: source.id,
+                    target_id: t.id,
+                    kind: "extends".to_string(),
+                    confidence: 1.0,
+                    dynamic: 0,
                     dynamic_kind: None,
                     technique: None,
                 });
             }
         }
         if let Some(ref implements_name) = cls.implements {
-            let targets = resolve_hierarchy_targets(ctx, implements_name, rel_path, imported_names, IMPLEMENTS_TARGET_KINDS, imported_original_names);
+            let targets = resolve_hierarchy_targets(
+                ctx,
+                implements_name,
+                rel_path,
+                imported_names,
+                IMPLEMENTS_TARGET_KINDS,
+                imported_original_names,
+            );
             for t in targets {
                 edges.push(ComputedEdge {
-                    source_id: source.id, target_id: t.id,
-                    kind: "implements".to_string(), confidence: 1.0, dynamic: 0,
+                    source_id: source.id,
+                    target_id: t.id,
+                    kind: "implements".to_string(),
+                    confidence: 1.0,
+                    dynamic: 0,
                     dynamic_kind: None,
                     technique: None,
                 });
@@ -2058,7 +2421,6 @@ fn emit_hierarchy_edges(
         }
     }
 }
-
 
 // ── Import edges (native) ──────────────────────────────────────────────
 
@@ -2221,7 +2583,14 @@ impl<'a> ImportEdgeContext<'a> {
             );
         }
 
-        Self { resolved, reexport_map, file_node_map, barrel_set, file_defs, symbol_node_map }
+        Self {
+            resolved,
+            reexport_map,
+            file_node_map,
+            barrel_set,
+            file_defs,
+            symbol_node_map,
+        }
     }
 }
 
@@ -2259,8 +2628,9 @@ pub fn build_import_edges(
     file_node_ids: Vec<FileNodeEntry>,
     barrel_files: Vec<String>,
     root_dir: String,
-    #[napi(ts_arg_type = "SymbolNodeEntry[] | undefined")]
-    symbol_nodes: Option<Vec<SymbolNodeEntry>>,
+    #[napi(ts_arg_type = "SymbolNodeEntry[] | undefined")] symbol_nodes: Option<
+        Vec<SymbolNodeEntry>,
+    >,
 ) -> Vec<ComputedEdge> {
     let empty_symbols = Vec::new();
     let symbols_ref = symbol_nodes.as_deref().unwrap_or(&empty_symbols);
@@ -2422,12 +2792,8 @@ fn emit_barrel_through_edges(
     let mut resolved_sources: HashSet<String> = HashSet::new();
     for (_local, original, _type_only) in import_name_pairs(imp) {
         let mut visited = HashSet::new();
-        let actual = barrel_resolution::resolve_barrel_export(
-            ctx,
-            resolved_path,
-            &original,
-            &mut visited,
-        );
+        let actual =
+            barrel_resolution::resolve_barrel_export(ctx, resolved_path, &original, &mut visited);
         let actual_source = match actual {
             Some(resolved) => resolved.file,
             None => continue,
@@ -2507,7 +2873,12 @@ fn process_single_import(
 mod import_edge_tests {
     use super::*;
 
-    fn make_file(file: &str, node_id: u32, imports: Vec<ImportInfo>, defs: Vec<&str>) -> ImportEdgeFileInput {
+    fn make_file(
+        file: &str,
+        node_id: u32,
+        imports: Vec<ImportInfo>,
+        defs: Vec<&str>,
+    ) -> ImportEdgeFileInput {
         ImportEdgeFileInput {
             file: file.to_string(),
             file_node_id: node_id,
@@ -2517,7 +2888,13 @@ mod import_edge_tests {
         }
     }
 
-    fn make_import(source: &str, names: Vec<&str>, reexport: bool, type_only: bool, dynamic: bool) -> ImportInfo {
+    fn make_import(
+        source: &str,
+        names: Vec<&str>,
+        reexport: bool,
+        type_only: bool,
+        dynamic: bool,
+    ) -> ImportInfo {
         ImportInfo {
             source: source.to_string(),
             names: names.into_iter().map(|s| s.to_string()).collect(),
@@ -2585,18 +2962,35 @@ mod import_edge_tests {
     }
 
     fn make_node_entry(file: &str, id: u32) -> FileNodeEntry {
-        FileNodeEntry { file: file.to_string(), node_id: id }
+        FileNodeEntry {
+            file: file.to_string(),
+            node_id: id,
+        }
     }
 
     #[test]
     fn basic_import_edge() {
-        let files = vec![make_file("src/app.ts", 1, vec![
-            make_import("./utils", vec!["foo"], false, false, false),
-        ], vec!["main"])];
+        let files = vec![make_file(
+            "src/app.ts",
+            1,
+            vec![make_import("./utils", vec!["foo"], false, false, false)],
+            vec!["main"],
+        )];
         let resolved = vec![make_resolved("/root/src/app.ts", "./utils", "src/utils.ts")];
-        let node_ids = vec![make_node_entry("src/app.ts", 1), make_node_entry("src/utils.ts", 2)];
+        let node_ids = vec![
+            make_node_entry("src/app.ts", 1),
+            make_node_entry("src/utils.ts", 2),
+        ];
 
-        let edges = build_import_edges(files, resolved, vec![], node_ids, vec![], "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            vec![],
+            node_ids,
+            vec![],
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].source_id, 1);
         assert_eq!(edges[0].target_id, 2);
@@ -2606,13 +3000,31 @@ mod import_edge_tests {
 
     #[test]
     fn reexport_edge() {
-        let files = vec![make_file("src/index.ts", 1, vec![
-            make_import("./utils", vec!["foo"], true, false, false),
-        ], vec![])];
-        let resolved = vec![make_resolved("/root/src/index.ts", "./utils", "src/utils.ts")];
-        let node_ids = vec![make_node_entry("src/index.ts", 1), make_node_entry("src/utils.ts", 2)];
+        let files = vec![make_file(
+            "src/index.ts",
+            1,
+            vec![make_import("./utils", vec!["foo"], true, false, false)],
+            vec![],
+        )];
+        let resolved = vec![make_resolved(
+            "/root/src/index.ts",
+            "./utils",
+            "src/utils.ts",
+        )];
+        let node_ids = vec![
+            make_node_entry("src/index.ts", 1),
+            make_node_entry("src/utils.ts", 2),
+        ];
 
-        let edges = build_import_edges(files, resolved, vec![], node_ids, vec![], "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            vec![],
+            node_ids,
+            vec![],
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].kind, "reexports");
     }
@@ -2623,11 +3035,21 @@ mod import_edge_tests {
         // specific symbol defined in src/utils.ts. Alongside the file-level
         // `reexports` edge, a symbol-level `reexports` edge should point at
         // `foo`'s own node — not at every export of utils.ts (#1742).
-        let files = vec![make_file("src/index.ts", 1, vec![
-            make_import("./utils", vec!["foo"], true, false, false),
-        ], vec![])];
-        let resolved = vec![make_resolved("/root/src/index.ts", "./utils", "src/utils.ts")];
-        let node_ids = vec![make_node_entry("src/index.ts", 1), make_node_entry("src/utils.ts", 2)];
+        let files = vec![make_file(
+            "src/index.ts",
+            1,
+            vec![make_import("./utils", vec!["foo"], true, false, false)],
+            vec![],
+        )];
+        let resolved = vec![make_resolved(
+            "/root/src/index.ts",
+            "./utils",
+            "src/utils.ts",
+        )];
+        let node_ids = vec![
+            make_node_entry("src/index.ts", 1),
+            make_node_entry("src/utils.ts", 2),
+        ];
         let symbol_nodes = vec![SymbolNodeEntry {
             name: "foo".to_string(),
             file: "src/utils.ts".to_string(),
@@ -2661,8 +3083,10 @@ mod import_edge_tests {
         // `reexports` edge) so the query layer can always apply full-export
         // semantics for genuine wildcards, even when a *different* statement
         // to the same target also names specific symbols (#1849 review).
-        let files = vec![make_file("src/index.ts", 1, vec![
-            ImportInfo {
+        let files = vec![make_file(
+            "src/index.ts",
+            1,
+            vec![ImportInfo {
                 source: "./utils".to_string(),
                 names: vec![],
                 reexport: true,
@@ -2671,10 +3095,18 @@ mod import_edge_tests {
                 wildcard_reexport: true,
                 type_only_names: vec![],
                 renamed_imports: vec![],
-            },
-        ], vec![])];
-        let resolved = vec![make_resolved("/root/src/index.ts", "./utils", "src/utils.ts")];
-        let node_ids = vec![make_node_entry("src/index.ts", 1), make_node_entry("src/utils.ts", 2)];
+            }],
+            vec![],
+        )];
+        let resolved = vec![make_resolved(
+            "/root/src/index.ts",
+            "./utils",
+            "src/utils.ts",
+        )];
+        let node_ids = vec![
+            make_node_entry("src/index.ts", 1),
+            make_node_entry("src/utils.ts", 2),
+        ];
         let symbol_nodes = vec![SymbolNodeEntry {
             name: "foo".to_string(),
             file: "src/utils.ts".to_string(),
@@ -2707,21 +3139,33 @@ mod import_edge_tests {
         // named specifier's symbol-level edge — otherwise the query layer
         // would report only `foo` and silently drop every other export of
         // utils.ts that the wildcard was meant to surface (#1849 review).
-        let files = vec![make_file("src/index.ts", 1, vec![
-            make_import("./utils", vec!["foo"], true, false, false),
-            ImportInfo {
-                source: "./utils".to_string(),
-                names: vec![],
-                reexport: true,
-                type_only: false,
-                dynamic_import: false,
-                wildcard_reexport: true,
-                type_only_names: vec![],
-                renamed_imports: vec![],
-            },
-        ], vec![])];
-        let resolved = vec![make_resolved("/root/src/index.ts", "./utils", "src/utils.ts")];
-        let node_ids = vec![make_node_entry("src/index.ts", 1), make_node_entry("src/utils.ts", 2)];
+        let files = vec![make_file(
+            "src/index.ts",
+            1,
+            vec![
+                make_import("./utils", vec!["foo"], true, false, false),
+                ImportInfo {
+                    source: "./utils".to_string(),
+                    names: vec![],
+                    reexport: true,
+                    type_only: false,
+                    dynamic_import: false,
+                    wildcard_reexport: true,
+                    type_only_names: vec![],
+                    renamed_imports: vec![],
+                },
+            ],
+            vec![],
+        )];
+        let resolved = vec![make_resolved(
+            "/root/src/index.ts",
+            "./utils",
+            "src/utils.ts",
+        )];
+        let node_ids = vec![
+            make_node_entry("src/index.ts", 1),
+            make_node_entry("src/utils.ts", 2),
+        ];
         let symbol_nodes = vec![SymbolNodeEntry {
             name: "foo".to_string(),
             file: "src/utils.ts".to_string(),
@@ -2757,11 +3201,21 @@ mod import_edge_tests {
         // the *original* declaration name ("foo") in `names`, not the
         // external alias ("bar"). The symbol-level edge must resolve
         // against foo's own node.
-        let files = vec![make_file("src/index.ts", 1, vec![
-            make_import("./utils", vec!["foo"], true, false, false),
-        ], vec![])];
-        let resolved = vec![make_resolved("/root/src/index.ts", "./utils", "src/utils.ts")];
-        let node_ids = vec![make_node_entry("src/index.ts", 1), make_node_entry("src/utils.ts", 2)];
+        let files = vec![make_file(
+            "src/index.ts",
+            1,
+            vec![make_import("./utils", vec!["foo"], true, false, false)],
+            vec![],
+        )];
+        let resolved = vec![make_resolved(
+            "/root/src/index.ts",
+            "./utils",
+            "src/utils.ts",
+        )];
+        let node_ids = vec![
+            make_node_entry("src/index.ts", 1),
+            make_node_entry("src/utils.ts", 2),
+        ];
         let symbol_nodes = vec![
             SymbolNodeEntry {
                 name: "foo".to_string(),
@@ -2794,13 +3248,27 @@ mod import_edge_tests {
 
     #[test]
     fn type_only_edge() {
-        let files = vec![make_file("src/app.ts", 1, vec![
-            make_import("./types", vec!["MyType"], false, true, false),
-        ], vec![])];
+        let files = vec![make_file(
+            "src/app.ts",
+            1,
+            vec![make_import("./types", vec!["MyType"], false, true, false)],
+            vec![],
+        )];
         let resolved = vec![make_resolved("/root/src/app.ts", "./types", "src/types.ts")];
-        let node_ids = vec![make_node_entry("src/app.ts", 1), make_node_entry("src/types.ts", 2)];
+        let node_ids = vec![
+            make_node_entry("src/app.ts", 1),
+            make_node_entry("src/types.ts", 2),
+        ];
 
-        let edges = build_import_edges(files, resolved, vec![], node_ids, vec![], "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            vec![],
+            node_ids,
+            vec![],
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].kind, "imports-type");
     }
@@ -2812,11 +3280,22 @@ mod import_edge_tests {
         // declared in types.ts. The symbol-level `imports-type` edge must
         // resolve against Config's own node, not fail to find "CfgType"
         // there (#1847).
-        let files = vec![make_file("src/app.ts", 1, vec![
-            make_import_with_renames("./types", vec!["CfgType"], vec![("CfgType", "Config")], true),
-        ], vec![])];
+        let files = vec![make_file(
+            "src/app.ts",
+            1,
+            vec![make_import_with_renames(
+                "./types",
+                vec!["CfgType"],
+                vec![("CfgType", "Config")],
+                true,
+            )],
+            vec![],
+        )];
         let resolved = vec![make_resolved("/root/src/app.ts", "./types", "src/types.ts")];
-        let node_ids = vec![make_node_entry("src/app.ts", 1), make_node_entry("src/types.ts", 2)];
+        let node_ids = vec![
+            make_node_entry("src/app.ts", 1),
+            make_node_entry("src/types.ts", 2),
+        ];
         let symbol_nodes = vec![SymbolNodeEntry {
             name: "Config".to_string(),
             file: "src/types.ts".to_string(),
@@ -2848,13 +3327,25 @@ mod import_edge_tests {
         // export map, not the local alias "CfgType", which only exists in
         // app.ts (#1847).
         let files = vec![
-            make_file("src/app.ts", 1, vec![
-                make_import_with_renames("./barrel", vec!["CfgType"], vec![("CfgType", "Config")], false),
-            ], vec![]),
+            make_file(
+                "src/app.ts",
+                1,
+                vec![make_import_with_renames(
+                    "./barrel",
+                    vec!["CfgType"],
+                    vec![("CfgType", "Config")],
+                    false,
+                )],
+                vec![],
+            ),
             make_file("src/barrel.ts", 10, vec![], vec![]),
             make_file("src/types.ts", 20, vec![], vec!["Config"]),
         ];
-        let resolved = vec![make_resolved("/root/src/app.ts", "./barrel", "src/barrel.ts")];
+        let resolved = vec![make_resolved(
+            "/root/src/app.ts",
+            "./barrel",
+            "src/barrel.ts",
+        )];
         let reexports = vec![FileReexports {
             file: "src/barrel.ts".to_string(),
             reexports: vec![ReexportEntryInput {
@@ -2898,11 +3389,21 @@ mod import_edge_tests {
         // a symbol-level `imports-type` edge; `value` must not (#1813). The
         // file-level edge stays `imports` since the statement as a whole
         // isn't fully type-only.
-        let files = vec![make_file("src/app.ts", 1, vec![
-            make_import_with_type_only_names("./mixed", vec!["value", "Foo"], vec!["Foo"]),
-        ], vec![])];
+        let files = vec![make_file(
+            "src/app.ts",
+            1,
+            vec![make_import_with_type_only_names(
+                "./mixed",
+                vec!["value", "Foo"],
+                vec!["Foo"],
+            )],
+            vec![],
+        )];
         let resolved = vec![make_resolved("/root/src/app.ts", "./mixed", "src/mixed.ts")];
-        let node_ids = vec![make_node_entry("src/app.ts", 1), make_node_entry("src/mixed.ts", 2)];
+        let node_ids = vec![
+            make_node_entry("src/app.ts", 1),
+            make_node_entry("src/mixed.ts", 2),
+        ];
         let symbol_nodes = vec![
             SymbolNodeEntry {
                 name: "Foo".to_string(),
@@ -2947,7 +3448,10 @@ mod import_edge_tests {
             vec![],
         )];
         let resolved = vec![make_resolved("/root/src/app.ts", "./types", "src/types.ts")];
-        let node_ids = vec![make_node_entry("src/app.ts", 1), make_node_entry("src/types.ts", 2)];
+        let node_ids = vec![
+            make_node_entry("src/app.ts", 1),
+            make_node_entry("src/types.ts", 2),
+        ];
         let symbol_nodes = vec![SymbolNodeEntry {
             name: "Foo".to_string(),
             file: "src/types.ts".to_string(),
@@ -2984,7 +3488,10 @@ mod import_edge_tests {
             vec![],
         )];
         let resolved = vec![make_resolved("/root/src/app.ts", "./utils", "src/utils.ts")];
-        let node_ids = vec![make_node_entry("src/app.ts", 1), make_node_entry("src/utils.ts", 2)];
+        let node_ids = vec![
+            make_node_entry("src/app.ts", 1),
+            make_node_entry("src/utils.ts", 2),
+        ];
         let symbol_nodes = vec![SymbolNodeEntry {
             name: "helper".to_string(),
             file: "src/utils.ts".to_string(),
@@ -3020,7 +3527,10 @@ mod import_edge_tests {
             vec![],
         )];
         let resolved = vec![make_resolved("/root/src/app.ts", "./iface", "src/iface.go")];
-        let node_ids = vec![make_node_entry("src/app.ts", 1), make_node_entry("src/iface.go", 2)];
+        let node_ids = vec![
+            make_node_entry("src/app.ts", 1),
+            make_node_entry("src/iface.go", 2),
+        ];
         let symbol_nodes = vec![SymbolNodeEntry {
             name: "Reader".to_string(),
             file: "src/iface.go".to_string(),
@@ -3043,23 +3553,42 @@ mod import_edge_tests {
 
     #[test]
     fn dynamic_import_edge() {
-        let files = vec![make_file("src/app.ts", 1, vec![
-            make_import("./lazy", vec!["Lazy"], false, false, true),
-        ], vec![])];
+        let files = vec![make_file(
+            "src/app.ts",
+            1,
+            vec![make_import("./lazy", vec!["Lazy"], false, false, true)],
+            vec![],
+        )];
         let resolved = vec![make_resolved("/root/src/app.ts", "./lazy", "src/lazy.ts")];
-        let node_ids = vec![make_node_entry("src/app.ts", 1), make_node_entry("src/lazy.ts", 2)];
+        let node_ids = vec![
+            make_node_entry("src/app.ts", 1),
+            make_node_entry("src/lazy.ts", 2),
+        ];
 
-        let edges = build_import_edges(files, resolved, vec![], node_ids, vec![], "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            vec![],
+            node_ids,
+            vec![],
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].kind, "dynamic-imports");
     }
 
     #[test]
     fn barrel_only_skips_non_reexport() {
-        let mut file = make_file("src/index.ts", 1, vec![
-            make_import("./a", vec!["a"], false, false, false),
-            make_import("./b", vec!["b"], true, false, false),
-        ], vec![]);
+        let mut file = make_file(
+            "src/index.ts",
+            1,
+            vec![
+                make_import("./a", vec!["a"], false, false, false),
+                make_import("./b", vec!["b"], true, false, false),
+            ],
+            vec![],
+        );
         file.is_barrel_only = true;
         let resolved = vec![
             make_resolved("/root/src/index.ts", "./a", "src/a.ts"),
@@ -3071,7 +3600,15 @@ mod import_edge_tests {
             make_node_entry("src/b.ts", 3),
         ];
 
-        let edges = build_import_edges(vec![file], resolved, vec![], node_ids, vec![], "/root".to_string(), None);
+        let edges = build_import_edges(
+            vec![file],
+            resolved,
+            vec![],
+            node_ids,
+            vec![],
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].kind, "reexports");
         assert_eq!(edges[0].target_id, 3);
@@ -3080,9 +3617,12 @@ mod import_edge_tests {
     #[test]
     fn barrel_resolution_simple() {
         let files = vec![
-            make_file("src/app.ts", 1, vec![
-                make_import("./index", vec!["foo"], false, false, false),
-            ], vec!["main"]),
+            make_file(
+                "src/app.ts",
+                1,
+                vec![make_import("./index", vec!["foo"], false, false, false)],
+                vec!["main"],
+            ),
             make_file("src/index.ts", 10, vec![], vec![]),
             make_file("src/utils.ts", 20, vec![], vec!["foo"]),
         ];
@@ -3103,7 +3643,15 @@ mod import_edge_tests {
         ];
         let barrels = vec!["src/index.ts".to_string()];
 
-        let edges = build_import_edges(files, resolved, reexports, node_ids, barrels, "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            reexports,
+            node_ids,
+            barrels,
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 2);
         // First: direct import to barrel
         assert_eq!(edges[0].target_id, 10);
@@ -3117,9 +3665,12 @@ mod import_edge_tests {
     #[test]
     fn barrel_chain_two_levels() {
         let files = vec![
-            make_file("src/app.ts", 1, vec![
-                make_import("./index", vec!["deep"], false, false, false),
-            ], vec![]),
+            make_file(
+                "src/app.ts",
+                1,
+                vec![make_import("./index", vec!["deep"], false, false, false)],
+                vec![],
+            ),
             make_file("src/index.ts", 10, vec![], vec![]),
             make_file("src/mid.ts", 20, vec![], vec![]),
             make_file("src/deep.ts", 30, vec![], vec!["deep"]),
@@ -3152,7 +3703,15 @@ mod import_edge_tests {
         ];
         let barrels = vec!["src/index.ts".to_string()];
 
-        let edges = build_import_edges(files, resolved, reexports, node_ids, barrels, "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            reexports,
+            node_ids,
+            barrels,
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 2);
         assert_eq!(edges[1].target_id, 30);
         assert_eq!(edges[1].confidence, 0.9);
@@ -3161,9 +3720,12 @@ mod import_edge_tests {
     #[test]
     fn barrel_cycle_detection() {
         let files = vec![
-            make_file("src/app.ts", 1, vec![
-                make_import("./a", vec!["x"], false, false, false),
-            ], vec![]),
+            make_file(
+                "src/app.ts",
+                1,
+                vec![make_import("./a", vec!["x"], false, false, false)],
+                vec![],
+            ),
             make_file("src/a.ts", 10, vec![], vec![]),
             make_file("src/b.ts", 20, vec![], vec![]),
         ];
@@ -3194,7 +3756,15 @@ mod import_edge_tests {
         ];
         let barrels = vec!["src/a.ts".to_string()];
 
-        let edges = build_import_edges(files, resolved, reexports, node_ids, barrels, "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            reexports,
+            node_ids,
+            barrels,
+            "/root".to_string(),
+            None,
+        );
         // Only the direct import edge, no barrel-through (cycle prevents resolution)
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].target_id, 10);
@@ -3203,13 +3773,20 @@ mod import_edge_tests {
     #[test]
     fn wildcard_reexport_resolution() {
         let files = vec![
-            make_file("src/app.ts", 1, vec![
-                make_import("./barrel", vec!["helper"], false, false, false),
-            ], vec![]),
+            make_file(
+                "src/app.ts",
+                1,
+                vec![make_import("./barrel", vec!["helper"], false, false, false)],
+                vec![],
+            ),
             make_file("src/barrel.ts", 10, vec![], vec![]),
             make_file("src/helpers.ts", 20, vec![], vec!["helper"]),
         ];
-        let resolved = vec![make_resolved("/root/src/app.ts", "./barrel", "src/barrel.ts")];
+        let resolved = vec![make_resolved(
+            "/root/src/app.ts",
+            "./barrel",
+            "src/barrel.ts",
+        )];
         let reexports = vec![FileReexports {
             file: "src/barrel.ts".to_string(),
             reexports: vec![ReexportEntryInput {
@@ -3226,7 +3803,15 @@ mod import_edge_tests {
         ];
         let barrels = vec!["src/barrel.ts".to_string()];
 
-        let edges = build_import_edges(files, resolved, reexports, node_ids, barrels, "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            reexports,
+            node_ids,
+            barrels,
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 2);
         assert_eq!(edges[1].target_id, 20);
         assert_eq!(edges[1].confidence, 0.9);
@@ -3236,13 +3821,20 @@ mod import_edge_tests {
     fn dedup_barrel_sources() {
         // Two names from same barrel both resolve to the same actual source
         let files = vec![
-            make_file("src/app.ts", 1, vec![
-                make_import("./barrel", vec!["a", "b"], false, false, false),
-            ], vec![]),
+            make_file(
+                "src/app.ts",
+                1,
+                vec![make_import("./barrel", vec!["a", "b"], false, false, false)],
+                vec![],
+            ),
             make_file("src/barrel.ts", 10, vec![], vec![]),
             make_file("src/real.ts", 20, vec![], vec!["a", "b"]),
         ];
-        let resolved = vec![make_resolved("/root/src/app.ts", "./barrel", "src/barrel.ts")];
+        let resolved = vec![make_resolved(
+            "/root/src/app.ts",
+            "./barrel",
+            "src/barrel.ts",
+        )];
         let reexports = vec![FileReexports {
             file: "src/barrel.ts".to_string(),
             reexports: vec![ReexportEntryInput {
@@ -3259,7 +3851,15 @@ mod import_edge_tests {
         ];
         let barrels = vec!["src/barrel.ts".to_string()];
 
-        let edges = build_import_edges(files, resolved, reexports, node_ids, barrels, "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            reexports,
+            node_ids,
+            barrels,
+            "/root".to_string(),
+            None,
+        );
         // 1 direct import + 1 barrel-through (deduped, not 2)
         assert_eq!(edges.len(), 2);
     }
@@ -3271,13 +3871,26 @@ mod import_edge_tests {
     #[test]
     fn renamed_barrel_reexport_resolution() {
         let files = vec![
-            make_file("src/app.ts", 1, vec![
-                make_import("./barrel", vec!["friendlyName"], false, false, false),
-            ], vec![]),
+            make_file(
+                "src/app.ts",
+                1,
+                vec![make_import(
+                    "./barrel",
+                    vec!["friendlyName"],
+                    false,
+                    false,
+                    false,
+                )],
+                vec![],
+            ),
             make_file("src/barrel.ts", 10, vec![], vec![]),
             make_file("src/underlying.ts", 20, vec![], vec!["realName"]),
         ];
-        let resolved = vec![make_resolved("/root/src/app.ts", "./barrel", "src/barrel.ts")];
+        let resolved = vec![make_resolved(
+            "/root/src/app.ts",
+            "./barrel",
+            "src/barrel.ts",
+        )];
         let reexports = vec![FileReexports {
             file: "src/barrel.ts".to_string(),
             reexports: vec![ReexportEntryInput {
@@ -3297,7 +3910,15 @@ mod import_edge_tests {
         ];
         let barrels = vec!["src/barrel.ts".to_string()];
 
-        let edges = build_import_edges(files, resolved, reexports, node_ids, barrels, "/root".to_string(), None);
+        let edges = build_import_edges(
+            files,
+            resolved,
+            reexports,
+            node_ids,
+            barrels,
+            "/root".to_string(),
+            None,
+        );
         assert_eq!(edges.len(), 2);
         // Barrel-through edge resolves through the rename to underlying.ts.
         assert_eq!(edges[1].target_id, 20);
@@ -3376,7 +3997,11 @@ mod call_edge_tests {
     }
 
     fn type_map_entry(name: &str, type_name: &str, confidence: f64) -> TypeMapInput {
-        TypeMapInput { name: name.to_string(), type_name: type_name.to_string(), confidence }
+        TypeMapInput {
+            name: name.to_string(),
+            type_name: type_name.to_string(),
+            confidence,
+        }
     }
 
     fn class_info(name: &str, extends: Option<&str>, implements: Option<&str>) -> ClassInfo {
@@ -3421,9 +4046,9 @@ mod call_edge_tests {
     #[test]
     fn receiver_edge_via_type_map() {
         let all_nodes = vec![
-            node(1, "main",       "function", "index.js", 3),
-            node(2, "Calculator", "class",    "utils.js", 1),
-            node(3, "compute",    "method",   "utils.js", 3),
+            node(1, "main", "function", "index.js", 3),
+            node(2, "Calculator", "class", "utils.js", 1),
+            node(3, "compute", "method", "utils.js", 3),
         ];
 
         let files = vec![make_file(
@@ -3441,11 +4066,20 @@ mod call_edge_tests {
         assert!(
             receiver_edge.is_some(),
             "expected a receiver edge but got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
         let re = receiver_edge.unwrap();
-        assert_eq!(re.source_id, 1, "receiver edge source should be main (id=1)");
-        assert_eq!(re.target_id, 2, "receiver edge target should be Calculator (id=2)");
+        assert_eq!(
+            re.source_id, 1,
+            "receiver edge source should be main (id=1)"
+        );
+        assert_eq!(
+            re.target_id, 2,
+            "receiver edge target should be Calculator (id=2)"
+        );
     }
 
     // ── Cross-file ES6 accessor property-read resolution (#2030) ───────────
@@ -3460,7 +4094,14 @@ mod call_edge_tests {
     fn cross_file_accessor_read_resolves_across_distant_directories() {
         let all_nodes = vec![
             node(1, "useRepo", "function", "src/features/sequence.js", 1),
-            accessor_node(2, "SqliteRepository.db", "method", "src/db/repository/sqlite.js", 3, "get"),
+            accessor_node(
+                2,
+                "SqliteRepository.db",
+                "method",
+                "src/db/repository/sqlite.js",
+                3,
+                "get",
+            ),
         ];
         let files = vec![make_file(
             "src/features/sequence.js",
@@ -3477,7 +4118,10 @@ mod call_edge_tests {
         assert!(
             call_edge.is_some(),
             "expected a calls edge to the cross-file accessor; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
         let ce = call_edge.unwrap();
         assert_eq!(ce.source_id, 1);
@@ -3508,7 +4152,10 @@ mod call_edge_tests {
         assert!(
             !edges.iter().any(|e| e.kind == "calls"),
             "an accessor-read call must never resolve to a plain (non-accessor) method; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3540,9 +4187,15 @@ mod call_edge_tests {
             call_edges.len(),
             1,
             "expected exactly one calls edge (to the setter only); got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
-        assert_eq!(call_edges[0].target_id, 3, "expected the setter (id=3), not the getter");
+        assert_eq!(
+            call_edges[0].target_id, 3,
+            "expected the setter (id=3), not the getter"
+        );
     }
 
     /// Regression for #2030's Greptile review finding: the resolved class
@@ -3562,8 +4215,22 @@ mod call_edge_tests {
         // unrelated node too (masked in a single-candidate test).
         let all_nodes = vec![
             node(1, "useRepo", "function", "consumer.js", 1),
-            accessor_node(2, "SqliteRepository.db", "method", "sqlite-repository.js", 3, "get"),
-            accessor_node(3, "SqliteRepository.db", "method", "unrelated-other-file.js", 9, "get"),
+            accessor_node(
+                2,
+                "SqliteRepository.db",
+                "method",
+                "sqlite-repository.js",
+                3,
+                "get",
+            ),
+            accessor_node(
+                3,
+                "SqliteRepository.db",
+                "method",
+                "unrelated-other-file.js",
+                9,
+                "get",
+            ),
         ];
         let mut file = make_file(
             "consumer.js",
@@ -3586,7 +4253,10 @@ mod call_edge_tests {
             call_edges.len(),
             1,
             "expected exactly one calls edge (to the aliased import's own file); got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             call_edges[0].target_id, 2,
@@ -3603,8 +4273,22 @@ mod call_edge_tests {
     fn cross_file_accessor_read_prefers_imported_file_over_unrelated_same_named_global_match() {
         let all_nodes = vec![
             node(1, "useRepo", "function", "consumer.js", 1),
-            accessor_node(2, "SqliteRepository.db", "method", "sqlite-repository.js", 3, "get"),
-            accessor_node(3, "SqliteRepository.db", "method", "unrelated-other-file.js", 9, "get"),
+            accessor_node(
+                2,
+                "SqliteRepository.db",
+                "method",
+                "sqlite-repository.js",
+                3,
+                "get",
+            ),
+            accessor_node(
+                3,
+                "SqliteRepository.db",
+                "method",
+                "unrelated-other-file.js",
+                9,
+                "get",
+            ),
         ];
         let mut file = make_file(
             "consumer.js",
@@ -3627,9 +4311,15 @@ mod call_edge_tests {
             call_edges.len(),
             1,
             "expected exactly one calls edge (to the imported file's accessor only); got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
-        assert_eq!(call_edges[0].target_id, 2, "expected the imported file's node (id=2), not the unrelated one (id=3)");
+        assert_eq!(
+            call_edges[0].target_id, 2,
+            "expected the imported file's node (id=2), not the unrelated one (id=3)"
+        );
     }
 
     /// Companion to the above: when the imported file's own accessor doesn't
@@ -3640,8 +4330,22 @@ mod call_edge_tests {
     fn cross_file_accessor_read_drops_when_imported_file_kind_mismatches_without_global_fallback() {
         let all_nodes = vec![
             node(1, "useRepo", "function", "consumer.js", 1),
-            accessor_node(2, "SqliteRepository.db", "method", "sqlite-repository.js", 3, "set"),
-            accessor_node(3, "SqliteRepository.db", "method", "unrelated-other-file.js", 9, "get"),
+            accessor_node(
+                2,
+                "SqliteRepository.db",
+                "method",
+                "sqlite-repository.js",
+                3,
+                "set",
+            ),
+            accessor_node(
+                3,
+                "SqliteRepository.db",
+                "method",
+                "unrelated-other-file.js",
+                9,
+                "get",
+            ),
         ];
         let mut file = make_file(
             "consumer.js",
@@ -3676,9 +4380,9 @@ mod call_edge_tests {
     fn value_ref_edge_requires_key_invoked_elsewhere() {
         let all_nodes = vec![
             node(1, "makeTable", "function", "factory.js", 1),
-            node(2, "neverRead",  "function", "factory.js", 2),
-            node(3, "isRead",     "function", "factory.js", 3),
-            node(4, "run",        "function", "consumer.js", 1),
+            node(2, "neverRead", "function", "factory.js", 2),
+            node(3, "isRead", "function", "factory.js", 3),
+            node(4, "run", "function", "consumer.js", 1),
         ];
 
         let mut resolve_call = call("neverRead", 5, None);
@@ -3724,12 +4428,18 @@ mod call_edge_tests {
         assert!(
             !calls_never_read,
             "expected no calls edge to neverRead (key 'resolve' never invoked); got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
         assert!(
             calls_is_read,
             "expected a calls edge to isRead (key 'reject' invoked in consumer.js); got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3742,11 +4452,11 @@ mod call_edge_tests {
     #[test]
     fn receiver_edge_imported_function_node_falls_through_to_global_class() {
         let all_nodes = vec![
-            node(1, "main",       "function", "index.js", 3),
+            node(1, "main", "function", "index.js", 3),
             // Destructured import `const { Calculator } = require('./utils')` → kind "function" in index.js
             node(4, "Calculator", "function", "index.js", 1),
-            node(2, "Calculator", "class",    "utils.js", 1),
-            node(3, "compute",    "method",   "utils.js", 3),
+            node(2, "Calculator", "class", "utils.js", 1),
+            node(3, "compute", "method", "utils.js", 3),
         ];
 
         let mut file = make_file(
@@ -3759,7 +4469,11 @@ mod call_edge_tests {
         );
         // Mark `Calculator` as an imported name so the resolver treats the
         // same-file kind="function" node as an import artifact and falls through.
-        file.imported_names = vec![ImportedName { name: "Calculator".to_string(), file: "utils.js".to_string(), imported: None }];
+        file.imported_names = vec![ImportedName {
+            name: "Calculator".to_string(),
+            file: "utils.js".to_string(),
+            imported: None,
+        }];
 
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
 
@@ -3767,10 +4481,16 @@ mod call_edge_tests {
         assert!(
             receiver_edge.is_some(),
             "imported 'function' node must not block fallback to global class; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
         let re = receiver_edge.unwrap();
-        assert_eq!(re.target_id, 2, "receiver edge must point to Calculator class (id=2), not import artifact (id=4)");
+        assert_eq!(
+            re.target_id, 2,
+            "receiver edge must point to Calculator class (id=2), not import artifact (id=4)"
+        );
     }
 
     /// Issue #1539: `function C(){}` (function constructor) in the same file as
@@ -3780,9 +4500,9 @@ mod call_edge_tests {
     #[test]
     fn receiver_edge_local_function_ctor_blocks_global_class() {
         let all_nodes = vec![
-            node(1, "C",     "function", "prototypes.js", 1),  // local function constructor
-            node(2, "C.foo", "method",   "prototypes.js", 3),
-            node(3, "C",     "class",    "classes.js",    1),  // cross-file class with same name
+            node(1, "C", "function", "prototypes.js", 1), // local function constructor
+            node(2, "C.foo", "method", "prototypes.js", 3),
+            node(3, "C", "class", "classes.js", 1), // cross-file class with same name
         ];
 
         // No imported_names — `C` is locally defined.
@@ -3812,8 +4532,8 @@ mod call_edge_tests {
     #[test]
     fn receiver_edge_rejects_cross_language_match() {
         let all_nodes = vec![
-            node(1, "main",   "function", "widget.py", 3),
-            node(2, "Widget", "class",    "widget.js", 1),
+            node(1, "main", "function", "widget.py", 3),
+            node(2, "Widget", "class", "widget.js", 1),
         ];
 
         let files = vec![make_file(
@@ -3840,8 +4560,8 @@ mod call_edge_tests {
     #[test]
     fn receiver_edge_still_resolves_same_language_cross_file_match() {
         let all_nodes = vec![
-            node(1, "main",   "function", "widget.py", 3),
-            node(2, "Widget", "class",    "widget_impl.py", 1),
+            node(1, "main", "function", "widget.py", 3),
+            node(2, "Widget", "class", "widget_impl.py", 1),
         ];
 
         let files = vec![make_file(
@@ -3859,7 +4579,10 @@ mod call_edge_tests {
         assert!(
             receiver_edge.is_some(),
             "same-language cross-file receiver fallback must still resolve; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
         assert_eq!(receiver_edge.unwrap().target_id, 2);
     }
@@ -3884,9 +4607,14 @@ mod call_edge_tests {
         )];
         let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
         assert!(
-            edges.iter().any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
+            edges
+                .iter()
+                .any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
             "expected calls edge UserService.create → Logger.error; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3908,9 +4636,14 @@ mod call_edge_tests {
         )];
         let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
         assert!(
-            edges.iter().any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
+            edges
+                .iter()
+                .any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
             "expected calls edge useRest → E4.e4 via rest-param key; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3932,7 +4665,9 @@ mod call_edge_tests {
         )];
         let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
         assert!(
-            !edges.iter().any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
+            !edges
+                .iter()
+                .any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
             "bare call must not resolve to same-class sibling in a module-scoped language"
         );
     }
@@ -3955,9 +4690,14 @@ mod call_edge_tests {
         )];
         let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
         assert!(
-            edges.iter().any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
+            edges
+                .iter()
+                .any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
             "bare sibling call must resolve in a class-scoped language; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3980,9 +4720,14 @@ mod call_edge_tests {
         )];
         let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
         assert!(
-            edges.iter().any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
+            edges
+                .iter()
+                .any(|e| e.kind == "calls" && e.source_id == 1 && e.target_id == 2),
             "expected Geo.Shape.describe → Shape.area via bare class segment; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -4011,7 +4756,10 @@ mod call_edge_tests {
         assert!(
             !edges.iter().any(|e| e.kind == "calls" && e.source_id == 1),
             "ambiguous same-confidence candidates must not fan out into calls edges; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -4037,14 +4785,23 @@ mod call_edge_tests {
             vec![],
         )];
         let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
-        let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls" && e.source_id == 1).collect();
+        let call_edges: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == "calls" && e.source_id == 1)
+            .collect();
         assert_eq!(
             call_edges.len(),
             1,
             "expected exactly one calls edge (the unambiguous best match); got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
-        assert_eq!(call_edges[0].target_id, 2, "expected the same-directory candidate to win");
+        assert_eq!(
+            call_edges[0].target_id, 2,
+            "expected the same-directory candidate to win"
+        );
     }
 
     /// Receiver-edge confidence must propagate the stored typeMap confidence
@@ -4066,7 +4823,10 @@ mod call_edge_tests {
             vec![],
         )];
         let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
-        let re = edges.iter().find(|e| e.kind == "receiver").expect("receiver edge");
+        let re = edges
+            .iter()
+            .find(|e| e.kind == "receiver")
+            .expect("receiver edge");
         assert!(
             (re.confidence - 0.85).abs() < 1e-9,
             "expected stored confidence 0.85, got {}",
@@ -4079,8 +4839,8 @@ mod call_edge_tests {
     #[test]
     fn receiver_edge_direct_class_name() {
         let all_nodes = vec![
-            node(1, "main",       "function", "index.js", 1),
-            node(2, "Calculator", "class",    "utils.js", 1),
+            node(1, "main", "function", "index.js", 1),
+            node(2, "Calculator", "class", "utils.js", 1),
         ];
 
         let files = vec![make_file(
@@ -4088,14 +4848,17 @@ mod call_edge_tests {
             10,
             vec![def("main", "function", 1, 5)],
             vec![call("compute", 3, Some("Calculator"))],
-            vec![],  // no typeMap — receiver IS the class name
+            vec![], // no typeMap — receiver IS the class name
             vec![],
         )];
 
         let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
-        assert!(receiver_edge.is_some(), "expected receiver edge for direct class-name receiver");
+        assert!(
+            receiver_edge.is_some(),
+            "expected receiver edge for direct class-name receiver"
+        );
         assert_eq!(receiver_edge.unwrap().target_id, 2);
     }
 
@@ -4113,10 +4876,34 @@ mod call_edge_tests {
     #[test]
     fn cha_typed_dispatch_fallback_resolves_distant_interface_implementation() {
         let all_nodes = vec![
-            node(1, "main", "function", "src/domain/graph/builder/helpers.ts", 1),
-            node(2, "BetterSqlite3Database.prepare", "method", "src/types.ts", 5),
-            node(3, "NativeDbProxy", "class", "src/domain/graph/builder/native-db-proxy.ts", 1),
-            node(4, "NativeDbProxy.prepare", "method", "src/domain/graph/builder/native-db-proxy.ts", 8),
+            node(
+                1,
+                "main",
+                "function",
+                "src/domain/graph/builder/helpers.ts",
+                1,
+            ),
+            node(
+                2,
+                "BetterSqlite3Database.prepare",
+                "method",
+                "src/types.ts",
+                5,
+            ),
+            node(
+                3,
+                "NativeDbProxy",
+                "class",
+                "src/domain/graph/builder/native-db-proxy.ts",
+                1,
+            ),
+            node(
+                4,
+                "NativeDbProxy.prepare",
+                "method",
+                "src/domain/graph/builder/native-db-proxy.ts",
+                8,
+            ),
         ];
 
         let caller_file = make_file(
@@ -4135,22 +4922,38 @@ mod call_edge_tests {
             vec![],
             // RTA evidence: `new NativeDbProxy(...)` somewhere — constructor confidence 1.0.
             vec![type_map_entry("proxy", "NativeDbProxy", 1.0)],
-            vec![class_info("NativeDbProxy", None, Some("BetterSqlite3Database"))],
+            vec![class_info(
+                "NativeDbProxy",
+                None,
+                Some("BetterSqlite3Database"),
+            )],
         );
 
-        let edges = build_call_edges(vec![caller_file, impl_file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(
+            vec![caller_file, impl_file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+        );
 
         // The interface's own qualified method (id 2) must NOT receive an edge —
         // computeConfidence(helpers.ts, types.ts) is well below the 0.5 gate.
         let to_interface = edges.iter().any(|e| e.kind == "calls" && e.target_id == 2);
-        assert!(!to_interface, "did not expect a calls edge to the interface method node");
+        assert!(
+            !to_interface,
+            "did not expect a calls edge to the interface method node"
+        );
 
         // The concrete implementation's own method (id 4) must receive the edge instead.
         let to_impl = edges.iter().find(|e| e.kind == "calls" && e.target_id == 4);
         assert!(
             to_impl.is_some(),
             "expected a CHA-fallback calls edge to NativeDbProxy.prepare; got: {:?}",
-            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id, e.confidence)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (&e.kind, e.source_id, e.target_id, e.confidence))
+                .collect::<Vec<_>>()
         );
         let edge = to_impl.unwrap();
         assert_eq!(edge.source_id, 1);
@@ -4169,10 +4972,34 @@ mod call_edge_tests {
     #[test]
     fn cha_typed_dispatch_fallback_respects_rta_filter() {
         let all_nodes = vec![
-            node(1, "main", "function", "src/domain/graph/builder/helpers.ts", 1),
-            node(2, "BetterSqlite3Database.prepare", "method", "src/types.ts", 5),
-            node(3, "NativeDbProxy", "class", "src/domain/graph/builder/native-db-proxy.ts", 1),
-            node(4, "NativeDbProxy.prepare", "method", "src/domain/graph/builder/native-db-proxy.ts", 8),
+            node(
+                1,
+                "main",
+                "function",
+                "src/domain/graph/builder/helpers.ts",
+                1,
+            ),
+            node(
+                2,
+                "BetterSqlite3Database.prepare",
+                "method",
+                "src/types.ts",
+                5,
+            ),
+            node(
+                3,
+                "NativeDbProxy",
+                "class",
+                "src/domain/graph/builder/native-db-proxy.ts",
+                1,
+            ),
+            node(
+                4,
+                "NativeDbProxy.prepare",
+                "method",
+                "src/domain/graph/builder/native-db-proxy.ts",
+                8,
+            ),
         ];
 
         let caller_file = make_file(
@@ -4189,16 +5016,29 @@ mod call_edge_tests {
             vec![],
             vec![],
             vec![], // no RTA evidence for NativeDbProxy anywhere
-            vec![class_info("NativeDbProxy", None, Some("BetterSqlite3Database"))],
+            vec![class_info(
+                "NativeDbProxy",
+                None,
+                Some("BetterSqlite3Database"),
+            )],
         );
 
-        let edges = build_call_edges(vec![caller_file, impl_file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(
+            vec![caller_file, impl_file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+        );
 
         let calls_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert!(
             calls_edges.is_empty(),
             "expected no calls edge when the implementor has no RTA evidence; got: {:?}",
-            calls_edges.iter().map(|e| (e.source_id, e.target_id)).collect::<Vec<_>>()
+            calls_edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -4210,10 +5050,34 @@ mod call_edge_tests {
     #[test]
     fn cha_typed_dispatch_fallback_does_not_override_successful_proximity_lookup() {
         let all_nodes = vec![
-            node(1, "main", "function", "src/domain/graph/builder/helpers.ts", 1),
-            node(2, "ILocal.run", "method", "src/domain/graph/builder/types.ts", 5),
-            node(3, "LocalImpl", "class", "src/domain/graph/builder/local-impl.ts", 1),
-            node(4, "LocalImpl.run", "method", "src/domain/graph/builder/local-impl.ts", 8),
+            node(
+                1,
+                "main",
+                "function",
+                "src/domain/graph/builder/helpers.ts",
+                1,
+            ),
+            node(
+                2,
+                "ILocal.run",
+                "method",
+                "src/domain/graph/builder/types.ts",
+                5,
+            ),
+            node(
+                3,
+                "LocalImpl",
+                "class",
+                "src/domain/graph/builder/local-impl.ts",
+                1,
+            ),
+            node(
+                4,
+                "LocalImpl.run",
+                "method",
+                "src/domain/graph/builder/local-impl.ts",
+                8,
+            ),
         ];
 
         let caller_file = make_file(
@@ -4233,16 +5097,29 @@ mod call_edge_tests {
             vec![class_info("LocalImpl", None, Some("ILocal"))],
         );
 
-        let edges = build_call_edges(vec![caller_file, impl_file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(
+            vec![caller_file, impl_file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+        );
 
         let calls_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert_eq!(
-            calls_edges.len(), 1,
+            calls_edges.len(),
+            1,
             "expected exactly one calls edge (the direct interface hit); got: {:?}",
-            calls_edges.iter().map(|e| (e.source_id, e.target_id, e.confidence)).collect::<Vec<_>>()
+            calls_edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, e.confidence))
+                .collect::<Vec<_>>()
         );
         let edge = calls_edges[0];
-        assert_eq!(edge.target_id, 2, "expected the interface method (same-dir proximity hit), not the CHA fallback");
+        assert_eq!(
+            edge.target_id, 2,
+            "expected the interface method (same-dir proximity hit), not the CHA fallback"
+        );
         assert!(
             (edge.confidence - CHA_TYPED_DISPATCH_CONFIDENCE).abs() > 1e-9,
             "expected proximity-based confidence, not the flat CHA_TYPED_DISPATCH_CONFIDENCE"
@@ -4255,11 +5132,35 @@ mod call_edge_tests {
     #[test]
     fn cha_typed_dispatch_fallback_bfs_reaches_through_abstract_intermediate() {
         let all_nodes = vec![
-            node(1, "main", "function", "src/domain/graph/builder/helpers.ts", 1),
+            node(
+                1,
+                "main",
+                "function",
+                "src/domain/graph/builder/helpers.ts",
+                1,
+            ),
             node(2, "IWorker.doWork", "method", "src/types.ts", 5),
-            node(3, "AbstractWorker", "class", "src/domain/graph/builder/worker-base.ts", 1),
-            node(4, "RealWorker", "class", "src/domain/graph/builder/real-worker.ts", 1),
-            node(5, "RealWorker.doWork", "method", "src/domain/graph/builder/real-worker.ts", 8),
+            node(
+                3,
+                "AbstractWorker",
+                "class",
+                "src/domain/graph/builder/worker-base.ts",
+                1,
+            ),
+            node(
+                4,
+                "RealWorker",
+                "class",
+                "src/domain/graph/builder/real-worker.ts",
+                1,
+            ),
+            node(
+                5,
+                "RealWorker.doWork",
+                "method",
+                "src/domain/graph/builder/real-worker.ts",
+                8,
+            ),
         ];
 
         let caller_file = make_file(
@@ -4322,9 +5223,9 @@ mod call_edge_tests {
     #[test]
     fn pts_param_flow_resolves_callback_through_parameter() {
         let all_nodes = vec![
-            node(1, "hof",    "function", "lib.js", 1),
+            node(1, "hof", "function", "lib.js", 1),
             node(2, "target", "function", "lib.js", 5),
-            node(3, "main",   "function", "lib.js", 8),
+            node(3, "main", "function", "lib.js", 8),
         ];
         let mut file = make_file(
             "lib.js",
@@ -4347,14 +5248,24 @@ mod call_edge_tests {
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
 
         assert!(
-            edges.iter().any(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls"),
+            edges
+                .iter()
+                .any(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls"),
             "expected pts edge hof→target; got: {:?}",
-            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, &e.kind))
+                .collect::<Vec<_>>()
         );
         assert!(
-            edges.iter().any(|e| e.source_id == 3 && e.target_id == 1 && e.kind == "calls"),
+            edges
+                .iter()
+                .any(|e| e.source_id == 3 && e.target_id == 1 && e.kind == "calls"),
             "expected direct edge main→hof; got: {:?}",
-            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, &e.kind))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -4366,9 +5277,9 @@ mod call_edge_tests {
     #[test]
     fn pts_alias_edge_is_tagged_points_to_technique() {
         let all_nodes = vec![
-            node(1, "hof",    "function", "lib.js", 1),
+            node(1, "hof", "function", "lib.js", 1),
             node(2, "target", "function", "lib.js", 5),
-            node(3, "main",   "function", "lib.js", 8),
+            node(3, "main", "function", "lib.js", 8),
         ];
         let file = {
             let mut f = make_file(
@@ -4412,9 +5323,9 @@ mod call_edge_tests {
     #[test]
     fn pts_alias_edge_technique_upgraded_to_ts_native_on_direct_call() {
         let all_nodes = vec![
-            node(1, "hof",    "function", "lib.js", 1),
+            node(1, "hof", "function", "lib.js", 1),
             node(2, "target", "function", "lib.js", 6),
-            node(3, "main",   "function", "lib.js", 9),
+            node(3, "main", "function", "lib.js", 9),
         ];
         let file = {
             let mut f = make_file(
@@ -4447,13 +5358,18 @@ mod call_edge_tests {
 
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
 
-        let hof_to_target: Vec<_> =
-            edges.iter().filter(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls").collect();
+        let hof_to_target: Vec<_> = edges
+            .iter()
+            .filter(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls")
+            .collect();
         assert_eq!(
             hof_to_target.len(),
             1,
             "expected exactly one hof→target edge (upgraded in place, not duplicated); got: {:?}",
-            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind, &e.technique)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, &e.kind, &e.technique))
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             hof_to_target[0].technique.as_deref(),
@@ -4468,8 +5384,8 @@ mod call_edge_tests {
     #[test]
     fn pts_this_call_binding_resolves_this_invocation() {
         let all_nodes = vec![
-            node(1, "invoker",     "function", "lib.js", 1),
-            node(2, "handler",     "function", "lib.js", 5),
+            node(1, "invoker", "function", "lib.js", 1),
+            node(2, "handler", "function", "lib.js", 5),
             node(3, "runCallThis", "function", "lib.js", 8),
         ];
         let mut file = make_file(
@@ -4484,7 +5400,15 @@ mod call_edge_tests {
                 // this() inside invoker
                 call("this", 2, None),
                 // invoker.call(handler, 10) — extractor emits dynamic call to invoker
-                CallInfo { name: "invoker".to_string(), line: 9, dynamic: Some(true), receiver: None, dynamic_kind: None, key_expr: None, accessor_read: None },
+                CallInfo {
+                    name: "invoker".to_string(),
+                    line: 9,
+                    dynamic: Some(true),
+                    receiver: None,
+                    dynamic_kind: None,
+                    key_expr: None,
+                    accessor_read: None,
+                },
             ],
             vec![],
             vec![],
@@ -4497,14 +5421,24 @@ mod call_edge_tests {
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
 
         assert!(
-            edges.iter().any(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls"),
+            edges
+                .iter()
+                .any(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls"),
             "expected pts edge invoker→handler; got: {:?}",
-            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, &e.kind))
+                .collect::<Vec<_>>()
         );
         assert!(
-            edges.iter().any(|e| e.source_id == 3 && e.target_id == 1 && e.kind == "calls"),
+            edges
+                .iter()
+                .any(|e| e.source_id == 3 && e.target_id == 1 && e.kind == "calls"),
             "expected direct edge runCallThis→invoker; got: {:?}",
-            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, &e.kind))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -4514,8 +5448,8 @@ mod call_edge_tests {
     #[test]
     fn pts_for_of_over_array_elements_resolves_all_elements() {
         let all_nodes = vec![
-            node(1, "forOf1",   "function", "for-of.js", 1),
-            node(2, "forOf2",   "function", "for-of.js", 3),
+            node(1, "forOf1", "function", "for-of.js", 1),
+            node(2, "forOf2", "function", "for-of.js", 3),
             node(3, "iterPlain", "function", "for-of.js", 6),
         ];
         let mut file = make_file(
@@ -4531,8 +5465,16 @@ mod call_edge_tests {
             vec![],
         );
         file.array_elem_bindings = Some(vec![
-            ArrayElemBinding { array_name: "arr".to_string(), index: 0, elem_name: "forOf1".to_string() },
-            ArrayElemBinding { array_name: "arr".to_string(), index: 1, elem_name: "forOf2".to_string() },
+            ArrayElemBinding {
+                array_name: "arr".to_string(),
+                index: 0,
+                elem_name: "forOf1".to_string(),
+            },
+            ArrayElemBinding {
+                array_name: "arr".to_string(),
+                index: 1,
+                elem_name: "forOf2".to_string(),
+            },
         ]);
         file.for_of_bindings = Some(vec![ForOfBinding {
             var_name: "cb".to_string(),
@@ -4544,10 +5486,15 @@ mod call_edge_tests {
 
         for target in [1u32, 2u32] {
             assert!(
-                edges.iter().any(|e| e.source_id == 3 && e.target_id == target && e.kind == "calls"),
+                edges
+                    .iter()
+                    .any(|e| e.source_id == 3 && e.target_id == target && e.kind == "calls"),
                 "expected pts edge iterPlain→node{}; got: {:?}",
                 target,
-                edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+                edges
+                    .iter()
+                    .map(|e| (e.source_id, e.target_id, &e.kind))
+                    .collect::<Vec<_>>()
             );
         }
     }
@@ -4557,8 +5504,8 @@ mod call_edge_tests {
     #[test]
     fn pts_object_rest_receiver_call_resolves_via_seeded_prop() {
         let all_nodes = vec![
-            node(1, "f3",   "function", "lib.js", 1),
-            node(2, "e4",   "function", "other.js", 1),
+            node(1, "f3", "function", "lib.js", 1),
+            node(2, "e4", "function", "other.js", 1),
             node(3, "main", "function", "lib.js", 8),
         ];
         let mut file = make_file(
@@ -4567,13 +5514,25 @@ mod call_edge_tests {
             vec![def("f3", "function", 1, 3), def("main", "function", 8, 10)],
             vec![
                 // eerest.e4() inside f3
-                CallInfo { name: "e4".to_string(), line: 2, dynamic: None, receiver: Some("eerest".to_string()), dynamic_kind: None, key_expr: None, accessor_read: None },
+                CallInfo {
+                    name: "e4".to_string(),
+                    line: 2,
+                    dynamic: None,
+                    receiver: Some("eerest".to_string()),
+                    dynamic_kind: None,
+                    key_expr: None,
+                    accessor_read: None,
+                },
                 call("f3", 9, None),
             ],
             vec![],
             vec![],
         );
-        file.imported_names = vec![ImportedName { name: "e4".to_string(), file: "other.js".to_string(), imported: None }];
+        file.imported_names = vec![ImportedName {
+            name: "e4".to_string(),
+            file: "other.js".to_string(),
+            imported: None,
+        }];
         file.param_bindings = Some(vec![ParamBinding {
             callee: "f3".to_string(),
             arg_index: 0,
@@ -4593,9 +5552,14 @@ mod call_edge_tests {
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
 
         assert!(
-            edges.iter().any(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls"),
+            edges
+                .iter()
+                .any(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls"),
             "expected pts edge f3→e4 via rest receiver; got: {:?}",
-            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, &e.kind))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -4605,9 +5569,9 @@ mod call_edge_tests {
     fn pts_spread_args_flow_array_elements_into_params() {
         let all_nodes = vec![
             node(1, "callAll", "function", "spread.js", 1),
-            node(2, "x",       "function", "spread.js", 5),
-            node(3, "y",       "function", "spread.js", 6),
-            node(4, "main",    "function", "spread.js", 8),
+            node(2, "x", "function", "spread.js", 5),
+            node(3, "y", "function", "spread.js", 6),
+            node(4, "main", "function", "spread.js", 8),
         ];
         let mut file = make_file(
             "spread.js",
@@ -4618,13 +5582,25 @@ mod call_edge_tests {
                 def("y", "function", 6, 6),
                 def("main", "function", 8, 10),
             ],
-            vec![call("a", 2, None), call("b", 2, None), call("callAll", 9, None)],
+            vec![
+                call("a", 2, None),
+                call("b", 2, None),
+                call("callAll", 9, None),
+            ],
             vec![],
             vec![],
         );
         file.array_elem_bindings = Some(vec![
-            ArrayElemBinding { array_name: "fns".to_string(), index: 0, elem_name: "x".to_string() },
-            ArrayElemBinding { array_name: "fns".to_string(), index: 1, elem_name: "y".to_string() },
+            ArrayElemBinding {
+                array_name: "fns".to_string(),
+                index: 0,
+                elem_name: "x".to_string(),
+            },
+            ArrayElemBinding {
+                array_name: "fns".to_string(),
+                index: 1,
+                elem_name: "y".to_string(),
+            },
         ]);
         file.spread_arg_bindings = Some(vec![SpreadArgBinding {
             callee: "callAll".to_string(),
@@ -4635,14 +5611,24 @@ mod call_edge_tests {
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
 
         assert!(
-            edges.iter().any(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls"),
+            edges
+                .iter()
+                .any(|e| e.source_id == 1 && e.target_id == 2 && e.kind == "calls"),
             "expected pts edge callAll→x; got: {:?}",
-            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, &e.kind))
+                .collect::<Vec<_>>()
         );
         assert!(
-            edges.iter().any(|e| e.source_id == 1 && e.target_id == 3 && e.kind == "calls"),
+            edges
+                .iter()
+                .any(|e| e.source_id == 1 && e.target_id == 3 && e.kind == "calls"),
             "expected pts edge callAll→y; got: {:?}",
-            edges.iter().map(|e| (e.source_id, e.target_id, &e.kind)).collect::<Vec<_>>()
+            edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id, &e.kind))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -4686,8 +5672,13 @@ mod call_edge_tests {
         };
 
         // A cap well below the chain length must not converge for a0.
-        let pts_low =
-            build_points_to_map(&bindings, &def_names, &imported_names, &definition_params, 3);
+        let pts_low = build_points_to_map(
+            &bindings,
+            &def_names,
+            &imported_names,
+            &definition_params,
+            3,
+        );
         assert!(
             resolve_via_points_to("a0", &pts_low).is_empty(),
             "expected a0 to NOT resolve with max_iterations=3 (chain needs {chain_len})"
@@ -4715,13 +5706,19 @@ mod inline_new_type_tests {
 
     #[test]
     fn parens_new_uppercase() {
-        assert_eq!(extract_inline_new_type("(new Foo)"), Some("Foo".to_string()));
+        assert_eq!(
+            extract_inline_new_type("(new Foo)"),
+            Some("Foo".to_string())
+        );
     }
 
     #[test]
     fn parens_new_with_args() {
         // (new Foo('arg')) — parens and constructor args
-        assert_eq!(extract_inline_new_type("(new Foo('arg'))"), Some("Foo".to_string()));
+        assert_eq!(
+            extract_inline_new_type("(new Foo('arg'))"),
+            Some("Foo".to_string())
+        );
     }
 
     #[test]
@@ -4731,12 +5728,18 @@ mod inline_new_type_tests {
 
     #[test]
     fn underscore_prefix_accepted() {
-        assert_eq!(extract_inline_new_type("new _Factory"), Some("_Factory".to_string()));
+        assert_eq!(
+            extract_inline_new_type("new _Factory"),
+            Some("_Factory".to_string())
+        );
     }
 
     #[test]
     fn dollar_prefix_accepted() {
-        assert_eq!(extract_inline_new_type("new $Service"), Some("$Service".to_string()));
+        assert_eq!(
+            extract_inline_new_type("new $Service"),
+            Some("$Service".to_string())
+        );
     }
 
     #[test]

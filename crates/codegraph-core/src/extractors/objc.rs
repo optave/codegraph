@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 /// Objective-C extractor — mirrors `src/extractors/objc.ts`.
 ///
@@ -18,7 +18,12 @@ impl SymbolExtractor for ObjCExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_objc_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &OBJC_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &OBJC_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -197,8 +202,16 @@ fn handle_method(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         line: start_line(node),
         end_line: Some(end_line(node)),
         decorators: None,
-        complexity: if has_body { compute_all_metrics(node, source, "objc") } else { None },
-        cfg: if has_body { build_function_cfg(node, "objc", source) } else { None },
+        complexity: if has_body {
+            compute_all_metrics(node, source, "objc")
+        } else {
+            None
+        },
+        cfg: if has_body {
+            build_function_cfg(node, "objc", source)
+        } else {
+            None
+        },
         children: opt_children(params),
         bodyless: Some(!has_body),
         content_hash: None,
@@ -236,11 +249,17 @@ fn handle_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     };
     let raw = node_text(&path_node, source);
     // Strip `"..."` or `<...>` wrappers — mirrors the JS extractor regex.
-    let source_path = raw.trim_matches(|c| c == '"' || c == '<' || c == '>').to_string();
+    let source_path = raw
+        .trim_matches(|c| c == '"' || c == '<' || c == '>')
+        .to_string();
     if source_path.is_empty() {
         return;
     }
-    let last_name = source_path.rsplit('/').next().unwrap_or(&source_path).to_string();
+    let last_name = source_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&source_path)
+        .to_string();
     let mut imp = Import::new(source_path, vec![last_name], start_line(node));
     imp.c_include = Some(true);
     symbols.imports.push(imp);
@@ -251,7 +270,8 @@ fn handle_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 /// preprocessor field; `module_import` uses `module`.) Mirrors
 /// `src/extractors/objc.ts`.
 fn handle_at_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let module_node = node.child_by_field_name("module")
+    let module_node = node
+        .child_by_field_name("module")
         .or_else(|| find_child(node, "identifier"));
     if let Some(m) = module_node {
         let name = node_text(&m, source).to_string();
@@ -353,10 +373,12 @@ fn handle_c_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     };
 
     let (name, receiver) = if fn_node.kind() == "field_expression" {
-        let field = fn_node.child_by_field_name("field")
+        let field = fn_node
+            .child_by_field_name("field")
             .map(|n| node_text(&n, source).to_string())
             .unwrap_or_else(|| node_text(&fn_node, source).to_string());
-        let recv = fn_node.child_by_field_name("argument")
+        let recv = fn_node
+            .child_by_field_name("argument")
             .map(|n| node_text(&n, source).to_string());
         (field, recv)
     } else {
@@ -383,7 +405,8 @@ fn handle_c_call_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 /// keyword identifier the `method` field name; for multi-keyword selectors
 /// we collect them all and join with `:`.
 fn handle_message_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let receiver = node.child_by_field_name("receiver")
+    let receiver = node
+        .child_by_field_name("receiver")
         .map(|n| node_text(&n, source).to_string());
 
     let selector = build_message_selector(node, source);
@@ -476,9 +499,7 @@ fn find_objc_parent_class(node: &Node, source: &[u8]) -> Option<String> {
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
-            "class_interface"
-            | "class_implementation"
-            | "protocol_declaration" => {
+            "class_interface" | "class_implementation" | "protocol_declaration" => {
                 let name_node = find_objc_decl_name(&parent)?;
                 let base = node_text(&name_node, source).to_string();
                 // Categories: include `(Cat)` so methods are grouped per category.
@@ -697,9 +718,16 @@ mod tests {
         let supers: Vec<_> = s.classes.iter().filter(|c| c.extends.is_some()).collect();
         assert_eq!(supers.len(), 1);
         assert_eq!(supers[0].extends.as_deref(), Some("NSObject"));
-        let impls: Vec<_> = s.classes.iter().filter(|c| c.implements.is_some()).collect();
+        let impls: Vec<_> = s
+            .classes
+            .iter()
+            .filter(|c| c.implements.is_some())
+            .collect();
         assert_eq!(impls.len(), 2);
-        let names: Vec<_> = impls.iter().filter_map(|c| c.implements.as_deref()).collect();
+        let names: Vec<_> = impls
+            .iter()
+            .filter_map(|c| c.implements.as_deref())
+            .collect();
         assert!(names.contains(&"Bar"));
         assert!(names.contains(&"Baz"));
     }
@@ -720,7 +748,11 @@ mod tests {
         assert_eq!(foo.kind, "class");
         let do_it = s.definitions.iter().find(|d| d.name == "Foo.doIt").unwrap();
         assert_eq!(do_it.kind, "method");
-        let shared = s.definitions.iter().find(|d| d.name == "Foo.shared").unwrap();
+        let shared = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Foo.shared")
+            .unwrap();
         assert_eq!(shared.kind, "method");
     }
 
@@ -732,7 +764,11 @@ mod tests {
 }
 @end";
         let s = parse_objc(code);
-        let m = s.definitions.iter().find(|d| d.name == "Foo.setName:age:").unwrap();
+        let m = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Foo.setName:age:")
+            .unwrap();
         let kids = m.children.as_ref().unwrap();
         assert_eq!(kids.len(), 2);
         assert_eq!(kids[0].name, "name");
@@ -749,9 +785,17 @@ mod tests {
 - (void)catMethod {}
 @end";
         let s = parse_objc(code);
-        let iface = s.definitions.iter().find(|d| d.name == "Foo(Cat)" && d.line == 1).unwrap();
+        let iface = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Foo(Cat)" && d.line == 1)
+            .unwrap();
         assert_eq!(iface.kind, "class");
-        let m = s.definitions.iter().find(|d| d.name == "Foo(Cat).catMethod" && d.kind == "method").unwrap();
+        let m = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Foo(Cat).catMethod" && d.kind == "method")
+            .unwrap();
         let _ = m;
     }
 
@@ -838,7 +882,11 @@ mod tests {
 }
 @end";
         let s = parse_objc(code);
-        let dyn_call = s.calls.iter().find(|c| c.name == "<dynamic:unresolved>").unwrap();
+        let dyn_call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "<dynamic:unresolved>")
+            .unwrap();
         assert_eq!(dyn_call.dynamic, Some(true));
         assert_eq!(dyn_call.dynamic_kind.as_deref(), Some("unresolved-dynamic"));
     }
@@ -852,7 +900,11 @@ mod tests {
 }
 @end";
         let s = parse_objc(code);
-        let dyn_call = s.calls.iter().find(|c| c.name == "<dynamic:unresolved>").unwrap();
+        let dyn_call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "<dynamic:unresolved>")
+            .unwrap();
         assert_eq!(dyn_call.dynamic, Some(true));
         assert_eq!(dyn_call.dynamic_kind.as_deref(), Some("unresolved-dynamic"));
     }
@@ -861,7 +913,11 @@ mod tests {
     fn flags_objc_msg_send_as_unresolved_dynamic() {
         let code = "void run(id obj, SEL sel) { objc_msgSend(obj, sel); }";
         let s = parse_objc(code);
-        let dyn_call = s.calls.iter().find(|c| c.name == "<dynamic:unresolved>").unwrap();
+        let dyn_call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "<dynamic:unresolved>")
+            .unwrap();
         assert_eq!(dyn_call.dynamic, Some(true));
         assert_eq!(dyn_call.dynamic_kind.as_deref(), Some("unresolved-dynamic"));
     }

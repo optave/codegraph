@@ -260,7 +260,9 @@ pub fn persist_reexport_renames(
             )
             .map_err(|e| e.to_string())?;
         for (barrel_file, entries) in reexport_map {
-            delete_stmt.execute([barrel_file]).map_err(|e| e.to_string())?;
+            delete_stmt
+                .execute([barrel_file])
+                .map_err(|e| e.to_string())?;
             for entry in entries {
                 for rename in &entry.renames {
                     insert_stmt
@@ -275,7 +277,8 @@ pub fn persist_reexport_renames(
             }
         }
     }
-    tx.commit().map_err(|e| format!("persist_reexport_renames: commit failed: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("persist_reexport_renames: commit failed: {e}"))?;
     Ok(())
 }
 
@@ -312,7 +315,9 @@ pub fn persist_invoked_property_names(
             .prepare("INSERT OR IGNORE INTO invoked_property_names (file, name) VALUES (?1, ?2)")
             .map_err(|e| e.to_string())?;
         for file in files {
-            delete_stmt.execute([&file.file]).map_err(|e| e.to_string())?;
+            delete_stmt
+                .execute([&file.file])
+                .map_err(|e| e.to_string())?;
             let mut seen: HashSet<&str> = HashSet::new();
             for call in &file.calls {
                 if call.receiver.is_some() && seen.insert(call.name.as_str()) {
@@ -323,7 +328,8 @@ pub fn persist_invoked_property_names(
             }
         }
     }
-    tx.commit().map_err(|e| format!("persist_invoked_property_names: commit failed: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("persist_invoked_property_names: commit failed: {e}"))?;
     Ok(())
 }
 
@@ -363,9 +369,9 @@ pub fn detect_barrel_only_files(
 /// overwriting the map entry for `file`.
 fn load_file_node_ids(conn: &Connection) -> HashMap<String, i64> {
     let mut map = HashMap::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0 AND name = file",
-    ) {
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0 AND name = file")
+    {
         if let Ok(rows) = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         }) {
@@ -726,7 +732,9 @@ pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<Edg
         for imp in &symbols.imports {
             // CJS require bindings feed imported_names for receiver-edge resolution
             // but must not produce DB import edges (#1678).
-            if imp.cjs_require.unwrap_or(false) { continue; }
+            if imp.cjs_require.unwrap_or(false) {
+                continue;
+            }
             emit_edges_for_import(
                 &mut edges,
                 file_node_id,
@@ -804,10 +812,7 @@ pub fn insert_edges(conn: &Connection, edges: &[EdgeRow]) -> Result<(), String> 
 /// `prepare` (not `prepare_cached`) is used because the SQL string varies
 /// with chunk length — caching keyed on dynamic SQL would churn the LRU
 /// for every partial trailing chunk and obscure the intent of the cache.
-fn insert_edge_chunk(
-    tx: &rusqlite::Transaction<'_>,
-    chunk: &[EdgeRow],
-) -> rusqlite::Result<()> {
+fn insert_edge_chunk(tx: &rusqlite::Transaction<'_>, chunk: &[EdgeRow]) -> rusqlite::Result<()> {
     let placeholders: Vec<String> = (0..chunk.len())
         .map(|i| {
             let base = i * 5;
@@ -1055,11 +1060,7 @@ mod tests {
 
     #[test]
     fn import_name_pairs_plain_value_import_flags_no_names() {
-        let imp = Import::new(
-            "./utils".to_string(),
-            vec!["helper".to_string()],
-            1,
-        );
+        let imp = Import::new("./utils".to_string(), vec!["helper".to_string()], 1);
 
         let pairs = import_name_pairs(&imp);
         assert!(pairs.iter().all(|(_, _, type_only)| !*type_only));
@@ -1072,7 +1073,10 @@ mod tests {
             barrel_only_files: HashSet::new(),
             file_symbols,
             root_dir: "/project".to_string(),
-            aliases: PathAliases { base_url: None, paths: vec![] },
+            aliases: PathAliases {
+                base_url: None,
+                paths: vec![],
+            },
             known_files: HashSet::new(),
             workspaces: HashMap::new(),
         }

@@ -164,9 +164,12 @@ pub fn extract_symbols_with_opts(
         LanguageKind::R => {
             r_lang::RExtractor.extract_with_opts(tree, source, file_path, include_ast_nodes)
         }
-        LanguageKind::Solidity => {
-            solidity::SolidityExtractor.extract_with_opts(tree, source, file_path, include_ast_nodes)
-        }
+        LanguageKind::Solidity => solidity::SolidityExtractor.extract_with_opts(
+            tree,
+            source,
+            file_path,
+            include_ast_nodes,
+        ),
         LanguageKind::Verilog => {
             verilog::VerilogExtractor.extract_with_opts(tree, source, file_path, include_ast_nodes)
         }

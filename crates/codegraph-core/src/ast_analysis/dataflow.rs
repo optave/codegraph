@@ -285,7 +285,9 @@ static RUST_DATAFLOW: DataflowRules = DataflowRules {
     member_property_field: "field",
     optional_chain_node: None,
     await_node: Some("await_expression"),
-    mutating_methods: &["push", "pop", "insert", "remove", "clear", "sort", "reverse"],
+    mutating_methods: &[
+        "push", "pop", "insert", "remove", "clear", "sort", "reverse",
+    ],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: Some("name"),
@@ -334,7 +336,9 @@ static JAVA_DATAFLOW: DataflowRules = DataflowRules {
     member_property_field: "field",
     optional_chain_node: None,
     await_node: None,
-    mutating_methods: &["add", "remove", "clear", "put", "set", "push", "pop", "sort"],
+    mutating_methods: &[
+        "add", "remove", "clear", "put", "set", "push", "pop", "sort",
+    ],
     expression_stmt_node: "expression_statement",
     call_object_field: Some("object"),
     method_call_name_field: None,
@@ -384,7 +388,9 @@ static CSHARP_DATAFLOW: DataflowRules = DataflowRules {
     member_property_field: "name",
     optional_chain_node: None,
     await_node: Some("await_expression"),
-    mutating_methods: &["Add", "Remove", "Clear", "Insert", "Sort", "Reverse", "Push", "Pop"],
+    mutating_methods: &[
+        "Add", "Remove", "Clear", "Insert", "Sort", "Reverse", "Push", "Pop",
+    ],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: None,
@@ -438,7 +444,9 @@ static PHP_DATAFLOW: DataflowRules = DataflowRules {
     member_property_field: "name",
     optional_chain_node: None,
     await_node: None,
-    mutating_methods: &["push", "pop", "shift", "unshift", "splice", "sort", "reverse"],
+    mutating_methods: &[
+        "push", "pop", "shift", "unshift", "splice", "sort", "reverse",
+    ],
     expression_stmt_node: "expression_statement",
     call_object_field: None,
     method_call_name_field: None,
@@ -537,11 +545,7 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         // Find the byte offset of the max-th character
-        let byte_offset = s
-            .char_indices()
-            .nth(max)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
+        let byte_offset = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
         let mut result = s[..byte_offset].to_string();
         result.push('…');
         result
@@ -623,7 +627,11 @@ fn extract_params_go(node: &Node, source: &[u8]) -> Option<Vec<String>> {
                 names.push(node_text(&c, source).to_string());
             }
         }
-        if !names.is_empty() { Some(names) } else { None }
+        if !names.is_empty() {
+            Some(names)
+        } else {
+            None
+        }
     } else if t == "variadic_parameter_declaration" {
         node.child_by_field_name("name")
             .map(|n| vec![node_text(&n, source).to_string()])
@@ -709,7 +717,11 @@ fn extract_params_ruby(node: &Node, source: &[u8]) -> Option<Vec<String>> {
 }
 
 /// Extract parameter names using per-language strategy.
-fn extract_param_names_strategy(node: &Node, strategy: ParamStrategy, source: &[u8]) -> Option<Vec<String>> {
+fn extract_param_names_strategy(
+    node: &Node,
+    strategy: ParamStrategy,
+    source: &[u8],
+) -> Option<Vec<String>> {
     match strategy {
         ParamStrategy::Default => None,
         ParamStrategy::Python => extract_params_python(node, source),
@@ -867,7 +879,13 @@ fn member_receiver(member_expr: &Node, rules: &DataflowRules, source: &[u8]) -> 
 }
 
 /// Collect all identifier names referenced within a node.
-fn collect_identifiers(node: &Node, out: &mut Vec<String>, rules: &DataflowRules, source: &[u8], depth: usize) {
+fn collect_identifiers(
+    node: &Node,
+    out: &mut Vec<String>,
+    rules: &DataflowRules,
+    source: &[u8],
+    depth: usize,
+) {
     if depth >= MAX_WALK_DEPTH {
         return;
     }
@@ -1042,8 +1060,12 @@ fn handle_return_stmt(
     returns: &mut Vec<DataflowReturn>,
     depth: usize,
 ) {
-    let Some(scope) = scope_stack.last() else { return };
-    let Some(ref func_name) = scope.func_name else { return };
+    let Some(scope) = scope_stack.last() else {
+        return;
+    };
+    let Some(ref func_name) = scope.func_name else {
+        return;
+    };
 
     let expr = node.named_child(0);
     let mut referenced_names = Vec::new();
@@ -1115,7 +1137,9 @@ fn resolve_var_declarator_nodes<'a>(
     rules: &DataflowRules,
 ) -> (Option<Node<'a>>, Option<Node<'a>>) {
     let mut name_node = node.child_by_field_name(rules.var_name_field);
-    let mut value_node = rules.var_value_field.and_then(|f| node.child_by_field_name(f));
+    let mut value_node = rules
+        .var_value_field
+        .and_then(|f| node.child_by_field_name(f));
 
     // C#: initializer is inside equals_value_clause child
     if value_node.is_none() {
@@ -1222,11 +1246,24 @@ fn handle_var_declarator(
     };
 
     // Destructuring: const { a, b } = foo()
-    let is_obj_destruct = rules.object_destruct_type.is_some_and(|o| o == name_n.kind());
-    let is_arr_destruct = rules.array_destruct_type.is_some_and(|a| a == name_n.kind());
+    let is_obj_destruct = rules
+        .object_destruct_type
+        .is_some_and(|o| o == name_n.kind());
+    let is_arr_destruct = rules
+        .array_destruct_type
+        .is_some_and(|a| a == name_n.kind());
 
     if is_obj_destruct || is_arr_destruct {
-        emit_destructuring_assignments(&name_n, node, &callee, &func_name, rules, source, scope, assignments);
+        emit_destructuring_assignments(
+            &name_n,
+            node,
+            &callee,
+            &func_name,
+            rules,
+            source,
+            scope,
+            assignments,
+        );
     } else {
         let var_name = node_text(&name_n, source).to_string();
         assignments.push(DataflowAssignment {
@@ -1327,7 +1364,10 @@ fn handle_call_expr(
     let cursor = &mut args_node.walk();
     for arg_raw in args_node.named_children(cursor) {
         // PHP/Java: unwrap argument wrapper
-        let arg = if rules.argument_wrapper_type.is_some_and(|w| w == arg_raw.kind()) {
+        let arg = if rules
+            .argument_wrapper_type
+            .is_some_and(|w| w == arg_raw.kind())
+        {
             arg_raw.named_child(0).unwrap_or(arg_raw)
         } else {
             arg_raw
@@ -1344,13 +1384,12 @@ fn handle_call_expr(
         } else {
             None
         };
-        let arg_member = if arg_name.is_none()
-            && rules.member_node.is_some_and(|m| m == unwrapped.kind())
-        {
-            member_receiver(&unwrapped, rules, source)
-        } else {
-            None
-        };
+        let arg_member =
+            if arg_name.is_none() && rules.member_node.is_some_and(|m| m == unwrapped.kind()) {
+                member_receiver(&unwrapped, rules, source)
+            } else {
+                None
+            };
         let tracked_name = arg_name.clone().or(arg_member);
 
         if let Some(ref tracked) = tracked_name {

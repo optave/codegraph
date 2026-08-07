@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct SwiftExtractor;
 
@@ -11,8 +11,18 @@ impl SymbolExtractor for SwiftExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_swift_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &SWIFT_AST_CONFIG);
-        walk_tree(&tree.root_node(), source, &mut symbols, match_swift_type_map);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &SWIFT_AST_CONFIG,
+        );
+        walk_tree(
+            &tree.root_node(),
+            source,
+            &mut symbols,
+            match_swift_type_map,
+        );
         dedup_type_map(&mut symbols.type_map);
         symbols
     }
@@ -22,12 +32,14 @@ impl SymbolExtractor for SwiftExtractor {
 
 fn match_swift_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
     if node.kind() == "property_declaration" {
-        if let Some(type_ann) = node.child_by_field_name("type")
+        if let Some(type_ann) = node
+            .child_by_field_name("type")
             .or_else(|| find_child(node, "type_annotation"))
         {
             // type_annotation contains the actual type as a child
             let type_name = if type_ann.kind() == "type_annotation" {
-                type_ann.child(type_ann.child_count().saturating_sub(1))
+                type_ann
+                    .child(type_ann.child_count().saturating_sub(1))
                     .map(|n| node_text(&n, source))
                     .unwrap_or("")
             } else {
@@ -96,7 +108,8 @@ fn extract_swift_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
                         if param.kind() == "parameter" {
                             // Swift params have external and internal names
                             // The internal name (or only name) is what we want
-                            let name = param.child_by_field_name("internal_name")
+                            let name = param
+                                .child_by_field_name("internal_name")
                                 .or_else(|| param.child_by_field_name("name"))
                                 .or_else(|| find_child(&param, "simple_identifier"))
                                 .map(|n| node_text(&n, source).to_string());
@@ -114,8 +127,7 @@ fn extract_swift_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
 
 fn extract_swift_class_properties(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut props = Vec::new();
-    let body = find_child(node, "class_body")
-        .or_else(|| find_child(node, "enum_class_body"));
+    let body = find_child(node, "class_body").or_else(|| find_child(node, "enum_class_body"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
             if let Some(child) = body.child(i) {
@@ -136,8 +148,7 @@ fn extract_swift_class_properties(node: &Node, source: &[u8]) -> Vec<Definition>
 
 fn extract_swift_enum_cases(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut cases = Vec::new();
-    let body = find_child(node, "enum_class_body")
-        .or_else(|| find_child(node, "class_body"));
+    let body = find_child(node, "enum_class_body").or_else(|| find_child(node, "class_body"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
             if let Some(child) = body.child(i) {
@@ -156,7 +167,12 @@ fn extract_swift_enum_cases(node: &Node, source: &[u8]) -> Vec<Definition> {
     cases
 }
 
-fn extract_swift_inheritance(node: &Node, source: &[u8], class_name: &str, symbols: &mut FileSymbols) {
+fn extract_swift_inheritance(
+    node: &Node,
+    source: &[u8],
+    class_name: &str,
+    symbols: &mut FileSymbols,
+) {
     let mut first = true;
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -193,12 +209,15 @@ fn extract_swift_inheritance(node: &Node, source: &[u8], class_name: &str, symbo
 /// Inspects call_suffix → value_arguments → value_argument → line_string_literal.
 fn get_swift_first_string_literal(call_node: &Node, source: &[u8]) -> Option<String> {
     let call_suffix = find_child(call_node, "call_suffix")?;
-    let value_args = find_child(&call_suffix, "value_arguments")
-        .unwrap_or(call_suffix);
+    let value_args = find_child(&call_suffix, "value_arguments").unwrap_or(call_suffix);
     for i in 0..value_args.child_count() {
-        let Some(arg) = value_args.child(i) else { continue };
+        let Some(arg) = value_args.child(i) else {
+            continue;
+        };
         let t = arg.kind();
-        if matches!(t, "(" | ")" | ",") { continue; }
+        if matches!(t, "(" | ")" | ",") {
+            continue;
+        }
         let value_node = if t == "value_argument" {
             arg.child_by_field_name("value")
                 .or_else(|| arg.child(arg.child_count().saturating_sub(1)))
@@ -209,7 +228,9 @@ fn get_swift_first_string_literal(call_node: &Node, source: &[u8]) -> Option<Str
         let vt = value_node.kind();
         if vt == "line_string_literal" || vt == "string_literal" {
             for j in 0..value_node.child_count() {
-                let Some(ch) = value_node.child(j) else { continue };
+                let Some(ch) = value_node.child(j) else {
+                    continue;
+                };
                 if ch.kind() == "line_str_text" || ch.kind() == "string_content" {
                     return Some(node_text(&ch, source).to_string());
                 }
@@ -225,8 +246,8 @@ fn get_swift_first_string_literal(call_node: &Node, source: &[u8]) -> Option<Str
 fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
     match node.kind() {
         "class_declaration" => {
-            let name_node = find_child(node, "simple_identifier")
-                .or_else(|| node.child_by_field_name("name"));
+            let name_node =
+                find_child(node, "simple_identifier").or_else(|| node.child_by_field_name("name"));
             if let Some(name_node) = name_node {
                 let class_name = node_text(&name_node, source).to_string();
                 let kind = swift_class_kind(node, source);
@@ -271,8 +292,8 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
         }
 
         "protocol_declaration" => {
-            let name_node = find_child(node, "simple_identifier")
-                .or_else(|| node.child_by_field_name("name"));
+            let name_node =
+                find_child(node, "simple_identifier").or_else(|| node.child_by_field_name("name"));
             if let Some(name_node) = name_node {
                 let proto_name = node_text(&name_node, source).to_string();
                 symbols.definitions.push(Definition {
@@ -294,8 +315,8 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
         }
 
         "function_declaration" => {
-            let name_node = find_child(node, "simple_identifier")
-                .or_else(|| node.child_by_field_name("name"));
+            let name_node =
+                find_child(node, "simple_identifier").or_else(|| node.child_by_field_name("name"));
             if let Some(name_node) = name_node {
                 let parent_class = find_swift_parent_class(node, source);
                 let name = node_text(&name_node, source);
@@ -303,7 +324,11 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
                     Some(cls) => format!("{}.{}", cls, name),
                     None => name.to_string(),
                 };
-                let kind = if parent_class.is_some() { "method" } else { "function" };
+                let kind = if parent_class.is_some() {
+                    "method"
+                } else {
+                    "function"
+                };
                 let children = extract_swift_parameters(node, source);
                 symbols.definitions.push(Definition {
                     name: full_name,
@@ -341,20 +366,21 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
                         // (e.g. `.save` text), not a bare `simple_identifier`. Descend into
                         // navigation_suffix to get the inner simple_identifier so the resolved
                         // name is "save" not ".save". Mirrors WASM extractors/swift.ts fix.
-                        let name = last.map(|n| {
-                            if n.kind() == "navigation_suffix" {
-                                find_child(&n, "simple_identifier")
-                                    .map(|id| node_text(&id, source).to_string())
-                                    .unwrap_or_else(|| {
-                                        let t = node_text(&n, source);
-                                        t.trim_start_matches('.').to_string()
-                                    })
-                            } else {
-                                node_text(&n, source).to_string()
-                            }
-                        }).unwrap_or_else(|| node_text(&fn_node, source).to_string());
-                        let receiver = fn_node.child(0)
-                            .map(|n| node_text(&n, source).to_string());
+                        let name = last
+                            .map(|n| {
+                                if n.kind() == "navigation_suffix" {
+                                    find_child(&n, "simple_identifier")
+                                        .map(|id| node_text(&id, source).to_string())
+                                        .unwrap_or_else(|| {
+                                            let t = node_text(&n, source);
+                                            t.trim_start_matches('.').to_string()
+                                        })
+                                } else {
+                                    node_text(&n, source).to_string()
+                                }
+                            })
+                            .unwrap_or_else(|| node_text(&fn_node, source).to_string());
+                        let receiver = fn_node.child(0).map(|n| node_text(&n, source).to_string());
                         (name, receiver)
                     }
                     _ => (node_text(&fn_node, source).to_string(), None),
@@ -381,7 +407,9 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
                 if call_name == "NSSelectorFromString" {
                     let literal = get_swift_first_string_literal(node, source);
                     symbols.calls.push(Call {
-                        name: literal.clone().unwrap_or_else(|| "<dynamic:unresolved>".to_string()),
+                        name: literal
+                            .clone()
+                            .unwrap_or_else(|| "<dynamic:unresolved>".to_string()),
                         line: call_line,
                         dynamic: Some(true),
                         dynamic_kind: Some(if literal.is_some() {
@@ -463,8 +491,15 @@ mod tests {
     #[test]
     fn extracts_navigation_call_bare_name() {
         let s = parse_swift("func f() { repo.save(x) }");
-        let call = s.calls.iter().find(|c| c.receiver.as_deref() == Some("repo")).unwrap();
-        assert_eq!(call.name, "save", "method name must not include leading dot");
+        let call = s
+            .calls
+            .iter()
+            .find(|c| c.receiver.as_deref() == Some("repo"))
+            .unwrap();
+        assert_eq!(
+            call.name, "save",
+            "method name must not include leading dot"
+        );
         assert_eq!(call.receiver.as_deref(), Some("repo"));
     }
 

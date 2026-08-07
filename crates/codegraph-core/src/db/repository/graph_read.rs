@@ -387,8 +387,10 @@ fn bfs_transitive_callers(
     let mut groups: Vec<FnDepsTransitiveGroup> = Vec::new();
 
     for d in 2..=depth {
-        let unvisited: Vec<&FnDepsCallerWithId> =
-            frontier.iter().filter(|f| !visited.contains(&f.id)).collect();
+        let unvisited: Vec<&FnDepsCallerWithId> = frontier
+            .iter()
+            .filter(|f| !visited.contains(&f.id))
+            .collect();
         for f in &unvisited {
             visited.insert(f.id);
         }
@@ -474,9 +476,8 @@ fn fetch_nodes_by_kind(
     conn: &rusqlite::Connection,
     no_tests_filter: &str,
 ) -> napi::Result<Vec<KindCount>> {
-    let sql = format!(
-        "SELECT kind, COUNT(*) as c FROM nodes WHERE 1=1 {no_tests_filter} GROUP BY kind",
-    );
+    let sql =
+        format!("SELECT kind, COUNT(*) as c FROM nodes WHERE 1=1 {no_tests_filter} GROUP BY kind",);
     let mut stmt = conn
         .prepare_cached(&sql)
         .map_err(|e| napi::Error::from_reason(format!("get_graph_stats nodes_by_kind: {e}")))?;
@@ -547,9 +548,8 @@ fn fetch_role_counts(
             })
         })
         .map_err(|e| napi::Error::from_reason(format!("get_graph_stats role_counts query: {e}")))?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
-        napi::Error::from_reason(format!("get_graph_stats role_counts collect: {e}"))
-    })
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| napi::Error::from_reason(format!("get_graph_stats role_counts collect: {e}")))
 }
 
 fn fetch_quality_metrics(
@@ -558,9 +558,8 @@ fn fetch_quality_metrics(
     tf_n_file: &str,
 ) -> napi::Result<QualityMetrics> {
     let callable_total: i32 = {
-        let sql = format!(
-            "SELECT COUNT(*) FROM nodes WHERE kind IN ('function', 'method') {tf_file}",
-        );
+        let sql =
+            format!("SELECT COUNT(*) FROM nodes WHERE kind IN ('function', 'method') {tf_file}",);
         conn.prepare_cached(&sql)
             .map_err(|e| napi::Error::from_reason(format!("get_graph_stats callable_total: {e}")))?
             .query_row([], |row| row.get(0))
@@ -592,16 +591,12 @@ fn fetch_quality_metrics(
         .prepare_cached("SELECT COUNT(*) FROM edges WHERE kind = 'calls' AND confidence > 0")
         .map_err(|e| napi::Error::from_reason(format!("get_graph_stats call_edges: {e}")))?
         .query_row([], |row| row.get(0))
-        .map_err(|e| {
-            napi::Error::from_reason(format!("get_graph_stats call_edges query: {e}"))
-        })?;
+        .map_err(|e| napi::Error::from_reason(format!("get_graph_stats call_edges query: {e}")))?;
     let high_conf_call_edges: i32 = conn
         .prepare_cached("SELECT COUNT(*) FROM edges WHERE kind = 'calls' AND confidence >= 0.7")
         .map_err(|e| napi::Error::from_reason(format!("get_graph_stats high_conf: {e}")))?
         .query_row([], |row| row.get(0))
-        .map_err(|e| {
-            napi::Error::from_reason(format!("get_graph_stats high_conf query: {e}"))
-        })?;
+        .map_err(|e| napi::Error::from_reason(format!("get_graph_stats high_conf query: {e}")))?;
     Ok(QualityMetrics {
         callable_total,
         callable_with_callers,
@@ -663,9 +658,7 @@ fn fetch_complexity_summary(
                 row.get::<_, f64>(3).unwrap_or(0.0),
             ))
         })
-        .map_err(|e| {
-            napi::Error::from_reason(format!("get_graph_stats complexity query: {e}"))
-        })?;
+        .map_err(|e| napi::Error::from_reason(format!("get_graph_stats complexity query: {e}")))?;
     let data: Vec<(i32, i32, i32, f64)> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
         napi::Error::from_reason(format!("get_graph_stats complexity collect: {e}"))
     })?;
@@ -1000,9 +993,7 @@ impl NativeDatabase {
     pub fn find_nodes_by_file(&self, file: String) -> napi::Result<Vec<NativeNodeRow>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare_cached(
-                "SELECT * FROM nodes WHERE file = ?1 AND kind != 'file' ORDER BY line",
-            )
+            .prepare_cached("SELECT * FROM nodes WHERE file = ?1 AND kind != 'file' ORDER BY line")
             .map_err(|e| napi::Error::from_reason(format!("find_nodes_by_file prepare: {e}")))?;
         let rows = stmt
             .query_map(params![file], read_node_row)
@@ -1036,8 +1027,7 @@ impl NativeDatabase {
         let conn = self.conn()?;
 
         let mut sql = "SELECT * FROM nodes WHERE scope = ?1".to_string();
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(scope_name)];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(scope_name)];
         let mut idx = 2;
 
         if let Some(ref k) = kind {
@@ -1072,8 +1062,7 @@ impl NativeDatabase {
         let conn = self.conn()?;
 
         let mut sql = "SELECT * FROM nodes WHERE qualified_name = ?1".to_string();
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(qualified_name)];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(qualified_name)];
         let mut idx = 2;
         if let Some(ref f) = file {
             push_file_filter(&mut sql, &mut param_values, &mut idx, "file", f);
@@ -1109,14 +1098,16 @@ impl NativeDatabase {
              LEFT JOIN (SELECT target_id, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target_id) fi ON fi.target_id = n.id \
              WHERE n.name LIKE ?1",
         );
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(name_pattern)];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(name_pattern)];
         let mut idx = 2;
 
         if let Some(ref ks) = kinds {
             if !ks.is_empty() {
-                let placeholders: Vec<String> =
-                    ks.iter().enumerate().map(|(i, _)| format!("?{}", idx + i)).collect();
+                let placeholders: Vec<String> = ks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", idx + i))
+                    .collect();
                 sql.push_str(&format!(" AND n.kind IN ({})", placeholders.join(", ")));
                 for k in ks {
                     param_values.push(Box::new(k.clone()));
@@ -1128,11 +1119,9 @@ impl NativeDatabase {
             push_file_filter(&mut sql, &mut param_values, &mut idx, "n.file", f);
         }
 
-        let mut stmt = conn
-            .prepare_cached(&sql)
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_nodes_with_fan_in prepare: {e}"))
-            })?;
+        let mut stmt = conn.prepare_cached(&sql).map_err(|e| {
+            napi::Error::from_reason(format!("find_nodes_with_fan_in prepare: {e}"))
+        })?;
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
@@ -1153,13 +1142,9 @@ impl NativeDatabase {
                     fan_in: row.get("fan_in")?,
                 })
             })
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_nodes_with_fan_in: {e}"))
-            })?;
+            .map_err(|e| napi::Error::from_reason(format!("find_nodes_with_fan_in: {e}")))?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_nodes_with_fan_in collect: {e}"))
-            })
+            .map_err(|e| napi::Error::from_reason(format!("find_nodes_with_fan_in collect: {e}")))
     }
 
     /// Fetch nodes for triage scoring.
@@ -1182,9 +1167,9 @@ impl NativeDatabase {
             no_tests.unwrap_or(false),
         );
 
-        let mut stmt = conn.prepare_cached(&sql).map_err(|e| {
-            napi::Error::from_reason(format!("find_nodes_for_triage prepare: {e}"))
-        })?;
+        let mut stmt = conn
+            .prepare_cached(&sql)
+            .map_err(|e| napi::Error::from_reason(format!("find_nodes_for_triage prepare: {e}")))?;
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
@@ -1282,9 +1267,7 @@ impl NativeDatabase {
                  FROM edges e JOIN nodes n ON e.source_id = n.id \
                  WHERE e.target_id = ?1 AND e.kind = 'calls'",
             )
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_distinct_callers prepare: {e}"))
-            })?;
+            .map_err(|e| napi::Error::from_reason(format!("find_distinct_callers prepare: {e}")))?;
         let rows = stmt
             .query_map(params![node_id], |row| {
                 Ok(NativeRelatedNodeRow {
@@ -1298,9 +1281,7 @@ impl NativeDatabase {
             })
             .map_err(|e| napi::Error::from_reason(format!("find_distinct_callers: {e}")))?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_distinct_callers collect: {e}"))
-            })
+            .map_err(|e| napi::Error::from_reason(format!("find_distinct_callers collect: {e}")))
     }
 
     /// Find all outgoing edges with edge kind.
@@ -1329,13 +1310,9 @@ impl NativeDatabase {
                     edge_kind: row.get("edge_kind")?,
                 })
             })
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_all_outgoing_edges: {e}"))
-            })?;
+            .map_err(|e| napi::Error::from_reason(format!("find_all_outgoing_edges: {e}")))?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_all_outgoing_edges collect: {e}"))
-            })
+            .map_err(|e| napi::Error::from_reason(format!("find_all_outgoing_edges collect: {e}")))
     }
 
     /// Find all incoming edges with edge kind.
@@ -1364,13 +1341,9 @@ impl NativeDatabase {
                     edge_kind: row.get("edge_kind")?,
                 })
             })
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_all_incoming_edges: {e}"))
-            })?;
+            .map_err(|e| napi::Error::from_reason(format!("find_all_incoming_edges: {e}")))?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_all_incoming_edges collect: {e}"))
-            })
+            .map_err(|e| napi::Error::from_reason(format!("find_all_incoming_edges collect: {e}")))
     }
 
     /// Get distinct callee names for a node.
@@ -1473,9 +1446,7 @@ impl NativeDatabase {
             .query_map(params![node_id], read_node_row)
             .map_err(|e| napi::Error::from_reason(format!("find_import_dependents: {e}")))?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_import_dependents collect: {e}"))
-            })
+            .map_err(|e| napi::Error::from_reason(format!("find_import_dependents collect: {e}")))
     }
 
     /// Get IDs of symbols in a file called from other files.
@@ -1494,13 +1465,10 @@ impl NativeDatabase {
             })?;
         let rows = stmt
             .query_map(params![file, file], |row| row.get::<_, i32>(0))
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_cross_file_call_targets: {e}"))
-            })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_cross_file_call_targets collect: {e}"))
-            })
+            .map_err(|e| napi::Error::from_reason(format!("find_cross_file_call_targets: {e}")))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            napi::Error::from_reason(format!("find_cross_file_call_targets collect: {e}"))
+        })
     }
 
     /// Count callers in a different file than the target.
@@ -1532,16 +1500,12 @@ impl NativeDatabase {
                 "SELECT n.id FROM edges e JOIN nodes n ON e.target_id = n.id \
                  WHERE e.source_id = ?1 AND e.kind = 'extends'",
             )
-            .map_err(|e| {
-                napi::Error::from_reason(format!("get_class_hierarchy prepare: {e}"))
-            })?;
+            .map_err(|e| napi::Error::from_reason(format!("get_class_hierarchy prepare: {e}")))?;
 
         while let Some(current) = queue.pop_front() {
             let parents: Vec<i32> = stmt
                 .query_map(params![current], |row| row.get::<_, i32>(0))
-                .map_err(|e| {
-                    napi::Error::from_reason(format!("get_class_hierarchy query: {e}"))
-                })?
+                .map_err(|e| napi::Error::from_reason(format!("get_class_hierarchy query: {e}")))?
                 .filter_map(|r| r.ok())
                 .collect();
             for p in parents {
@@ -1633,13 +1597,10 @@ impl NativeDatabase {
                     callee_name: row.get("callee_name")?,
                 })
             })
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_intra_file_call_edges: {e}"))
-            })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                napi::Error::from_reason(format!("find_intra_file_call_edges collect: {e}"))
-            })
+            .map_err(|e| napi::Error::from_reason(format!("find_intra_file_call_edges: {e}")))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            napi::Error::from_reason(format!("find_intra_file_call_edges collect: {e}"))
+        })
     }
 
     // ── Batch 4: Graph-Read + Table Checks ──────────────────────────────
@@ -1790,7 +1751,9 @@ impl NativeDatabase {
             Ok(()) => Ok(true),
             Err(rusqlite::Error::SqliteFailure(_, _)) => Ok(false),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
-            Err(e) => Err(napi::Error::from_reason(format!("has_implements_edges: {e}"))),
+            Err(e) => Err(napi::Error::from_reason(format!(
+                "has_implements_edges: {e}"
+            ))),
         }
     }
 
@@ -1805,7 +1768,9 @@ impl NativeDatabase {
             Ok(()) => Ok(true),
             Err(rusqlite::Error::SqliteFailure(_, _)) => Ok(false),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
-            Err(e) => Err(napi::Error::from_reason(format!("has_co_changes_table: {e}"))),
+            Err(e) => Err(napi::Error::from_reason(format!(
+                "has_co_changes_table: {e}"
+            ))),
         }
     }
 
@@ -1815,8 +1780,9 @@ impl NativeDatabase {
         let conn = self.conn()?;
         match conn
             .prepare_cached("SELECT hash FROM file_hashes WHERE file = ?1")
-            .and_then(|mut stmt| stmt.query_row(rusqlite::params![file], |row| row.get::<_, String>(0)))
-        {
+            .and_then(|mut stmt| {
+                stmt.query_row(rusqlite::params![file], |row| row.get::<_, String>(0))
+            }) {
             Ok(hash) => Ok(Some(hash)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(rusqlite::Error::SqliteFailure(_, _)) => Ok(None),
@@ -1908,20 +1874,15 @@ impl NativeDatabase {
 
         let mut stmt = conn
             .prepare_cached(&sql)
-            .map_err(|e| {
-                napi::Error::from_reason(format!("query_function_nodes prepare: {e}"))
-            })?;
+            .map_err(|e| napi::Error::from_reason(format!("query_function_nodes prepare: {e}")))?;
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query_map(params_ref.as_slice(), read_node_row)
             .map_err(|e| napi::Error::from_reason(format!("query_function_nodes: {e}")))?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                napi::Error::from_reason(format!("query_function_nodes collect: {e}"))
-            })
+            .map_err(|e| napi::Error::from_reason(format!("query_function_nodes collect: {e}")))
     }
-
 }
 
 // ── Batched query methods ──────────────────────────────────────────────
@@ -1933,8 +1894,16 @@ impl NativeDatabase {
     #[napi]
     pub fn get_graph_stats(&self, no_tests: bool) -> napi::Result<GraphStats> {
         let conn = self.conn()?;
-        let tf = if no_tests { test_filter_clauses("file") } else { String::new() };
-        let tf_n = if no_tests { test_filter_clauses("n.file") } else { String::new() };
+        let tf = if no_tests {
+            test_filter_clauses("file")
+        } else {
+            String::new()
+        };
+        let tf_n = if no_tests {
+            test_filter_clauses("n.file")
+        } else {
+            String::new()
+        };
 
         let nodes_by_kind = fetch_nodes_by_kind(conn, &tf)?;
         let total_nodes: i32 = nodes_by_kind.iter().map(|k| k.count).sum();
@@ -1983,24 +1952,31 @@ impl NativeDatabase {
             node_id: i32,
             kind: &str,
         ) -> napi::Result<Vec<DataflowQueryEdge>> {
-            let sql = "SELECT n.name, n.kind, n.file, d.line, d.param_index, d.expression, d.confidence \
+            let sql =
+                "SELECT n.name, n.kind, n.file, d.line, d.param_index, d.expression, d.confidence \
                  FROM dataflow d JOIN nodes n ON d.target_id = n.id \
                  WHERE d.source_id = ?1 AND d.kind = ?2";
-            let mut stmt = conn.prepare_cached(sql)
-                .map_err(|e| napi::Error::from_reason(format!("get_dataflow_edges out {kind}: {e}")))?;
-            let rows = stmt.query_map(params![node_id, kind], |row: &rusqlite::Row| {
-                Ok(DataflowQueryEdge {
-                    name: row.get(0)?,
-                    kind: row.get(1)?,
-                    file: row.get(2)?,
-                    line: row.get(3)?,
-                    param_index: row.get(4)?,
-                    expression: row.get(5)?,
-                    confidence: row.get(6)?,
+            let mut stmt = conn.prepare_cached(sql).map_err(|e| {
+                napi::Error::from_reason(format!("get_dataflow_edges out {kind}: {e}"))
+            })?;
+            let rows = stmt
+                .query_map(params![node_id, kind], |row: &rusqlite::Row| {
+                    Ok(DataflowQueryEdge {
+                        name: row.get(0)?,
+                        kind: row.get(1)?,
+                        file: row.get(2)?,
+                        line: row.get(3)?,
+                        param_index: row.get(4)?,
+                        expression: row.get(5)?,
+                        confidence: row.get(6)?,
+                    })
                 })
-            }).map_err(|e| napi::Error::from_reason(format!("get_dataflow_edges out {kind} query: {e}")))?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(|e| napi::Error::from_reason(format!("get_dataflow_edges out {kind} collect: {e}")))
+                .map_err(|e| {
+                    napi::Error::from_reason(format!("get_dataflow_edges out {kind} query: {e}"))
+                })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+                napi::Error::from_reason(format!("get_dataflow_edges out {kind} collect: {e}"))
+            })
         }
 
         fn query_incoming(
@@ -2008,24 +1984,31 @@ impl NativeDatabase {
             node_id: i32,
             kind: &str,
         ) -> napi::Result<Vec<DataflowQueryEdge>> {
-            let sql = "SELECT n.name, n.kind, n.file, d.line, d.param_index, d.expression, d.confidence \
+            let sql =
+                "SELECT n.name, n.kind, n.file, d.line, d.param_index, d.expression, d.confidence \
                  FROM dataflow d JOIN nodes n ON d.source_id = n.id \
                  WHERE d.target_id = ?1 AND d.kind = ?2";
-            let mut stmt = conn.prepare_cached(sql)
-                .map_err(|e| napi::Error::from_reason(format!("get_dataflow_edges in {kind}: {e}")))?;
-            let rows = stmt.query_map(params![node_id, kind], |row: &rusqlite::Row| {
-                Ok(DataflowQueryEdge {
-                    name: row.get(0)?,
-                    kind: row.get(1)?,
-                    file: row.get(2)?,
-                    line: row.get(3)?,
-                    param_index: row.get(4)?,
-                    expression: row.get(5)?,
-                    confidence: row.get(6)?,
+            let mut stmt = conn.prepare_cached(sql).map_err(|e| {
+                napi::Error::from_reason(format!("get_dataflow_edges in {kind}: {e}"))
+            })?;
+            let rows = stmt
+                .query_map(params![node_id, kind], |row: &rusqlite::Row| {
+                    Ok(DataflowQueryEdge {
+                        name: row.get(0)?,
+                        kind: row.get(1)?,
+                        file: row.get(2)?,
+                        line: row.get(3)?,
+                        param_index: row.get(4)?,
+                        expression: row.get(5)?,
+                        confidence: row.get(6)?,
+                    })
                 })
-            }).map_err(|e| napi::Error::from_reason(format!("get_dataflow_edges in {kind} query: {e}")))?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(|e| napi::Error::from_reason(format!("get_dataflow_edges in {kind} collect: {e}")))
+                .map_err(|e| {
+                    napi::Error::from_reason(format!("get_dataflow_edges in {kind} query: {e}"))
+                })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+                napi::Error::from_reason(format!("get_dataflow_edges in {kind} collect: {e}"))
+            })
         }
 
         Ok(DataflowEdgesResult {
@@ -2075,22 +2058,25 @@ impl NativeDatabase {
             test_filter, order_by
         );
 
-        let mut stmt = conn.prepare_cached(&sql)
+        let mut stmt = conn
+            .prepare_cached(&sql)
             .map_err(|e| napi::Error::from_reason(format!("get_hotspots: {e}")))?;
-        let rows = stmt.query_map(params![kind, limit], |row| {
-            Ok(NativeHotspotRow {
-                name: row.get(0)?,
-                kind: row.get(1)?,
-                line_count: row.get(2)?,
-                symbol_count: row.get(3)?,
-                import_count: row.get(4)?,
-                export_count: row.get(5)?,
-                fan_in: row.get(6)?,
-                fan_out: row.get(7)?,
-                cohesion: row.get(8)?,
-                file_count: row.get(9)?,
+        let rows = stmt
+            .query_map(params![kind, limit], |row| {
+                Ok(NativeHotspotRow {
+                    name: row.get(0)?,
+                    kind: row.get(1)?,
+                    line_count: row.get(2)?,
+                    symbol_count: row.get(3)?,
+                    import_count: row.get(4)?,
+                    export_count: row.get(5)?,
+                    fan_in: row.get(6)?,
+                    fan_out: row.get(7)?,
+                    cohesion: row.get(8)?,
+                    file_count: row.get(9)?,
+                })
             })
-        }).map_err(|e| napi::Error::from_reason(format!("get_hotspots query: {e}")))?;
+            .map_err(|e| napi::Error::from_reason(format!("get_hotspots query: {e}")))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| napi::Error::from_reason(format!("get_hotspots collect: {e}")))
     }
@@ -2103,19 +2089,31 @@ impl NativeDatabase {
 
         let mut fan_in_stmt = conn
             .prepare_cached("SELECT COUNT(*) FROM edges WHERE target_id = ?1 AND kind = 'calls'")
-            .map_err(|e| napi::Error::from_reason(format!("batch_fan_metrics fan_in prepare: {e}")))?;
+            .map_err(|e| {
+                napi::Error::from_reason(format!("batch_fan_metrics fan_in prepare: {e}"))
+            })?;
         let mut fan_out_stmt = conn
             .prepare_cached("SELECT COUNT(*) FROM edges WHERE source_id = ?1 AND kind = 'calls'")
-            .map_err(|e| napi::Error::from_reason(format!("batch_fan_metrics fan_out prepare: {e}")))?;
+            .map_err(|e| {
+                napi::Error::from_reason(format!("batch_fan_metrics fan_out prepare: {e}"))
+            })?;
 
         let mut results = Vec::with_capacity(node_ids.len());
         for &nid in &node_ids {
             let fan_in: i32 = fan_in_stmt
                 .query_row(params![nid], |row| row.get(0))
-                .map_err(|e| napi::Error::from_reason(format!("batch_fan_metrics fan_in query nid={nid}: {e}")))?;
+                .map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "batch_fan_metrics fan_in query nid={nid}: {e}"
+                    ))
+                })?;
             let fan_out: i32 = fan_out_stmt
                 .query_row(params![nid], |row| row.get(0))
-                .map_err(|e| napi::Error::from_reason(format!("batch_fan_metrics fan_out query nid={nid}: {e}")))?;
+                .map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "batch_fan_metrics fan_out query nid={nid}: {e}"
+                    ))
+                })?;
             results.push(FanMetric {
                 node_id: nid,
                 fan_in,
@@ -2155,9 +2153,9 @@ impl NativeDatabase {
             param_values.iter().map(|p| p.as_ref()).collect();
 
         let mut matched: Vec<FnDepsMatchedNode> = {
-            let mut stmt = conn
-                .prepare_cached(&sql)
-                .map_err(|e| napi::Error::from_reason(format!("fn_deps find_nodes prepare: {e}")))?;
+            let mut stmt = conn.prepare_cached(&sql).map_err(|e| {
+                napi::Error::from_reason(format!("fn_deps find_nodes prepare: {e}"))
+            })?;
             let rows = stmt
                 .query_map(params_ref.as_slice(), |row| {
                     Ok(FnDepsMatchedNode {

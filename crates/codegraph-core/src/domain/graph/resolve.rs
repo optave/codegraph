@@ -217,7 +217,11 @@ pub fn clear_exports_cache() {
 fn find_package_dir(package_name: &str, root_dir: &str) -> Option<String> {
     let mut dir = root_dir.to_string();
     loop {
-        let candidate = format!("{}/node_modules/{}", dir.trim_end_matches('/'), package_name);
+        let candidate = format!(
+            "{}/node_modules/{}",
+            dir.trim_end_matches('/'),
+            package_name
+        );
         if Path::new(&candidate).join("package.json").exists() {
             return Some(candidate);
         }
@@ -761,8 +765,7 @@ fn resolve_rust_use_path(
         _ => return None,
     };
 
-    let resolved =
-        walk_rust_module_segments(&start_dir, &start_file, rest, root_dir, known_files)?;
+    let resolved = walk_rust_module_segments(&start_dir, &start_file, rest, root_dir, known_files)?;
     Some(relativize_to_root(&resolved, root_dir))
 }
 
@@ -947,15 +950,22 @@ thread_local! {
 /// so e.g. a file in `graph/algorithms/*.rs` calling a method declared in
 /// the shallower `graph/model.rs` was scored as maximally distant (issue #1769).
 fn directory_distance(a: &str, b: &str) -> usize {
-    let key = if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) };
+    let key = if a <= b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    };
     if let Some(cached) = DIRECTORY_DISTANCE_CACHE.with(|c| c.borrow().get(&key).copied()) {
         return cached;
     }
 
     let chain_a = ancestor_chain(a);
     let chain_b = ancestor_chain(b);
-    let index_in_b: std::collections::HashMap<&str, usize> =
-        chain_b.iter().enumerate().map(|(j, d)| (d.as_str(), j)).collect();
+    let index_in_b: std::collections::HashMap<&str, usize> = chain_b
+        .iter()
+        .enumerate()
+        .map(|(j, d)| (d.as_str(), j))
+        .collect();
     let mut dist = usize::MAX;
     for (i, dir_a) in chain_a.iter().enumerate() {
         if let Some(&j) = index_in_b.get(dir_a.as_str()) {
@@ -1132,10 +1142,7 @@ mod tests {
     #[test]
     fn clean_path_excess_parent_dirs_silently_dropped() {
         // Documents the known limitation: excess leading `..` are dropped
-        assert_eq!(
-            clean_path(Path::new("../../foo")),
-            PathBuf::from("foo")
-        );
+        assert_eq!(clean_path(Path::new("../../foo")), PathBuf::from("foo"));
     }
 
     #[test]
@@ -1150,11 +1157,19 @@ mod tests {
         let root = "/project";
 
         // Absolute candidate should match relative known_files entry
-        assert!(file_exists("/project/src/domain/parser.ts", Some(&known), root));
+        assert!(file_exists(
+            "/project/src/domain/parser.ts",
+            Some(&known),
+            root
+        ));
         assert!(file_exists("/project/src/index.ts", Some(&known), root));
 
         // Non-matching paths should still return false
-        assert!(!file_exists("/project/src/nonexistent.ts", Some(&known), root));
+        assert!(!file_exists(
+            "/project/src/nonexistent.ts",
+            Some(&known),
+            root
+        ));
 
         // Relative candidate should still match directly
         assert!(file_exists("src/domain/parser.ts", Some(&known), root));
@@ -1282,7 +1297,10 @@ mod tests {
     fn directory_distance_unequal_depth_non_siblings_is_three() {
         // `algorithms` is nested inside `graph`, which is a sibling of `features` —
         // not a direct sibling pair despite sharing the `src` ancestor.
-        assert_eq!(directory_distance("src/graph/algorithms", "src/features"), 3);
+        assert_eq!(
+            directory_distance("src/graph/algorithms", "src/features"),
+            3
+        );
     }
 
     // Regression tests for #1783: the global-by-name call-resolution fallback
@@ -1295,7 +1313,10 @@ mod tests {
 
     #[test]
     fn is_same_language_family_rejects_ruby_and_js() {
-        assert!(!is_same_language_family("tracer/ruby-tracer.rb", "tracer/loader-hooks.mjs"));
+        assert!(!is_same_language_family(
+            "tracer/ruby-tracer.rb",
+            "tracer/loader-hooks.mjs"
+        ));
     }
 
     #[test]
@@ -1613,10 +1634,16 @@ mod tests {
     // crate root, mod models/repository/service/validator declared there).
 
     fn rust_fixture_known_files() -> HashSet<String> {
-        ["main.rs", "models.rs", "repository.rs", "service.rs", "validator.rs"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        [
+            "main.rs",
+            "models.rs",
+            "repository.rs",
+            "service.rs",
+            "validator.rs",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     }
 
     #[test]
@@ -1649,8 +1676,12 @@ mod tests {
         // `use crate::models::{create_user, Repository};` — source is the
         // module path alone, no trailing item name.
         let known = rust_fixture_known_files();
-        let resolved =
-            resolve_rust_use_path("/project/main.rs", "crate::models", "/project", Some(&known));
+        let resolved = resolve_rust_use_path(
+            "/project/main.rs",
+            "crate::models",
+            "/project",
+            Some(&known),
+        );
         assert_eq!(resolved, Some("models.rs".to_string()));
     }
 
@@ -1769,8 +1800,12 @@ mod tests {
 
     #[test]
     fn crate_use_path_returns_none_without_known_files() {
-        let resolved =
-            resolve_rust_use_path("/project/main.rs", "crate::service::build_service", "/project", None);
+        let resolved = resolve_rust_use_path(
+            "/project/main.rs",
+            "crate::service::build_service",
+            "/project",
+            None,
+        );
         assert_eq!(resolved, None);
     }
 
@@ -1908,7 +1943,9 @@ mod tests {
         let resolved = resolve_via_exports("some-pkg/lib/sub", tmp.to_str().unwrap());
         assert_eq!(
             resolved,
-            Some(normalized(&tmp.join("node_modules/some-pkg/dist/lib/sub.js")))
+            Some(normalized(
+                &tmp.join("node_modules/some-pkg/dist/lib/sub.js")
+            ))
         );
 
         let _ = fs::remove_dir_all(&tmp);
@@ -1939,7 +1976,9 @@ mod tests {
         let resolved = resolve_via_exports("some-pkg/lib/zeta-foo", tmp.to_str().unwrap());
         assert_eq!(
             resolved,
-            Some(normalized(&tmp.join("node_modules/some-pkg/dist/zeta/foo.js")))
+            Some(normalized(
+                &tmp.join("node_modules/some-pkg/dist/zeta/foo.js")
+            ))
         );
 
         let _ = fs::remove_dir_all(&tmp);

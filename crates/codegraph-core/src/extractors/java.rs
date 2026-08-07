@@ -11,7 +11,12 @@ impl SymbolExtractor for JavaExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_java_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &JAVA_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &JAVA_AST_CONFIG,
+        );
         walk_tree(&tree.root_node(), source, &mut symbols, match_java_type_map);
         dedup_type_map(&mut symbols.type_map);
         symbols
@@ -66,7 +71,11 @@ fn match_java_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _d
     }
 }
 
-const JAVA_CLASS_KINDS: &[&str] = &["class_declaration", "enum_declaration", "interface_declaration"];
+const JAVA_CLASS_KINDS: &[&str] = &[
+    "class_declaration",
+    "enum_declaration",
+    "interface_declaration",
+];
 
 fn find_java_parent_class(node: &Node, source: &[u8]) -> Option<String> {
     find_enclosing_type_name(node, JAVA_CLASS_KINDS, source)
@@ -89,7 +98,9 @@ fn match_java_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
 // ── Per-node-kind handlers for walk_node_depth ───────────────────────────────
 
 fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let class_name = node_text(&name_node, source).to_string();
     let children = extract_java_class_fields(node, source);
     symbols.definitions.push(Definition {
@@ -117,9 +128,17 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     }
 }
 
-fn extract_java_superclass(superclass: &Node, class_name: &str, node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+fn extract_java_superclass(
+    superclass: &Node,
+    class_name: &str,
+    node: &Node,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+) {
     for i in 0..superclass.child_count() {
-        let Some(child) = superclass.child(i) else { continue };
+        let Some(child) = superclass.child(i) else {
+            continue;
+        };
         match child.kind() {
             "type_identifier" | "identifier" => {
                 symbols.classes.push(ClassRelation {
@@ -147,7 +166,9 @@ fn extract_java_superclass(superclass: &Node, class_name: &str, node: &Node, sou
 }
 
 fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let iface_name = node_text(&name_node, source).to_string();
     symbols.definitions.push(Definition {
         name: iface_name.clone(),
@@ -165,7 +186,9 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
             let Some(child) = body.child(i) else { continue };
-            if child.kind() != "method_declaration" { continue; }
+            if child.kind() != "method_declaration" {
+                continue;
+            }
             if let Some(meth_name) = child.child_by_field_name("name") {
                 // Interface method declarations have no body (unless it's a
                 // default/static method with one) — skip CFG and complexity
@@ -227,7 +250,9 @@ fn handle_method_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     // `node.parent?.parent?.type === 'interface_declaration'` guard.
     if let Some(parent) = node.parent() {
         if let Some(grand) = parent.parent() {
-            if grand.kind() == "interface_declaration" { return; }
+            if grand.kind() == "interface_declaration" {
+                return;
+            }
         }
     }
     if let Some(name_node) = node.child_by_field_name("name") {
@@ -307,7 +332,8 @@ fn handle_import_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 
 /// Return the text of the first non-punctuation argument in an argument_list.
 fn get_first_string_arg_java(node: &Node, source: &[u8]) -> Option<String> {
-    let args = node.child_by_field_name("arguments")
+    let args = node
+        .child_by_field_name("arguments")
         .or_else(|| find_child(node, "argument_list"))?;
     for i in 0..args.child_count() {
         let child = args.child(i)?;
@@ -323,7 +349,9 @@ fn get_first_string_arg_java(node: &Node, source: &[u8]) -> Option<String> {
 }
 
 fn handle_method_invocation(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let method_name = node_text(&name_node, source);
     let receiver = named_child_text(node, "object", source).map(|s| s.to_string());
     let call_line = start_line(node);
@@ -395,9 +423,13 @@ fn handle_method_invocation(node: &Node, source: &[u8], symbols: &mut FileSymbol
 }
 
 fn handle_object_creation(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(type_node) = node.child_by_field_name("type") else { return };
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
     let type_name = if type_node.kind() == "generic_type" {
-        type_node.child(0).map(|n| node_text(&n, source).to_string())
+        type_node
+            .child(0)
+            .map(|n| node_text(&n, source).to_string())
     } else {
         Some(node_text(&type_node, source).to_string())
     };
@@ -481,7 +513,9 @@ fn extract_java_interfaces(
     symbols: &mut FileSymbols,
 ) {
     for i in 0..interfaces.child_count() {
-        let Some(child) = interfaces.child(i) else { continue };
+        let Some(child) = interfaces.child(i) else {
+            continue;
+        };
         match child.kind() {
             "type_identifier" | "identifier" => {
                 push_implements(symbols, class_name, node_text(&child, source), interfaces);
@@ -499,7 +533,12 @@ fn extract_java_interfaces(
     }
 }
 
-fn push_implements(symbols: &mut FileSymbols, class_name: &str, iface_name: &str, line_node: &Node) {
+fn push_implements(
+    symbols: &mut FileSymbols,
+    class_name: &str,
+    iface_name: &str,
+    line_node: &Node,
+) {
     symbols.classes.push(ClassRelation {
         name: class_name.to_string(),
         extends: None,
@@ -516,7 +555,9 @@ fn collect_type_list_implements(
     line_node: &Node,
 ) {
     for j in 0..type_list.child_count() {
-        let Some(t) = type_list.child(j) else { continue };
+        let Some(t) = type_list.child(j) else {
+            continue;
+        };
         match t.kind() {
             "type_identifier" | "identifier" => {
                 push_implements(symbols, class_name, node_text(&t, source), line_node);
@@ -585,7 +626,8 @@ mod tests {
             .unwrap();
         assert_eq!(abstract_save.bodyless, Some(true));
 
-        let concrete = parse_java("class Repo { boolean save(String id, int value) { return true; } }");
+        let concrete =
+            parse_java("class Repo { boolean save(String id, int value) { return true; } }");
         let concrete_save = concrete
             .definitions
             .iter()
@@ -609,7 +651,11 @@ mod tests {
                }\n\
              }\n",
         );
-        let save = s.definitions.iter().find(|d| d.name == "Repo.save").unwrap();
+        let save = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Repo.save")
+            .unwrap();
         assert!(save.complexity.is_none());
         assert!(save.cfg.is_none());
 

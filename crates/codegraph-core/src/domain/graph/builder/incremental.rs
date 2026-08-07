@@ -1,12 +1,12 @@
-use std::collections::HashMap;
 use send_wrapper::SendWrapper;
+use std::collections::HashMap;
 use tree_sitter::{Parser, Tree};
 
 use napi_derive::napi;
 
-use crate::extractors::extract_symbols;
 use crate::domain::parallel::compute_declaration_hashes;
 use crate::domain::parser::LanguageKind;
+use crate::extractors::extract_symbols;
 use crate::types::FileSymbols;
 
 struct CacheEntry {

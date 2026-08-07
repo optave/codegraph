@@ -12,7 +12,12 @@ impl SymbolExtractor for PhpExtractor {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_php_node);
         walk_tree(&tree.root_node(), source, &mut symbols, match_php_type_map);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &PHP_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &PHP_AST_CONFIG,
+        );
         dedup_type_map(&mut symbols.type_map);
         symbols
     }
@@ -63,7 +68,9 @@ fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let class_name = node_text(&name_node, source).to_string();
     let children = extract_php_class_properties(node, source);
     symbols.definitions.push(Definition {
@@ -119,7 +126,9 @@ fn handle_class_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
     let iface_name = node_text(&name_node, source).to_string();
     symbols.definitions.push(Definition {
         name: iface_name.clone(),
@@ -137,7 +146,9 @@ fn handle_interface_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
     if let Some(body) = node.child_by_field_name("body") {
         for i in 0..body.child_count() {
             let Some(child) = body.child(i) else { continue };
-            if child.kind() != "method_declaration" { continue; }
+            if child.kind() != "method_declaration" {
+                continue;
+            }
             if let Some(meth_name) = child.child_by_field_name("name") {
                 symbols.definitions.push(Definition {
                     name: format!("{}.{}", iface_name, node_text(&meth_name, source)),
@@ -237,8 +248,8 @@ fn handle_namespace_use(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
         if child.kind() == "namespace_use_clause" {
-            let name_node = find_child(&child, "qualified_name")
-                .or_else(|| find_child(&child, "name"));
+            let name_node =
+                find_child(&child, "qualified_name").or_else(|| find_child(&child, "name"));
             if let Some(name_node) = name_node {
                 let full_path = node_text(&name_node, source).to_string();
                 let last_name = full_path.split('\\').last().unwrap_or("").to_string();
@@ -263,7 +274,9 @@ fn handle_namespace_use(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_function_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let fn_node = node.child_by_field_name("function").or_else(|| node.child(0));
+    let fn_node = node
+        .child_by_field_name("function")
+        .or_else(|| node.child(0));
     let Some(fn_node) = fn_node else { return };
     match fn_node.kind() {
         "name" | "identifier" => {
@@ -292,8 +305,7 @@ fn handle_function_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 
 fn handle_member_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     if let Some(name) = node.child_by_field_name("name") {
-        let receiver = named_child_text(node, "object", source)
-            .map(|s| s.to_string());
+        let receiver = named_child_text(node, "object", source).map(|s| s.to_string());
         symbols.calls.push(Call {
             name: node_text(&name, source).to_string(),
             line: start_line(node),
@@ -306,8 +318,7 @@ fn handle_member_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 
 fn handle_scoped_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     if let Some(name) = node.child_by_field_name("name") {
-        let receiver = named_child_text(node, "scope", source)
-            .map(|s| s.to_string());
+        let receiver = named_child_text(node, "scope", source).map(|s| s.to_string());
         symbols.calls.push(Call {
             name: node_text(&name, source).to_string(),
             line: start_line(node),
@@ -319,8 +330,12 @@ fn handle_scoped_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 }
 
 fn handle_object_creation(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(class_node) = node.child(1) else { return };
-    if class_node.kind() != "name" && class_node.kind() != "qualified_name" { return; }
+    let Some(class_node) = node.child(1) else {
+        return;
+    };
+    if class_node.kind() != "name" && class_node.kind() != "qualified_name" {
+        return;
+    }
     let text = node_text(&class_node, source);
     let last = text.split('\\').last().unwrap_or("");
     symbols.calls.push(Call {
@@ -336,7 +351,8 @@ fn handle_object_creation(node: &Node, source: &[u8], symbols: &mut FileSymbols)
 
 fn extract_php_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
-    let params_node = node.child_by_field_name("parameters")
+    let params_node = node
+        .child_by_field_name("parameters")
         .or_else(|| find_child(node, "formal_parameters"));
     if let Some(params_node) = params_node {
         for i in 0..params_node.child_count() {
@@ -361,7 +377,8 @@ fn extract_php_parameters(node: &Node, source: &[u8]) -> Vec<Definition> {
 
 fn extract_php_class_properties(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut props = Vec::new();
-    let body = node.child_by_field_name("body")
+    let body = node
+        .child_by_field_name("body")
         .or_else(|| find_child(node, "declaration_list"));
     let Some(body) = body else { return props };
     for i in 0..body.child_count() {
@@ -376,8 +393,12 @@ fn extract_php_class_properties(node: &Node, source: &[u8]) -> Vec<Definition> {
 fn collect_property_element_names(decl: &Node, source: &[u8], props: &mut Vec<Definition>) {
     for j in 0..decl.child_count() {
         let Some(elem) = decl.child(j) else { continue };
-        if elem.kind() != "property_element" { continue; }
-        let Some(name_node) = elem.child(0) else { continue };
+        if elem.kind() != "property_element" {
+            continue;
+        }
+        let Some(name_node) = elem.child(0) else {
+            continue;
+        };
         if name_node.kind() == "variable_name" {
             props.push(child_def(
                 node_text(&name_node, source).to_string(),
@@ -390,7 +411,8 @@ fn collect_property_element_names(decl: &Node, source: &[u8], props: &mut Vec<De
 
 fn extract_php_enum_cases(node: &Node, source: &[u8]) -> Vec<Definition> {
     let mut cases = Vec::new();
-    let body = node.child_by_field_name("body")
+    let body = node
+        .child_by_field_name("body")
         .or_else(|| find_child(node, "enum_declaration_list"));
     if let Some(body) = body {
         for i in 0..body.child_count() {
@@ -415,7 +437,8 @@ fn extract_php_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<&
         "named_type" | "name" | "qualified_name" => Some(node_text(type_node, source)),
         "optional_type" => {
             // ?MyType → skip the ? and get inner type
-            type_node.child(1)
+            type_node
+                .child(1)
                 .or_else(|| type_node.child(0))
                 .and_then(|inner| extract_php_type_name(&inner, source))
         }
@@ -430,7 +453,8 @@ fn match_php_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _de
         "simple_parameter" | "variadic_parameter" | "property_promotion_parameter" => {
             if let Some(type_node) = node.child_by_field_name("type") {
                 if let Some(type_name) = extract_php_type_name(&type_node, source) {
-                    let name_node = node.child_by_field_name("name")
+                    let name_node = node
+                        .child_by_field_name("name")
                         .or_else(|| find_child(node, "variable_name"));
                     if let Some(name_node) = name_node {
                         symbols.type_map.push(TypeMapEntry {
@@ -483,7 +507,11 @@ mod tests {
         assert_eq!(bare_save_count, 0);
 
         assert!(s.definitions.iter().any(|d| d.name == "RepoInterface.save"));
-        let repo_save = s.definitions.iter().find(|d| d.name == "Repo.save").unwrap();
+        let repo_save = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Repo.save")
+            .unwrap();
         assert!(repo_save.complexity.is_some());
     }
 }

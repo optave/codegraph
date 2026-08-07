@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct GleamExtractor;
 
@@ -11,7 +11,12 @@ impl SymbolExtractor for GleamExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_gleam_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &GLEAM_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &GLEAM_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -211,9 +216,7 @@ fn handle_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     };
 
     let raw = node_text(&module_node, source);
-    let source_path = raw
-        .trim_matches(|c| c == '\'' || c == '"')
-        .to_string();
+    let source_path = raw.trim_matches(|c| c == '\'' || c == '"').to_string();
     let mut names: Vec<String> = Vec::new();
 
     // Unqualified imports: `import gleam/io.{println, print}`
@@ -372,7 +375,9 @@ mod tests {
         let greet = s.definitions.iter().find(|d| d.name == "greet").unwrap();
         assert_eq!(greet.kind, "function");
         let children = greet.children.as_ref().expect("expected children");
-        assert!(children.iter().any(|c| c.name == "name" && c.kind == "parameter"));
+        assert!(children
+            .iter()
+            .any(|c| c.name == "name" && c.kind == "parameter"));
     }
 
     #[test]
@@ -465,7 +470,8 @@ mod tests {
 
     #[test]
     fn extracts_external_function_with_named_parameters() {
-        let code = "pub external fn parse(input: String, base: Int) -> Int = \"erlang_mod\" \"parse\"\n";
+        let code =
+            "pub external fn parse(input: String, base: Int) -> Int = \"erlang_mod\" \"parse\"\n";
         let s = parse_gleam(code);
         let parse_fn = s
             .definitions
@@ -478,8 +484,14 @@ mod tests {
             .as_ref()
             .expect("expected external function parameters as children");
         let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"input"), "missing `input` param, got {names:?}");
-        assert!(names.contains(&"base"), "missing `base` param, got {names:?}");
+        assert!(
+            names.contains(&"input"),
+            "missing `input` param, got {names:?}"
+        );
+        assert!(
+            names.contains(&"base"),
+            "missing `base` param, got {names:?}"
+        );
         assert!(children.iter().all(|c| c.kind == "parameter"));
     }
 

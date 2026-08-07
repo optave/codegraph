@@ -4,8 +4,8 @@ use std::fs;
 use tree_sitter::Parser;
 
 use crate::ast_analysis::dataflow::extract_dataflow;
-use crate::extractors::extract_symbols_with_opts;
 use crate::domain::parser::LanguageKind;
+use crate::extractors::extract_symbols_with_opts;
 use crate::types::{Definition, FileSymbols};
 
 /// SHA-256 hash of a declaration's own source text (1-based, inclusive
@@ -13,7 +13,11 @@ use crate::types::{Definition, FileSymbols};
 /// declaration with no reliable body range has nothing meaningful to hash.
 /// Gives reverse-dep-edge reconnection during incremental rebuilds a true
 /// identity signal beyond line position (issue #2015).
-fn compute_declaration_hash(lines: &[&str], start_line: u32, end_line: Option<u32>) -> Option<String> {
+fn compute_declaration_hash(
+    lines: &[&str],
+    start_line: u32,
+    end_line: Option<u32>,
+) -> Option<String> {
     let end_line = end_line?;
     if start_line == 0 || end_line < start_line {
         return None;
@@ -88,10 +92,7 @@ pub fn parse_files_parallel(
 /// Parse multiple files in parallel, always extracting ALL analysis data:
 /// symbols, AST nodes, complexity, CFG, and dataflow in a single parse pass.
 /// This eliminates the need for any downstream re-parse (WASM or native standalone).
-pub fn parse_files_parallel_full(
-    file_paths: &[String],
-    _root_dir: &str,
-) -> Vec<FileSymbols> {
+pub fn parse_files_parallel_full(file_paths: &[String], _root_dir: &str) -> Vec<FileSymbols> {
     file_paths
         .par_iter()
         .filter_map(|file_path| {
@@ -104,8 +105,7 @@ pub fn parse_files_parallel_full(
 
             let tree = parser.parse(&source, None)?;
             // Always include AST nodes
-            let mut symbols =
-                extract_symbols_with_opts(lang, &tree, &source, file_path, true);
+            let mut symbols = extract_symbols_with_opts(lang, &tree, &source, file_path, true);
             // Always extract dataflow
             symbols.dataflow = extract_dataflow(&tree, &source, lang.lang_id_str());
             symbols.line_count = Some(line_count);

@@ -25,8 +25,15 @@ const TYPE_DEF_KINDS: &[&str] = &["struct", "enum", "trait", "type", "interface"
 /// Equals `TYPE_DEF_KINDS` ∪ `{"constant"}`.
 /// Used by `compute_active_files` to exclude annotation-only nodes when deciding whether
 /// a file has any actively-called symbols — mirrors `ANNOTATION_ONLY_KINDS` in the TS classifier.
-const ANNOTATION_ONLY_KINDS: &[&str] =
-    &["constant", "struct", "enum", "trait", "type", "interface", "record"];
+const ANNOTATION_ONLY_KINDS: &[&str] = &[
+    "constant",
+    "struct",
+    "enum",
+    "trait",
+    "type",
+    "interface",
+    "record",
+];
 
 /// Path patterns indicating framework-dispatched entry points (matches JS
 /// `ENTRY_PATH_PATTERNS` in `graph/classifiers/roles.ts`).
@@ -389,7 +396,11 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
     let leaf_rows: Vec<(i64, String, String)> = {
         let mut stmt = tx.prepare("SELECT id, name, file FROM nodes WHERE kind = 'property'")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -636,7 +647,8 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
     // (#1855). See #2032's follow-up issue for incremental parity.
     let call_edges: Vec<(i64, i64)> = {
         let mut stmt = tx.prepare("SELECT source_id, target_id FROM edges WHERE kind = 'calls'")?;
-        let mapped = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+        let mapped =
+            stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
         mapped.filter_map(|r| r.ok()).collect()
     };
     apply_reachability_downgrade(
@@ -683,7 +695,12 @@ fn test_file_filter_col(column: &str) -> String {
 ///   prevent a self-sibling false negative: a function with `fan_in=0, fan_out>0`
 ///   as the sole callable in its file must NOT count itself as an "active sibling"
 ///   and thereby promote itself to `leaf`.
-fn compute_active_files(rows: &[(i64, String, String, String, u32, u32)]) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+fn compute_active_files(
+    rows: &[(i64, String, String, String, u32, u32)],
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
     let mut active = std::collections::HashSet::new();
     let mut called_active = std::collections::HashSet::new();
     for (_id, _name, kind, file, fan_in, fan_out) in rows {
@@ -780,8 +797,8 @@ fn classify_rows(
     for (id, name, kind, file, fan_in, fan_out) in rows {
         let is_exported = exported_ids.contains(id);
         let prod_fi = prod_fan_in.get(id).copied().unwrap_or(0);
-        let is_annotation_only = kind == "constant"
-            || TYPE_DEF_KINDS.iter().any(|k| *k == kind.as_str());
+        let is_annotation_only =
+            kind == "constant" || TYPE_DEF_KINDS.iter().any(|k| *k == kind.as_str());
         // Set has_active_siblings for annotation-only kinds AND for method/function —
         // the latter two can have fan_in == 0 due to untraced call-site patterns
         // (interface dispatch, logical-or defaults). The classifier interprets this
@@ -941,12 +958,7 @@ fn is_interface_dispatch_method_root(
     is_type_member: bool,
     interface_member_bare_names: &std::collections::HashSet<String>,
 ) -> bool {
-    if kind != "method"
-        || fan_in != 0
-        || fan_out == 0
-        || !has_active_siblings
-        || is_type_member
-    {
+    if kind != "method" || fan_in != 0 || fan_out == 0 || !has_active_siblings || is_type_member {
         return false;
     }
     let bare = match name.find('.') {
@@ -1022,7 +1034,8 @@ fn apply_reachability_downgrade(
     for (id, _name, kind, _file, _fan_in, _fan_out) in rows {
         kind_by_id.insert(*id, kind.as_str());
     }
-    let interface_member_bare_names = compute_interface_member_bare_names(rows, type_def_names_by_file);
+    let interface_member_bare_names =
+        compute_interface_member_bare_names(rows, type_def_names_by_file);
 
     let mut roots: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for (id, name, kind, file, fan_in, fan_out) in rows {
@@ -1262,7 +1275,10 @@ fn find_neighbour_files(
 fn query_nodes_for_files(
     tx: &rusqlite::Transaction,
     files: &[&str],
-) -> rusqlite::Result<(Vec<(i64, String, String)>, Vec<(i64, String, String, String, u32, u32)>)> {
+) -> rusqlite::Result<(
+    Vec<(i64, String, String)>,
+    Vec<(i64, String, String, String, u32, u32)>,
+)> {
     let ph: String = files.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
     let leaf_sql = format!(
@@ -1277,7 +1293,11 @@ fn query_nodes_for_files(
         let mut rows = stmt.raw_query();
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
-            result.push((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?));
+            result.push((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ));
         }
         result
     };
@@ -1380,8 +1400,11 @@ pub(crate) fn do_classify_incremental(
         }
 
         if !reachable_barrels.is_empty() {
-            let barrel_ph: String =
-                reachable_barrels.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let barrel_ph: String = reachable_barrels
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             let sql = format!(
                 "SELECT DISTINCT n.id
                  FROM nodes n
@@ -1529,8 +1552,10 @@ mod tests {
     }
 
     fn role_of(conn: &Connection, id: i64) -> Option<String> {
-        conn.query_row("SELECT role FROM nodes WHERE id = ?1", [id], |row| row.get(0))
-            .expect("query role should succeed")
+        conn.query_row("SELECT role FROM nodes WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .expect("query role should succeed")
     }
 
     // ── Transitive-reachability dead-code downgrade (#2032) ─────────────
@@ -1651,7 +1676,14 @@ mod tests {
         // `NativeDatabase` in `types.ts`) has real fan_in > 0 from call sites
         // resolving to it by name, and must never be reconsidered here.
         insert_node(conn, 1, "NativeDatabase", "interface", "types.ts", 0);
-        insert_node(conn, 2, "NativeDatabase.countNodes", "method", "types.ts", 0);
+        insert_node(
+            conn,
+            2,
+            "NativeDatabase.countNodes",
+            "method",
+            "types.ts",
+            0,
+        );
         insert_node(conn, 3, "unreachableCaller", "function", "a.ts", 0);
         insert_edge(conn, 3, 2, "calls", 0);
 

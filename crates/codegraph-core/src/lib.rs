@@ -81,14 +81,8 @@ pub fn parse_files(
 /// Always includes: symbols, AST nodes, complexity, CFG, and dataflow.
 /// Eliminates the need for any downstream re-parse (WASM or native standalone).
 #[napi]
-pub fn parse_files_full(
-    file_paths: Vec<String>,
-    root_dir: String,
-) -> Vec<FileSymbols> {
-    domain::parallel::parse_files_parallel_full(
-        &file_paths,
-        &root_dir,
-    )
+pub fn parse_files_full(file_paths: Vec<String>, root_dir: String) -> Vec<FileSymbols> {
+    domain::parallel::parse_files_parallel_full(&file_paths, &root_dir)
 }
 
 /// Resolve a single import path.

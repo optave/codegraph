@@ -11,7 +11,11 @@ pub fn node_text<'a>(node: &Node, source: &'a [u8]) -> &'a str {
 
 /// Wrap a children vec into Option — None if empty.
 pub fn opt_children(children: Vec<Definition>) -> Option<Vec<Definition>> {
-    if children.is_empty() { None } else { Some(children) }
+    if children.is_empty() {
+        None
+    } else {
+        Some(children)
+    }
 }
 
 /// Create a child Definition with the given kind (parameter, property, constant).
@@ -63,9 +67,7 @@ pub fn find_first_child_of_types<'a>(node: &Node<'a>, kinds: &[&str]) -> Option<
 /// Common punctuation tokens — handy as a `skip_kinds` set for
 /// [`iter_children`]. Mirrors `PUNCTUATION_TOKENS` in
 /// `src/extractors/helpers.ts`.
-pub const PUNCTUATION_TOKENS: &[&str] = &[
-    ",", ";", "(", ")", "[", "]", "{", "}", ":", ".",
-];
+pub const PUNCTUATION_TOKENS: &[&str] = &[",", ";", "(", ")", "[", "]", "{", "}", ":", "."];
 
 /// Iterate the direct children of `node` in document order, skipping
 /// nulls and tokens whose `kind()` is in `skip_kinds`. Mirrors the
@@ -138,8 +140,7 @@ pub fn find_enclosing_type_name_with_boundary(
     let mut current = node.parent();
     while let Some(parent) = current {
         if kinds.contains(&parent.kind()) {
-            return named_child_text(&parent, "name", source)
-                .map(|s| s.to_string());
+            return named_child_text(&parent, "name", source).map(|s| s.to_string());
         }
         if is_boundary(&parent) {
             return None;
@@ -568,7 +569,11 @@ pub const SOLIDITY_AST_CONFIG: LangAstConfig = LangAstConfig {
     new_types: &["new_expression"],
     throw_types: &["revert_statement"],
     await_types: &[],
-    string_types: &["string_literal", "hex_string_literal", "unicode_string_literal"],
+    string_types: &[
+        "string_literal",
+        "hex_string_literal",
+        "unicode_string_literal",
+    ],
     regex_types: &[],
     quote_chars: &['"', '\''],
     string_prefixes: &[],
@@ -597,17 +602,28 @@ pub const VERILOG_AST_CONFIG: LangAstConfig = LangAstConfig {
 
 /// Node types that represent identifiers across languages.
 const IDENT_TYPES: &[&str] = &[
-    "identifier", "type_identifier", "name", "qualified_name",
-    "scoped_identifier", "qualified_identifier",
-    "member_expression", "member_access_expression",
-    "field_expression", "attribute", "scoped_type_identifier",
+    "identifier",
+    "type_identifier",
+    "name",
+    "qualified_name",
+    "scoped_identifier",
+    "qualified_identifier",
+    "member_expression",
+    "member_access_expression",
+    "field_expression",
+    "attribute",
+    "scoped_type_identifier",
 ];
 
 /// Node types that represent function/method calls across languages.
 const CALL_TYPES: &[&str] = &[
-    "call_expression", "call", "invocation_expression",
-    "method_invocation", "function_call_expression",
-    "member_call_expression", "scoped_call_expression",
+    "call_expression",
+    "call",
+    "invocation_expression",
+    "method_invocation",
+    "function_call_expression",
+    "member_call_expression",
+    "scoped_call_expression",
 ];
 
 /// Walk the tree collecting AST nodes using language-specific config.
@@ -691,22 +707,23 @@ fn build_string_node(node: &Node, source: &[u8], config: &LangAstConfig) -> Opti
     let is_raw_string = kind.contains("raw_string");
     // Strip language prefix modifiers before quote chars:
     // - C# verbatim `@"..."`, Rust raw strings `r"..."`, Python prefixes: r, b, f, u
-    let without_prefix = raw.trim_start_matches('@')
+    let without_prefix = raw
+        .trim_start_matches('@')
         .trim_start_matches(|c: char| config.string_prefixes.contains(&c));
     let without_prefix = if is_raw_string {
-        without_prefix.trim_start_matches('r').trim_start_matches('#')
+        without_prefix
+            .trim_start_matches('r')
+            .trim_start_matches('#')
     } else {
         without_prefix
     };
-    let content = without_prefix
-        .trim_start_matches(|c: char| config.quote_chars.contains(&c));
+    let content = without_prefix.trim_start_matches(|c: char| config.quote_chars.contains(&c));
     let content = if is_raw_string {
         content.trim_end_matches('#')
     } else {
         content
     };
-    let content = content
-        .trim_end_matches(|c: char| config.quote_chars.contains(&c));
+    let content = content.trim_end_matches(|c: char| config.quote_chars.contains(&c));
     if content.chars().count() < 2 {
         return None;
     }
@@ -724,7 +741,11 @@ fn build_regex_node(node: &Node, source: &[u8]) -> AstNode {
     let raw = node_text(node, source);
     AstNode {
         kind: "regex".to_string(),
-        name: if raw.is_empty() { "?".to_string() } else { raw.to_string() },
+        name: if raw.is_empty() {
+            "?".to_string()
+        } else {
+            raw.to_string()
+        },
         line: start_line(node),
         text: Some(truncate(raw, AST_TEXT_MAX)),
         receiver: None,
@@ -754,11 +775,20 @@ fn walk_ast_nodes_with_config_depth(
                 ast_nodes.push(build_await_node(node, source));
             }
             "string" => {
-                if build_string_node(node, source, config).map(|n| ast_nodes.push(n)).is_none() {
+                if build_string_node(node, source, config)
+                    .map(|n| ast_nodes.push(n))
+                    .is_none()
+                {
                     // Short string: recurse children then skip outer loop
                     for i in 0..node.child_count() {
                         if let Some(child) = node.child(i) {
-                            walk_ast_nodes_with_config_depth(&child, source, ast_nodes, config, depth + 1);
+                            walk_ast_nodes_with_config_depth(
+                                &child,
+                                source,
+                                ast_nodes,
+                                config,
+                                depth + 1,
+                            );
                         }
                     }
                     return;
@@ -1006,15 +1036,15 @@ pub fn extract_simple_parameters(
         return params;
     };
     for i in 0..param_list.child_count() {
-        let Some(child) = param_list.child(i) else { continue };
+        let Some(child) = param_list.child(i) else {
+            continue;
+        };
         if !options.param_kinds.contains(&child.kind()) {
             continue;
         }
-        let Some(name_node) = resolve_param_name(
-            &child,
-            options.name_field,
-            options.fallback_to_identifier,
-        ) else {
+        let Some(name_node) =
+            resolve_param_name(&child, options.name_field, options.fallback_to_identifier)
+        else {
             continue;
         };
         params.push(child_def(
@@ -1092,7 +1122,9 @@ pub fn dedup_type_map(entries: &mut Vec<TypeMapEntry>) {
     let mut map: HashMap<String, TypeMapEntry> = HashMap::with_capacity(entries.len());
     for e in entries.drain(..) {
         match map.entry(e.name.clone()) {
-            Entry::Vacant(slot) => { slot.insert(e); }
+            Entry::Vacant(slot) => {
+                slot.insert(e);
+            }
             Entry::Occupied(mut slot) => {
                 if e.confidence > slot.get().confidence {
                     *slot.get_mut() = e;
@@ -1119,8 +1151,7 @@ pub fn match_c_family_type_map<F>(
     source: &[u8],
     symbols: &mut FileSymbols,
     mut unwrap_declarator: F,
-)
-where
+) where
     F: FnMut(&Node, &[u8]) -> String,
 {
     match node.kind() {
@@ -1166,7 +1197,11 @@ mod tests {
     use crate::types::TypeMapEntry;
 
     fn entry(name: &str, type_name: &str, confidence: f64) -> TypeMapEntry {
-        TypeMapEntry { name: name.to_string(), type_name: type_name.to_string(), confidence }
+        TypeMapEntry {
+            name: name.to_string(),
+            type_name: type_name.to_string(),
+            confidence,
+        }
     }
 
     #[test]
@@ -1194,10 +1229,7 @@ mod tests {
     #[test]
     fn dedup_keeps_highest_confidence() {
         // Lower confidence written first, higher written second — higher wins.
-        let mut v = vec![
-            entry("x", "Low", 0.6),
-            entry("x", "High", 0.9),
-        ];
+        let mut v = vec![entry("x", "Low", 0.6), entry("x", "High", 0.9)];
         dedup_type_map(&mut v);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].type_name, "High");
@@ -1207,10 +1239,7 @@ mod tests {
     #[test]
     fn dedup_first_write_wins_on_equal_confidence() {
         // Two entries with equal confidence — first one wins.
-        let mut v = vec![
-            entry("x", "First", 0.9),
-            entry("x", "Second", 0.9),
-        ];
+        let mut v = vec![entry("x", "First", 0.9), entry("x", "Second", 0.9)];
         dedup_type_map(&mut v);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].type_name, "First");
@@ -1221,8 +1250,8 @@ mod tests {
         let mut v = vec![
             entry("a", "A1", 0.6),
             entry("b", "B1", 0.9),
-            entry("a", "A2", 0.9),  // higher — wins for "a"
-            entry("b", "B2", 0.7),  // lower  — loses for "b"
+            entry("a", "A2", 0.9), // higher — wins for "a"
+            entry("b", "B2", 0.7), // lower  — loses for "b"
         ];
         dedup_type_map(&mut v);
         assert_eq!(v.len(), 2);

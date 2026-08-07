@@ -1,9 +1,9 @@
-use tree_sitter::{Node, Tree};
+use super::helpers::*;
+use super::SymbolExtractor;
 use crate::ast_analysis::cfg::build_function_cfg;
 use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
-use super::helpers::*;
-use super::SymbolExtractor;
+use tree_sitter::{Node, Tree};
 
 pub struct DartExtractor;
 
@@ -11,7 +11,12 @@ impl SymbolExtractor for DartExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_dart_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &DART_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &DART_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -31,7 +36,9 @@ fn match_dart_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
             }
         }
         "library_import" => handle_dart_import(node, source, symbols),
-        "constructor_invocation" | "new_expression" => handle_dart_constructor_call(node, source, symbols),
+        "constructor_invocation" | "new_expression" => {
+            handle_dart_constructor_call(node, source, symbols)
+        }
         "type_alias" => handle_dart_type_alias(node, source, symbols),
         "selector" => handle_dart_selector(node, source, symbols),
         "call_expression" => handle_dart_call_expression(node, source, symbols),
@@ -47,7 +54,10 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let class_name = node_text(&name_node, source).to_string();
 
     // Extract methods
-    if let Some(body) = node.child_by_field_name("body").or_else(|| find_child(node, "class_body")) {
+    if let Some(body) = node
+        .child_by_field_name("body")
+        .or_else(|| find_child(node, "class_body"))
+    {
         extract_dart_class_methods(&body, &class_name, source, symbols);
     }
 
@@ -70,7 +80,8 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 let type_name = if child.kind() == "type_identifier" {
                     Some(child)
                 } else {
-                    find_child(&child, "type_identifier").or_else(|| find_child(&child, "identifier"))
+                    find_child(&child, "type_identifier")
+                        .or_else(|| find_child(&child, "identifier"))
                 };
                 if let Some(tn) = type_name {
                     symbols.classes.push(ClassRelation {
@@ -99,7 +110,12 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     });
 }
 
-fn extract_dart_class_methods(body: &Node, class_name: &str, source: &[u8], symbols: &mut FileSymbols) {
+fn extract_dart_class_methods(
+    body: &Node,
+    class_name: &str,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+) {
     for i in 0..body.child_count() {
         if let Some(member) = body.child(i) {
             // Resolve the signature node from the various wrapper layers that
@@ -127,7 +143,8 @@ fn extract_dart_class_methods(body: &Node, class_name: &str, source: &[u8], symb
                     match method_decl {
                         Some(md) => {
                             // method_declaration has field "signature" → method_signature
-                            match md.child_by_field_name("signature")
+                            match md
+                                .child_by_field_name("signature")
                                 .or_else(|| find_dart_signature_child(&md))
                             {
                                 Some(s) => s,
@@ -256,7 +273,10 @@ fn extract_dart_fn_name(node: &Node, source: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
-                "function_signature" | "getter_signature" | "setter_signature" | "constructor_signature" => {
+                "function_signature"
+                | "getter_signature"
+                | "setter_signature"
+                | "constructor_signature" => {
                     if let Some(name) = child.child_by_field_name("name") {
                         return Some(node_text(&name, source).to_string());
                     }
@@ -358,16 +378,13 @@ fn handle_dart_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         None => return,
     };
 
-    let uri = find_child(&spec, "configurable_uri")
-        .or_else(|| find_child(&spec, "uri"));
+    let uri = find_child(&spec, "configurable_uri").or_else(|| find_child(&spec, "uri"));
     if let Some(uri) = uri {
         let raw = node_text(&uri, source);
         let source_path = raw.trim_matches(|c| c == '\'' || c == '"').to_string();
-        symbols.imports.push(Import::new(
-            source_path,
-            vec![],
-            start_line(node),
-        ));
+        symbols
+            .imports
+            .push(Import::new(source_path, vec![], start_line(node)));
     }
 }
 
@@ -382,9 +399,11 @@ fn handle_dart_constructor_call(node: &Node, source: &[u8], symbols: &mut FileSy
     let name_node = find_child(node, "type_identifier")
         .or_else(|| find_child(node, "identifier"))
         .or_else(|| {
-            node.child_by_field_name("type").or_else(|| find_child(node, "type")).and_then(|t| {
-                find_child(&t, "type_identifier").or_else(|| find_child(&t, "identifier"))
-            })
+            node.child_by_field_name("type")
+                .or_else(|| find_child(node, "type"))
+                .and_then(|t| {
+                    find_child(&t, "type_identifier").or_else(|| find_child(&t, "identifier"))
+                })
         });
     if let Some(name) = name_node {
         symbols.calls.push(Call {
@@ -398,8 +417,7 @@ fn handle_dart_constructor_call(node: &Node, source: &[u8], symbols: &mut FileSy
 }
 
 fn handle_dart_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let name_node = find_child(node, "type_identifier")
-        .or_else(|| find_child(node, "identifier"));
+    let name_node = find_child(node, "type_identifier").or_else(|| find_child(node, "identifier"));
     if let Some(name) = name_node {
         symbols.definitions.push(Definition {
             name: node_text(&name, source).to_string(),
@@ -472,14 +490,18 @@ fn handle_dart_selector(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 /// `obj.method1()` inside `obj.method1().method2()`, are visited separately
 /// by the tree walk's own recursion, so no manual recursion is needed here).
 fn handle_dart_call_expression(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let Some(func) = node.child_by_field_name("function") else { return };
+    let Some(func) = node.child_by_field_name("function") else {
+        return;
+    };
     match func.kind() {
         "identifier" => {
             let name = node_text(&func, source).to_string();
             push_simple_call(symbols, node, name);
         }
         "member_expression" => {
-            let Some(property) = func.child_by_field_name("property") else { return };
+            let Some(property) = func.child_by_field_name("property") else {
+                return;
+            };
             let method_name = node_text(&property, source).to_string();
 
             // Function.apply(fn, positionalArgs, namedArgs) — dynamic
@@ -512,8 +534,8 @@ fn is_inside_class(node: &Node) -> bool {
         match parent.kind() {
             // Accept both 0.0.4 (`class_definition`) and 0.2 (`class_declaration`)
             // node names to guard function_signature extraction from top-level scope.
-            "class_body" | "class_definition" | "class_declaration"
-            | "enum_body" | "mixin_declaration" => return true,
+            "class_body" | "class_definition" | "class_declaration" | "enum_body"
+            | "mixin_declaration" => return true,
             _ => {}
         }
         current = parent.parent();
@@ -528,7 +550,9 @@ mod tests {
 
     fn parse_dart(code: &str) -> FileSymbols {
         let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_dart::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_dart::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(code, None).unwrap();
         DartExtractor.extract(&tree, code.as_bytes(), "test.dart")
     }
@@ -566,15 +590,25 @@ mod tests {
         fn resolves_each_call_in_a_chained_sequence_to_its_own_name() {
             let s = parse_dart("void main() {\n  obj.method1().method2();\n}");
             let names: Vec<&str> = s.calls.iter().map(|c| c.name.as_str()).collect();
-            assert!(names.contains(&"method1"), "missing method1; got: {:?}", names);
-            assert!(names.contains(&"method2"), "missing method2; got: {:?}", names);
+            assert!(
+                names.contains(&"method1"),
+                "missing method1; got: {:?}",
+                names
+            );
+            assert!(
+                names.contains(&"method2"),
+                "missing method2; got: {:?}",
+                names
+            );
         }
 
         #[test]
         fn flags_function_apply_as_unresolved_dynamic() {
             let s = parse_dart("void g() {\n  var r = Function.apply(callback, []);\n}");
             assert!(
-                s.calls.iter().any(|c| c.name == "<dynamic:unresolved>" && c.dynamic == Some(true)),
+                s.calls
+                    .iter()
+                    .any(|c| c.name == "<dynamic:unresolved>" && c.dynamic == Some(true)),
                 "expected an unresolved-dynamic call; got: {:?}",
                 s.calls
             );
@@ -591,7 +625,11 @@ mod tests {
         fn spans_a_multiline_top_level_function_through_its_closing_brace() {
             let s = parse_dart("Foo makeWaldo() {\n  return Foo();\n}");
             let def = s.definitions.iter().find(|d| d.name == "makeWaldo");
-            assert!(def.is_some(), "missing makeWaldo definition; got: {:?}", s.definitions);
+            assert!(
+                def.is_some(),
+                "missing makeWaldo definition; got: {:?}",
+                s.definitions
+            );
             let def = def.unwrap();
             assert_eq!(def.line, 1);
             assert_eq!(def.end_line, Some(3));
@@ -602,8 +640,15 @@ mod tests {
             let s = parse_dart(
                 "class UserService {\n  User getUser(String id) {\n    return User(id);\n  }\n}",
             );
-            let def = s.definitions.iter().find(|d| d.name == "UserService.getUser");
-            assert!(def.is_some(), "missing UserService.getUser; got: {:?}", s.definitions);
+            let def = s
+                .definitions
+                .iter()
+                .find(|d| d.name == "UserService.getUser");
+            assert!(
+                def.is_some(),
+                "missing UserService.getUser; got: {:?}",
+                s.definitions
+            );
             let def = def.unwrap();
             assert_eq!(def.line, 2);
             assert_eq!(def.end_line, Some(4));
@@ -613,7 +658,11 @@ mod tests {
         fn does_not_extend_past_the_signature_for_an_abstract_method() {
             let s = parse_dart("abstract class Shape {\n  double area();\n}");
             let def = s.definitions.iter().find(|d| d.name == "Shape.area");
-            assert!(def.is_some(), "missing Shape.area; got: {:?}", s.definitions);
+            assert!(
+                def.is_some(),
+                "missing Shape.area; got: {:?}",
+                s.definitions
+            );
             assert_eq!(def.unwrap().end_line, Some(2));
         }
 
@@ -645,7 +694,9 @@ mod tests {
         fn extracts_a_semicolon_only_constructor() {
             let s = parse_dart("class Waldo {\n  Waldo();\n}");
             assert!(
-                s.definitions.iter().any(|d| d.name == "Waldo.Waldo" && d.kind == "method"),
+                s.definitions
+                    .iter()
+                    .any(|d| d.name == "Waldo.Waldo" && d.kind == "method"),
                 "missing Waldo.Waldo method; got: {:?}",
                 s.definitions
             );
@@ -655,7 +706,9 @@ mod tests {
         fn extracts_a_semicolon_only_constructor_with_this_shorthand_params() {
             let s = parse_dart("class User {\n  final String id;\n  User(this.id);\n}");
             assert!(
-                s.definitions.iter().any(|d| d.name == "User.User" && d.kind == "method"),
+                s.definitions
+                    .iter()
+                    .any(|d| d.name == "User.User" && d.kind == "method"),
                 "missing User.User method; got: {:?}",
                 s.definitions
             );
@@ -665,7 +718,9 @@ mod tests {
         fn still_extracts_a_block_bodied_constructor() {
             let s = parse_dart("class Waldo {\n  Waldo() {\n    print('hi');\n  }\n}");
             assert!(
-                s.definitions.iter().any(|d| d.name == "Waldo.Waldo" && d.kind == "method"),
+                s.definitions
+                    .iter()
+                    .any(|d| d.name == "Waldo.Waldo" && d.kind == "method"),
                 "missing Waldo.Waldo method; got: {:?}",
                 s.definitions
             );

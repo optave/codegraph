@@ -9,9 +9,9 @@ use tree_sitter::{Node, Parser};
 
 use crate::ast_analysis::cfg::{build_function_cfg, get_cfg_rules};
 use crate::ast_analysis::complexity::{compute_all_metrics, lang_rules};
-use crate::shared::constants::MAX_WALK_DEPTH;
 use crate::ast_analysis::dataflow::extract_dataflow;
 use crate::domain::parser::LanguageKind;
+use crate::shared::constants::MAX_WALK_DEPTH;
 use crate::types::{DataflowResult, FunctionCfgResult, FunctionComplexityResult};
 
 /// Extract the name of a function/method node via the "name" field.
@@ -80,7 +80,7 @@ pub fn analyze_complexity_standalone(
     };
 
     let root = tree.root_node();
-    let func_nodes = collect_function_nodes(root,rules.function_nodes, 0);
+    let func_nodes = collect_function_nodes(root, rules.function_nodes, 0);
     let source_bytes = source.as_bytes();
 
     func_nodes
@@ -102,7 +102,11 @@ pub fn analyze_complexity_standalone(
 
 /// Build control-flow graphs for all functions in the given source.
 /// Returns per-function results with name, line, and CFG data.
-pub fn build_cfg_standalone(source: &str, file_path: &str, lang_id: Option<&str>) -> Vec<FunctionCfgResult> {
+pub fn build_cfg_standalone(
+    source: &str,
+    file_path: &str,
+    lang_id: Option<&str>,
+) -> Vec<FunctionCfgResult> {
     let (tree, lang) = match parse_source(source, file_path, lang_id) {
         Some(v) => v,
         None => return Vec::new(),
@@ -119,7 +123,7 @@ pub fn build_cfg_standalone(source: &str, file_path: &str, lang_id: Option<&str>
     };
 
     let root = tree.root_node();
-    let func_nodes = collect_function_nodes(root,func_types, 0);
+    let func_nodes = collect_function_nodes(root, func_types, 0);
     let source_bytes = source.as_bytes();
 
     func_nodes
@@ -141,7 +145,11 @@ pub fn build_cfg_standalone(source: &str, file_path: &str, lang_id: Option<&str>
 
 /// Extract dataflow analysis for the given source.
 /// Returns file-level dataflow result (parameters, returns, assignments, arg flows, mutations).
-pub fn extract_dataflow_standalone(source: &str, file_path: &str, lang_id: Option<&str>) -> Option<DataflowResult> {
+pub fn extract_dataflow_standalone(
+    source: &str,
+    file_path: &str,
+    lang_id: Option<&str>,
+) -> Option<DataflowResult> {
     let (tree, lang) = parse_source(source, file_path, lang_id)?;
     extract_dataflow(&tree, source.as_bytes(), lang.lang_id_str())
 }

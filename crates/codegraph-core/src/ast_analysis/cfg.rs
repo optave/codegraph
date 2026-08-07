@@ -1,6 +1,6 @@
-use tree_sitter::Node;
 use crate::shared::constants::MAX_WALK_DEPTH;
 use crate::types::{CfgBlock, CfgData, CfgEdge};
+use tree_sitter::Node;
 
 // ─── CFG Rules ──────────────────────────────────────────────────────────
 
@@ -144,7 +144,11 @@ pub static GO_CFG: CfgRules = CfgRules {
     unless_node: None,
     until_node: None,
     switch_node: None,
-    switch_nodes: &["expression_switch_statement", "type_switch_statement", "select_statement"],
+    switch_nodes: &[
+        "expression_switch_statement",
+        "type_switch_statement",
+        "select_statement",
+    ],
     case_node: Some("expression_case"),
     case_nodes: &["type_case", "communication_case"],
     default_node: Some("default_case"),
@@ -624,7 +628,13 @@ impl<'a> CfgBuilder<'a> {
         }
     }
 
-    fn make_block(&mut self, block_type: &str, start_line: Option<u32>, end_line: Option<u32>, label: Option<&str>) -> u32 {
+    fn make_block(
+        &mut self,
+        block_type: &str,
+        start_line: Option<u32>,
+        end_line: Option<u32>,
+        label: Option<&str>,
+    ) -> u32 {
         let idx = self.next_index;
         self.next_index += 1;
         self.blocks.push(CfgBlock {
@@ -727,7 +737,12 @@ impl<'a> CfgBuilder<'a> {
 
     /// Unwrap expression_statement wrappers (Rust uses expressions for control flow).
     /// Returns `Some(result)` if unwrapped and processed, `None` if not applicable.
-    fn try_unwrap_expr_stmt(&mut self, stmt: &Node, kind: &str, current: u32) -> Option<Option<u32>> {
+    fn try_unwrap_expr_stmt(
+        &mut self,
+        stmt: &Node,
+        kind: &str,
+        current: u32,
+    ) -> Option<Option<u32>> {
         if kind != "expression_statement" || stmt.named_child_count() != 1 {
             return None;
         }
@@ -757,7 +772,12 @@ impl<'a> CfgBuilder<'a> {
 
     /// Process labeled statements. Returns `Some(result)` if this was a labeled
     /// statement, `None` otherwise.
-    fn try_process_labeled(&mut self, stmt: &Node, kind: &str, current: u32) -> Option<Option<u32>> {
+    fn try_process_labeled(
+        &mut self,
+        stmt: &Node,
+        kind: &str,
+        current: u32,
+    ) -> Option<Option<u32>> {
         if !matches_opt(kind, self.rules.labeled_node) {
             return None;
         }
@@ -765,7 +785,13 @@ impl<'a> CfgBuilder<'a> {
         let body = stmt.child_by_field_name("body");
         if let (Some(label_node), Some(body)) = (label_node, body) {
             let label_name = label_node.utf8_text(self.source).unwrap_or("").to_string();
-            self.label_map.push((label_name.clone(), LabelCtx { header_idx: None, exit_idx: None }));
+            self.label_map.push((
+                label_name.clone(),
+                LabelCtx {
+                    header_idx: None,
+                    exit_idx: None,
+                },
+            ));
             let result = self.process_statement(&body, current);
             self.label_map.retain(|(n, _)| n != &label_name);
             Some(result)
@@ -776,9 +802,15 @@ impl<'a> CfgBuilder<'a> {
 
     /// Dispatch compound control flow (if, for, while, switch, try, etc.).
     /// Returns `Some(result)` if handled, `None` if not a control flow node.
-    fn try_process_control_flow(&mut self, stmt: &Node, kind: &str, current: u32) -> Option<Option<u32>> {
+    fn try_process_control_flow(
+        &mut self,
+        stmt: &Node,
+        kind: &str,
+        current: u32,
+    ) -> Option<Option<u32>> {
         // If / unless
-        if matches_opt(kind, self.rules.if_node) || matches_slice(kind, self.rules.if_nodes)
+        if matches_opt(kind, self.rules.if_node)
+            || matches_slice(kind, self.rules.if_nodes)
             || matches_opt(kind, self.rules.unless_node)
         {
             return Some(self.process_if(stmt, current));
@@ -790,7 +822,8 @@ impl<'a> CfgBuilder<'a> {
         }
 
         // While / until
-        if matches_opt(kind, self.rules.while_node) || matches_slice(kind, self.rules.while_nodes)
+        if matches_opt(kind, self.rules.while_node)
+            || matches_slice(kind, self.rules.while_nodes)
             || matches_opt(kind, self.rules.until_node)
         {
             return Some(self.process_while_loop(stmt, current));
@@ -807,7 +840,8 @@ impl<'a> CfgBuilder<'a> {
         }
 
         // Switch/match
-        if matches_opt(kind, self.rules.switch_node) || matches_slice(kind, self.rules.switch_nodes) {
+        if matches_opt(kind, self.rules.switch_node) || matches_slice(kind, self.rules.switch_nodes)
+        {
             return Some(self.process_switch(stmt, current));
         }
 
@@ -818,7 +852,8 @@ impl<'a> CfgBuilder<'a> {
         // Additional try nodes (e.g. Ruby body_statement with rescue)
         if matches_slice(kind, self.rules.try_nodes) {
             let cursor = &mut stmt.walk();
-            let has_rescue = stmt.named_children(cursor)
+            let has_rescue = stmt
+                .named_children(cursor)
                 .any(|c| matches_opt(c.kind(), self.rules.catch_node));
             if has_rescue {
                 return Some(self.process_try_catch(stmt, current));
@@ -830,7 +865,12 @@ impl<'a> CfgBuilder<'a> {
 
     /// Handle terminal statements: return, throw, break, continue.
     /// Returns `Some(result)` if handled, `None` if not a terminal node.
-    fn try_process_terminal(&mut self, stmt: &Node, kind: &str, current: u32) -> Option<Option<u32>> {
+    fn try_process_terminal(
+        &mut self,
+        stmt: &Node,
+        kind: &str,
+        current: u32,
+    ) -> Option<Option<u32>> {
         if matches_opt(kind, self.rules.return_node) {
             self.set_end_line(current, node_line(stmt));
             self.add_edge(current, self.exit_idx, "return");
@@ -856,11 +896,14 @@ impl<'a> CfgBuilder<'a> {
 
     /// Process a break statement: resolve label or loop target.
     fn process_break(&mut self, stmt: &Node, current: u32) -> Option<u32> {
-        let label_name = stmt.child_by_field_name("label")
+        let label_name = stmt
+            .child_by_field_name("label")
             .map(|n| n.utf8_text(self.source).unwrap_or("").to_string());
 
         let target = if let Some(ref name) = label_name {
-            self.label_map.iter().rev()
+            self.label_map
+                .iter()
+                .rev()
                 .find(|(n, _)| n == name)
                 .and_then(|(_, ctx)| ctx.exit_idx)
         } else {
@@ -878,15 +921,20 @@ impl<'a> CfgBuilder<'a> {
 
     /// Process a continue statement: resolve label or nearest loop header.
     fn process_continue(&mut self, stmt: &Node, current: u32) -> Option<u32> {
-        let label_name = stmt.child_by_field_name("label")
+        let label_name = stmt
+            .child_by_field_name("label")
             .map(|n| n.utf8_text(self.source).unwrap_or("").to_string());
 
         let target = if let Some(ref name) = label_name {
-            self.label_map.iter().rev()
+            self.label_map
+                .iter()
+                .rev()
                 .find(|(n, _)| n == name)
                 .and_then(|(_, ctx)| ctx.header_idx)
         } else {
-            self.loop_stack.iter().rev()
+            self.loop_stack
+                .iter()
+                .rev()
                 .find(|ctx| ctx.is_loop)
                 .map(|ctx| ctx.header_idx)
         };
@@ -915,7 +963,12 @@ impl<'a> CfgBuilder<'a> {
         }
         self.set_end_line(current, node_line(if_stmt));
 
-        let cond_block = self.make_block("condition", Some(node_line(if_stmt)), Some(node_line(if_stmt)), Some("if"));
+        let cond_block = self.make_block(
+            "condition",
+            Some(node_line(if_stmt)),
+            Some(node_line(if_stmt)),
+            Some("if"),
+        );
         self.add_edge(current, cond_block, "fallthrough");
 
         let join_block = self.make_block("body", None, None, None);
@@ -945,7 +998,13 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Wire up the false branch of an if statement (elif siblings, alternative, or no-else).
-    fn process_if_false_branch(&mut self, if_stmt: &Node, cond_block: u32, join_block: u32, depth: usize) {
+    fn process_if_false_branch(
+        &mut self,
+        if_stmt: &Node,
+        cond_block: u32,
+        join_block: u32,
+        depth: usize,
+    ) {
         if self.rules.elif_node.is_some() {
             // Pattern B: elif/else as siblings
             self.process_elif_siblings(if_stmt, cond_block, join_block);
@@ -971,8 +1030,16 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Pattern C: alternative points directly to if or block (else_via_alternative languages).
-    fn process_if_alternative_c(&mut self, alternative: Node, alt_kind: &str, cond_block: u32, join_block: u32, depth: usize) {
-        if matches_opt(alt_kind, self.rules.if_node) || matches_slice(alt_kind, self.rules.if_nodes) {
+    fn process_if_alternative_c(
+        &mut self,
+        alternative: Node,
+        alt_kind: &str,
+        cond_block: u32,
+        join_block: u32,
+        depth: usize,
+    ) {
+        if matches_opt(alt_kind, self.rules.if_node) || matches_slice(alt_kind, self.rules.if_nodes)
+        {
             let false_block = self.make_block("branch_false", None, None, Some("else-if"));
             self.add_edge(cond_block, false_block, "branch_false");
             let else_if_end = self.process_if_depth(&alternative, false_block, depth + 1);
@@ -991,7 +1058,13 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Pattern A: else_clause wrapper (else { ... } or else if ...).
-    fn process_if_else_clause(&mut self, alternative: Node, cond_block: u32, join_block: u32, depth: usize) {
+    fn process_if_else_clause(
+        &mut self,
+        alternative: Node,
+        cond_block: u32,
+        join_block: u32,
+        depth: usize,
+    ) {
         let else_children: Vec<Node> = {
             let cursor = &mut alternative.walk();
             alternative.named_children(cursor).collect()
@@ -1030,7 +1103,12 @@ impl<'a> CfgBuilder<'a> {
             let child_kind = child.kind();
 
             if matches_opt(child_kind, self.rules.elif_node) {
-                let elif_cond = self.make_block("condition", Some(node_line(child)), Some(node_line(child)), Some("else-if"));
+                let elif_cond = self.make_block(
+                    "condition",
+                    Some(node_line(child)),
+                    Some(node_line(child)),
+                    Some("else-if"),
+                );
                 self.add_edge(last_cond, elif_cond, "branch_false");
 
                 let elif_consequent_field = self.rules.if_consequent_field.unwrap_or("consequence");
@@ -1077,7 +1155,10 @@ impl<'a> CfgBuilder<'a> {
 
     /// Update label map with loop context (for newly created loops inside labeled stmts).
     fn update_label_map(&mut self, header_idx: u32, exit_idx: u32) {
-        if let Some((_, ctx)) = self.label_map.iter_mut().rev()
+        if let Some((_, ctx)) = self
+            .label_map
+            .iter_mut()
+            .rev()
             .find(|(_, ctx)| ctx.header_idx.is_none())
         {
             ctx.header_idx = Some(header_idx);
@@ -1086,12 +1167,21 @@ impl<'a> CfgBuilder<'a> {
     }
 
     fn process_for_loop(&mut self, for_stmt: &Node, current: u32) -> Option<u32> {
-        let header = self.make_block("loop_header", Some(node_line(for_stmt)), Some(node_line(for_stmt)), Some("for"));
+        let header = self.make_block(
+            "loop_header",
+            Some(node_line(for_stmt)),
+            Some(node_line(for_stmt)),
+            Some("for"),
+        );
         self.add_edge(current, header, "fallthrough");
 
         let exit = self.make_block("body", None, None, None);
 
-        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit, is_loop: true });
+        self.loop_stack.push(LoopCtx {
+            header_idx: header,
+            exit_idx: exit,
+            is_loop: true,
+        });
         self.update_label_map(header, exit);
 
         // Determine if this for-loop is bounded.  C-style for loops have a `condition`
@@ -1117,7 +1207,11 @@ impl<'a> CfgBuilder<'a> {
 
         let body = for_stmt.child_by_field_name("body");
         let body_block = self.make_block("loop_body", None, None, None);
-        let body_edge = if has_condition { "branch_true" } else { "fallthrough" };
+        let body_edge = if has_condition {
+            "branch_true"
+        } else {
+            "fallthrough"
+        };
         self.add_edge(header, body_block, body_edge);
 
         if let Some(body) = body {
@@ -1146,12 +1240,21 @@ impl<'a> CfgBuilder<'a> {
     }
 
     fn process_while_loop(&mut self, while_stmt: &Node, current: u32) -> Option<u32> {
-        let header = self.make_block("loop_header", Some(node_line(while_stmt)), Some(node_line(while_stmt)), Some("while"));
+        let header = self.make_block(
+            "loop_header",
+            Some(node_line(while_stmt)),
+            Some(node_line(while_stmt)),
+            Some("while"),
+        );
         self.add_edge(current, header, "fallthrough");
 
         let exit = self.make_block("body", None, None, None);
 
-        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit, is_loop: true });
+        self.loop_stack.push(LoopCtx {
+            header_idx: header,
+            exit_idx: exit,
+            is_loop: true,
+        });
         self.update_label_map(header, exit);
 
         let body = while_stmt.child_by_field_name("body");
@@ -1178,7 +1281,11 @@ impl<'a> CfgBuilder<'a> {
         let cond_block = self.make_block("loop_header", None, None, Some("do-while"));
         let exit = self.make_block("body", None, None, None);
 
-        self.loop_stack.push(LoopCtx { header_idx: cond_block, exit_idx: exit, is_loop: true });
+        self.loop_stack.push(LoopCtx {
+            header_idx: cond_block,
+            exit_idx: exit,
+            is_loop: true,
+        });
         self.update_label_map(cond_block, exit);
 
         let body = do_stmt.child_by_field_name("body");
@@ -1198,12 +1305,21 @@ impl<'a> CfgBuilder<'a> {
     }
 
     fn process_infinite_loop(&mut self, loop_stmt: &Node, current: u32) -> Option<u32> {
-        let header = self.make_block("loop_header", Some(node_line(loop_stmt)), Some(node_line(loop_stmt)), Some("loop"));
+        let header = self.make_block(
+            "loop_header",
+            Some(node_line(loop_stmt)),
+            Some(node_line(loop_stmt)),
+            Some("loop"),
+        );
         self.add_edge(current, header, "fallthrough");
 
         let exit = self.make_block("body", None, None, None);
 
-        self.loop_stack.push(LoopCtx { header_idx: header, exit_idx: exit, is_loop: true });
+        self.loop_stack.push(LoopCtx {
+            header_idx: header,
+            exit_idx: exit,
+            is_loop: true,
+        });
         self.update_label_map(header, exit);
 
         let body = loop_stmt.child_by_field_name("body");
@@ -1233,23 +1349,36 @@ impl<'a> CfgBuilder<'a> {
     fn process_switch(&mut self, switch_stmt: &Node, current: u32) -> Option<u32> {
         self.set_end_line(current, node_line(switch_stmt));
 
-        let switch_header = self.make_block("condition", Some(node_line(switch_stmt)), Some(node_line(switch_stmt)), Some("switch"));
+        let switch_header = self.make_block(
+            "condition",
+            Some(node_line(switch_stmt)),
+            Some(node_line(switch_stmt)),
+            Some("switch"),
+        );
         self.add_edge(current, switch_header, "fallthrough");
 
         let join_block = self.make_block("body", None, None, None);
 
         // Switch acts like a break target but not a continue target
-        self.loop_stack.push(LoopCtx { header_idx: switch_header, exit_idx: join_block, is_loop: false });
+        self.loop_stack.push(LoopCtx {
+            header_idx: switch_header,
+            exit_idx: join_block,
+            is_loop: false,
+        });
 
         // Get case children from body field or direct children
-        let container = switch_stmt.child_by_field_name("body").unwrap_or(*switch_stmt);
+        let container = switch_stmt
+            .child_by_field_name("body")
+            .unwrap_or(*switch_stmt);
 
         let mut has_default = false;
         let cursor = &mut container.walk();
         let case_children: Vec<Node> = container.named_children(cursor).collect();
 
         for case_clause in &case_children {
-            if let Some(is_default) = self.process_switch_case(case_clause, switch_header, join_block) {
+            if let Some(is_default) =
+                self.process_switch_case(case_clause, switch_header, join_block)
+            {
                 if is_default {
                     has_default = true;
                 }
@@ -1266,12 +1395,19 @@ impl<'a> CfgBuilder<'a> {
 
     /// Process a single case clause within a switch statement.
     /// Returns `Some(is_default)` if the clause was a case/default, `None` if skipped.
-    fn process_switch_case(&mut self, case_clause: &Node, switch_header: u32, join_block: u32) -> Option<bool> {
+    fn process_switch_case(
+        &mut self,
+        case_clause: &Node,
+        switch_header: u32,
+        join_block: u32,
+    ) -> Option<bool> {
         let cc_kind = case_clause.kind();
         let is_default = matches_opt(cc_kind, self.rules.default_node)
             || (self.rules.wildcard_pattern_node.is_some()
-                && (matches_opt(cc_kind, self.rules.case_node) || matches_slice(cc_kind, self.rules.case_nodes))
-                && case_clause.named_child(0)
+                && (matches_opt(cc_kind, self.rules.case_node)
+                    || matches_slice(cc_kind, self.rules.case_nodes))
+                && case_clause
+                    .named_child(0)
                     .is_some_and(|c| matches_opt(c.kind(), self.rules.wildcard_pattern_node)));
         let is_case = is_default
             || matches_opt(cc_kind, self.rules.case_node)
@@ -1282,8 +1418,13 @@ impl<'a> CfgBuilder<'a> {
         }
 
         let case_label = if is_default { "default" } else { "case" };
-        let case_block = self.make_block("case", Some(node_line(case_clause)), None, Some(case_label));
-        let edge_kind = if is_default { "branch_false" } else { "branch_true" };
+        let case_block =
+            self.make_block("case", Some(node_line(case_clause)), None, Some(case_label));
+        let edge_kind = if is_default {
+            "branch_false"
+        } else {
+            "branch_true"
+        };
         self.add_edge(switch_header, case_block, edge_kind);
 
         let case_stmts = self.extract_case_stmts(case_clause);
@@ -1297,7 +1438,8 @@ impl<'a> CfgBuilder<'a> {
 
     /// Extract the statement list from a case clause body.
     fn extract_case_stmts<'b>(&self, case_clause: &Node<'b>) -> Vec<Node<'b>> {
-        let case_body_node = case_clause.child_by_field_name("body")
+        let case_body_node = case_clause
+            .child_by_field_name("body")
             .or_else(|| case_clause.child_by_field_name("consequence"));
 
         if let Some(body_node) = case_body_node {
@@ -1308,9 +1450,14 @@ impl<'a> CfgBuilder<'a> {
         } else {
             let pattern_node = case_clause.child_by_field_name("pattern");
             let cursor2 = &mut case_clause.walk();
-            case_clause.named_children(cursor2)
+            case_clause
+                .named_children(cursor2)
                 .filter(|child| {
-                    if let Some(ref p) = pattern_node { if child.id() == p.id() { return false; } }
+                    if let Some(ref p) = pattern_node {
+                        if child.id() == p.id() {
+                            return false;
+                        }
+                    }
                     child.kind() != "switch_label"
                 })
                 .collect()
@@ -1350,7 +1497,8 @@ impl<'a> CfgBuilder<'a> {
             (node_line(&body), self.get_statements(&body))
         } else {
             let cursor = &mut try_stmt.walk();
-            let stmts: Vec<Node> = try_stmt.named_children(cursor)
+            let stmts: Vec<Node> = try_stmt
+                .named_children(cursor)
                 .filter(|child| {
                     let ck = child.kind();
                     !matches_opt(ck, self.rules.catch_node)
@@ -1373,7 +1521,10 @@ impl<'a> CfgBuilder<'a> {
     /// because tree-sitter represents each handler clause as a direct child of the try node.
     /// Only treat as try-else if it's a direct child of the try statement
     /// (not the else_clause of an if inside the try body).
-    fn collect_try_handlers<'b>(&self, try_stmt: &Node<'b>) -> (Vec<Node<'b>>, Option<Node<'b>>, Option<Node<'b>>) {
+    fn collect_try_handlers<'b>(
+        &self,
+        try_stmt: &Node<'b>,
+    ) -> (Vec<Node<'b>>, Option<Node<'b>>, Option<Node<'b>>) {
         let mut catch_handlers: Vec<Node> = Vec::new();
         let mut finally_handler: Option<Node> = None;
         let mut else_handler: Option<Node> = None;
@@ -1393,9 +1544,14 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Process the optional else clause of a try statement (Python try...except...else).
-    fn process_try_else(&mut self, else_handler: Option<Node>, try_end: Option<u32>) -> Option<u32> {
+    fn process_try_else(
+        &mut self,
+        else_handler: Option<Node>,
+        try_end: Option<u32>,
+    ) -> Option<u32> {
         if let Some(else_node) = else_handler {
-            let else_block = self.make_block("body", Some(node_line(&else_node)), None, Some("else"));
+            let else_block =
+                self.make_block("body", Some(node_line(&else_node)), None, Some("else"));
             if let Some(te) = try_end {
                 self.add_edge(te, else_block, "fallthrough");
             }
@@ -1407,10 +1563,15 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Process all catch handlers, returning the list of catch-end block indices.
-    fn process_catch_handlers(&mut self, catch_handlers: &[Node], try_block: u32) -> Vec<Option<u32>> {
+    fn process_catch_handlers(
+        &mut self,
+        catch_handlers: &[Node],
+        try_block: u32,
+    ) -> Vec<Option<u32>> {
         let mut catch_ends: Vec<Option<u32>> = Vec::new();
         for catch_node in catch_handlers {
-            let catch_block = self.make_block("catch", Some(node_line(catch_node)), None, Some("catch"));
+            let catch_block =
+                self.make_block("catch", Some(node_line(catch_node)), None, Some("catch"));
             self.add_edge(try_block, catch_block, "exception");
 
             let catch_body_node = catch_node.child_by_field_name("body");
@@ -1427,7 +1588,13 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Wire a finally block (or direct join edges when there is no finally).
-    fn wire_finally_or_join(&mut self, finally_handler: Option<Node>, success_end: Option<u32>, catch_ends: &[Option<u32>], join_block: u32) {
+    fn wire_finally_or_join(
+        &mut self,
+        finally_handler: Option<Node>,
+        success_end: Option<u32>,
+        catch_ends: &[Option<u32>],
+        join_block: u32,
+    ) {
         if let Some(finally_node) = finally_handler {
             self.process_finally_block(finally_node, success_end, catch_ends, join_block);
         } else {
@@ -1443,8 +1610,19 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Process a finally block, wiring all predecessor ends into it and its end to join.
-    fn process_finally_block(&mut self, finally_node: Node, success_end: Option<u32>, catch_ends: &[Option<u32>], join_block: u32) {
-        let finally_block = self.make_block("finally", Some(node_line(&finally_node)), None, Some("finally"));
+    fn process_finally_block(
+        &mut self,
+        finally_node: Node,
+        success_end: Option<u32>,
+        catch_ends: &[Option<u32>],
+        join_block: u32,
+    ) {
+        let finally_block = self.make_block(
+            "finally",
+            Some(node_line(&finally_node)),
+            None,
+            Some("finally"),
+        );
         if let Some(se) = success_end {
             self.add_edge(se, finally_block, "fallthrough");
         }
@@ -1501,14 +1679,20 @@ pub fn build_function_cfg(function_node: &Node, lang_id: &str, source: &[u8]) ->
         Some(b) => b,
         None => {
             builder.add_edge(entry, exit, "fallthrough");
-            return Some(CfgData { blocks: builder.blocks, edges: builder.edges });
+            return Some(CfgData {
+                blocks: builder.blocks,
+                edges: builder.edges,
+            });
         }
     };
 
     let stmts = builder.get_statements(&body);
     if stmts.is_empty() {
         builder.add_edge(entry, exit, "fallthrough");
-        return Some(CfgData { blocks: builder.blocks, edges: builder.edges });
+        return Some(CfgData {
+            blocks: builder.blocks,
+            edges: builder.edges,
+        });
     }
 
     let first_block = builder.make_block("body", None, None, None);
@@ -1519,5 +1703,8 @@ pub fn build_function_cfg(function_node: &Node, lang_id: &str, source: &[u8]) ->
         builder.add_edge(lb, exit, "fallthrough");
     }
 
-    Some(CfgData { blocks: builder.blocks, edges: builder.edges })
+    Some(CfgData {
+        blocks: builder.blocks,
+        edges: builder.edges,
+    })
 }

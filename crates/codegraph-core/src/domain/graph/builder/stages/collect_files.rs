@@ -475,11 +475,18 @@ mod tests {
         let names: HashSet<String> = result
             .files
             .iter()
-            .filter_map(|f| Path::new(f).file_name().map(|n| n.to_str().unwrap().to_string()))
+            .filter_map(|f| {
+                Path::new(f)
+                    .file_name()
+                    .map(|n| n.to_str().unwrap().to_string())
+            })
             .collect();
         assert!(names.contains("app.ts"));
         assert!(names.contains("util.ts"));
-        assert!(!names.contains("app.test.ts"), "exclude glob should reject matching files");
+        assert!(
+            !names.contains("app.test.ts"),
+            "exclude glob should reject matching files"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -500,10 +507,17 @@ mod tests {
         let names: HashSet<String> = result
             .files
             .iter()
-            .filter_map(|f| Path::new(f).file_name().map(|n| n.to_str().unwrap().to_string()))
+            .filter_map(|f| {
+                Path::new(f)
+                    .file_name()
+                    .map(|n| n.to_str().unwrap().to_string())
+            })
             .collect();
         assert!(names.contains("app.ts"));
-        assert!(!names.contains("spec.ts"), "include glob should reject non-matching files");
+        assert!(
+            !names.contains("spec.ts"),
+            "include glob should reject non-matching files"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -541,7 +555,9 @@ mod tests {
         // Hold the test-level lock for the entire test so a concurrent
         // `clear_glob_cache()` call in another cache test cannot invalidate
         // the entry we just inserted.
-        let _guard = GLOB_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = GLOB_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         clear_glob_cache();
         let patterns = vec!["src/**/*.ts".to_string(), "**/*.test.ts".to_string()];
         let first = build_glob_set(&patterns).expect("compiles");
@@ -554,7 +570,9 @@ mod tests {
 
     #[test]
     fn build_glob_set_cache_distinguishes_different_lists() {
-        let _guard = GLOB_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = GLOB_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         clear_glob_cache();
         let a = build_glob_set(&["src/**/*.ts".to_string()]).expect("compiles");
         let b = build_glob_set(&["src/**/*.js".to_string()]).expect("compiles");

@@ -404,6 +404,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -412,6 +414,17 @@ jobs:
 
       - name: Check compilation
         run: cargo check --workspace
+
+      # #2096: cargo fmt --check gate — a one-time repo-wide `cargo fmt` pass
+      # (no functional change) landed alongside this step so the gate starts
+      # clean instead of failing every future PR on pre-existing drift.
+      # cargo clippy is deliberately NOT gated here yet: unlike fmt (a purely
+      # mechanical, semantics-preserving reformat), clearing its ~98
+      # pre-existing warnings needs case-by-case review, not a single
+      # automated pass — tracked separately.
+      - name: Check formatting
+        working-directory: crates/codegraph-core
+        run: cargo fmt -- --check
 
   # ── Pre-publish benchmark gate ──
   #

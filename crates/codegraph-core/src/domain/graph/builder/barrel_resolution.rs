@@ -89,21 +89,30 @@ pub fn resolve_barrel_export<C: BarrelContext>(
         if !re.names.is_empty() && !re.wildcard_reexport {
             if re.names.iter().any(|n| n == &lookup_name) {
                 if ctx.has_definition(re.source, &lookup_name) {
-                    return Some(BarrelResolution { file: re.source.to_string(), name: lookup_name });
+                    return Some(BarrelResolution {
+                        file: re.source.to_string(),
+                        name: lookup_name,
+                    });
                 }
                 let deeper = resolve_barrel_export(ctx, re.source, &lookup_name, visited);
                 if deeper.is_some() {
                     return deeper;
                 }
                 // Fallback: return source even if no definition found
-                return Some(BarrelResolution { file: re.source.to_string(), name: lookup_name });
+                return Some(BarrelResolution {
+                    file: re.source.to_string(),
+                    name: lookup_name,
+                });
             }
             continue;
         }
 
         // Wildcard or empty-names reexports
         if ctx.has_definition(re.source, &lookup_name) {
-            return Some(BarrelResolution { file: re.source.to_string(), name: lookup_name });
+            return Some(BarrelResolution {
+                file: re.source.to_string(),
+                name: lookup_name,
+            });
         }
         let deeper = resolve_barrel_export(ctx, re.source, &lookup_name, visited);
         if deeper.is_some() {
@@ -151,7 +160,12 @@ mod tests {
         let mut reexports = HashMap::new();
         reexports.insert(
             "src/index.ts".to_string(),
-            vec![("src/utils.ts".to_string(), vec!["foo".to_string()], false, vec![])],
+            vec![(
+                "src/utils.ts".to_string(),
+                vec!["foo".to_string()],
+                false,
+                vec![],
+            )],
         );
         let mut definitions = HashMap::new();
         definitions.insert(
@@ -159,12 +173,18 @@ mod tests {
             HashSet::from(["foo".to_string()]),
         );
 
-        let ctx = TestContext { reexports, definitions };
+        let ctx = TestContext {
+            reexports,
+            definitions,
+        };
         let mut visited = HashSet::new();
         let result = resolve_barrel_export(&ctx, "src/index.ts", "foo", &mut visited);
         assert_eq!(
             result,
-            Some(BarrelResolution { file: "src/utils.ts".to_string(), name: "foo".to_string() })
+            Some(BarrelResolution {
+                file: "src/utils.ts".to_string(),
+                name: "foo".to_string()
+            })
         );
     }
 
@@ -181,12 +201,18 @@ mod tests {
             HashSet::from(["bar".to_string()]),
         );
 
-        let ctx = TestContext { reexports, definitions };
+        let ctx = TestContext {
+            reexports,
+            definitions,
+        };
         let mut visited = HashSet::new();
         let result = resolve_barrel_export(&ctx, "src/index.ts", "bar", &mut visited);
         assert_eq!(
             result,
-            Some(BarrelResolution { file: "src/utils.ts".to_string(), name: "bar".to_string() })
+            Some(BarrelResolution {
+                file: "src/utils.ts".to_string(),
+                name: "bar".to_string()
+            })
         );
     }
 
@@ -199,7 +225,12 @@ mod tests {
         );
         reexports.insert(
             "src/mid.ts".to_string(),
-            vec![("src/deep.ts".to_string(), vec!["baz".to_string()], false, vec![])],
+            vec![(
+                "src/deep.ts".to_string(),
+                vec!["baz".to_string()],
+                false,
+                vec![],
+            )],
         );
         let mut definitions = HashMap::new();
         definitions.insert(
@@ -207,12 +238,18 @@ mod tests {
             HashSet::from(["baz".to_string()]),
         );
 
-        let ctx = TestContext { reexports, definitions };
+        let ctx = TestContext {
+            reexports,
+            definitions,
+        };
         let mut visited = HashSet::new();
         let result = resolve_barrel_export(&ctx, "src/index.ts", "baz", &mut visited);
         assert_eq!(
             result,
-            Some(BarrelResolution { file: "src/deep.ts".to_string(), name: "baz".to_string() })
+            Some(BarrelResolution {
+                file: "src/deep.ts".to_string(),
+                name: "baz".to_string()
+            })
         );
     }
 
@@ -262,7 +299,10 @@ mod tests {
             HashSet::from(["realName".to_string()]),
         );
 
-        let ctx = TestContext { reexports, definitions };
+        let ctx = TestContext {
+            reexports,
+            definitions,
+        };
         let mut visited = HashSet::new();
         let result = resolve_barrel_export(&ctx, "src/barrel.ts", "friendlyName", &mut visited);
         assert_eq!(

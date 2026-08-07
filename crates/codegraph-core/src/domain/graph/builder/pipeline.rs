@@ -27,17 +27,17 @@
 //! failure now triggers a real retry instead of a "successful" build over an
 //! incomplete graph (#1827).
 
+use crate::db::repository::ast::{self, AstInsertNode, FileAstBatch};
+use crate::domain::graph::builder::stages::collect_files;
 use crate::domain::graph::builder::stages::detect_changes;
+use crate::domain::graph::builder::stages::import_edges::{self, ImportEdgeContext};
+use crate::domain::graph::journal;
+use crate::domain::graph::resolve;
+use crate::domain::parallel;
+use crate::features::structure;
+use crate::graph::classifiers::roles;
 use crate::infrastructure::config::{BuildConfig, BuildOpts, BuildPathAliases};
 use crate::shared::constants::{FAST_PATH_MAX_CHANGED_FILES, FAST_PATH_MIN_EXISTING_FILES};
-use crate::domain::graph::builder::stages::collect_files;
-use crate::domain::graph::builder::stages::import_edges::{self, ImportEdgeContext};
-use crate::domain::graph::resolve;
-use crate::domain::graph::journal;
-use crate::domain::parallel;
-use crate::db::repository::ast::{self, AstInsertNode, FileAstBatch};
-use crate::graph::classifiers::roles;
-use crate::features::structure;
 use crate::types::{FileSymbols, ImportResolutionInput, TypeMapEntry};
 use rusqlite::Connection;
 use serde::Serialize;
@@ -137,11 +137,13 @@ fn pipeline_setup(
         serde_json::from_str(aliases_json).map_err(|e| format!("aliases parse error: {e}"))?;
     let opts: BuildOpts =
         serde_json::from_str(opts_json).map_err(|e| format!("opts parse error: {e}"))?;
-    let workspace_packages: Vec<crate::types::WorkspacePackage> = if workspaces_json.trim().is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_str(workspaces_json).map_err(|e| format!("workspaces parse error: {e}"))?
-    };
+    let workspace_packages: Vec<crate::types::WorkspacePackage> =
+        if workspaces_json.trim().is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(workspaces_json)
+                .map_err(|e| format!("workspaces parse error: {e}"))?
+        };
 
     let napi_aliases = aliases.to_napi_aliases();
     let incremental = opts.incremental.unwrap_or(config.build.incremental);
@@ -236,8 +238,7 @@ fn save_and_purge_changed(
         // later deleted again would resurface the OLD (pre-reappearance)
         // advisory snapshot instead of a fresh one, misattributing a stale
         // violation (#1938). Mirrors the TS `handleFullBuild` fix.
-        let changed_paths: Vec<String> =
-            parse_changes.iter().map(|c| c.rel_path.clone()).collect();
+        let changed_paths: Vec<String> = parse_changes.iter().map(|c| c.rel_path.clone()).collect();
         detect_changes::clear_deleted_export_advisories(conn, &changed_paths);
         return (
             saved_reverse_dep_edges,
@@ -298,8 +299,7 @@ fn parse_and_index_files(
     include_dataflow: bool,
     include_ast: bool,
 ) -> BTreeMap<String, FileSymbols> {
-    let files_to_parse: Vec<String> =
-        parse_changes.iter().map(|c| c.abs_path.clone()).collect();
+    let files_to_parse: Vec<String> = parse_changes.iter().map(|c| c.abs_path.clone()).collect();
     let parsed =
         parallel::parse_files_parallel(&files_to_parse, root_dir, include_dataflow, include_ast);
     let mut file_symbols: BTreeMap<String, FileSymbols> = BTreeMap::new();
@@ -327,15 +327,19 @@ fn resolve_pipeline_imports(
         for imp in &symbols.imports {
             // Skip CJS require bindings — they feed imported_names for receiver-edge
             // resolution but must not produce DB import edges (#1678).
-            if imp.cjs_require.unwrap_or(false) { continue; }
+            if imp.cjs_require.unwrap_or(false) {
+                continue;
+            }
             batch_inputs.push(ImportResolutionInput {
                 from_file: abs_str.clone(),
                 import_source: imp.source.clone(),
             });
         }
     }
-    let known_files: HashSet<String> =
-        collect_files.iter().map(|f| relative_path(root_dir, f)).collect();
+    let known_files: HashSet<String> = collect_files
+        .iter()
+        .map(|f| relative_path(root_dir, f))
+        .collect();
     let resolved = resolve::resolve_imports_batch(
         &batch_inputs,
         root_dir,
@@ -486,7 +490,10 @@ fn run_analysis_persistence(
     let include_cfg = opts.cfg.unwrap_or(true);
     let do_analysis = include_ast || include_dataflow || include_cfg || include_complexity;
     if !do_analysis {
-        return AnalysisPersistenceResult { ran: false, ok: true };
+        return AnalysisPersistenceResult {
+            ran: false,
+            ok: true,
+        };
     }
 
     let analysis_file_set: HashSet<&str> = match analysis_scope {
@@ -527,7 +534,10 @@ fn run_analysis_persistence(
         timing.dataflow_ms = t0.elapsed().as_secs_f64() * 1000.0;
     }
 
-    AnalysisPersistenceResult { ran: do_analysis, ok: analysis_ok }
+    AnalysisPersistenceResult {
+        ran: do_analysis,
+        ok: analysis_ok,
+    }
 }
 
 /// Run the full build pipeline in Rust.
@@ -563,13 +573,18 @@ pub fn run_pipeline(
     let t0 = Instant::now();
     // For scoped builds, track all scoped relative paths (including deleted files)
     // so detect_removed_files only flags scoped files as removed, not everything.
-    let scoped_rel_paths: Option<HashSet<String>> = opts.scope.as_ref().map(|scope| {
-        scope
-            .iter()
-            .map(|f| normalize_path(f))
-            .collect()
-    });
-    let collect_result = collect_source_files(conn, root_dir, &config, &opts, incremental, force_full_rebuild);
+    let scoped_rel_paths: Option<HashSet<String>> = opts
+        .scope
+        .as_ref()
+        .map(|scope| scope.iter().map(|f| normalize_path(f)).collect());
+    let collect_result = collect_source_files(
+        conn,
+        root_dir,
+        &config,
+        &opts,
+        incremental,
+        force_full_rebuild,
+    );
     timing.collect_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     // ── Stage 3: Detect changes ────────────────────────────────────────
@@ -606,8 +621,12 @@ pub fn run_pipeline(
     // Stage 3b: save reverse-dep edges (incremental) or clear all (full),
     // then purge changed files. Returns the saved edges for Stage 7
     // reconnect and the removal reverse-dep set for Stage 8 reclassification.
-    let (saved_reverse_dep_edges, saved_sibling_groups, removal_reverse_deps, removed_file_neighbors) =
-        save_and_purge_changed(conn, &parse_changes, &change_result, &opts, root_dir);
+    let (
+        saved_reverse_dep_edges,
+        saved_sibling_groups,
+        removal_reverse_deps,
+        removed_file_neighbors,
+    ) = save_and_purge_changed(conn, &parse_changes, &change_result, &opts, root_dir);
 
     // ── Stage 4: Parse files ───────────────────────────────────────────
     // Only truly-changed files are parsed. Reverse-dep files are not re-parsed —
@@ -750,10 +769,9 @@ pub fn run_pipeline(
     // it only affects bookkeeping, not correctness — the file's hash simply
     // keeps its old value, so the next build re-detects and re-processes it
     // (the same self-healing property #1731 relies on).
-    if let Err(e) = crate::domain::graph::builder::stages::insert_nodes::commit_file_hashes(
-        conn,
-        &file_hashes,
-    ) {
+    if let Err(e) =
+        crate::domain::graph::builder::stages::insert_nodes::commit_file_hashes(conn, &file_hashes)
+    {
         eprintln!("[codegraph] commit_file_hashes failed: {e}");
     }
     timing.edges_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -1035,8 +1053,11 @@ fn reparse_barrel_candidates(
             );
             // Re-resolve imports for the barrel file
             // Normalize to forward slashes so batch_resolved keys match get_resolved lookups on Windows.
-            let abs_str =
-                Path::new(root_dir).join(&rel).to_str().unwrap_or("").replace('\\', "/");
+            let abs_str = Path::new(root_dir)
+                .join(&rel)
+                .to_str()
+                .unwrap_or("")
+                .replace('\\', "/");
             for imp in &sym.imports {
                 let input = ImportResolutionInput {
                     from_file: abs_str.clone(),
@@ -1094,9 +1115,7 @@ fn collect_imported_barrel_candidates(
         for imp in &symbols.imports {
             let key = format!("{}|{}", fwd, imp.source);
             if let Some(resolved) = batch_resolved.get(&key) {
-                if barrel_files_in_db.contains(resolved)
-                    && !file_symbols.contains_key(resolved)
-                {
+                if barrel_files_in_db.contains(resolved) && !file_symbols.contains_key(resolved) {
                     let abs = Path::new(root_dir).join(resolved);
                     if abs.exists() {
                         out.push(abs.to_str().unwrap_or("").to_string());
@@ -1128,8 +1147,7 @@ fn collect_reexport_from_barrels(
         Err(_) => return out,
     };
     for changed in changed_files {
-        if let Ok(rows) =
-            stmt.query_map(rusqlite::params![changed], |row| row.get::<_, String>(0))
+        if let Ok(rows) = stmt.query_map(rusqlite::params![changed], |row| row.get::<_, String>(0))
         {
             for row in rows.flatten() {
                 if !file_symbols.contains_key(&row) {
@@ -1301,12 +1319,14 @@ fn build_file_hash_entries(
             } else {
                 (c.mtime as f64, c.size as f64)
             };
-            Some(crate::domain::graph::builder::stages::insert_nodes::FileHashEntry {
-                file: c.rel_path.clone(),
-                hash,
-                mtime,
-                size,
-            })
+            Some(
+                crate::domain::graph::builder::stages::insert_nodes::FileHashEntry {
+                    file: c.rel_path.clone(),
+                    hash,
+                    mtime,
+                    size,
+                },
+            )
         })
         .collect()
 }
@@ -1328,11 +1348,34 @@ fn build_file_hash_entries(
 /// `log` somewhere else). Mirrors `BUILTIN_RECEIVERS` in `build-edges.ts`.
 fn builtin_call_receivers() -> Vec<String> {
     [
-        "console", "Math", "JSON", "Object", "Array", "String", "Number",
-        "Boolean", "Date", "RegExp", "Map", "Set", "WeakMap", "WeakSet",
-        "Promise", "Symbol", "Error", "TypeError", "RangeError", "Proxy",
-        "Reflect", "Intl", "globalThis", "window", "document", "process",
-        "Buffer", "require",
+        "console",
+        "Math",
+        "JSON",
+        "Object",
+        "Array",
+        "String",
+        "Number",
+        "Boolean",
+        "Date",
+        "RegExp",
+        "Map",
+        "Set",
+        "WeakMap",
+        "WeakSet",
+        "Promise",
+        "Symbol",
+        "Error",
+        "TypeError",
+        "RangeError",
+        "Proxy",
+        "Reflect",
+        "Intl",
+        "globalThis",
+        "window",
+        "document",
+        "process",
+        "Buffer",
+        "require",
     ]
     .into_iter()
     .map(String::from)
@@ -1441,7 +1484,9 @@ fn load_edge_node_set(
 }
 
 /// Load every candidate edge node from the DB (full-build path).
-fn load_all_edge_nodes(conn: &Connection) -> Vec<crate::domain::graph::builder::stages::build_edges::NodeInfo> {
+fn load_all_edge_nodes(
+    conn: &Connection,
+) -> Vec<crate::domain::graph::builder::stages::build_edges::NodeInfo> {
     let sql = format!(
         "SELECT id, name, kind, file, line, accessor_kind FROM nodes WHERE {EDGE_NODE_KIND_FILTER}",
     );
@@ -1456,15 +1501,19 @@ fn load_all_edge_nodes(conn: &Connection) -> Vec<crate::domain::graph::builder::
 
 /// Row-mapper for the `SELECT id, name, kind, file, line FROM nodes ...`
 /// shape used by both scoped and full edge-node loads.
-fn read_edge_node_info(row: &rusqlite::Row) -> rusqlite::Result<crate::domain::graph::builder::stages::build_edges::NodeInfo> {
-    Ok(crate::domain::graph::builder::stages::build_edges::NodeInfo {
-        id: row.get::<_, i64>(0)? as u32,
-        name: row.get(1)?,
-        kind: row.get(2)?,
-        file: row.get(3)?,
-        line: row.get::<_, i64>(4)? as u32,
-        accessor_kind: row.get(5)?,
-    })
+fn read_edge_node_info(
+    row: &rusqlite::Row,
+) -> rusqlite::Result<crate::domain::graph::builder::stages::build_edges::NodeInfo> {
+    Ok(
+        crate::domain::graph::builder::stages::build_edges::NodeInfo {
+            id: row.get::<_, i64>(0)? as u32,
+            name: row.get(1)?,
+            kind: row.get(2)?,
+            file: row.get(3)?,
+            line: row.get::<_, i64>(4)? as u32,
+            accessor_kind: row.get(5)?,
+        },
+    )
 }
 
 /// Load all `file`-kind node IDs into a flat map (one query instead of one
@@ -1472,12 +1521,12 @@ fn read_edge_node_info(row: &rusqlite::Row) -> rusqlite::Result<crate::domain::g
 /// map entry when an unrelated row happens to share the file path (#1028).
 fn load_file_node_id_map(conn: &Connection) -> HashMap<String, u32> {
     let mut map = HashMap::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0 AND name = file",
-    ) {
-        if let Ok(rows) =
-            stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u32)))
-        {
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT file, id FROM nodes WHERE kind = 'file' AND line = 0 AND name = file")
+    {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u32))
+        }) {
             for r in rows.flatten() {
                 map.insert(r.0, r.1);
             }
@@ -1531,7 +1580,11 @@ fn collect_imported_names_for_file(
                 }
             }
             imported_names.push(ImportedName {
-                imported: if target_name != local { Some(target_name) } else { None },
+                imported: if target_name != local {
+                    Some(target_name)
+                } else {
+                    None
+                },
                 name: local,
                 file: target_file,
             });
@@ -1655,9 +1708,7 @@ fn inject_return_types_for_file(
         }
 
         let found = match &ca.receiver_type_name {
-            Some(receiver) => {
-                global_return_types.get(&format!("{receiver}.{}", ca.callee_name))
-            }
+            Some(receiver) => global_return_types.get(&format!("{receiver}.{}", ca.callee_name)),
             None => imported_map.get(&ca.callee_name).and_then(|from| {
                 // The return-type index for the imported file is keyed by the
                 // function's own declared name — use the original (pre-rename)
@@ -1665,7 +1716,9 @@ fn inject_return_types_for_file(
                 let callee_original_name = imported_original_map
                     .get(&ca.callee_name)
                     .unwrap_or(&ca.callee_name);
-                return_type_index.get(from).and_then(|m| m.get(callee_original_name))
+                return_type_index
+                    .get(from)
+                    .and_then(|m| m.get(callee_original_name))
             }),
         };
 
@@ -1760,7 +1813,11 @@ fn build_and_insert_call_edges(
             .collect();
 
         fn non_empty<T: Clone>(v: &[T]) -> Option<Vec<T>> {
-            if v.is_empty() { None } else { Some(v.to_vec()) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v.to_vec())
+            }
         }
 
         file_entries.push(FileEdgeInput {
@@ -1864,9 +1921,8 @@ fn build_analysis_node_map(
 
     // Use a temp table to batch all file lookups into a single join query,
     // avoiding N per-file round-trips through prepared-statement execution.
-    let _ = conn.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS _analysis_files (file TEXT NOT NULL)",
-    );
+    let _ =
+        conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS _analysis_files (file TEXT NOT NULL)");
     let _ = conn.execute("DELETE FROM temp._analysis_files", []);
 
     if let Ok(mut ins) = conn.prepare("INSERT INTO temp._analysis_files (file) VALUES (?1)") {
@@ -2044,15 +2100,16 @@ fn write_cfg(
             continue;
         }
         for def in &symbols.definitions {
-            write_def_cfg(
-                &tx, &mut block_stmt, &mut edge_stmt,
-                file, def, node_id_map,
-            );
+            write_def_cfg(&tx, &mut block_stmt, &mut edge_stmt, file, def, node_id_map);
             if let Some(ref children) = def.children {
                 for child in children {
                     write_def_cfg(
-                        &tx, &mut block_stmt, &mut edge_stmt,
-                        file, child, node_id_map,
+                        &tx,
+                        &mut block_stmt,
+                        &mut edge_stmt,
+                        file,
+                        child,
+                        node_id_map,
                     );
                 }
             }
@@ -2159,9 +2216,27 @@ fn write_dataflow(
             Some(d) => d,
             None => continue,
         };
-        write_dataflow_arg_flows(&mut insert_stmt, &mut local_stmt, &mut global_stmt, data, file);
-        write_dataflow_assignments(&mut insert_stmt, &mut local_stmt, &mut global_stmt, data, file);
-        write_dataflow_mutations(&mut insert_stmt, &mut local_stmt, &mut global_stmt, data, file);
+        write_dataflow_arg_flows(
+            &mut insert_stmt,
+            &mut local_stmt,
+            &mut global_stmt,
+            data,
+            file,
+        );
+        write_dataflow_assignments(
+            &mut insert_stmt,
+            &mut local_stmt,
+            &mut global_stmt,
+            data,
+            file,
+        );
+        write_dataflow_mutations(
+            &mut insert_stmt,
+            &mut local_stmt,
+            &mut global_stmt,
+            data,
+            file,
+        );
     }
 
     drop(insert_stmt);
@@ -2187,7 +2262,13 @@ fn write_dataflow_arg_flows(
         let tgt = resolve_dataflow_node(local_stmt, global_stmt, &flow.callee_name, file);
         if let (Some(src), Some(tgt)) = (src, tgt) {
             let _ = insert_stmt.execute(rusqlite::params![
-                src, tgt, "flows_to", flow.arg_index, &flow.expression, flow.line, flow.confidence,
+                src,
+                tgt,
+                "flows_to",
+                flow.arg_index,
+                &flow.expression,
+                flow.line,
+                flow.confidence,
             ]);
         }
     }
@@ -2287,14 +2368,20 @@ mod tests {
 
     fn make_import_ctx(file_symbols: &BTreeMap<String, FileSymbols>) -> ImportEdgeContext {
         let mut batch_resolved = HashMap::new();
-        batch_resolved.insert("/repo/driver.js|./service.js".to_string(), "service.js".to_string());
+        batch_resolved.insert(
+            "/repo/driver.js|./service.js".to_string(),
+            "service.js".to_string(),
+        );
         ImportEdgeContext {
             batch_resolved,
             reexport_map: HashMap::new(),
             barrel_only_files: HashSet::new(),
             file_symbols: file_symbols.clone(),
             root_dir: "/repo".to_string(),
-            aliases: PathAliases { base_url: None, paths: vec![] },
+            aliases: PathAliases {
+                base_url: None,
+                paths: vec![],
+            },
             known_files: HashSet::new(),
             workspaces: HashMap::new(),
         }
@@ -2311,7 +2398,9 @@ mod tests {
     #[test]
     fn propagates_imported_factory_return_type_into_type_map() {
         let mut service = FileSymbols::new("service.js".to_string());
-        service.return_type_map.push(entry("buildService", "UserService", 0.85));
+        service
+            .return_type_map
+            .push(entry("buildService", "UserService", 0.85));
 
         let mut driver = FileSymbols::new("driver.js".to_string());
         driver.imports.push(Import::new(
@@ -2319,11 +2408,13 @@ mod tests {
             vec!["buildService".to_string()],
             1,
         ));
-        driver.call_assignments.push(crate::types::NativeCallAssignment {
-            var_name: "svc".to_string(),
-            callee_name: "buildService".to_string(),
-            receiver_type_name: None,
-        });
+        driver
+            .call_assignments
+            .push(crate::types::NativeCallAssignment {
+                var_name: "svc".to_string(),
+                callee_name: "buildService".to_string(),
+                receiver_type_name: None,
+            });
 
         let mut file_symbols = BTreeMap::new();
         file_symbols.insert("service.js".to_string(), service);
@@ -2346,15 +2437,19 @@ mod tests {
     #[test]
     fn qualified_receiver_lookup_uses_global_return_type_map() {
         let mut factory = FileSymbols::new("factory.js".to_string());
-        factory.return_type_map.push(entry("Factory.create", "Widget", 1.0));
+        factory
+            .return_type_map
+            .push(entry("Factory.create", "Widget", 1.0));
 
         let mut driver = FileSymbols::new("driver.js".to_string());
         driver.type_map.push(entry("factory", "Factory", 0.9));
-        driver.call_assignments.push(crate::types::NativeCallAssignment {
-            var_name: "w".to_string(),
-            callee_name: "create".to_string(),
-            receiver_type_name: Some("Factory".to_string()),
-        });
+        driver
+            .call_assignments
+            .push(crate::types::NativeCallAssignment {
+                var_name: "w".to_string(),
+                callee_name: "create".to_string(),
+                receiver_type_name: Some("Factory".to_string()),
+            });
 
         let mut file_symbols = BTreeMap::new();
         file_symbols.insert("factory.js".to_string(), factory);
@@ -2364,7 +2459,11 @@ mod tests {
         propagate_return_types_across_files(&mut file_symbols, &import_ctx);
 
         let driver = &file_symbols["driver.js"];
-        let seeded = driver.type_map.iter().find(|t| t.name == "w").expect("w seeded");
+        let seeded = driver
+            .type_map
+            .iter()
+            .find(|t| t.name == "w")
+            .expect("w seeded");
         assert_eq!(seeded.type_name, "Widget");
         assert!((seeded.confidence - 0.9).abs() < 1e-9);
     }
@@ -2372,7 +2471,9 @@ mod tests {
     #[test]
     fn locally_typed_variables_are_not_overwritten() {
         let mut service = FileSymbols::new("service.js".to_string());
-        service.return_type_map.push(entry("buildService", "UserService", 0.85));
+        service
+            .return_type_map
+            .push(entry("buildService", "UserService", 0.85));
 
         let mut driver = FileSymbols::new("driver.js".to_string());
         driver.imports.push(Import::new(
@@ -2381,11 +2482,13 @@ mod tests {
             1,
         ));
         driver.type_map.push(entry("svc", "LocalOverride", 1.0));
-        driver.call_assignments.push(crate::types::NativeCallAssignment {
-            var_name: "svc".to_string(),
-            callee_name: "buildService".to_string(),
-            receiver_type_name: None,
-        });
+        driver
+            .call_assignments
+            .push(crate::types::NativeCallAssignment {
+                var_name: "svc".to_string(),
+                callee_name: "buildService".to_string(),
+                receiver_type_name: None,
+            });
 
         let mut file_symbols = BTreeMap::new();
         file_symbols.insert("service.js".to_string(), service);
@@ -2396,7 +2499,11 @@ mod tests {
 
         let driver = &file_symbols["driver.js"];
         let svc_entries: Vec<_> = driver.type_map.iter().filter(|t| t.name == "svc").collect();
-        assert_eq!(svc_entries.len(), 1, "no duplicate entry should be injected");
+        assert_eq!(
+            svc_entries.len(),
+            1,
+            "no duplicate entry should be injected"
+        );
         assert_eq!(svc_entries[0].type_name, "LocalOverride");
     }
 }

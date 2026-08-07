@@ -749,12 +749,13 @@ pub fn reconnect_reverse_dep_edges(
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
                     let mut rows: Vec<(i64, i64, Option<String>)> = Vec::new();
-                    if let Ok(mut rows_iter) = candidates_stmt
-                        .query(rusqlite::params![&s.tgt_name, &s.tgt_kind, &s.tgt_file])
-                    {
+                    if let Ok(mut rows_iter) = candidates_stmt.query(rusqlite::params![
+                        &s.tgt_name,
+                        &s.tgt_kind,
+                        &s.tgt_file
+                    ]) {
                         while let Ok(Some(row)) = rows_iter.next() {
-                            if let (Ok(id), Ok(line)) =
-                                (row.get::<_, i64>(0), row.get::<_, i64>(1))
+                            if let (Ok(id), Ok(line)) = (row.get::<_, i64>(0), row.get::<_, i64>(1))
                             {
                                 let hash = row.get::<_, Option<String>>(2).unwrap_or(None);
                                 rows.push((id, line, hash));
@@ -969,8 +970,7 @@ pub fn record_deleted_export_advisories(conn: &Connection, removed_files: &[Stri
            (file, name, kind, line, consumer_name, consumer_file, consumer_line, consumer_kind, deleted_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     );
-    let delete_result =
-        tx.prepare_cached("DELETE FROM deleted_export_advisories WHERE file = ?1");
+    let delete_result = tx.prepare_cached("DELETE FROM deleted_export_advisories WHERE file = ?1");
 
     if let (Ok(mut defs_stmt), Ok(mut consumers_stmt), Ok(mut insert_stmt), Ok(mut delete_stmt)) =
         (defs_result, consumers_result, insert_result, delete_result)
@@ -1000,7 +1000,11 @@ pub fn record_deleted_export_advisories(conn: &Connection, removed_files: &[Stri
                     Err(_) => continue,
                 };
                 for (consumer_name, consumer_file, consumer_line, edge_kind) in consumers {
-                    let consumer_kind = if edge_kind == "imports-type" { "file" } else { "symbol" };
+                    let consumer_kind = if edge_kind == "imports-type" {
+                        "file"
+                    } else {
+                        "symbol"
+                    };
                     let _ = insert_stmt.execute(rusqlite::params![
                         file,
                         name,
@@ -1143,8 +1147,7 @@ pub fn purge_changed_files(
     if !reverse_dep_files.is_empty() {
         let dfcall_sql = "DELETE FROM dataflow WHERE call_edge_id IN \
              (SELECT id FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?))";
-        let edge_sql =
-            "DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)";
+        let edge_sql = "DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)";
         for f in reverse_dep_files {
             // Optional — column absent in pre-v18 schemas; ignore errors.
             let _ = tx.execute(dfcall_sql, [f]);
@@ -1651,7 +1654,13 @@ mod tests {
         let target_old_id = insert_node(&conn, "close", "method", file, 500);
         insert_node(&conn, "close", "method", file, 580);
         // External caller in a different (untouched) file.
-        let caller_id = insert_node(&conn, "triageData", "function", "src/features/triage.ts", 146);
+        let caller_id = insert_node(
+            &conn,
+            "triageData",
+            "function",
+            "src/features/triage.ts",
+            146,
+        );
         conn.execute(
             "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?1, ?2, 'calls', 0.5, 0)",
             rusqlite::params![caller_id, target_old_id],
@@ -1666,8 +1675,13 @@ mod tests {
         );
 
         // Simulate purge_changed_files: delete the changed file's nodes/edges.
-        conn.execute("DELETE FROM edges WHERE target_id IN (SELECT id FROM nodes WHERE file = ?1)", [file]).unwrap();
-        conn.execute("DELETE FROM nodes WHERE file = ?1", [file]).unwrap();
+        conn.execute(
+            "DELETE FROM edges WHERE target_id IN (SELECT id FROM nodes WHERE file = ?1)",
+            [file],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM nodes WHERE file = ?1", [file])
+            .unwrap();
 
         // Re-insert: a new function was added above all four, shifting every
         // sibling down by the same delta (147 lines) — the exact shape of the
@@ -1731,8 +1745,13 @@ mod tests {
         assert_eq!(saved.len(), 4);
 
         // Simulate purge_changed_files.
-        conn.execute("DELETE FROM edges WHERE target_id IN (SELECT id FROM nodes WHERE file = ?1)", [file]).unwrap();
-        conn.execute("DELETE FROM nodes WHERE file = ?1", [file]).unwrap();
+        conn.execute(
+            "DELETE FROM edges WHERE target_id IN (SELECT id FROM nodes WHERE file = ?1)",
+            [file],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM nodes WHERE file = ?1", [file])
+            .unwrap();
 
         // Re-insert: whole group shifted +147 (unrelated helper inserted
         // above), AND B's `close` was renamed to `shutdown` in the same
@@ -1924,8 +1943,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut neighbors =
-            capture_removed_file_neighbors(&conn, &["src/pkgA/a1.js".to_string()]);
+        let mut neighbors = capture_removed_file_neighbors(&conn, &["src/pkgA/a1.js".to_string()]);
         neighbors.sort();
         assert_eq!(
             neighbors,
@@ -1986,7 +2004,13 @@ mod tests {
         conn
     }
 
-    fn insert_exported_node(conn: &Connection, name: &str, kind: &str, file: &str, line: i64) -> i64 {
+    fn insert_exported_node(
+        conn: &Connection,
+        name: &str,
+        kind: &str,
+        file: &str,
+        line: i64,
+    ) -> i64 {
         conn.execute(
             "INSERT INTO nodes (name, kind, file, line, exported) VALUES (?1, ?2, ?3, ?4, 1)",
             rusqlite::params![name, kind, file, line],

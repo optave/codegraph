@@ -290,8 +290,8 @@ pub fn refresh_affected_directory_metrics(
                     get_node_id(&tx, &parent, "directory", &parent, 0),
                     get_node_id(&tx, dir, "directory", dir, 0),
                 ) {
-                    let _ =
-                        insert_edge.execute(rusqlite::params![parent_id, dir_id, parent_id, dir_id]);
+                    let _ = insert_edge
+                        .execute(rusqlite::params![parent_id, dir_id, parent_id, dir_id]);
                 }
             }
         }
@@ -318,9 +318,9 @@ pub fn refresh_affected_directory_metrics(
         // an index-friendly prefix-range scan equivalent to `file LIKE
         // 'dir/%'` — '0' (0x30) is the character immediately after '/'
         // (0x2F), so this bound matches exactly the paths nested under `dir`.
-        let mut count_files = match tx.prepare(
-            "SELECT COUNT(*) FROM nodes WHERE kind = 'file' AND file >= ?1 AND file < ?2",
-        ) {
+        let mut count_files = match tx
+            .prepare("SELECT COUNT(*) FROM nodes WHERE kind = 'file' AND file >= ?1 AND file < ?2")
+        {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -559,7 +559,13 @@ pub fn build_full_structure(
     let (fan_in_map, fan_out_map, import_edges) = compute_import_edge_maps(conn);
 
     // Step 5: Compute file metrics
-    compute_file_metrics(conn, file_symbols, line_count_map, &fan_in_map, &fan_out_map);
+    compute_file_metrics(
+        conn,
+        file_symbols,
+        line_count_map,
+        &fan_in_map,
+        &fan_out_map,
+    );
 
     // Step 6: Compute directory metrics
     compute_directory_metrics(conn, file_symbols, &all_dirs, &import_edges);
@@ -622,7 +628,13 @@ fn insert_directory_nodes(conn: &Connection, all_dirs: &HashSet<String>) {
             Err(_) => return,
         };
         for dir in all_dirs {
-            let _ = stmt.execute(rusqlite::params![dir, "directory", dir, 0, rusqlite::types::Null]);
+            let _ = stmt.execute(rusqlite::params![
+                dir,
+                "directory",
+                dir,
+                0,
+                rusqlite::types::Null
+            ]);
         }
     }
     let _ = tx.commit();
@@ -654,9 +666,7 @@ fn load_child_dirs_in_affected(conn: &Connection, affected_dirs: &HashSet<String
 /// directories retain their dir→file containment edges after cleanup.
 fn load_file_paths_in_dirs(conn: &Connection, dirs: &HashSet<String>) -> Vec<String> {
     let mut result = Vec::new();
-    let mut stmt = match conn.prepare(
-        "SELECT name FROM nodes WHERE kind = 'file'",
-    ) {
+    let mut stmt = match conn.prepare("SELECT name FROM nodes WHERE kind = 'file'") {
         Ok(s) => s,
         Err(_) => return result,
     };
@@ -842,10 +852,7 @@ fn compute_import_edge_maps(
 
     let rows = stmt
         .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .ok();
 
@@ -1177,11 +1184,9 @@ fn compute_directory_metrics(
     let all_db_files = load_all_file_paths_from_db(conn);
     let dir_files = build_dir_files_map(all_dirs, &all_db_files, file_symbols);
     let file_to_ancestor_dirs = build_file_to_ancestor_dirs(&dir_files);
-    let dir_edge_counts =
-        count_directory_edges(all_dirs, &file_to_ancestor_dirs, import_edges);
+    let dir_edge_counts = count_directory_edges(all_dirs, &file_to_ancestor_dirs, import_edges);
     let db_symbol_counts = load_db_symbol_counts(conn);
-    let dir_symbol_counts =
-        compute_dir_symbol_counts(&dir_files, &db_symbol_counts, file_symbols);
+    let dir_symbol_counts = compute_dir_symbol_counts(&dir_files, &db_symbol_counts, file_symbols);
     write_directory_metric_rows(conn, &dir_files, &dir_symbol_counts, &dir_edge_counts);
 }
 

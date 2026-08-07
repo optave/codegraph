@@ -1,7 +1,7 @@
-use tree_sitter::{Node, Tree};
-use crate::types::*;
 use super::helpers::*;
 use super::SymbolExtractor;
+use crate::types::*;
+use tree_sitter::{Node, Tree};
 
 pub struct ErlangExtractor;
 
@@ -9,7 +9,12 @@ impl SymbolExtractor for ErlangExtractor {
     fn extract(&self, tree: &Tree, source: &[u8], file_path: &str) -> FileSymbols {
         let mut symbols = FileSymbols::new(file_path.to_string());
         walk_tree(&tree.root_node(), source, &mut symbols, match_erlang_node);
-        walk_ast_nodes_with_config(&tree.root_node(), source, &mut symbols.ast_nodes, &ERLANG_AST_CONFIG);
+        walk_ast_nodes_with_config(
+            &tree.root_node(),
+            source,
+            &mut symbols.ast_nodes,
+            &ERLANG_AST_CONFIG,
+        );
         symbols
     }
 }
@@ -310,11 +315,9 @@ fn handle_import_attr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         names.push(module_text.clone());
     }
 
-    symbols.imports.push(Import::new(
-        module_text,
-        names,
-        start_line(node),
-    ));
+    symbols
+        .imports
+        .push(Import::new(module_text, names, start_line(node)));
 }
 
 fn handle_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
@@ -471,24 +474,24 @@ mod tests {
     #[test]
     fn deduplicates_multi_clause_function() {
         // Multiple clauses for the same function produce one definition only.
-        let s = parse_erlang(
-            "fact(0) -> 1;\nfact(N) when N > 0 -> N * fact(N - 1).\n",
-        );
+        let s = parse_erlang("fact(0) -> 1;\nfact(N) when N > 0 -> N * fact(N - 1).\n");
         let fact_defs: Vec<&Definition> = s
             .definitions
             .iter()
             .filter(|d| d.name == "fact" && d.kind == "function")
             .collect();
-        assert_eq!(fact_defs.len(), 1, "expected single function def for multi-clause");
+        assert_eq!(
+            fact_defs.len(),
+            1,
+            "expected single function def for multi-clause"
+        );
     }
 
     #[test]
     fn keeps_distinct_arities_for_same_name() {
         // Erlang overloads by arity: foo/1 and foo/2 are distinct definitions
         // and must not be collapsed by name-only deduplication.
-        let s = parse_erlang(
-            "foo(X) -> X.\nfoo(X, Y) -> X + Y.\nfoo(X, Y, Z) -> X + Y + Z.\n",
-        );
+        let s = parse_erlang("foo(X) -> X.\nfoo(X, Y) -> X + Y.\nfoo(X, Y, Z) -> X + Y + Z.\n");
         let foo_defs: Vec<&Definition> = s
             .definitions
             .iter()
@@ -506,9 +509,7 @@ mod tests {
     #[test]
     fn counts_complex_pattern_arguments_as_parameters() {
         // Tuple, list and binary pattern arguments must still count toward arity.
-        let s = parse_erlang(
-            "handle({ok, X}, [H | T]) -> {X, H, T}.\n",
-        );
+        let s = parse_erlang("handle({ok, X}, [H | T]) -> {X, H, T}.\n");
         let f = s
             .definitions
             .iter()
