@@ -781,7 +781,11 @@ function getInsertCallEdgeExtStmt(db: BetterSqlite3Database): SqliteStatement {
   return _insertCallEdgeExtStmt!;
 }
 
-/** Insert a `calls` edge with an explicit technique and/or dynamic_kind. */
+/**
+ * Insert a `calls` edge with an explicit technique and/or dynamic_kind.
+ * Returns the inserted row's id so a caller-side map (e.g. `ptsEdgeRows`,
+ * #2079) can later upgrade this exact row in place.
+ */
 function insertCallEdgeExt(
   db: BetterSqlite3Database,
   sourceId: number,
@@ -790,8 +794,42 @@ function insertCallEdgeExt(
   dynamic: 0 | 1,
   technique: string | null,
   dynamicKind: string | null,
+): number | bigint {
+  return getInsertCallEdgeExtStmt(db).run(
+    sourceId,
+    targetId,
+    confidence,
+    dynamic,
+    technique,
+    dynamicKind,
+  ).lastInsertRowid;
+}
+
+// Lazily-cached prepared statement for upgrading a pts-resolved edge row to
+// direct-call confidence in place (#2079) — mirrors the full-build path's
+// `ptsEdgeRows` in-memory row mutation (stages/build-edges.ts), adapted for
+// the incremental path's per-row DB writes instead of a batched insert array.
+let _updateEdgeDb: BetterSqlite3Database | null = null;
+let _updateCallEdgeToDirectStmt: SqliteStatement | null = null;
+
+function getUpdateCallEdgeToDirectStmt(db: BetterSqlite3Database): SqliteStatement {
+  if (_updateEdgeDb !== db) {
+    _updateEdgeDb = db;
+    _updateCallEdgeToDirectStmt = db.prepare(
+      `UPDATE edges SET confidence = ?, dynamic = ?, technique = 'ts-native' WHERE id = ?`,
+    );
+  }
+  return _updateCallEdgeToDirectStmt!;
+}
+
+/** Upgrade a pts-resolved edge row to direct-call confidence/technique in place. */
+function upgradePtsEdgeToDirect(
+  db: BetterSqlite3Database,
+  rowId: number | bigint,
+  confidence: number,
+  dynamic: 0 | 1,
 ): void {
-  getInsertCallEdgeExtStmt(db).run(sourceId, targetId, confidence, dynamic, technique, dynamicKind);
+  getUpdateCallEdgeToDirectStmt(db).run(confidence, dynamic, rowId);
 }
 
 // ── Call edge building ──────────────────────────────────────────────────
@@ -938,6 +976,11 @@ function applyCallFallbacks(
  * Emit direct `calls` edges for the resolved targets of a single call site,
  * then emit a `receiver` edge when the call has a non-this/self/super receiver.
  * Returns the number of edges inserted.
+ *
+ * If a target pair was already claimed by a pts-resolved edge (`ptsEdgeRows`,
+ * #2079), that row is upgraded in place to direct-call confidence/technique
+ * instead of being skipped — mirroring the full-build path's
+ * `emitDirectCallEdgesForCall` (stages/build-edges.ts).
  */
 function emitIncrementalCallEdges(
   call: { name: string; receiver?: string | null; dynamic?: boolean },
@@ -949,16 +992,27 @@ function emitIncrementalCallEdges(
   lookup: CallNodeLookup,
   importedNames: Map<string, string>,
   seenCallEdges: Set<string>,
+  ptsEdgeRows: Map<string, number | bigint>,
   stmts: IncrementalStmts,
+  db: BetterSqlite3Database,
 ): number {
   let edgesAdded = 0;
 
   for (const t of targets) {
+    if (t.id === caller.id) continue;
     const edgeKey = `${caller.id}|${t.id}`;
-    if (t.id !== caller.id && !seenCallEdges.has(edgeKey)) {
+    if (seenCallEdges.has(edgeKey)) continue;
+
+    const confidence = computeConfidence(relPath, t.file, importedFrom ?? null);
+    const dynamic: 0 | 1 = call.dynamic ? 1 : 0;
+    const ptsRowId = ptsEdgeRows.get(edgeKey);
+    if (ptsRowId !== undefined) {
+      upgradePtsEdgeToDirect(db, ptsRowId, confidence, dynamic);
+      ptsEdgeRows.delete(edgeKey);
       seenCallEdges.add(edgeKey);
-      const confidence = computeConfidence(relPath, t.file, importedFrom ?? null);
-      stmts.insertEdge.run(caller.id, t.id, 'calls', confidence, call.dynamic ? 1 : 0);
+    } else {
+      seenCallEdges.add(edgeKey);
+      stmts.insertEdge.run(caller.id, t.id, 'calls', confidence, dynamic);
       edgesAdded++;
     }
   }
@@ -995,12 +1049,10 @@ function emitIncrementalCallEdges(
  * that function's docstring for the full case breakdown (dynamic calls,
  * scoped/module/flat pts keys).
  *
- * Unlike the full-build version, a pts edge here shares `seenCallEdges` with
- * direct-call edges rather than a separate `ptsEdgeRows` map, so a later
- * direct call to the same target in the same file is skipped (not upgraded
- * to the higher direct-call confidence) if a pts edge already claimed the
- * pair — a narrow, documented gap from full-build parity (tracked in #1852's
- * follow-up), not a missing edge.
+ * Pts edges are added to `ptsEdgeRows` (not `seenCallEdges`, #2079) so a
+ * later direct call to the same target in the same file upgrades this row
+ * in place (`emitIncrementalCallEdges`) instead of being silently dropped —
+ * mirroring the full-build path's `ptsEdgeRows` map exactly.
  */
 function emitIncrementalPtsNoReceiverEdges(
   db: BetterSqlite3Database,
@@ -1013,6 +1065,7 @@ function emitIncrementalPtsNoReceiverEdges(
   ptsMap: PointsToMap,
   fnRefBindingLhs: ReadonlySet<string>,
   seenCallEdges: Set<string>,
+  ptsEdgeRows: Map<string, number | bigint>,
   importedOriginalNames: ReadonlyMap<string, string> | undefined,
 ): number {
   const scopedPtsKey = caller.callerName != null ? `${caller.callerName}::${call.name}` : null;
@@ -1065,12 +1118,12 @@ function emitIncrementalPtsNoReceiverEdges(
         : aliasTargets;
     for (const t of sortedAliasTargets) {
       const edgeKey = `${caller.id}|${t.id}`;
-      if (t.id !== caller.id && !seenCallEdges.has(edgeKey)) {
+      if (t.id !== caller.id && !seenCallEdges.has(edgeKey) && !ptsEdgeRows.has(edgeKey)) {
         const conf =
           computeConfidence(relPath, t.file, aliasFrom ?? null) - PROPAGATION_HOP_PENALTY;
         if (conf > 0) {
-          seenCallEdges.add(edgeKey);
-          insertCallEdgeExt(db, caller.id, t.id, conf, isDynamic, 'points-to', null);
+          const rowId = insertCallEdgeExt(db, caller.id, t.id, conf, isDynamic, 'points-to', null);
+          ptsEdgeRows.set(edgeKey, rowId);
           edgesAdded++;
         }
       }
@@ -1083,6 +1136,9 @@ function emitIncrementalPtsNoReceiverEdges(
  * Phase 8.3f pts fallback for unresolved receiver calls via object-rest
  * param bindings (`rest.prop()`). Mirrors `emitPtsReceiverEdges`
  * (stages/build-edges.ts, full-build path).
+ *
+ * Pts edges are added to `ptsEdgeRows` (not `seenCallEdges`, #2079) — see
+ * `emitIncrementalPtsNoReceiverEdges`'s docstring for why.
  */
 function emitIncrementalPtsReceiverEdges(
   db: BetterSqlite3Database,
@@ -1094,6 +1150,7 @@ function emitIncrementalPtsReceiverEdges(
   typeMap: Map<string, unknown>,
   ptsMap: PointsToMap,
   seenCallEdges: Set<string>,
+  ptsEdgeRows: Map<string, number | bigint>,
   importedOriginalNames: ReadonlyMap<string, string> | undefined,
 ): number {
   const receiverKey = `${call.receiver}.${call.name}`;
@@ -1121,12 +1178,12 @@ function emitIncrementalPtsReceiverEdges(
         : aliasTargets;
     for (const t of sortedAliasTargets) {
       const edgeKey = `${caller.id}|${t.id}`;
-      if (t.id !== caller.id && !seenCallEdges.has(edgeKey)) {
+      if (t.id !== caller.id && !seenCallEdges.has(edgeKey) && !ptsEdgeRows.has(edgeKey)) {
         const conf =
           computeConfidence(relPath, t.file, aliasFrom ?? null) - PROPAGATION_HOP_PENALTY;
         if (conf > 0) {
-          seenCallEdges.add(edgeKey);
-          insertCallEdgeExt(db, caller.id, t.id, conf, isDynamic, 'points-to', null);
+          const rowId = insertCallEdgeExt(db, caller.id, t.id, conf, isDynamic, 'points-to', null);
+          ptsEdgeRows.set(edgeKey, rowId);
           edgesAdded++;
         }
       }
@@ -1174,6 +1231,10 @@ function buildCallEdges(
 ): number {
   const typeMap = buildIncrementalTypeMap(symbols);
   const seenCallEdges = new Set<string>();
+  // #2079: pts-resolved edges are tracked here (not seenCallEdges) so a later
+  // direct call to the same target in this file upgrades the row in place
+  // instead of being dropped by the seenCallEdges dedup guard.
+  const ptsEdgeRows = new Map<string, number | bigint>();
   const lookup = makeIncrementalLookup(db, stmts);
   // Phase 8.3 pts map (#1852) — same per-file construction the full-build
   // JS path uses (buildPointsToMapForFile, shared via resolver/points-to.js).
@@ -1242,7 +1303,9 @@ function buildCallEdges(
       lookup,
       importedNames,
       seenCallEdges,
+      ptsEdgeRows,
       stmts,
+      db,
     );
 
     // Phase 8.3/8.3c/8.3f pts fallback (#1852): only fires when the primary +
@@ -1260,6 +1323,7 @@ function buildCallEdges(
           ptsMap,
           fnRefBindingLhs,
           seenCallEdges,
+          ptsEdgeRows,
           importedOriginalNames,
         );
       } else if (
@@ -1278,6 +1342,7 @@ function buildCallEdges(
           typeMap,
           ptsMap,
           seenCallEdges,
+          ptsEdgeRows,
           importedOriginalNames,
         );
       }
