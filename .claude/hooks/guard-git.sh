@@ -21,14 +21,15 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-# Act on git and gh commands (may appear after cd "..." && or inside a quoted
-# nested-shell invocation, e.g. `bash -c "git clean -fd"` — #2099 Greptile
-# review). This is only a cheap fast-path skip, so it's deliberately
-# permissive (["'] as an extra allowed prefix boundary alongside
-# start/whitespace/&&) rather than exact: a false "yes" here just means the
-# rest of the script runs its checks anyway, while a false "no" would exit
-# before ever reaching them.
-if ! echo "$COMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*|["'"'"'])(git|gh)[[:space:]]+'; then
+# Act on git and gh commands (may appear after cd "..." &&, inside a quoted
+# nested-shell invocation like `bash -c "git clean -fd"`, or inside a command
+# substitution like `"message $(git clean -fd)"` — #2099 Greptile review).
+# This is only a cheap fast-path skip, so it's deliberately permissive
+# (["'`(] as extra allowed prefix boundaries alongside start/whitespace/&&)
+# rather than exact: a false "yes" here just means the rest of the script
+# runs its checks anyway, while a false "no" would exit before ever reaching
+# them.
+if ! echo "$COMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*|["'"'"'`(])(git|gh)[[:space:]]+'; then
   exit 0
 fi
 
@@ -57,15 +58,17 @@ fi
 NCOMMAND=$(echo "$MASKED_COMMAND" | sed -E 's/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+"[^"]+"/\1git/g; s/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+[^"[:space:]][^[:space:]]*/\1git/g')
 NCOMMAND=$(echo "$NCOMMAND" | sed -E 's/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+"[^"]+"/\1git/g; s/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+[^"[:space:]][^[:space:]]*/\1git/g')
 
-# Strip any remaining literal quote characters from NCOMMAND (#2099 Greptile
-# review): an exec-triggered quote (`bash -c "git clean -fd"`) is left
-# unmasked by mask-quoted-text.mjs, but its quote DELIMITERS survive — e.g.
-# `"git` — which sit directly adjacent to the verb, defeating every
-# `(^|[[:space:]])`-anchored check below. NCOMMAND is used exclusively for
-# verb detection (never for value extraction — detect_work_dir/MSG_FILE read
-# the raw $COMMAND instead), so quote characters carry no meaning here once
-# masking has already run.
-NCOMMAND=$(echo "$NCOMMAND" | sed -E "s/[\"']/ /g")
+# Strip any remaining literal quote/substitution-delimiter characters from
+# NCOMMAND (#2099 Greptile review): an exec-triggered quote
+# (`bash -c "git clean -fd"`) or a command substitution
+# (`"message $(git clean -fd)"`, which executes even inside an otherwise
+# masked double-quoted string) is left unmasked by mask-quoted-text.mjs, but
+# its delimiters survive — e.g. `"git` or `$(git` — sitting directly adjacent
+# to the verb, defeating every `(^|[[:space:]])`-anchored check below.
+# NCOMMAND is used exclusively for verb detection (never for value
+# extraction — detect_work_dir/MSG_FILE read the raw $COMMAND instead), so
+# these characters carry no meaning here once masking has already run.
+NCOMMAND=$(echo "$NCOMMAND" | sed -E "s/[\"'\`()]/ /g")
 
 deny() {
   local reason="$1"

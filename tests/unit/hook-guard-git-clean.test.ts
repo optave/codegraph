@@ -88,6 +88,23 @@ describe('guard-git.sh git clean dry-run/force distinction (#2099)', () => {
     expect(isDenied('git clean -fd | cat -n')).toBe(true);
     expect(isDenied('git clean -fd\nls -n')).toBe(true);
   });
+
+  it('does not let a standalone & (background) separator leak a flag across commands', () => {
+    // Greptile review (round 2): the segment splitter initially only
+    // recognized && as a separator, not a lone &.
+    expect(isDenied('git clean -fd & ls -n')).toBe(true);
+  });
+
+  it('does not treat a pathspec after -- as a dry-run flag', () => {
+    // Greptile review (round 2): `-n` after `--` names a literal path, not
+    // an option — git's own convention for disambiguating dash-prefixed
+    // pathspecs from flags.
+    expect(isDenied('git clean -f -- -n')).toBe(true);
+  });
+
+  it('still recognizes a real -n option before the -- pathspec boundary', () => {
+    expect(isDenied('git clean -fn -- -weird-file')).toBe(false);
+  });
 });
 
 describe('guard-git.sh does not false-positive on quoted text (#2099)', () => {
@@ -127,6 +144,31 @@ describe('guard-git.sh does not false-positive on quoted text (#2099)', () => {
 
   it('still allows inert quoted text passed to -c-like flags when it names no dangerous verb', () => {
     expect(isDenied('bash -c "echo hello"')).toBe(false);
+  });
+
+  it('still blocks a command substitution inside an ordinary double-quoted argument (Greptile review)', () => {
+    // $(...) and `...` execute even inside an otherwise-inert double-quoted
+    // string — real bash actually runs `git clean -fd` here when expanding
+    // the -m argument, regardless of it being "just a commit message".
+    expect(isDenied('git commit -m "message $(git clean -fd)"')).toBe(true);
+    expect(isDenied('git commit -m "message `git add -A`"')).toBe(true);
+  });
+
+  it('does not treat command substitution inside a SINGLE-quoted argument as executable', () => {
+    // Single quotes suppress all expansion in real bash — $(...) there is
+    // genuinely inert literal text.
+    expect(isDenied("git commit -m 'message $(git clean -fd)'")).toBe(false);
+  });
+
+  it('still blocks command substitution inside an unquoted-delimiter heredoc body', () => {
+    // <<EOF (unlike <<'EOF') still expands $(...) inside the body.
+    const command = [`cat <<EOF`, `text $(git clean -fd) more text`, `EOF`].join('\n');
+    expect(isDenied(command)).toBe(true);
+  });
+
+  it('does not block command substitution-shaped text inside a quoted-delimiter heredoc body', () => {
+    const command = [`cat <<'EOF'`, `text $(git clean -fd) more text`, `EOF`].join('\n');
+    expect(isDenied(command)).toBe(false);
   });
 
   it('does not block a commit whose heredoc-authored message body mentions git clean', () => {
