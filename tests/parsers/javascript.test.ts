@@ -2287,6 +2287,33 @@ function runDemo(reporter: Reporter, users: string[]): void {
       expect(symbols.typeMap.has('rest')).toBe(false);
     });
 
+    // Review finding: a named property alongside the rest element excludes
+    // that property from rest's real type (`Omit<IWorker, 'doWork'>`), so
+    // seeding the full IWorker type onto `rest` would let a call like
+    // `rest.doWork()` — invalid, since doWork was destructured away —
+    // falsely resolve via CHA dispatch.
+    it('does not seed the full annotation type when a sibling property is destructured out', () => {
+      const symbols = parseTS(`
+        function f({ doWork, ...rest }: IWorker) {
+          rest.other();
+        }
+      `);
+      expect(symbols.typeMap.has('rest')).toBe(false);
+    });
+
+    it('still records the object-rest-param binding when a sibling property is present', () => {
+      const symbols = parseTS(`
+        function f({ doWork, ...rest }: IWorker) {
+          rest.other();
+        }
+      `);
+      expect(symbols.objectRestParamBindings).toContainEqual({
+        callee: 'f',
+        restName: 'rest',
+        argIndex: 0,
+      });
+    });
+
     it('records correct argIndex for a type-annotated rest param that is not first', () => {
       const symbols = parseTS(`
         function g(x: number, { ...rest }: IWorker) { rest.doWork(); }

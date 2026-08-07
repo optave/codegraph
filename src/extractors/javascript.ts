@@ -3458,6 +3458,14 @@ function handleVarDeclaratorTypeMap(
  * direct type binding (0.9) takes priority over that value-chase guess
  * (0.65) when both exist, which is correct: an explicit type annotation is
  * strictly more reliable evidence than an inferred call-site argument name.
+ *
+ * Only seeded when the rest element is the pattern's ONLY member (`{ ...rest
+ * }: IWorker`) — if a named property sits alongside it (`{ doWork, ...rest
+ * }: IWorker`), TypeScript's own structural typing excludes that property
+ * from `rest`'s real type (effectively `Omit<IWorker, 'doWork'>`), so
+ * assigning the full `IWorker` type to `rest` would let a call like
+ * `rest.doWork()` — invalid, since `doWork` was destructured away — resolve
+ * a false edge via CHA dispatch (#2080 review).
  */
 function handleParamTypeMap(node: TreeSitterNode, typeMap: Map<string, TypeMapEntry>): void {
   const nameNode =
@@ -3471,6 +3479,13 @@ function handleParamTypeMap(node: TreeSitterNode, typeMap: Map<string, TypeMapEn
     return;
   }
   if (nameNode?.type !== 'object_pattern') return;
+  for (let i = 0; i < nameNode.childCount; i++) {
+    const sibling = nameNode.child(i);
+    if (!sibling) continue;
+    const st = sibling.type;
+    if (st === '{' || st === '}' || st === ',') continue;
+    if (st !== 'rest_pattern' && st !== 'rest_element') return;
+  }
   const typeAnno = findChild(node, 'type_annotation');
   if (!typeAnno) return;
   const typeName = extractSimpleTypeName(typeAnno);

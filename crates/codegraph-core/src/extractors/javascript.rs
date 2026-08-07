@@ -258,6 +258,20 @@ fn handle_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
         return;
     }
     if name_node.kind() != "object_pattern" { return };
+    // Only seed when the rest element is the pattern's ONLY member (`{
+    // ...rest }: IWorker`) — if a named property sits alongside it (`{
+    // doWork, ...rest }: IWorker`), TypeScript's own structural typing
+    // excludes that property from `rest`'s real type (effectively
+    // `Omit<IWorker, 'doWork'>`), so assigning the full `IWorker` type to
+    // `rest` would let a call like `rest.doWork()` — invalid, since
+    // `doWork` was destructured away — resolve a false edge via CHA
+    // dispatch (#2080 review).
+    for i in 0..name_node.child_count() {
+        let Some(sibling) = name_node.child(i) else { continue };
+        let st = sibling.kind();
+        if st == "{" || st == "}" || st == "," { continue }
+        if st != "rest_pattern" && st != "rest_element" { return }
+    }
     let Some(type_anno) = find_child(node, "type_annotation") else { return };
     let Some(type_name) = extract_simple_type_name(&type_anno, source) else { return };
     for i in 0..name_node.child_count() {
@@ -8124,6 +8138,33 @@ mod tests {
         let s = parse_ts("function f3({ ...rest }) { rest.go(); }");
         let tm = s.type_map.iter().find(|t| t.name == "rest");
         assert!(tm.is_none(), "type_map should not contain an entry for untyped 'rest'; got: {:?}", s.type_map);
+    }
+
+    // #2080 review (Greptile): a named property alongside the rest element
+    // excludes that property from rest's real type (`Omit<IWorker,
+    // 'doWork'>`), so seeding the full IWorker type onto `rest` would let a
+    // call like `rest.doWork()` — invalid, since doWork was destructured
+    // away — falsely resolve via CHA dispatch.
+    #[test]
+    fn object_rest_param_with_sibling_property_does_not_seed_full_type() {
+        let s = parse_ts("function f({ doWork, ...rest }: IWorker) { rest.other(); }");
+        let tm = s.type_map.iter().find(|t| t.name == "rest");
+        assert!(
+            tm.is_none(),
+            "type_map should not seed the full annotation type onto 'rest' when a sibling property is destructured out; got: {:?}",
+            s.type_map
+        );
+    }
+
+    // The object_rest_param_bindings extraction itself (the value-chase
+    // mechanism, #1336) is unaffected by the sibling-property guard above —
+    // it always recorded the rest binding regardless of sibling properties.
+    #[test]
+    fn object_rest_param_binding_still_recorded_with_sibling_property() {
+        let s = parse_ts("function f({ doWork, ...rest }: IWorker) { rest.other(); }");
+        let b = s.object_rest_param_bindings.iter().find(|b| b.callee == "f");
+        assert!(b.is_some(), "object_rest_param_bindings missing; got: {:?}", s.object_rest_param_bindings);
+        assert_eq!(b.unwrap().rest_name, "rest");
     }
 
     #[test]
