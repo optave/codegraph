@@ -2228,6 +2228,77 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  // #2080: tree-sitter-typescript wraps EVERY parameter — typed or not — in
+  // a required_parameter/optional_parameter node (confirmed by parsing
+  // `function f({ ...rest }) {}` with the TS grammar, which still wraps
+  // despite no type annotation), unlike plain tree-sitter-javascript where
+  // object_pattern is a direct formal_parameters child. Without unwrapping,
+  // object-rest-param bindings were silently never recorded for ANY .ts/.tsx
+  // file — the describe block above only ever exercised the .js grammar.
+  describe('Phase 8.3f + #2080: object-rest-param binding extraction in TypeScript', () => {
+    function parseTS(code) {
+      const parser = parsers.get('typescript');
+      const tree = parser.parse(code);
+      return extractSymbols(tree, 'test.ts');
+    }
+
+    it('extracts rest binding from an untyped object-destructuring parameter', () => {
+      const symbols = parseTS(`
+        function f3({ e1: eee1, ...eerest }) {
+          eerest.e4();
+        }
+        f3(obj);
+      `);
+      expect(symbols.objectRestParamBindings).toContainEqual({
+        callee: 'f3',
+        restName: 'eerest',
+        argIndex: 0,
+      });
+    });
+
+    it('extracts rest binding from a type-annotated object-destructuring parameter', () => {
+      const symbols = parseTS(`
+        function dispatchRest({ ...rest }: IWorker) {
+          rest.doWork();
+        }
+      `);
+      expect(symbols.objectRestParamBindings).toContainEqual({
+        callee: 'dispatchRest',
+        restName: 'rest',
+        argIndex: 0,
+      });
+    });
+
+    it('seeds a direct typeMap entry for the rest binding from its type annotation', () => {
+      const symbols = parseTS(`
+        function dispatchRest({ ...rest }: IWorker) {
+          rest.doWork();
+        }
+      `);
+      expect(symbols.typeMap.get('rest')).toEqual({ type: 'IWorker', confidence: 0.9 });
+    });
+
+    it('does not seed a typeMap entry for an untyped rest binding', () => {
+      const symbols = parseTS(`
+        function f3({ ...rest }) {
+          rest.go();
+        }
+      `);
+      expect(symbols.typeMap.has('rest')).toBe(false);
+    });
+
+    it('records correct argIndex for a type-annotated rest param that is not first', () => {
+      const symbols = parseTS(`
+        function g(x: number, { ...rest }: IWorker) { rest.doWork(); }
+      `);
+      expect(symbols.objectRestParamBindings).toContainEqual({
+        callee: 'g',
+        restName: 'rest',
+        argIndex: 1,
+      });
+    });
+  });
+
   describe('prototype method extraction', () => {
     it('extracts Foo.prototype.bar = function() {} as a method definition', () => {
       const symbols = parseJS(`

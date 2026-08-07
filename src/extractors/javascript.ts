@@ -3441,15 +3441,49 @@ function handleVarDeclaratorTypeMap(
   }
 }
 
-/** Extract type info from a required_parameter or optional_parameter. */
+/**
+ * Extract type info from a required_parameter or optional_parameter.
+ *
+ * A plain typed parameter (`worker: IWorker`) seeds `typeMap['worker']`
+ * directly. An object-rest-destructured parameter with a type annotation
+ * (`{ ...rest }: IWorker`) has no single "name" — `nameNode` is an
+ * `object_pattern`, not an `identifier` — but the rest binding itself
+ * (`rest`) is exactly the thing later property-access dispatch resolves
+ * against, so it gets the SAME direct type-annotation seed (#2080), keyed
+ * on the rest binding's own name. This is a different mechanism from the
+ * value-chase seeding in incremental.ts's `seedRestParamTypeMap` / the
+ * full-build's `buildObjectRestParamPostPass`, which instead seeds the
+ * CALL-SITE argument's variable name for object-property value-chase
+ * (#1336) — `setTypeMapEntry`'s higher-confidence-wins merge means this
+ * direct type binding (0.9) takes priority over that value-chase guess
+ * (0.65) when both exist, which is correct: an explicit type annotation is
+ * strictly more reliable evidence than an inferred call-site argument name.
+ */
 function handleParamTypeMap(node: TreeSitterNode, typeMap: Map<string, TypeMapEntry>): void {
   const nameNode =
     node.childForFieldName('pattern') || node.childForFieldName('left') || node.child(0);
-  if (nameNode?.type !== 'identifier') return;
+  if (nameNode?.type === 'identifier') {
+    const typeAnno = findChild(node, 'type_annotation');
+    if (typeAnno) {
+      const typeName = extractSimpleTypeName(typeAnno);
+      if (typeName) setTypeMapEntry(typeMap, nameNode.text, typeName, 0.9);
+    }
+    return;
+  }
+  if (nameNode?.type !== 'object_pattern') return;
   const typeAnno = findChild(node, 'type_annotation');
-  if (typeAnno) {
-    const typeName = extractSimpleTypeName(typeAnno);
-    if (typeName) setTypeMapEntry(typeMap, nameNode.text, typeName, 0.9);
+  if (!typeAnno) return;
+  const typeName = extractSimpleTypeName(typeAnno);
+  if (!typeName) return;
+  for (let i = 0; i < nameNode.childCount; i++) {
+    const inner = nameNode.child(i);
+    if (!inner) continue;
+    if (inner.type === 'rest_pattern' || inner.type === 'rest_element') {
+      // rest_pattern/rest_element node: `...identifier` — the identifier is
+      // at child index 1 (mirrors collectObjectRestParams's own extraction).
+      const restId = inner.child(1) ?? inner.childForFieldName('name');
+      if (restId?.type === 'identifier') setTypeMapEntry(typeMap, restId.text, typeName, 0.9);
+    }
   }
 }
 
@@ -3956,9 +3990,20 @@ function collectObjectRestParams(
       if (!child) continue;
       const ct = child.type;
       if (ct === ',' || ct === '(' || ct === ')') continue;
-      if (ct === 'object_pattern') {
-        for (let j = 0; j < child.childCount; j++) {
-          const inner = child.child(j);
+      // TypeScript wraps EVERY parameter — typed or not — in a
+      // required_parameter/optional_parameter node (confirmed by parsing
+      // `function f({ ...rest }) {}` with tree-sitter-typescript, which
+      // still wraps despite no type annotation at all), unlike plain JS
+      // where the object_pattern is a direct child. Without unwrapping,
+      // object-rest-param bindings were silently never recorded for any
+      // .ts/.tsx file, not just ones using a type annotation (#2080).
+      const patternNode =
+        ct === 'required_parameter' || ct === 'optional_parameter'
+          ? child.childForFieldName('pattern')
+          : child;
+      if (patternNode?.type === 'object_pattern') {
+        for (let j = 0; j < patternNode.childCount; j++) {
+          const inner = patternNode.child(j);
           if (!inner) continue;
           if (inner.type === 'rest_pattern' || inner.type === 'rest_element') {
             // rest_pattern node: `...identifier` — the identifier is at child index 1
