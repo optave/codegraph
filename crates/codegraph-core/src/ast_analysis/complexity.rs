@@ -597,6 +597,78 @@ pub static ZIG_RULES: LangRules = LangRules {
     switch_like_nodes: &["switch_expression"],
 };
 
+/// Mirrors the TS `complexity` export in `src/ast-analysis/rules/r.ts`.
+///
+/// Confirmed against tree-sitter-r 1.2.0's `src/node-types.json` and by
+/// parsing sample R control flow. `if_statement` carries `consequence`/
+/// `alternative` fields directly (no `else_clause` wrapper), so an else-if
+/// chain is a nested `if_statement` reached via `alternative` — Pattern C,
+/// same as Go/Java. R has no `switch` statement (`switch(x, ...)` is an
+/// ordinary function call). `repeat` is an unconditional loop, the same
+/// treatment Rust's `loop_expression` gets.
+pub static R_RULES: LangRules = LangRules {
+    branch_nodes: &["if_statement", "for_statement", "while_statement", "repeat_statement"],
+    case_nodes: &[],
+    logical_operators: &["&&", "||"],
+    logical_node_types: &["binary_operator"],
+    optional_chain_type: None,
+    nesting_nodes: &["if_statement", "for_statement", "while_statement", "repeat_statement"],
+    function_nodes: &["function_definition"],
+    if_node_type: Some("if_statement"),
+    else_node_type: None,
+    elif_node_type: None,
+    else_via_alternative: true,
+    switch_like_nodes: &[],
+};
+
+/// Mirrors the TS `complexityGroovy` export in `src/ast-analysis/rules/b2.ts`.
+///
+/// tree-sitter-groovy extends tree-sitter-java's grammar, confirmed by
+/// parsing sample if/else-if/else, classic and for-in loops, do-while,
+/// switch/case, try/catch/finally, and ternary: node kinds and field names
+/// are byte-identical to Java's (`alternative` field on `if_statement`, no
+/// `else_clause` wrapper). The generic `closure` node type is deliberately
+/// excluded from `function_nodes`: this grammar reuses `closure` ambiguously
+/// for ordinary if/for/while/switch block bodies as well as real closure
+/// literals, so treating it as a function boundary would fabricate a
+/// spurious extra "function" for every such body.
+pub static GROOVY_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_statement",
+        "for_statement",
+        "enhanced_for_statement",
+        "while_statement",
+        "do_statement",
+        "catch_clause",
+        "ternary_expression",
+        "switch_expression",
+    ],
+    case_nodes: &["switch_label"],
+    logical_operators: &["&&", "||"],
+    logical_node_types: &["binary_expression"],
+    optional_chain_type: None,
+    nesting_nodes: &[
+        "if_statement",
+        "for_statement",
+        "enhanced_for_statement",
+        "while_statement",
+        "do_statement",
+        "catch_clause",
+        "ternary_expression",
+    ],
+    function_nodes: &[
+        "method_declaration",
+        "constructor_definition",
+        "constructor_declaration",
+        "function_definition",
+    ],
+    if_node_type: Some("if_statement"),
+    else_node_type: None,
+    elif_node_type: None,
+    else_via_alternative: true,
+    switch_like_nodes: &["switch_expression"],
+};
+
 /// Look up complexity rules by language ID (matches `COMPLEXITY_RULES` keys in JS).
 pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
     match lang_id {
@@ -617,6 +689,8 @@ pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
         "bash" => Some(&BASH_RULES),
         "lua" => Some(&LUA_RULES),
         "zig" => Some(&ZIG_RULES),
+        "r" => Some(&R_RULES),
+        "groovy" => Some(&GROOVY_RULES),
         _ => None,
     }
 }
@@ -1273,6 +1347,60 @@ pub static ZIG_HALSTEAD: HalsteadRules = HalsteadRules {
     skip_types: &[],
 };
 
+/// Mirrors the TS `halstead` export in `src/ast-analysis/rules/r.ts`.
+///
+/// User-defined infix operators (`%%`, `%in%`, `%o%`, ...) all collapse onto
+/// one generic `special` leaf type in this grammar (confirmed by parsing
+/// `x %% y` and `x %in% y`) — a minor unique-operator precision loss the
+/// grammar itself imposes. `integer` (`1L`) and `complex` (`2i`) literals
+/// wrap only their suffix (`L`/`i`) as a child — the numeric digits are
+/// unlabeled text in the parent span, not a separate node — so the suffix
+/// leaf is used as the operand token, another minor precision loss inherent
+/// to the grammar.
+pub static R_HALSTEAD: HalsteadRules = HalsteadRules {
+    operator_leaf_types: &[
+        "+", "-", "*", "/", "^", "special",
+        "&", "&&", "|", "||", "!",
+        "<", ">", "<=", ">=", "==", "!=",
+        "<-", "<<-", "->", "->>", "=", ":=",
+        "~", "?", ":", "::", ":::", "@", "$", "|>",
+        "in", "if", "else", "for", "while", "repeat", "function", "\\",
+    ],
+    operand_leaf_types: &[
+        "identifier", "float", "string_content",
+        "NA", "NA_character_", "NA_integer_", "NA_real_", "NA_complex_",
+        "NULL", "Inf", "NaN", "TRUE", "FALSE", "L", "i", "dots", "dot_dot_i",
+    ],
+    compound_operators: &["call", "subset", "subset2"],
+    skip_types: &[],
+};
+
+/// Mirrors the TS `halsteadGroovy` export in `src/ast-analysis/rules/b2.ts`.
+pub static GROOVY_HALSTEAD: HalsteadRules = HalsteadRules {
+    operator_leaf_types: &[
+        "+", "-", "*", "/", "%",
+        "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", ">>>=",
+        "==", "!=", "<", ">", "<=", ">=",
+        "&&", "||", "!",
+        "&", "|", "^", "~", "<<", ">>", ">>>",
+        "++", "--",
+        "instanceof", "new", "as", "in", "def",
+        "if", "else", "for", "while", "do", "switch", "case", "default",
+        "return", "throw", "break", "continue",
+        "try", "catch", "finally",
+        ".", ",", ";", ":", "?", "->",
+    ],
+    operand_leaf_types: &[
+        "identifier", "type_identifier",
+        "decimal_integer_literal", "hex_integer_literal", "octal_integer_literal", "binary_integer_literal",
+        "decimal_floating_point_literal",
+        "string_fragment", "character_literal",
+        "true", "false", "null", "this", "super",
+    ],
+    compound_operators: &["method_invocation", "array_access", "object_creation_expression"],
+    skip_types: &["type_arguments", "type_parameters"],
+};
+
 /// Look up Halstead rules by language ID.
 pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
     match lang_id {
@@ -1293,6 +1421,8 @@ pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
         "bash" => Some(&BASH_HALSTEAD),
         "lua" => Some(&LUA_HALSTEAD),
         "zig" => Some(&ZIG_HALSTEAD),
+        "r" => Some(&R_HALSTEAD),
+        "groovy" => Some(&GROOVY_HALSTEAD),
         _ => None,
     }
 }
@@ -1305,8 +1435,8 @@ pub fn comment_prefixes(lang_id: &str) -> &'static [&'static str] {
         // bare `*`/`*/` continuation lines, undercounting commentLines for
         // any multi-line Javadoc-style comment (issue #2058).
         "javascript" | "typescript" | "tsx" | "go" | "rust" | "java" | "csharp" | "c" | "cpp"
-        | "cuda" | "objc" | "kotlin" | "swift" | "scala" => &["//", "/*", "*", "*/"],
-        "python" | "ruby" => &["#"],
+        | "cuda" | "objc" | "kotlin" | "swift" | "scala" | "groovy" => &["//", "/*", "*", "*/"],
+        "python" | "ruby" | "r" => &["#"],
         "php" => &["//", "#", "/*", "*", "*/"],
         "bash" => &["#"],
         "lua" => &["--"],
@@ -1628,7 +1758,7 @@ mod tests {
         // all use the same `/** ... */` block-comment style as JS/Java/C# —
         // the old 2-entry list omitted bare `*`/`*/` continuation lines,
         // undercounting commentLines for any multi-line Javadoc-style comment.
-        for lang in ["c", "cpp", "cuda", "objc", "kotlin", "swift", "scala"] {
+        for lang in ["c", "cpp", "cuda", "objc", "kotlin", "swift", "scala", "groovy"] {
             let prefixes = comment_prefixes(lang);
             assert!(prefixes.contains(&"*"), "{lang} should match bare '*' continuation lines");
             assert!(prefixes.contains(&"*/"), "{lang} should match closing '*/' lines");
@@ -2269,6 +2399,98 @@ mod tests {
         assert_eq!(m.cognitive, 0);
         assert_eq!(m.cyclomatic, 1);
         assert_eq!(m.max_nesting, 0);
+    }
+
+    // ─── R tests (issue #1923) ──────────────────────────────────────────────
+
+    fn compute_r(code: &str) -> ComplexityMetrics {
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_r::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &R_RULES).expect("no function found");
+        compute_function_complexity(&func, &R_RULES)
+    }
+
+    #[test]
+    fn r_if_elseif_else() {
+        let m = compute_r(
+            "f <- function(x) {\n  if (x > 0) {\n    return(1)\n  } else if (x < 0) {\n    return(-1)\n  } else {\n    return(0)\n  }\n}",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn r_for_loop() {
+        let m = compute_r("f <- function() {\n  for (i in 1:10) {\n    print(i)\n  }\n}");
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
+    }
+
+    #[test]
+    fn r_repeat_loop() {
+        let m = compute_r("f <- function() {\n  repeat {\n    break\n  }\n}");
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn r_logical_operators_mixed() {
+        let m = compute_r("f <- function(a, b, c) {\n  if (a && b || c) {\n    return(1)\n  }\n}");
+        // if: +1 cog, +1 cyc; && nested: +1 cog, +1 cyc; || top: +1 cog, +1 cyc
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 4);
+    }
+
+    // ─── Groovy tests (issue #1923) ─────────────────────────────────────────
+
+    fn compute_groovy(code: &str) -> ComplexityMetrics {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_groovy::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &GROOVY_RULES).expect("no function found");
+        compute_function_complexity(&func, &GROOVY_RULES)
+    }
+
+    #[test]
+    fn groovy_if_elseif_else() {
+        let m = compute_groovy(
+            "def f(x) {\n    if (x > 0) {\n        return 1\n    } else if (x < 0) {\n        return -1\n    } else {\n        return 0\n    }\n}",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn groovy_do_while_loop() {
+        let m = compute_groovy("def f(x) {\n    do {\n        x = x - 1\n    } while (x > 0)\n}");
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn groovy_switch_with_multi_value_case() {
+        let m = compute_groovy(
+            "def f(x) {\n    switch (x) {\n        case 1:\n            break\n        case 2:\n        case 3:\n            break\n        default:\n            break\n    }\n}",
+        );
+        // switch container: +1 cyc, then -1 via switch_like_nodes offset (net 0);
+        // 4 switch_label nodes (case 1, case 2, case 3, default): +1 cyc each
+        assert_eq!(m.cyclomatic, 5);
+    }
+
+    #[test]
+    fn groovy_logical_operators_mixed() {
+        let m = compute_groovy("def f(a, b, c) {\n    if (a && b || c) {\n        return 1\n    }\n}");
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 4);
     }
 
     // ─── Kotlin tests (issue #1923) ─────────────────────────────────────────

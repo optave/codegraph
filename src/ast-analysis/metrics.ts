@@ -88,6 +88,8 @@ const COMMENT_PREFIXES = new Map<string, string[]>([
   ['bash', ['#']],
   ['lua', ['--']],
   ['zig', ['//']],
+  ['groovy', C_STYLE_PREFIXES],
+  ['r', ['#']],
 ]);
 
 /**

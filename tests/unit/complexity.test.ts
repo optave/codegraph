@@ -1325,6 +1325,87 @@ describe('Zig complexity', () => {
   });
 });
 
+// tree-sitter-r's if_statement carries consequence/alternative fields
+// directly — there is no else_clause wrapper node, so an else-if chain is a
+// nested if_statement reached via the alternative field (Pattern C, same as
+// Go/Java), confirmed by parsing. R has no switch statement (`switch(x, ...)`
+// is an ordinary function call). `repeat` is an unconditional loop, the same
+// treatment Rust's `loop` gets.
+
+describe('R complexity (#1923)', () => {
+  const { analyze, halstead } = makeHelpers('r', sharedParsers());
+
+  it('function with if/else-if/else chain', () => {
+    const r = analyze(
+      'f <- function(x) {\n  if (x > 0) {\n    return(1)\n  } else if (x < 0) {\n    return(-1)\n  } else {\n    return(0)\n  }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('for loop', () => {
+    const r = analyze('f <- function() {\n  for (i in 1:10) {\n    print(i)\n  }\n}\n');
+    expect(r.cognitive).toBe(1);
+    expect(r.cyclomatic).toBe(2);
+  });
+
+  it('repeat loop is a branch/nesting node', () => {
+    const r = analyze('f <- function() {\n  repeat {\n    break\n  }\n}\n');
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it('mixed && / || logical operators', () => {
+    const r = analyze('f <- function(a, b, c) {\n  if (a && b || c) {\n    return(1)\n  }\n}\n');
+    expect(r.cognitive).toBe(3);
+    expect(r.cyclomatic).toBe(4);
+  });
+
+  it('halstead: positive volume', () => {
+    const h = halstead('f <- function(a, b) {\n  return(a + b)\n}\n');
+    expect(h).not.toBeNull();
+    expect(h.volume).toBeGreaterThan(0);
+  });
+});
+
+// tree-sitter-groovy extends tree-sitter-java's grammar, confirmed by
+// parsing sample if/else-if/else, do-while, and switch/case: node kinds and
+// field names are byte-identical to Java's (alternative field on
+// if_statement, no else_clause wrapper).
+
+describe('Groovy complexity (#1923)', () => {
+  const { analyze, halstead } = makeHelpers('groovy', sharedParsers());
+
+  it('function with if/else-if/else chain', () => {
+    const r = analyze(
+      'def f(x) {\n    if (x > 0) {\n        return 1\n    } else if (x < 0) {\n        return -1\n    } else {\n        return 0\n    }\n}\n',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('do-while loop', () => {
+    const r = analyze('def f(x) {\n    do {\n        x = x - 1\n    } while (x > 0)\n}\n');
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it('switch with multi-value case', () => {
+    const r = analyze(
+      'def f(x) {\n    switch (x) {\n        case 1:\n            break\n        case 2:\n        case 3:\n            break\n        default:\n            break\n    }\n}\n',
+    );
+    expect(r.cyclomatic).toBe(5);
+  });
+
+  it('mixed && / || logical operators', () => {
+    const r = analyze('def f(a, b, c) {\n    if (a && b || c) {\n        return 1\n    }\n}\n');
+    expect(r.cognitive).toBe(3);
+    expect(r.cyclomatic).toBe(4);
+  });
+
+  it('halstead: positive volume', () => {
+    const h = halstead('def f(a, b) {\n    return a + b\n}\n');
+    expect(h).not.toBeNull();
+    expect(h.volume).toBeGreaterThan(0);
+  });
+});
+
 // ─── Kotlin (#1923) ───────────────────────────────────────────────────────
 
 describe('Kotlin complexity', () => {
