@@ -235,30 +235,16 @@ const SKIP_VERSIONS = new Set(['3.8.0']);
  * 3.13.0 entries — dataflow/no-op/full-build timing noise and the erlang 0%
  * drop — were pruned at the 3.15.0 release once the 3.15.0 benchmark
  * baseline landed in PR #1702, which folds those deltas into the baseline
- * so dev-vs-3.15.0 comparisons no longer flag them).
+ * so dev-vs-3.15.0 comparisons no longer flag them; the 3.15.0 entries —
+ * Full build / 1-file rebuild growth-driven baseline drift, #2081 — were
+ * pruned at the 3.16.0 release once the 3.16.0 benchmark baseline landed in
+ * PR #2133, for the same reason).
  *
  * NOTE: WASM *timing* noise no longer needs per-version entries here — it is
  * handled structurally by WASM_TIMING_THRESHOLD (see above); native keeps the
  * strict thresholds and is the canary for real algorithmic regressions.
  */
-const KNOWN_REGRESSIONS = new Set<string>([
-  // v3.15.0 was released 2026-06-21 and no stable release has landed since,
-  // while 150+ PRs merged into main — including many new per-language
-  // resolution-benchmark fixtures. The repo's own tracked source file count
-  // (this is a self-benchmark: `root` in scripts/benchmark.ts is the repo
-  // itself) grew from 629 files (3.15.0 baseline) to 1000+ files, a ~60%
-  // increase. Full-build and 1-file-rebuild time both scale with file count
-  // (the latter via the repo-wide change-detection scan), so every
-  // dev-vs-3.15.0 comparison now measures a real, but growth-driven — not
-  // algorithmic — increase that clears the 25%/50%/75% thresholds. This hit
-  // every open PR regardless of content (chore/deps-only PRs included),
-  // confirming it isn't PR-introduced. Tracked in #2081. Exemption clears
-  // itself: prune both entries once the next stable release folds current
-  // repo size into a fresh baseline (same pattern as the 3.12.0/3.13.0 prune
-  // at 3.15.0 documented above).
-  '3.15.0:Full build',
-  '3.15.0:1-file rebuild',
-]);
+const KNOWN_REGRESSIONS = new Set<string>([]);
 
 /**
  * Maximum minor-version gap allowed for comparison. When the nearest
