@@ -10,7 +10,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { enrichTypeMapWithTsc } from '../../src/domain/graph/resolver/ts-resolver.js';
+import {
+  enrichTypeMapWithTsc,
+  hasClassicCompilerApi,
+} from '../../src/domain/graph/resolver/ts-resolver.js';
 import type { ExtractorOutput } from '../../src/types.js';
 
 function makeTmpDir(): string {
@@ -542,5 +545,26 @@ function getCount(): number { return 42; }
     const symbols = fileSymbols.get(srcFile)!;
     expect(symbols.returnTypeMap!.has('getName')).toBe(false);
     expect(symbols.returnTypeMap!.has('getCount')).toBe(false);
+  });
+});
+
+describe('hasClassicCompilerApi (#2106)', () => {
+  it('returns true for a TS 5.x/6.x-shaped module (readConfigFile present)', () => {
+    expect(hasClassicCompilerApi({ readConfigFile: () => undefined } as never)).toBe(true);
+  });
+
+  it('returns false for a TS 7.x-shaped module (only version/versionMajorMinor exported)', () => {
+    expect(hasClassicCompilerApi({ version: '7.0.2', versionMajorMinor: '7.0' } as never)).toBe(
+      false,
+    );
+  });
+
+  it('returns false for null/undefined', () => {
+    expect(hasClassicCompilerApi(null)).toBe(false);
+    expect(hasClassicCompilerApi(undefined)).toBe(false);
+  });
+
+  it('returns false when readConfigFile exists but is not a function', () => {
+    expect(hasClassicCompilerApi({ readConfigFile: 'not-a-function' } as never)).toBe(false);
   });
 });

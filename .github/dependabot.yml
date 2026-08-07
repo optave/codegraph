@@ -4,6 +4,18 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # TypeScript 7.x replaced the classic in-process Program/TypeChecker
+      # API (createProgram, TypeChecker, ts.sys, forEachChild, ...) with an
+      # out-of-process client-server model under typescript/unstable/sync|async.
+      # src/domain/graph/resolver/ts-resolver.ts is built entirely around the
+      # old synchronous API (~70 call sites) and breaks at compile time and
+      # silently no-ops at runtime under v7 (issue #2106) — needs its own
+      # redesign project before this repo can move off the 6.x line, not a
+      # routine dependency-bump PR. Remove this ignore once that redesign
+      # lands.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"

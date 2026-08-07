@@ -17,7 +17,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { debug } from '../../../infrastructure/logger.js';
+import { debug, warn } from '../../../infrastructure/logger.js';
 import type { CallAssignment, ExtractorOutput, TypeMapEntry } from '../../../types.js';
 
 // typescript is not a hard dependency — lazy-load it so JS-only projects
@@ -25,12 +25,41 @@ import type { CallAssignment, ExtractorOutput, TypeMapEntry } from '../../../typ
 type TsModule = typeof import('typescript');
 let _ts: TsModule | null | undefined; // undefined = not yet tried; null = unavailable
 
+/**
+ * True when `mod` still exposes the classic in-process Program/TypeChecker
+ * API this whole module is built around. TypeScript 7.x replaced it with an
+ * out-of-process client-server model — `.` no longer exports
+ * readConfigFile/createProgram/sys at all (issue #2106). Exported as a pure
+ * check (rather than inlined in loadTs) so it's testable without mocking the
+ * real `typescript` module import.
+ */
+export function hasClassicCompilerApi(mod: Partial<TsModule> | null | undefined): boolean {
+  return typeof mod?.readConfigFile === 'function';
+}
+
 async function loadTs(): Promise<TsModule | null> {
   if (_ts !== undefined) return _ts;
   try {
     // TypeScript 6+ ships dual CJS/ESM exports; `.default` is the CJS interop
     // namespace and is present and non-null in both TS 5.x and TS 6.x.
-    _ts = (await import('typescript')).default as TsModule;
+    const mod = (await import('typescript')).default as TsModule;
+    // Detected explicitly (rather than letting createProgram's TypeError
+    // propagate into its own catch, indistinguishable from an ordinary
+    // per-project tsconfig failure) so this specific, permanent
+    // incompatibility gets a visible warn() instead of silently degrading
+    // with only a debug()-level trace — this pass' compiler-verified type
+    // enrichment is being skipped entirely, not just for one file.
+    if (!hasClassicCompilerApi(mod)) {
+      _ts = null;
+      warn(
+        'ts-resolver: installed typescript package is v7+ and no longer exposes the ' +
+          'classic Program/TypeChecker API (readConfigFile is undefined) — skipping ' +
+          'TSC type enrichment for this build. See ' +
+          'https://github.com/optave/ops-codegraph-tool/issues/2106',
+      );
+      return _ts;
+    }
+    _ts = mod;
   } catch {
     _ts = null;
     debug('ts-resolver: typescript package not available — skipping TSC type enrichment');
