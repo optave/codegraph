@@ -19,6 +19,7 @@
  * always overriding `-f`).
  */
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -230,5 +231,23 @@ describe('guard-git.sh mask-quoted-text.mjs', () => {
     const input = ["cat <<'EOF'", 'masked body', 'EOF', 'git clean -fd'].join('\n');
     const output = mask(input);
     expect(output.split('\n').at(-1)).toBe('git clean -fd');
+  });
+});
+
+describe('guard-git.sh docs example stays in sync (#2105)', () => {
+  // docs/examples/claude-code-hooks/guard-git.sh is meant to be a working
+  // copy of the live hook for users setting up their own repo — it had
+  // drifted far enough out of sync (missing worktree detection, branch
+  // validation, AI-attribution blocking, and more) that it no longer
+  // reflected the real hook's behavior at all. Kept as an exact copy and
+  // enforced here instead of documented-and-hoped-for, since a prose note
+  // alone already failed to prevent the original drift.
+  const HOOKS = ['guard-git.sh', 'mask-quoted-text.mjs', 'check-git-clean-force.mjs'];
+  const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'examples', 'claude-code-hooks');
+
+  it.each(HOOKS)('%s is byte-identical to its docs/examples copy', (name) => {
+    const live = fs.readFileSync(path.join(REPO_ROOT, '.claude', 'hooks', name), 'utf8');
+    const docs = fs.readFileSync(path.join(DOCS_DIR, name), 'utf8');
+    expect(docs).toBe(live);
   });
 });
