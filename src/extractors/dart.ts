@@ -98,10 +98,35 @@ function extractDartClassMembers(
           name: `${className}.${fnName}`,
           kind: 'method',
           line: member.startPosition.row + 1,
-          endLine: nodeEndLine(member),
+          endLine: dartFunctionEndLine(member),
         });
       }
     } else if (member.type === 'declaration') {
+      // A bodyless (semicolon-only) member — `Foo();` (a constructor, the
+      // short form idiomatic Dart uses throughout) or `double area();` (an
+      // abstract method with no implementation) — wraps its
+      // constructor_signature/function_signature/method_signature in a
+      // `declaration` node instead of the `method_signature` a block-bodied
+      // member uses (confirmed by parsing both forms with tree-sitter-dart;
+      // #2082). Check for that shape before falling back to plain
+      // field-declaration detection, which would otherwise silently find no
+      // `identifier` child here and drop the member entirely.
+      const bodylessSig =
+        findChild(member, 'constructor_signature') ||
+        findChild(member, 'method_signature') ||
+        findChild(member, 'function_signature');
+      if (bodylessSig) {
+        const fnName = extractDartFunctionName(member);
+        if (fnName) {
+          ctx.definitions.push({
+            name: `${className}.${fnName}`,
+            kind: 'method',
+            line: member.startPosition.row + 1,
+            endLine: nodeEndLine(member),
+          });
+        }
+        continue;
+      }
       // Field declarations
       for (let j = 0; j < member.childCount; j++) {
         const decl = member.child(j);
@@ -116,6 +141,35 @@ function extractDartClassMembers(
       }
     }
   }
+}
+
+/**
+ * Compute the true end line for a function/method whose grammar splits the
+ * signature and body into SIBLING nodes — `function_signature`/
+ * `method_signature` followed by a separate `function_body` sibling under
+ * the SAME parent — rather than nesting the body inside the signature node
+ * (confirmed by parsing multi-line top-level functions and class methods
+ * with tree-sitter-dart; #2082). Using the signature node's own span alone
+ * truncates `endLine` to the signature line, so any call inside a
+ * multi-line body falls outside `[line, endLine]` and enclosing-function
+ * caller-attribution during graph build silently misses it.
+ *
+ * Falls back to the signature node's own span when the next sibling is a
+ * bare `;` (an abstract/interface method signature with no body at all) or
+ * doesn't exist.
+ */
+function dartFunctionEndLine(signatureNode: TreeSitterNode): number {
+  const parent = signatureNode.parent;
+  if (parent) {
+    for (let i = 0; i < parent.childCount; i++) {
+      if (parent.child(i)?.id === signatureNode.id) {
+        const next = parent.child(i + 1);
+        if (next && next.type !== ';') return nodeEndLine(next);
+        break;
+      }
+    }
+  }
+  return nodeEndLine(signatureNode);
 }
 
 function extractDartFunctionName(node: TreeSitterNode): string | null {
@@ -186,7 +240,7 @@ function handleDartFunction(node: TreeSitterNode, ctx: ExtractorOutput): void {
     name: nameNode.text,
     kind: 'function',
     line: node.startPosition.row + 1,
-    endLine: nodeEndLine(node),
+    endLine: dartFunctionEndLine(node),
   });
 }
 
@@ -199,7 +253,7 @@ function handleDartMethodSig(node: TreeSitterNode, ctx: ExtractorOutput): void {
     name: fnName,
     kind: 'function',
     line: node.startPosition.row + 1,
-    endLine: nodeEndLine(node),
+    endLine: dartFunctionEndLine(node),
   });
 }
 
@@ -291,10 +345,17 @@ function handleDartSelector(node: TreeSitterNode, ctx: ExtractorOutput): void {
 }
 
 // Look for the identifier this selector belongs to.
-// Two layouts are possible depending on grammar version:
+// Three layouts are possible depending on grammar version and call shape:
 //   A) selector has both unconditional_assignable_selector + argument_part (same node)
 //   B) one selector node holds unconditional_assignable_selector (.method),
 //      the next holds argument_part (the call args) — method name is in the previous sibling
+//   C) a bare (keyword-less) call — `helper()`, `Foo()` — has no preceding
+//      `.method`-style selector at all; the callee is a plain identifier
+//      (or type_identifier, for a bare constructor call) sitting directly
+//      before this selector in the SAME parent (confirmed by parsing
+//      `helper();` and `var w = Foo();` with tree-sitter-dart: the tree is
+//      `identifier "helper"` followed by a SIBLING `selector` node, not a
+//      wrapping call_expression — #2082).
 function resolveDartSelectorMethodName(node: TreeSitterNode): string | null {
   const unconditional = findChild(node, 'unconditional_assignable_selector');
   if (unconditional) {
@@ -302,23 +363,37 @@ function resolveDartSelectorMethodName(node: TreeSitterNode): string | null {
     return id ? id.text : null;
   }
 
-  // Layout B: look at the previous sibling selector for the method name
   const parent = node.parent;
   if (!parent) return null;
 
-  let methodName: string | null = null;
+  // Find the sibling immediately preceding this selector node — Dart's
+  // grammar places exactly the callee there, whether that's another
+  // `selector` in a chained-access call (Layout B) or a bare identifier
+  // (Layout C). Compares by `.id`, not `===`: web-tree-sitter returns a
+  // fresh wrapper object from every `.child()` call, so two accessors for
+  // the SAME underlying node are never reference-equal — only `.id` is
+  // stable (confirmed empirically; `.child(i) === .child(i)` is false but
+  // `.child(i).id === .child(i).id` is true). A `===` comparison here would
+  // never break the loop, silently falling through to the LAST sibling in
+  // the parent instead of the one immediately before this selector (#2082).
+  let prevSibling: TreeSitterNode | null = null;
   for (let i = 0; i < parent.childCount; i++) {
     const sibling = parent.child(i);
-    if (sibling === node) break;
-    if (sibling?.type === 'selector') {
-      const unc2 = findChild(sibling, 'unconditional_assignable_selector');
-      if (unc2) {
-        const id2 = findChild(unc2, 'identifier');
-        if (id2) methodName = id2.text;
-      }
-    }
+    if (sibling?.id === node.id) break;
+    prevSibling = sibling;
   }
-  return methodName;
+  if (!prevSibling) return null;
+
+  if (prevSibling.type === 'selector') {
+    const unc2 = findChild(prevSibling, 'unconditional_assignable_selector');
+    return unc2 ? (findChild(unc2, 'identifier')?.text ?? null) : null;
+  }
+
+  if (prevSibling.type === 'identifier' || prevSibling.type === 'type_identifier') {
+    return prevSibling.text;
+  }
+
+  return null;
 }
 
 // Detects `Function.apply(...)` calls: true when a sibling selector's text is

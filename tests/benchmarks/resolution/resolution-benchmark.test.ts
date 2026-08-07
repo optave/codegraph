@@ -206,7 +206,17 @@ const THRESHOLDS: Record<string, { precision: number; recall: number }> = {
   //   matching what the Elixir extractor emits. Same-module bare calls (display_user → get_user)
   //   are not yet resolved — tracked as FNs. Precision 1.0 acts as ratchet against future FPs.
   elixir: { precision: 1.0, recall: 0.8 },
-  dart: { precision: 0.0, recall: 0.0 },
+  // dart: fixed three extractor bugs (#2082) that left recall at a genuine 0%
+  // floor — bare/keyword-less calls were never extracted at all, multi-line
+  // function/method endLine was truncated to the signature line (breaking
+  // enclosing-function caller-attribution for any call inside the body), and
+  // bodyless (semicolon-only) constructors were never extracted as
+  // definitions. Now 100% precision, 61.9% recall (13/21). The remaining
+  // FNs are all receiver-typed calls (`_repo.save(user)` where `_repo`'s
+  // type comes from a constructor `this.field` parameter) — Dart has no
+  // typeMap population for field/parameter types yet, tracked separately
+  // in #2319. Ratcheted below the exact achieved value to avoid flakiness.
+  dart: { precision: 1.0, recall: 0.6 },
   zig: { precision: 0.0, recall: 0.0 },
   fsharp: { precision: 0.0, recall: 0.0 },
   gleam: { precision: 0.0, recall: 0.0 },
