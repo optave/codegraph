@@ -1,7 +1,6 @@
 import { collectFile } from '../../db/query-builder.js';
 import { EVERY_SYMBOL_KIND } from '../../domain/queries.js';
 import { ConfigError } from '../../shared/errors.js';
-import { config } from '../shared/options.js';
 import type { CommandDefinition, CommandOpts } from '../types.js';
 
 function validateKind(kind: CommandOpts): void {
@@ -65,7 +64,12 @@ export const command: CommandDefinition = {
       depth: opts.depth ? parseInt(opts.depth as string, 10) : undefined,
       noTests: qOpts.noTests,
       json: qOpts.json,
-      config,
+      // No `config` field here — presentation/check.ts already omits it from
+      // the object it forwards, so features/check.ts resolves correctly from
+      // opts.db via loadConfig(repoRoot). Passing the process.cwd()-pinned
+      // CLI singleton here would be a loaded gun: harmless only until some
+      // future forward-through of this field reintroduces the
+      // cwd-vs-target-project bug (issue #2137).
     });
 
     if (opts.rules) {

@@ -2,7 +2,6 @@ import { collectFile } from '../../db/query-builder.js';
 import { EVERY_SYMBOL_KIND } from '../../domain/queries.js';
 import { audit } from '../../presentation/audit.js';
 import { explain } from '../../presentation/queries-cli.js';
-import { config } from '../shared/options.js';
 import type { CommandDefinition } from '../types.js';
 
 export const command: CommandDefinition = {
@@ -36,13 +35,17 @@ export const command: CommandDefinition = {
       });
       return;
     }
+    // No `config` field here — auditData()/resolveThresholds() already derive
+    // it correctly from opts.db via resolveDbConfig() (issue #1881). Passing
+    // the process.cwd()-pinned CLI singleton here would short-circuit that
+    // fallback and silently reintroduce the cwd-vs-target-project bug
+    // resolveDbConfig was built to fix (issue #2137).
     audit(target!, opts.db, {
       depth: parseInt(opts.depth as string, 10),
       file: opts.file,
       kind: opts.kind,
       noTests: qOpts.noTests,
       json: qOpts.json,
-      config,
     });
   },
 };

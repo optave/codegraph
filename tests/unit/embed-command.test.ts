@@ -10,73 +10,71 @@ vi.mock('../../src/db/index.js', () => ({
     throw new Error('no db in this test');
   }),
   resolveBusyTimeoutMs: vi.fn(() => 5000),
+  resolveDbConfig: vi.fn(),
 }));
 vi.mock('../../src/db/repository/embeddings.js', () => ({ getEmbeddingMeta: vi.fn() }));
 
 const { command } = await import('../../src/cli/commands/embed.js');
 const { buildEmbeddings } = await import('../../src/domain/search/index.js');
-const { openReadonlyOrFail } = await import('../../src/db/index.js');
+const { openReadonlyOrFail, resolveDbConfig } = await import('../../src/db/index.js');
 
-function fakeCtx(embeddings: Record<string, unknown>, llm: Record<string, unknown> = {}) {
-  return {
-    config: {
-      embeddings: { model: null, llmProvider: null, provider: null, ...embeddings },
-      llm: {
-        provider: null,
-        model: null,
-        baseUrl: null,
-        apiKey: null,
-        apiKeyCommand: null,
-        ...llm,
-      },
+// embed.ts derives config via resolveDbConfig(opts.db ?? root) (issue #2137)
+// rather than a ctx.config singleton, so tests configure the mocked
+// resolveDbConfig's return value directly instead of building a fake ctx.
+function mockConfig(embeddings: Record<string, unknown>, llm: Record<string, unknown> = {}) {
+  vi.mocked(resolveDbConfig).mockReturnValue({
+    embeddings: { model: null, llmProvider: null, provider: null, ...embeddings },
+    llm: {
+      provider: null,
+      model: null,
+      baseUrl: null,
+      apiKey: null,
+      apiKeyCommand: null,
+      ...llm,
     },
-  } as never;
+  } as never);
 }
+
+const fakeCtx = {} as never;
 
 describe('embed command validate()', () => {
   it('rejects an unknown strategy', () => {
-    const err = command.validate!([undefined], { strategy: 'bogus' } as never, fakeCtx({}));
+    mockConfig({});
+    const err = command.validate!([undefined], { strategy: 'bogus' } as never, fakeCtx);
     expect(err).toMatch(/Unknown strategy/);
   });
 
   it('rejects an unsupported embeddings.provider', () => {
-    const err = command.validate!(
-      [undefined],
-      { strategy: 'structured' } as never,
-      fakeCtx({ provider: 'anthropic' }),
-    );
+    mockConfig({ provider: 'anthropic' });
+    const err = command.validate!([undefined], { strategy: 'structured' } as never, fakeCtx);
     expect(err).toMatch(/Unsupported embeddings.provider/);
   });
 
   it('rejects provider "openai" with no model configured', () => {
-    const err = command.validate!(
-      [undefined],
-      { strategy: 'structured' } as never,
-      fakeCtx({ provider: 'openai' }),
-    );
+    mockConfig({ provider: 'openai' });
+    const err = command.validate!([undefined], { strategy: 'structured' } as never, fakeCtx);
     expect(err).toMatch(/no model is configured/);
   });
 
   it('accepts provider "openai" with a config model', () => {
-    const err = command.validate!(
-      [undefined],
-      { strategy: 'structured' } as never,
-      fakeCtx({ provider: 'openai', model: 'text-embedding-3-small' }),
-    );
+    mockConfig({ provider: 'openai', model: 'text-embedding-3-small' });
+    const err = command.validate!([undefined], { strategy: 'structured' } as never, fakeCtx);
     expect(err).toBeUndefined();
   });
 
   it('accepts provider "openai" with a --model flag', () => {
+    mockConfig({ provider: 'openai' });
     const err = command.validate!(
       [undefined],
       { strategy: 'structured', model: 'text-embedding-3-small' } as never,
-      fakeCtx({ provider: 'openai' }),
+      fakeCtx,
     );
     expect(err).toBeUndefined();
   });
 
   it('accepts no provider at all', () => {
-    const err = command.validate!([undefined], { strategy: 'structured' } as never, fakeCtx({}));
+    mockConfig({});
+    const err = command.validate!([undefined], { strategy: 'structured' } as never, fakeCtx);
     expect(err).toBeUndefined();
   });
 });
@@ -92,12 +90,12 @@ describe('embed command execute()', () => {
   });
 
   it('passes a resolved remote config through to buildEmbeddings when provider is "openai"', async () => {
-    const ctx = fakeCtx(
+    mockConfig(
       { provider: 'openai', model: 'text-embedding-3-small' },
       { baseUrl: 'http://localhost:8080/v1', apiKey: 'sk-test', requestTimeoutMs: 5000 },
     );
 
-    await command.execute!([undefined], { strategy: 'structured' } as never, ctx);
+    await command.execute!([undefined], { strategy: 'structured' } as never, fakeCtx);
 
     expect(buildEmbeddings).toHaveBeenCalledTimes(1);
     const [, model, , options] = vi.mocked(buildEmbeddings).mock.calls[0]!;
@@ -111,9 +109,9 @@ describe('embed command execute()', () => {
   });
 
   it('does not build a remote config when no provider is set', async () => {
-    const ctx = fakeCtx({ model: 'minilm' });
+    mockConfig({ model: 'minilm' });
 
-    await command.execute!([undefined], { strategy: 'structured' } as never, ctx);
+    await command.execute!([undefined], { strategy: 'structured' } as never, fakeCtx);
 
     expect(buildEmbeddings).toHaveBeenCalledTimes(1);
     const [, , , options] = vi.mocked(buildEmbeddings).mock.calls[0]!;
@@ -121,10 +119,10 @@ describe('embed command execute()', () => {
   });
 
   it('resolves the sticky-model DB lookup and buildEmbeddings against the positional dir, not cwd (#1869)', async () => {
-    const ctx = fakeCtx({});
+    mockConfig({});
     const targetDir = path.join('some', 'other', 'project');
 
-    await command.execute!([targetDir], { strategy: 'structured' } as never, ctx);
+    await command.execute!([targetDir], { strategy: 'structured' } as never, fakeCtx);
 
     // resolveStickyModel() must open the DB relative to the resolved dir, not
     // whatever the process's cwd happens to be.

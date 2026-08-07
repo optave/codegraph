@@ -42,7 +42,11 @@ export const command: CommandDefinition = {
       noTests: ctx.resolveNoTests(opts),
       json: opts.json,
       ndjson: opts.ndjson,
-      config: ctx.config,
+      // No `config` field here — complexityData() already derives it
+      // correctly from opts.db via resolveDbConfig() (issue #1881). Passing
+      // the process.cwd()-pinned CLI singleton would short-circuit that
+      // fallback and silently reintroduce the cwd-vs-target-project bug
+      // resolveDbConfig was built to fix (issue #2137).
     });
   },
 };

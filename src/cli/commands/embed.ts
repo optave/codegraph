@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { openReadonlyOrFail, resolveBusyTimeoutMs } from '../../db/index.js';
+import { openReadonlyOrFail, resolveBusyTimeoutMs, resolveDbConfig } from '../../db/index.js';
 import { getEmbeddingMeta } from '../../db/repository/embeddings.js';
 import {
   buildEmbeddings,
@@ -49,28 +49,36 @@ export const command: CommandDefinition = {
     ],
     ['-d, --db <path>', 'Path to graph.db (default: <dir>/.codegraph/graph.db)'],
   ],
-  validate([_dir], opts, ctx) {
+  validate([dir], opts) {
     if (!(EMBEDDING_STRATEGIES as readonly string[]).includes(opts.strategy)) {
       return `Unknown strategy: ${opts.strategy}. Available: ${EMBEDDING_STRATEGIES.join(', ')}`;
     }
-    const provider = ctx.config.embeddings?.provider ?? null;
+    // Derive config from the target project (opts.db, else the resolved
+    // [dir] positional) rather than the process.cwd()-pinned ctx.config
+    // singleton — otherwise `codegraph embed /other/project` invoked from a
+    // different cwd silently ignores that project's embeddings.provider
+    // (issue #2137).
+    const root = path.resolve(dir || '.');
+    const config = resolveDbConfig(opts.db ?? root);
+    const provider = config.embeddings?.provider ?? null;
     if (provider && provider !== 'openai') {
       return (
         `Unsupported embeddings.provider "${provider}". Currently supported: "openai" ` +
         '(any OpenAI-compatible /embeddings endpoint, including self-hosted servers).'
       );
     }
-    if (provider && !opts.model && !ctx.config.embeddings?.model) {
+    if (provider && !opts.model && !config.embeddings?.model) {
       return (
         `embeddings.provider is set to "${provider}" but no model is configured. ` +
         'Set embeddings.model to the model identifier your endpoint expects, or pass --model.'
       );
     }
   },
-  async execute([dir], opts, ctx) {
+  async execute([dir], opts) {
     const root = path.resolve(dir || '.');
     const dbPath = opts.db as string | undefined;
-    const embeddingsConfig = ctx.config.embeddings;
+    const config = resolveDbConfig(dbPath ?? root);
+    const embeddingsConfig = config.embeddings;
     const provider = embeddingsConfig?.provider ?? null;
     const flagModel = opts.model as string | undefined;
     const configModel = (embeddingsConfig?.model as string | null | undefined) ?? null;
@@ -96,8 +104,7 @@ export const command: CommandDefinition = {
       }
     }
 
-    const remote =
-      provider === 'openai' ? resolveRemoteEmbeddingOptions(ctx.config, model) : undefined;
+    const remote = provider === 'openai' ? resolveRemoteEmbeddingOptions(config, model) : undefined;
     await buildEmbeddings(root, model, dbPath, { strategy: opts.strategy, remote });
   },
 };

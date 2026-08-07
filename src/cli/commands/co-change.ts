@@ -1,3 +1,4 @@
+import { resolveDbConfig } from '../../db/index.js';
 import { AnalysisError } from '../../shared/errors.js';
 import type { CommandDefinition } from '../types.js';
 
@@ -25,8 +26,12 @@ export const command: CommandDefinition = {
     );
     const { formatCoChange, formatCoChangeTop } = await import('../../presentation/cochange.js');
 
+    // Derive coChange.* from opts.db (issue #2137) rather than the
+    // process.cwd()-pinned ctx.config singleton, so `--db /other/repo/...`
+    // reads that repo's own tuning config instead of the invoking
+    // directory's.
     if (opts.analyze) {
-      const coChangeConfig = ctx.config.coChange;
+      const coChangeConfig = resolveDbConfig(opts.db).coChange;
       const result = analyzeCoChanges(opts.db, {
         since: opts.since || coChangeConfig?.since,
         minSupport: opts.minSupport
@@ -48,7 +53,7 @@ export const command: CommandDefinition = {
       return;
     }
 
-    const coChangeConfig = ctx.config.coChange;
+    const coChangeConfig = resolveDbConfig(opts.db).coChange;
     const queryOpts = {
       limit: parseInt(opts.limit as string, 10),
       offset: opts.offset ? parseInt(opts.offset as string, 10) : undefined,

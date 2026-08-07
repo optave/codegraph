@@ -1,4 +1,5 @@
 import type { Command } from 'commander';
+import { resolveDbConfig } from '../../db/index.js';
 import { loadConfig } from '../../infrastructure/config.js';
 import type { CodegraphConfig } from '../../types.js';
 import type { CommandOpts } from '../types.js';
@@ -6,6 +7,14 @@ import type { CommandOpts } from '../types.js';
 // Deferred so global --user-config / --no-user-config flags are parsed
 // before config is first accessed (Commander parses flags before any command
 // action runs, but module-level code executes at import time).
+//
+// This singleton is only correct for commands with no project-specific
+// `dir`/`--db` target (e.g. `models`) — it is pinned to process.cwd() once
+// and never revisited. Any command that receives its own target directory
+// or `--db` path must resolve config via resolveDbConfig(opts.db) instead,
+// the way resolveNoTests() below does, so `codegraph <cmd> /other/project`
+// invoked from a different cwd reads *that* project's .codegraphrc.json
+// rather than the invoking directory's (issue #2137).
 let _config: CodegraphConfig | undefined;
 const config: CodegraphConfig = new Proxy({} as CodegraphConfig, {
   get(_t, prop: string) {
@@ -34,12 +43,15 @@ export function applyQueryOpts(cmd: Command): Command {
  * Resolve the effective noTests value: CLI flag > config > false.
  * Commander sets opts.tests to false when --no-tests is passed.
  * When --include-tests is passed, always return false (include tests).
- * Otherwise, fall back to config.query.excludeTests.
+ * Otherwise, fall back to the target project's query.excludeTests — derived
+ * from opts.db (issue #2137) rather than the process.cwd()-pinned `config`
+ * singleton, so `codegraph <cmd> --db /other/project/.codegraph/graph.db`
+ * reads that project's own config instead of the invoking directory's.
  */
 export function resolveNoTests(opts: CommandOpts): boolean {
   if (opts.includeTests) return false;
   if (opts.tests === false) return true;
-  return config.query?.excludeTests || false;
+  return resolveDbConfig(opts.db).query?.excludeTests || false;
 }
 
 /**

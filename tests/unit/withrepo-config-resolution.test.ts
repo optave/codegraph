@@ -69,7 +69,7 @@ beforeAll(() => {
   dbPath = path.join(tmpDir, '.codegraph', 'graph.db');
 
   // Project config lives next to the DB, not at cwd — proves rootDir is
-  // derived from `--db`, matching resolveConfigForDbPath()'s contract.
+  // derived from `--db`, matching resolveDbConfig()'s contract.
   fs.writeFileSync(
     path.join(tmpDir, '.codegraphrc.json'),
     JSON.stringify({
