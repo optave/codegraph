@@ -26,6 +26,21 @@ if ! echo "$COMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)(git|gh)[[:space:
   exit 0
 fi
 
+# Mask the *contents* of quoted strings (single or double) before any of the
+# "does this command invoke a dangerous verb" checks below run (#2099). Every
+# such check is a plain substring/regex scan over the command text, with no
+# awareness of shell quoting — so text that merely APPEARS inside a quoted
+# argument (e.g. `gh issue create --body "...git clean -fd..."`) matched the
+# same pattern as a real invocation and got blocked. See mask-quoted-text.mjs
+# for the masking rules. Extraction logic below (detect_work_dir, MSG_FILE,
+# the AI-attribution scan) deliberately keeps reading the raw, unmasked
+# $COMMAND — masking only feeds the verb-detection checks that use $NCOMMAND.
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+MASKED_COMMAND=$(echo "$COMMAND" | node "$HOOK_DIR/mask-quoted-text.mjs" 2>/dev/null) || true
+if [ -z "$MASKED_COMMAND" ]; then
+  MASKED_COMMAND="$COMMAND"
+fi
+
 # Normalize: strip `git -C "<path>"` / `git -C <path>` so downstream subcommand
 # patterns (git[[:space:]]+push, git[[:space:]]+commit, …) match regardless of whether `-C` is
 # present. detect_work_dir still inspects the raw $COMMAND to find the target.
@@ -33,7 +48,7 @@ fi
 # the opening `"` of a quoted path (which would leave a trailing `path"` in
 # NCOMMAND). The pattern re-anchors on `git`, so multi-`-C` chains (e.g.
 # `git -C /a -C /b push`) need a second pass to collapse the residual `-C`.
-NCOMMAND=$(echo "$COMMAND" | sed -E 's/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+"[^"]+"/\1git/g; s/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+[^"[:space:]][^[:space:]]*/\1git/g')
+NCOMMAND=$(echo "$MASKED_COMMAND" | sed -E 's/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+"[^"]+"/\1git/g; s/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+[^"[:space:]][^[:space:]]*/\1git/g')
 NCOMMAND=$(echo "$NCOMMAND" | sed -E 's/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+"[^"]+"/\1git/g; s/(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+-C[[:space:]]+[^"[:space:]][^[:space:]]*/\1git/g')
 
 deny() {
@@ -74,9 +89,21 @@ if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+res
   fi
 fi
 
-# git clean (delete untracked files)
+# git clean (delete untracked files) — #2099: `-n`/`--dry-run` is a pure
+# listing operation (git itself treats --dry-run as always overriding -f, so
+# it never deletes regardless of what else is on the line) and is exactly the
+# discovery mechanism /housekeep's Phase 2 recommends; only block an
+# invocation that would actually delete (carries -f/--force, and no
+# -n/--dry-run). A bare `git clean` with neither flag already refuses to run
+# without config changes this hook has no visibility into, so it's left
+# unblocked rather than flagging something git itself won't execute.
 if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+clean'; then
-  deny "BLOCKED: 'git clean' deletes untracked files that may belong to other sessions."
+  CLEAN_SEGMENT=$(echo "$NCOMMAND" | awk 'BEGIN{RS="&&"}{ if ($0 ~ /(^|[[:space:]])git[[:space:]]+clean/) { print; exit } }')
+  if ! echo "$CLEAN_SEGMENT" | grep -qE '(^|[[:space:]])(-n|--dry-run)([[:space:]]|$)'; then
+    if echo "$CLEAN_SEGMENT" | grep -qE '(^|[[:space:]])(-[a-zA-Z]*f[a-zA-Z]*|--force)([[:space:]]|$)'; then
+      deny "BLOCKED: 'git clean -f'/'--force' deletes untracked files that may belong to other sessions. Preview first with 'git clean -n'/'--dry-run'."
+    fi
+  fi
 fi
 
 # git stash (hides all changes)
