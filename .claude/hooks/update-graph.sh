@@ -24,7 +24,13 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
-PROJECT_DIR=$(git rev-parse --show-toplevel 2>/dev/null) || PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
+# Derive PROJECT_DIR from the EDITED FILE's own git toplevel, not the
+# session's cwd (issue #2134). A session can be cwd'ed into worktree A while
+# an Edit/Write touches a file entirely outside it (a different repo, or a
+# scratch path with no repo at all) — resolving from cwd would rebuild A's
+# graph in response to a change that has nothing to do with it. If the file
+# isn't inside any git repo, there is no project to rebuild.
+PROJECT_DIR=$(git -C "$(dirname "$FILE_PATH")" rev-parse --show-toplevel 2>/dev/null) || exit 0
 
 # Only rebuild for source files codegraph tracks.
 # Skip docs, configs, test fixtures, and non-code files.
@@ -99,17 +105,21 @@ fi
 # not be installed yet either. Both used to fail identically silent
 # (stderr -> /dev/null, exit code swallowed by `|| true`), giving a
 # contributor no signal that graph auto-rebuild isn't active (issue #2074).
+# Prefer the project's own local build over a global `codegraph` on PATH
+# (issue #2134): a global binary can be a different, potentially older,
+# version than the one actually checked out here, and building with it
+# silently downgrades this project's build_meta / parsing results. Only
+# fall back to the global binary when the project has no local build at all.
 BUILD_OK=0
 BUILD_ERR=""
-if command -v codegraph &>/dev/null; then
+CLI_ENTRY="$PROJECT_DIR/dist/cli.js"
+if [ -f "$CLI_ENTRY" ]; then
+  BUILD_ERR=$(node "$CLI_ENTRY" build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>&1 1>/dev/null) && BUILD_OK=1 || true
+elif command -v codegraph &>/dev/null; then
   BUILD_ERR=$(codegraph build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>&1 1>/dev/null) && BUILD_OK=1 || true
 else
-  CLI_ENTRY="${CLAUDE_PROJECT_DIR:-$PROJECT_DIR}/dist/cli.js"
-  if [ ! -f "$CLI_ENTRY" ]; then
-    echo "[codegraph] $CLI_ENTRY not found — run 'npm install' (or 'npm run build') to enable graph auto-rebuild" >&2
-    exit 0
-  fi
-  BUILD_ERR=$(node "$CLI_ENTRY" build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>&1 1>/dev/null) && BUILD_OK=1 || true
+  echo "[codegraph] $CLI_ENTRY not found and no global 'codegraph' on PATH — run 'npm install' (or 'npm run build') to enable graph auto-rebuild" >&2
+  exit 0
 fi
 
 if [ "$BUILD_OK" -eq 0 ]; then
