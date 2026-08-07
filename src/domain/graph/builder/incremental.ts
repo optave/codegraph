@@ -246,6 +246,8 @@ function rebuildReverseDepEdges(
   symbols: ExtractorOutput,
   stmts: IncrementalStmts,
   skipBarrel: boolean,
+  // #2077: forwarded to buildCallEdges — see its own param doc.
+  maxIterations?: number,
 ): number {
   const fileNodeRow = stmts.getNodeId.get(depRelPath, 'file', depRelPath, 0);
   if (!fileNodeRow) return 0;
@@ -281,6 +283,7 @@ function rebuildReverseDepEdges(
     fileNodeRow,
     importedNames,
     importedOriginalNames,
+    maxIterations,
   );
   edgesAdded += buildClassHierarchyEdges(
     db,
@@ -1162,13 +1165,18 @@ function buildCallEdges(
   fileNodeRow: { id: number },
   importedNames: Map<string, string>,
   importedOriginalNames?: ReadonlyMap<string, string>,
+  // #2077: resolved from EngineOpts.pointsToMaxIterations (itself sourced
+  // from config.analysis.pointsToMaxIterations) so a .codegraphrc.json
+  // override applies to watch-mode rebuilds, not just full builds.
+  // Undefined falls back to buildPointsToMapForFile's own default parameter.
+  maxIterations?: number,
 ): number {
   const typeMap = buildIncrementalTypeMap(symbols);
   const seenCallEdges = new Set<string>();
   const lookup = makeIncrementalLookup(db, stmts);
   // Phase 8.3 pts map (#1852) — same per-file construction the full-build
   // JS path uses (buildPointsToMapForFile, shared via resolver/points-to.js).
-  const ptsMap = buildPointsToMapForFile(symbols, importedNames);
+  const ptsMap = buildPointsToMapForFile(symbols, importedNames, maxIterations);
   const fnRefBindingLhs = new Set(symbols.fnRefBindings?.map((b) => b.lhs) ?? []);
   // #1895: scoped to this file's own calls only — see collectInvokedPropertyNames
   // doc comment (call-resolver.ts) for why incremental rebuilds use a narrower,
@@ -1400,6 +1408,8 @@ function rebuildEdgesForTargetFile(
   symbols: ExtractorOutput,
   fileNodeRow: { id: number },
   rootDir: string,
+  // #2077: forwarded to buildCallEdges — see its own param doc.
+  maxIterations?: number,
 ): number {
   // #1967: keep this file's persisted barrel rename table current if it's
   // itself a barrel — independent of the edges rebuilt below.
@@ -1424,6 +1434,7 @@ function rebuildEdgesForTargetFile(
     fileNodeRow,
     importedNames,
     importedOriginalNames,
+    maxIterations,
   );
   edgesAdded += buildClassHierarchyEdges(
     db,
@@ -1527,7 +1538,15 @@ async function runReverseDepCascade(
   let edgesAdded = 0;
   // Pass 1: direct edges only (no barrel resolution) — creates reexports edges
   for (const [depRelPath, symbols_] of depSymbols) {
-    edgesAdded += rebuildReverseDepEdges(db, rootDir, depRelPath, symbols_, stmts, true);
+    edgesAdded += rebuildReverseDepEdges(
+      db,
+      rootDir,
+      depRelPath,
+      symbols_,
+      stmts,
+      true,
+      engineOpts.pointsToMaxIterations,
+    );
   }
   // Pass 2: add barrel import edges (reexports edges now exist)
   edgesAdded += emitBarrelImportEdgesForReverseDeps(db, stmts, depSymbols, rootDir);
@@ -1739,7 +1758,15 @@ export async function rebuildFile(
       edgesBefore,
     };
 
-  let edgesAdded = rebuildEdgesForTargetFile(db, stmts, relPath, symbols, fileNodeRow, rootDir);
+  let edgesAdded = rebuildEdgesForTargetFile(
+    db,
+    stmts,
+    relPath,
+    symbols,
+    fileNodeRow,
+    rootDir,
+    engineOpts.pointsToMaxIterations,
+  );
   const {
     edgesAdded: cascadeEdges,
     reverseDepsEdgesBefore,

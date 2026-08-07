@@ -210,6 +210,10 @@ function setupWatcher(rootDir: string, opts: { engine?: string; dbPath?: string 
     engine: (opts.engine || 'auto') as import('../../types.js').EngineMode,
     dataflow: false,
     ast: false,
+    // #2077: without this, incremental rebuilds fell back to
+    // buildPointsToMapForFile's own default parameter instead of honoring a
+    // .codegraphrc.json override, diverging from the full-build path below.
+    pointsToMaxIterations: config.analysis.pointsToMaxIterations,
   };
   const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
   info(`Watch mode using ${engineName} engine${engineVersion ? ` (v${engineVersion})` : ''}`);
