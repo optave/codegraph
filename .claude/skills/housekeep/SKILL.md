@@ -167,7 +167,7 @@ git worktree prune
   git worktree remove "<path>"
   git branch -D "<branch>"
   ```
-  `-D`, not `-d`: this worktree was already classified "stale" via Phase 1c's GitHub-PR-state check, not git ancestry, so `-d`'s own ancestry test would wrongly refuse a genuinely squash/rebase-merged branch here — see Phase 4d's identical fix for why `-d` is the wrong tool once a more authoritative source already confirmed the merge (issue #2309).
+  `-D`, not `-d`: this worktree was already classified "stale" via Phase 1c's GitHub-PR-state check, not git ancestry, so `-d`'s own ancestry test would wrongly refuse a genuinely squash/rebase-merged branch here — see Phase 4d's identical fix for why `-d` is the wrong tool once a more authoritative source already confirmed the merge (issue #2309). Phase 1c's classifier currently matches by branch name only (not name-and-SHA the way Phase 4a now does), so this inherits the same reused-branch-name gap Phase 4a closed — tracked separately in issue #2310 since the fix belongs in `gc-worktrees.sh`, not here.
 
 **For bloated (non-stale) worktrees:**
 - List them with a per-artifact size breakdown
@@ -309,17 +309,26 @@ Flag any branches marked `[ahead N, behind M]` — these may need attention.
 > **Do not hand-roll this with `git branch --merged origin/main`** — same reason as Phase 1c: in a repo that **squash-merges** (confirmed live in this repo, issue #2309), a landed branch's tip is never an ancestor of the default branch, so `--merged` reports almost nothing as merged even right after a run that squash-merged a dozen PRs. Resolve merged-ness from GitHub PR state instead, exactly like Phase 1c/`gc-worktrees.sh` already do:
 
 ```bash
-git branch --format='%(refname:short)' | grep -vxF main > /tmp/housekeep-local-branches.txt
-gh pr list --state merged --limit 1000 --json headRefName --jq '.[].headRefName' > /tmp/housekeep-merged-heads.txt
-grep -xFf /tmp/housekeep-merged-heads.txt /tmp/housekeep-local-branches.txt
+# name + current tip SHA, not name alone: a branch name can be reused after its earlier
+# PR merged (a later /fixer-style run, or a human, creating a new branch of the same
+# name for unrelated work) — matching by name only would then classify that NEW, never-
+# merged work as "confirmed merged" and hand it straight to 4d's force-delete. Requiring
+# the local branch's CURRENT tip to equal the exact SHA GitHub recorded as the merged
+# PR's head closes that gap: any commit added since (a rename, a reused name, a new
+# unpushed commit) changes the tip SHA, so the pair no longer matches and 4d leaves the
+# branch alone instead of guessing (Greptile review, PR #2311).
+git branch --format='%(refname:short) %(objectname)' | grep -v '^main ' | sort > /tmp/housekeep-local-branches.txt
+gh pr list --state merged --limit 1000 --json headRefName,headRefOid \
+  --jq '.[] | "\(.headRefName) \(.headRefOid)"' | sort > /tmp/housekeep-merged-heads.txt
+comm -12 /tmp/housekeep-local-branches.txt /tmp/housekeep-merged-heads.txt
 ```
 
-This lists local branches whose head ref matches a PR GitHub reports as **merged** — true regardless of merge strategy (merge commit, squash, or rebase), unlike ancestry.
+This lists local branches whose name **and current commit** match a PR GitHub reports as **merged** — true regardless of merge strategy (merge commit, squash, or rebase), unlike ancestry, and immune to name reuse since it's pinned to the exact commit GitHub recorded at merge time.
 
 ### 4b. Safe to delete
 
 Branches that are:
-- Confirmed merged via 4a's `gh pr list` check (not the ancestry test)
+- Confirmed merged via 4a's name-**and**-SHA check against `gh pr list` (not the ancestry test, and not a name-only match)
 - Not `main` itself
 - Not the current branch
 - Not a worktree branch (check `git worktree list`)
@@ -427,7 +436,7 @@ Status: CLEAN ✓
 
 ## Rules
 
-- **Never delete a branch without first confirming it merged via `gh pr list` (GitHub PR state), not `git branch --merged`/`-d`'s ancestry test** — ancestry is unreliable under squash/rebase merges (issue #2309); `-D` is correct, not reckless, once the `gh`-based check confirms the merge (see Phase 1c and Phase 4)
+- **Never delete a branch without first confirming its *current tip commit* matches a merged PR's recorded head SHA via `gh pr list`** — not `git branch --merged`/`-d`'s ancestry test (unreliable under squash/rebase merges, issue #2309), and not a branch-*name* match alone (a reused name with new, never-merged commits would wrongly qualify, issue #2311). `-D` is correct, not reckless, once that name-and-SHA check confirms the exact commit was merged (see Phase 1c and Phase 4)
 - **Never rebase** — sync with main via merge only (per project rules)
 - **Never delete tracked files** — only clean untracked/ignored dirt
 - **Never delete worktrees with uncommitted changes** — warn and skip
