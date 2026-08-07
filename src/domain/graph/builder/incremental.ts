@@ -1674,18 +1674,50 @@ function findChaSiblingCallerFiles(
   chaCtx: ChaContext,
   filesWithSymbols: ReadonlyArray<readonly [string, ExtractorOutput]>,
 ): string[] {
-  const touchedInterfaces = new Set<string>();
+  const directHeritage = new Set<string>();
   for (const [, symbols] of filesWithSymbols) {
     for (const cls of symbols.classes) {
-      if (cls.extends) touchedInterfaces.add(cls.extends);
-      if (cls.implements) touchedInterfaces.add(cls.implements);
+      if (cls.extends) directHeritage.add(cls.extends);
+      if (cls.implements) directHeritage.add(cls.implements);
     }
   }
-  if (touchedInterfaces.size === 0) return [];
+  if (directHeritage.size === 0) return [];
 
+  // Walk UP the full ancestry from each direct extends/implements name, not
+  // just that name itself: a class extending a base that itself implements
+  // interface I is ALSO a transitive implementor of I for CHA dispatch
+  // purposes, and an existing caller may dispatch via I directly rather than
+  // via the (possibly abstract, never-instantiated) intermediate base.
+  // `chaCtx.parents` only covers `extends` (single-parent), so this needs
+  // its own reverse map covering `implements` too.
+  const reverseHeritage = buildReverseHeritageMap(db);
+  const touchedInterfaces = new Set<string>(directHeritage);
+  const upQueue = [...directHeritage];
+  while (upQueue.length > 0) {
+    const name = upQueue.shift()!;
+    for (const parent of reverseHeritage.get(name) ?? []) {
+      if (!touchedInterfaces.has(parent)) {
+        touchedInterfaces.add(parent);
+        upQueue.push(parent);
+      }
+    }
+  }
+
+  // Walk DOWN from every touched interface/base-class name to every
+  // transitively reachable implementor — mirroring `resolveChaTargets`'s own
+  // BFS — since an existing caller's edge may point at a sibling several
+  // hops below the touched interface, not just a direct child of it.
   const otherImplementors = new Set<string>();
-  for (const iface of touchedInterfaces) {
-    for (const cls of chaCtx.implementors.get(iface) ?? []) otherImplementors.add(cls);
+  const downVisited = new Set<string>(touchedInterfaces);
+  const downQueue = [...touchedInterfaces];
+  while (downQueue.length > 0) {
+    const current = downQueue.shift()!;
+    for (const child of chaCtx.implementors.get(current) ?? []) {
+      if (downVisited.has(child)) continue;
+      downVisited.add(child);
+      otherImplementors.add(child);
+      downQueue.push(child);
+    }
   }
   if (otherImplementors.size === 0) return [];
 
@@ -1707,6 +1739,35 @@ function findChaSiblingCallerFiles(
     }
   }
   return [...additional];
+}
+
+/**
+ * Reverse child -> [parent/interface names] map from every `extends` and
+ * `implements` edge in the DB, covering BOTH kinds (unlike `ChaContext.parents`,
+ * which only tracks `extends` for single-parent super-dispatch resolution) —
+ * needed so `findChaSiblingCallerFiles` can walk a rebuilt class's full
+ * ancestry upward to find every interface it transitively implements.
+ */
+function buildReverseHeritageMap(db: BetterSqlite3Database): Map<string, string[]> {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT src.name AS child_name, tgt.name AS parent_name
+       FROM edges e
+       JOIN nodes src ON e.source_id = src.id
+       JOIN nodes tgt ON e.target_id = tgt.id
+       WHERE e.kind IN ('extends', 'implements')`,
+    )
+    .all() as Array<{ child_name: string; parent_name: string }>;
+  const reverse = new Map<string, string[]>();
+  for (const row of rows) {
+    let list = reverse.get(row.child_name);
+    if (!list) {
+      list = [];
+      reverse.set(row.child_name, list);
+    }
+    if (!list.includes(row.parent_name)) list.push(row.parent_name);
+  }
+  return reverse;
 }
 
 /**

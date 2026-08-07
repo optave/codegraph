@@ -48,6 +48,26 @@ export function makeNewWorker(): NewWorker {
 }
 `;
 
+// Square extends AbstractShape, which `implements IShape` (not `extends`) —
+// Square's own direct heritage name is only "AbstractShape". A caller
+// dispatching via the ancestral "IShape" interface directly (ShapeRunner.ts,
+// via the pre-existing Circle) shares no immediate parent with Square, so
+// finding it requires walking upward from "AbstractShape" to "IShape" and
+// back down through every transitively reachable implementor — not just
+// AbstractShape's direct children.
+const NEW_SQUARE_SOURCE = `import { AbstractShape } from './AbstractShape.js';
+
+export class Square extends AbstractShape {
+  render(): string {
+    return 'square';
+  }
+}
+
+export function makeSquare(): Square {
+  return new Square();
+}
+`;
+
 function copyDirSync(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -204,4 +224,61 @@ function runSiblingCallerScenario(engine: EngineMode): void {
 runSiblingCallerScenario('wasm');
 describe.skipIf(!isNativeAvailable())('native engine coverage', () => {
   runSiblingCallerScenario('native');
+});
+
+function runTransitiveAncestryScenario(engine: EngineMode): void {
+  describe(`codegraph watch (rebuildFile): CHA post-pass walks transitive interface ancestry (#2078) — ${engine}`, () => {
+    let tmpDir: string;
+
+    beforeAll(async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2078-cha-transitive-${engine}-`));
+      copyDirSync(CHA_FIXTURE_DIR, tmpDir);
+      await buildGraph(tmpDir, { engine, incremental: false, skipRegistry: true });
+
+      // Sanity precondition: ShapeRunner.ts dispatches via the top-level
+      // IShape interface to Circle (a direct implementor, unrelated to
+      // AbstractShape) before the incremental add below.
+      const before = readCallEdges(path.join(tmpDir, '.codegraph', 'graph.db'));
+      const hasCircle = before.some((e) => e.src === 'process' && e.tgt === 'Circle.render');
+      if (!hasCircle) {
+        throw new Error('fixture precondition failed: process -> Circle.render missing');
+      }
+
+      // Add Square, extending AbstractShape (which `implements IShape`, not
+      // `extends`) — Square's own direct heritage is only "AbstractShape",
+      // which shares no immediate parent with Circle. Finding ShapeRunner.ts
+      // requires walking UP from "AbstractShape" to the ancestral "IShape",
+      // then back DOWN through every transitively reachable implementor
+      // (reaching Circle) to find its existing dispatch edge.
+      fs.writeFileSync(path.join(tmpDir, 'Square.ts'), NEW_SQUARE_SOURCE);
+      await rebuildOneFile(tmpDir, 'Square.ts', engine);
+    }, 60_000);
+
+    afterAll(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    function edges(): CallEdgeRow[] {
+      return readCallEdges(path.join(tmpDir, '.codegraph', 'graph.db'));
+    }
+
+    it('revisits ShapeRunner.ts and adds process -> Square.render via the ancestral interface', () => {
+      const all = edges();
+      const found = all.find(
+        (e) => e.src === 'process' && e.tgt === 'Square.render' && e.tgtFile === 'Square.ts',
+      );
+      expect(found, `Actual edges:\n${JSON.stringify(all, null, 2)}`).toBeDefined();
+      expect(found?.technique).toBe('cha');
+    });
+
+    it('keeps the pre-existing process -> Circle.render edge intact', () => {
+      const found = edges().find((e) => e.src === 'process' && e.tgt === 'Circle.render');
+      expect(found).toBeDefined();
+    });
+  });
+}
+
+runTransitiveAncestryScenario('wasm');
+describe.skipIf(!isNativeAvailable())('native engine coverage', () => {
+  runTransitiveAncestryScenario('native');
 });
