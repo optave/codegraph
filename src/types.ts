@@ -1290,6 +1290,16 @@ export interface EngineOpts {
   engine: EngineMode;
   dataflow: boolean;
   ast: boolean;
+  /**
+   * Fixed-point iteration cap for the JS points-to solver (Phase 8.3),
+   * resolved from `config.analysis.pointsToMaxIterations`. Threaded through
+   * incremental/watch-mode rebuilds (`rebuildFile` → `buildCallEdges` →
+   * `buildPointsToMapForFile`) so a `.codegraphrc.json` override applies
+   * identically to `codegraph watch` and a full build (#2077). When omitted,
+   * `buildPointsToMapForFile` falls back to its own default parameter
+   * (`DEFAULTS.analysis.pointsToMaxIterations`).
+   */
+  pointsToMaxIterations?: number;
   /** Persistent NativeDatabase connection for build writes (Phase 6.15). */
   nativeDb?: NativeDatabase;
   /**

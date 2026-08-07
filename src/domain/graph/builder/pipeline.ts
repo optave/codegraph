@@ -67,6 +67,11 @@ function initializeEngine(ctx: PipelineContext): void {
     engine: ctx.opts.engine ?? ctx.config.build.engine ?? 'auto',
     dataflow: ctx.opts.dataflow !== false,
     ast: ctx.opts.ast !== false,
+    // Full builds already pass ctx.config.analysis.pointsToMaxIterations
+    // directly to buildPointsToMapForFile (stages/build-edges.ts); this keeps
+    // ctx.engineOpts itself consistent rather than leaving the field
+    // permanently unset on this construction path (#2077).
+    pointsToMaxIterations: ctx.config.analysis.pointsToMaxIterations,
     // nativeDb and WAL callbacks are set later when NativeDatabase is opened
     // (deferred to skip overhead on no-op rebuilds).
     nativeDb: undefined,
