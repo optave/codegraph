@@ -20,6 +20,10 @@ interface PurgeStmts {
    *  leaves stale rows behind for `resolveBarrelTarget` (incremental.ts) to
    *  read later. */
   reexportRenames: SqliteStatement | null;
+  /** #2087: invoked-property-name evidence keyed by the file it was observed
+   *  in — cleared so a deleted (or no-longer-matching) file never leaves
+   *  stale rows behind for the incremental #1895 liveness check to read. */
+  invokedPropertyNames: SqliteStatement | null;
 }
 
 interface PurgeOpts {
@@ -87,6 +91,7 @@ function preparePurgeStmts(db: BetterSqlite3Database): PurgeStmts {
     nodes: db.prepare('DELETE FROM nodes WHERE file = ?'),
     fileHashes: tryPrepare('DELETE FROM file_hashes WHERE file = ?'),
     reexportRenames: tryPrepare('DELETE FROM reexport_renames WHERE barrel_file = ?'),
+    invokedPropertyNames: tryPrepare('DELETE FROM invoked_property_names WHERE file = ?'),
   };
 }
 
@@ -120,6 +125,7 @@ function runPurge(stmts: PurgeStmts, file: string, opts: PurgeOpts = {}): void {
   stmts.nodeMetrics?.run(file);
   stmts.astNodes?.run(file);
   stmts.reexportRenames?.run(file);
+  stmts.invokedPropertyNames?.run(file);
 
   // Core tables
   stmts.edges.run({ f: file });

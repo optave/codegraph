@@ -477,6 +477,31 @@ const MIGRATIONS: &[Migration] = &[
         ON edges(source_id, target_id, kind, confidence, dynamic, COALESCE(dynamic_kind, ''), COALESCE(technique, ''));
     "#,
     },
+    Migration {
+        // #2087: durable, per-file record of every property/method name ever
+        // invoked via member-call syntax (`x.name(...)`) — the "one hop
+        // further" liveness evidence the #1895 object-literal-property
+        // value-ref check needs (collect_invoked_property_names /
+        // collectInvokedPropertyNames). A full build sees every file at
+        // once, so it was always exact; a `codegraph watch` single-file
+        // incremental rebuild (JS-only, domain/graph/builder/incremental.ts)
+        // only sees the one file being rebuilt, so a consumer's
+        // `.resolve(...)` call living in an untouched file was invisible.
+        // Populated once per full or incremental build (both engines — the
+        // native orchestrator mirrors the JS pipeline's write via
+        // import_edges::persist_invoked_property_names) so the incremental
+        // path has a durable, whole-graph view to query. Mirrors
+        // src/db/migrations.ts v29.
+        version: 29,
+        up: r#"
+      CREATE TABLE IF NOT EXISTS invoked_property_names (
+        file TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (file, name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_invoked_property_names_name ON invoked_property_names(name);
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────

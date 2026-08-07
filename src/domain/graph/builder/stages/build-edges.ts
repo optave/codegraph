@@ -705,11 +705,21 @@ function buildCallEdgesNative(
   const nativeNodes = allNodes.map((n) =>
     n.accessorKind == null ? { ...n, accessorKind: undefined } : n,
   );
+  // #2087: whole-graph invoked-property-name evidence (persistInvokedPropertyNames
+  // already wrote this pass's own fresh rows before buildCallEdgesPhase branched
+  // here) — closes the same false-negative window buildCallEdgesJS's read
+  // side closes, for the native fast path.
+  const extraInvokedPropertyNames = (
+    ctx.db.prepare('SELECT DISTINCT name FROM invoked_property_names').all() as Array<{
+      name: string;
+    }>
+  ).map((row) => row.name);
   const nativeEdges = native.buildCallEdges(
     nativeFiles,
     nativeNodes,
     [...BUILTIN_RECEIVERS],
     ctx.config.analysis.pointsToMaxIterations,
+    extraInvokedPropertyNames,
   ) as NativeEdge[];
   for (const e of nativeEdges) {
     allEdgeRows.push([
@@ -946,6 +956,38 @@ function buildImportedNamesForNative(
   return importedNames;
 }
 
+/**
+ * Persist per-file invoked-property-name evidence (#2087) into
+ * `invoked_property_names` — the durable counterpart of
+ * `persistInvokedPropertyNamesForFile` in `domain/graph/builder/incremental.ts`
+ * (codegraph watch's single-file path). Called once per `buildCallEdgesPhase`
+ * invocation regardless of which sub-path (native or JS fallback) resolves
+ * this pass's edges, so `codegraph watch`'s narrower same-file view always
+ * has a durable, whole-graph view to fall back on — see #2087 for the
+ * false-negative this closes.
+ *
+ * Deletes and re-inserts per file so a file whose invoked names changed (or
+ * were removed entirely) never leaves stale rows behind for it.
+ */
+function persistInvokedPropertyNames(ctx: PipelineContext): void {
+  const { db, fileSymbols } = ctx;
+  const deleteStmt = db.prepare('DELETE FROM invoked_property_names WHERE file = ?');
+  const insertStmt = db.prepare(
+    'INSERT OR IGNORE INTO invoked_property_names (file, name) VALUES (?, ?)',
+  );
+
+  const tx = db.transaction(() => {
+    for (const [relPath, symbols] of fileSymbols) {
+      deleteStmt.run(relPath);
+      const names = collectInvokedPropertyNames([symbols.calls]);
+      for (const name of names) {
+        insertStmt.run(relPath, name);
+      }
+    }
+  });
+  tx();
+}
+
 // ── Call edges (JS fallback) ────────────────────────────────────────────
 
 function buildCallEdgesJS(
@@ -954,14 +996,25 @@ function buildCallEdgesJS(
   allEdgeRows: EdgeRowTuple[],
   chaCtx?: ChaContext,
 ): void {
-  const { fileSymbols, barrelOnlyFiles, rootDir } = ctx;
+  const { db, fileSymbols, barrelOnlyFiles, rootDir } = ctx;
   const lookup = makeContextLookup(ctx, getNodeIdStmt);
-  // #1895: computed once from every file in this build pass (all files on a
-  // full build, just the affected files on an incremental one) — see
-  // collectInvokedPropertyNames doc comment for the scoping rationale.
-  const invokedPropertyNames = collectInvokedPropertyNames(
-    Array.from(fileSymbols.values(), (s) => s.calls),
+  // #1895 / #2087: this build pass's own files, unioned with every other
+  // file's persisted evidence (invoked_property_names) — on a full build the
+  // in-memory set is already exact (fileSymbols IS the whole codebase), but
+  // on a scoped incremental `codegraph build` (ctx.fileSymbols narrowed to
+  // the changed files + reverse-deps) the persisted table is what closes the
+  // false-negative window a purely in-memory computation would leave open
+  // for a consumer living in an untouched file. persistInvokedPropertyNames
+  // (called just before this in buildCallEdgesPhase) has already written
+  // this pass's own fresh rows, so this query already reflects them.
+  const invokedPropertyNames = new Set(
+    collectInvokedPropertyNames(Array.from(fileSymbols.values(), (s) => s.calls)),
   );
+  for (const row of db.prepare('SELECT DISTINCT name FROM invoked_property_names').all() as Array<{
+    name: string;
+  }>) {
+    invokedPropertyNames.add(row.name);
+  }
 
   for (const [relPath, symbols] of fileSymbols) {
     if (barrelOnlyFiles.has(relPath)) continue;
@@ -2455,6 +2508,10 @@ function buildCallEdgesPhase(
   native: NativeAddon | null,
   chaCtx: ChaContext,
 ): void {
+  // #2087: persist once per pass regardless of which sub-path below resolves
+  // this build's edges — see persistInvokedPropertyNames doc comment.
+  persistInvokedPropertyNames(ctx);
+
   // Skip native call-edge path for small incremental builds: napi-rs
   // marshaling overhead for allNodes exceeds Rust computation savings.
   const useNativeCallEdges =

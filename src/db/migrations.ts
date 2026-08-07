@@ -515,6 +515,35 @@ export const MIGRATIONS: Migration[] = [
         ON edges(source_id, target_id, kind, confidence, dynamic, COALESCE(dynamic_kind, ''), COALESCE(technique, ''));
     `,
   },
+  {
+    // #2087: durable, per-file record of every property/method name ever
+    // invoked via member-call syntax (`x.name(...)`) — the "one hop further"
+    // liveness evidence #1895's object-literal-property value-ref check
+    // needs (collectInvokedPropertyNames / collect_invoked_property_names).
+    // A full build sees every file at once, so it was always exact; a
+    // `codegraph watch` single-file incremental rebuild
+    // (domain/graph/builder/incremental.ts) only sees the one file being
+    // rebuilt, so a consumer's `.resolve(...)` call living in an untouched
+    // file was invisible and a same-named object-literal property in the
+    // rebuilt file could be misclassified as dead. Persisting this table
+    // once per full or incremental build (both engines — the native
+    // orchestrator mirrors this via
+    // import_edges::persist_invoked_property_names in Rust) gives the
+    // incremental path a durable, whole-graph view to query instead of only
+    // the current file's own evidence.
+    //
+    // Deletes and re-inserts per file so a file whose invoked names changed
+    // (or were removed entirely) never leaves stale rows behind for it.
+    version: 29,
+    up: `
+      CREATE TABLE IF NOT EXISTS invoked_property_names (
+        file TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (file, name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_invoked_property_names_name ON invoked_property_names(name);
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {

@@ -2517,6 +2517,14 @@ export interface NativeAddon {
     nodes: unknown[],
     builtinReceivers: string[],
     maxIterations: number,
+    /**
+     * #2087: durable cross-pass invoked-property-name evidence
+     * (`invoked_property_names` table) — needed on a scoped incremental
+     * build, where `files` is narrower than the whole codebase, so the
+     * #1895 liveness check doesn't lose evidence contributed by a file
+     * outside this pass. Omit or pass an empty array on a full build.
+     */
+    extraInvokedPropertyNames?: string[],
   ): unknown[];
   buildImportEdges?(
     files: unknown[],

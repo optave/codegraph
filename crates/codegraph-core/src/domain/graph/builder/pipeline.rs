@@ -1821,7 +1821,32 @@ fn build_and_insert_call_edges(
         });
     }
 
-    let computed_edges = build_call_edges(file_entries, all_nodes, builtin_receivers, max_iterations);
+    // #2087: persist per-file invoked-property-name evidence before
+    // `file_entries` is moved into `build_call_edges` below — gives
+    // `codegraph watch`'s JS-only incremental rebuild a durable, whole-graph
+    // view for repos built with the native engine too.
+    import_edges::persist_invoked_property_names(conn, &file_entries)
+        .map_err(|e| format!("invoked property name persistence failed: {e}"))?;
+
+    // Read back the now-current whole-graph view (includes the fresh rows
+    // just written above) so this pass's own call-edge resolution sees
+    // evidence from files outside `file_entries` too — `file_entries` alone
+    // is exact on a full build but narrower on an incremental one (#2087).
+    let extra_invoked_property_names: Vec<String> = conn
+        .prepare("SELECT DISTINCT name FROM invoked_property_names")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+
+    let computed_edges = build_call_edges(
+        file_entries,
+        all_nodes,
+        builtin_receivers,
+        max_iterations,
+        Some(extra_invoked_property_names),
+    );
     insert_call_edge_rows(conn, &computed_edges)
 }
 

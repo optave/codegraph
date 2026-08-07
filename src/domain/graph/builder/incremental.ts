@@ -378,6 +378,82 @@ function isBarrelFile(db: BetterSqlite3Database, relPath: string): boolean {
   return (reexportCount || 0) > 0;
 }
 
+// Lazily-cached prepared statements for the #2087 invoked-property-name registry.
+let _invokedPropDb: BetterSqlite3Database | null = null;
+let _invokedPropOtherFilesStmt: SqliteStatement | null = null;
+let _invokedPropDeleteStmt: SqliteStatement | null = null;
+let _invokedPropInsertStmt: SqliteStatement | null = null;
+
+function getInvokedPropertyStmts(db: BetterSqlite3Database): {
+  otherFilesStmt: SqliteStatement;
+  deleteStmt: SqliteStatement;
+  insertStmt: SqliteStatement;
+} {
+  if (_invokedPropDb !== db) {
+    _invokedPropDb = db;
+    _invokedPropOtherFilesStmt = db.prepare(
+      'SELECT DISTINCT name FROM invoked_property_names WHERE file != ?',
+    );
+    _invokedPropDeleteStmt = db.prepare('DELETE FROM invoked_property_names WHERE file = ?');
+    _invokedPropInsertStmt = db.prepare(
+      'INSERT OR IGNORE INTO invoked_property_names (file, name) VALUES (?, ?)',
+    );
+  }
+  return {
+    otherFilesStmt: _invokedPropOtherFilesStmt!,
+    deleteStmt: _invokedPropDeleteStmt!,
+    insertStmt: _invokedPropInsertStmt!,
+  };
+}
+
+/**
+ * Graph-wide invoked-property-name evidence for the #1895 liveness check
+ * (#2087): this file's own freshly-computed names, unioned with every other
+ * file's persisted evidence from `invoked_property_names` — the durable
+ * counterpart of the full-build path's whole-`fileSymbols` computation
+ * (`collectInvokedPropertyNames` in call-resolver.ts). Excludes this file's
+ * OWN persisted rows (not just its fresh ones) since those are about to be
+ * replaced by `persistInvokedPropertyNamesForFile` below; querying them here
+ * would only ever match what `ownNames` already provides directly.
+ */
+function collectGraphWideInvokedPropertyNames(
+  db: BetterSqlite3Database,
+  relPath: string,
+  ownNames: ReadonlySet<string>,
+): Set<string> {
+  const { otherFilesStmt } = getInvokedPropertyStmts(db);
+  const names = new Set(ownNames);
+  for (const row of otherFilesStmt.all(relPath) as Array<{ name: string }>) {
+    names.add(row.name);
+  }
+  return names;
+}
+
+/**
+ * Persist this file's invoked-property-name evidence (#2087) into
+ * `invoked_property_names` — the durable counterpart of
+ * `persistInvokedPropertyNames` in `resolve-imports.ts`/`build-edges.ts`
+ * (full-build path), needed here because `codegraph watch`'s single-file
+ * rebuild never goes through that stage. Always deletes this file's existing
+ * rows first (even when it invokes nothing via member-call syntax anymore)
+ * so a file that changed to stop invoking a property never leaves stale
+ * rows behind.
+ *
+ * Called for both the primary rebuilt file and each reverse-dep, mirroring
+ * `persistReexportRenamesForFile`.
+ */
+function persistInvokedPropertyNamesForFile(
+  db: BetterSqlite3Database,
+  relPath: string,
+  ownNames: ReadonlySet<string>,
+): void {
+  const { deleteStmt, insertStmt } = getInvokedPropertyStmts(db);
+  deleteStmt.run(relPath);
+  for (const name of ownNames) {
+    insertStmt.run(relPath, name);
+  }
+}
+
 /**
  * Persist this file's barrel re-export rename pairs (`export { X as Y } from
  * …`) into `reexport_renames` (#1967) — the durable counterpart of
@@ -1240,10 +1316,17 @@ function buildCallEdges(
   // JS path uses (buildPointsToMapForFile, shared via resolver/points-to.js).
   const ptsMap = buildPointsToMapForFile(symbols, importedNames, maxIterations);
   const fnRefBindingLhs = new Set(symbols.fnRefBindings?.map((b) => b.lhs) ?? []);
-  // #1895: scoped to this file's own calls only — see collectInvokedPropertyNames
-  // doc comment (call-resolver.ts) for why incremental rebuilds use a narrower,
-  // same-file view rather than a full-codebase one.
-  const invokedPropertyNames = collectInvokedPropertyNames([symbols.calls]);
+  // #2087: this file's own calls, unioned with every other file's persisted
+  // evidence (invoked_property_names) — closes the false-negative window
+  // that scoping purely to `symbols.calls` left open, where a consumer's
+  // `.resolve(...)` call living in an untouched file was invisible to this
+  // rebuild.
+  const ownInvokedPropertyNames = collectInvokedPropertyNames([symbols.calls]);
+  const invokedPropertyNames = collectGraphWideInvokedPropertyNames(
+    db,
+    relPath,
+    ownInvokedPropertyNames,
+  );
   let edgesAdded = 0;
 
   for (const call of symbols.calls) {
@@ -1353,6 +1436,10 @@ function buildCallEdges(
       edgesAdded += emitDynamicSinkEdge(db, call, caller, fileNodeRow, seenCallEdges);
     }
   }
+  // #2087: keep this file's persisted invoked-property-name evidence current
+  // for future rebuilds of OTHER files, regardless of what this rebuild
+  // itself needed it for.
+  persistInvokedPropertyNamesForFile(db, relPath, ownInvokedPropertyNames);
   return edgesAdded;
 }
 

@@ -279,6 +279,54 @@ pub fn persist_reexport_renames(
     Ok(())
 }
 
+/// Persist per-file invoked-property-name evidence (#2087) into
+/// `invoked_property_names` — the native orchestrator's counterpart of
+/// `persistInvokedPropertyNames` in `resolve-imports.ts` (JS pipeline). A
+/// property/method name counts as "invoked" for a file when some call in
+/// that file's own `calls` carries a receiver (`x.name(...)` member-call
+/// syntax, regardless of whether the receiver itself resolves).
+///
+/// Called once per native-orchestrated build (full or incremental) so
+/// `codegraph watch`'s JS-only single-file rebuild
+/// (`collectInvokedPropertyNames` in `domain/graph/builder/incremental.ts`)
+/// has a durable, whole-graph view to query instead of only the file it is
+/// currently rebuilding — see #2087 for the false-negative this closes.
+///
+/// Deletes and re-inserts per file so a file whose invoked names changed (or
+/// were removed entirely) never leaves stale rows behind for it.
+pub fn persist_invoked_property_names(
+    conn: &Connection,
+    files: &[super::build_edges::FileEdgeInput],
+) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("persist_invoked_property_names: failed to start transaction: {e}"))?;
+    {
+        let mut delete_stmt = tx
+            .prepare("DELETE FROM invoked_property_names WHERE file = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut insert_stmt = tx
+            .prepare("INSERT OR IGNORE INTO invoked_property_names (file, name) VALUES (?1, ?2)")
+            .map_err(|e| e.to_string())?;
+        for file in files {
+            delete_stmt.execute([&file.file]).map_err(|e| e.to_string())?;
+            let mut seen: HashSet<&str> = HashSet::new();
+            for call in &file.calls {
+                if call.receiver.is_some() && seen.insert(call.name.as_str()) {
+                    insert_stmt
+                        .execute(rusqlite::params![file.file, call.name])
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    tx.commit().map_err(|e| format!("persist_invoked_property_names: commit failed: {e}"))?;
+    Ok(())
+}
+
 /// Detect which of `candidate_paths` are barrel-only (reexport count >=
 /// definition count).
 ///
