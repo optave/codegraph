@@ -120,11 +120,29 @@ pub fn find_parent_of_types<'a>(node: &Node<'a>, kinds: &[&str]) -> Option<Node<
 /// This replaces the duplicated `find_*_parent_class` helpers that existed in
 /// every language extractor with identical logic but different kind lists.
 pub fn find_enclosing_type_name(node: &Node, kinds: &[&str], source: &[u8]) -> Option<String> {
+    find_enclosing_type_name_with_boundary(node, kinds, source, |_| false)
+}
+
+/// Like `find_enclosing_type_name`, but `is_boundary` is checked against
+/// every ancestor before the `kinds` match — if it returns true, the walk
+/// stops immediately and returns `None` even though a matching ancestor
+/// might exist further up. Used by scope-respecting lookups (e.g. `this`
+/// binding: a plain function does not inherit the enclosing class's `this`,
+/// so the walk must not cross it — see JS's `find_parent_class_for_this_binding`).
+pub fn find_enclosing_type_name_with_boundary(
+    node: &Node,
+    kinds: &[&str],
+    source: &[u8],
+    is_boundary: impl Fn(&Node) -> bool,
+) -> Option<String> {
     let mut current = node.parent();
     while let Some(parent) = current {
         if kinds.contains(&parent.kind()) {
             return named_child_text(&parent, "name", source)
                 .map(|s| s.to_string());
+        }
+        if is_boundary(&parent) {
+            return None;
         }
         current = parent.parent();
     }

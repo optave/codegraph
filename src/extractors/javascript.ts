@@ -929,8 +929,10 @@ function collectAccessorPropertyRead(
     // (including the ambiguous get+set skip) unchanged. A #2030 cross-file
     // fallback would never have anything to add for `this`, and tagging
     // every plain `this.field` read would add unbounded extraction volume
-    // for zero benefit.
-    const className = findParentClass(node);
+    // for zero benefit. Uses the this-binding-boundary-respecting lookup
+    // (#2085): an intervening plain function between this read and its
+    // lexically enclosing class means `this` is not that class's instance.
+    const className = findParentClassForThisBinding(node);
     if (!className) return;
     const accessorInfo = localAccessors.get(`${className}.${propName}`);
     if (!accessorInfo || (accessorInfo.get && accessorInfo.set) || !accessorInfo[neededKind]) {
@@ -4354,6 +4356,23 @@ function extractMemberExprCallInfo(fn: TreeSitterNode, callNode: TreeSitterNode)
     }
   }
 
+  // #2085: `this.method()` where an intervening plain function breaks the
+  // `this`-binding chain to the lexically enclosing class (e.g. a bare
+  // `function` passed to `setTimeout`/`addEventListener`) — `this` is not
+  // guaranteed to be that class's instance at runtime, so resolving this as
+  // a same-class call would be a false positive. The real target is
+  // statically unknowable here (it depends on how the function ends up being
+  // invoked), so this is flagged the same way other undecidable dynamic call
+  // shapes are, rather than guessed at.
+  if (obj?.type === 'this' && thisRebindingBreaksClassScope(fn)) {
+    return {
+      name: '<dynamic:unresolved>',
+      line: callLine,
+      dynamic: true,
+      dynamicKind: 'unresolved-dynamic',
+    };
+  }
+
   const receiver = extractReceiverName(obj);
   return { name: propText, line: callLine, receiver };
 }
@@ -5263,6 +5282,80 @@ function extractSuperclass(heritage: TreeSitterNode): string | null {
 const JS_CLASS_TYPES = ['class_declaration', 'abstract_class_declaration', 'class'] as const;
 function findParentClass(node: TreeSitterNode): string | null {
   return findParentNode(node, JS_CLASS_TYPES);
+}
+
+/**
+ * Plain (non-arrow) function scopes that do NOT inherit `this` lexically from
+ * their enclosing scope — JS/TS rebinds `this` at every ordinary function
+ * call unless the function is explicitly bound (see `isBoundToOuterThis`).
+ * Arrow functions are deliberately excluded: they close over the enclosing
+ * scope's `this` rather than establishing their own, so they are transparent
+ * to a `this`-binding walk.
+ */
+const JS_THIS_REBINDING_BOUNDARY_TYPES: ReadonlySet<string> = new Set([
+  'function_declaration',
+  'function_expression',
+  'generator_function_declaration',
+  'generator_function',
+]);
+
+/**
+ * True when `fnNode` (a function_declaration/function_expression/generator
+ * variant) is the direct receiver of an inline `.bind(this)` call —
+ * `function () { ... }.bind(this)` explicitly re-establishes the enclosing
+ * `this` at the point the function is created, so it does not rebind `this`
+ * away from the enclosing scope despite being a plain function.
+ *
+ * Deliberately narrow: only the immediate `fn.bind(this)` shape is
+ * recognized. A named function referenced and bound elsewhere
+ * (`const f = function(){...}; el.on('x', f.bind(this))`) falls through to
+ * the conservative (boundary-respecting) treatment — a missed resolution,
+ * not an incorrect one.
+ */
+function isBoundToOuterThis(fnNode: TreeSitterNode): boolean {
+  const parent = fnNode.parent;
+  if (parent?.type !== 'member_expression') return false;
+  if (parent.childForFieldName('object')?.id !== fnNode.id) return false;
+  if (parent.childForFieldName('property')?.text !== 'bind') return false;
+  const callExpr = parent.parent;
+  if (callExpr?.type !== 'call_expression') return false;
+  if (callExpr.childForFieldName('function')?.id !== parent.id) return false;
+  const args = callExpr.childForFieldName('arguments') || findChild(callExpr, 'arguments');
+  if (!args) return false;
+  for (let i = 0; i < args.childCount; i++) {
+    const child = args.child(i);
+    if (!child) continue;
+    const t = child.type;
+    if (t === '(' || t === ')' || t === ',') continue;
+    return t === 'this';
+  }
+  return false;
+}
+
+function isThisRebindingBoundary(n: TreeSitterNode): boolean {
+  return JS_THIS_REBINDING_BOUNDARY_TYPES.has(n.type) && !isBoundToOuterThis(n);
+}
+
+/**
+ * Like `findParentClass`, but stops (returning null) at an intervening plain
+ * function scope rather than walking through it — the scope-respecting
+ * lookup a `this`-qualified receiver's enclosing class needs (#2085). A
+ * non-arrow function does not inherit `this` from its enclosing method, so
+ * `this` inside it is not guaranteed to be that method's class instance.
+ */
+function findParentClassForThisBinding(node: TreeSitterNode): string | null {
+  return findParentNode(node, JS_CLASS_TYPES, 'name', isThisRebindingBoundary);
+}
+
+/**
+ * True when `node`'s enclosing class (if any) cannot be reached from `node`
+ * without crossing a `this`-rebinding boundary — i.e. there IS a lexically
+ * enclosing class, but an intervening plain function breaks the `this`
+ * chain to it (#2085). Returns false when there is no enclosing class at
+ * all, since there is nothing to falsely attribute `this` to in that case.
+ */
+function thisRebindingBreaksClassScope(node: TreeSitterNode): boolean {
+  return findParentClass(node) !== null && findParentClassForThisBinding(node) === null;
 }
 
 /**

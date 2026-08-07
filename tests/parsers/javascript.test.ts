@@ -3367,4 +3367,105 @@ function runDemo(reporter: Reporter, users: string[]): void {
       expect(symbols.calls).not.toContainEqual(expect.objectContaining({ name: 'unknownProp' }));
     });
   });
+
+  // #2085: a plain (non-arrow) function does not inherit `this` lexically —
+  // `this.method()`/`this.prop` inside one is not guaranteed to be the
+  // enclosing class's instance, so it must not resolve as a same-class call.
+  describe('this-binding scope boundaries for call/property-read attribution (#2085)', () => {
+    function parseTS(code) {
+      const parser = parsers.get('typescript');
+      const tree = parser.parse(code);
+      return extractSymbols(tree, 'test.ts');
+    }
+
+    it('flags a this.method() call inside an unbound plain-function callback as unresolved', () => {
+      const symbols = parseTS(`
+        class Session {
+          isReady(): boolean { return true; }
+          checkExplicit(): void {
+            setTimeout(function () {
+              return this.isReady();
+            }, 100);
+          }
+        }
+      `);
+      expect(symbols.calls).not.toContainEqual(
+        expect.objectContaining({ name: 'isReady', receiver: 'this' }),
+      );
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({
+          name: '<dynamic:unresolved>',
+          dynamic: true,
+          dynamicKind: 'unresolved-dynamic',
+        }),
+      );
+    });
+
+    it('still resolves a this.method() call inside an arrow-function callback', () => {
+      const symbols = parseTS(`
+        class Session {
+          isReady(): boolean { return true; }
+          checkArrow(): void {
+            setTimeout(() => {
+              return this.isReady();
+            }, 100);
+          }
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'isReady', receiver: 'this' }),
+      );
+    });
+
+    it('still resolves a this.method() call inside an explicitly `.bind(this)`-wrapped callback', () => {
+      const symbols = parseTS(`
+        class Session {
+          isReady(): boolean { return true; }
+          checkBound(): void {
+            setTimeout(function () {
+              return this.isReady();
+            }.bind(this), 100);
+          }
+        }
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'isReady', receiver: 'this' }),
+      );
+    });
+
+    it('does not attribute a this.field accessor read inside an unbound plain-function callback', () => {
+      const symbols = parseTS(`
+        class Session {
+          get ready(): boolean { return this._ready; }
+          private _ready = true;
+          checkExplicit(): void {
+            setTimeout(function () {
+              return this.ready;
+            }, 100);
+          }
+        }
+      `);
+      expect(symbols.calls).not.toContainEqual(expect.objectContaining({ name: 'ready' }));
+    });
+
+    it('still resolves a nested plain function inside an arrow (boundary re-established)', () => {
+      const symbols = parseTS(`
+        class Session {
+          isReady(): boolean { return true; }
+          checkNested(): void {
+            const arrow = () => {
+              function inner() {
+                return this.isReady();
+              }
+              inner();
+            };
+            arrow();
+          }
+        }
+      `);
+      expect(symbols.calls).not.toContainEqual(
+        expect.objectContaining({ name: 'isReady', receiver: 'this' }),
+      );
+    });
+  });
 });

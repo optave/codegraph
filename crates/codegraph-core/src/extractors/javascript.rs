@@ -1735,8 +1735,11 @@ fn handle_accessor_property_read(
     if obj.kind() == "this" {
         // `this`'s enclosing class is always declared in this same file —
         // the #1893 same-file registry is authoritative, so keep its exact
-        // semantics (including the ambiguous get+set skip) unchanged.
-        let Some(class_name) = find_parent_class(node, source) else { return };
+        // semantics (including the ambiguous get+set skip) unchanged. Uses
+        // the this-binding-boundary-respecting lookup (#2085): an
+        // intervening plain function between this read and its lexically
+        // enclosing class means `this` is not that class's instance.
+        let Some(class_name) = find_parent_class_for_this_binding(node, source) else { return };
         let key = format!("{}.{}", class_name, prop_name);
         let Some(accessor_info) = local_accessors.get(&key) else { return };
         if accessor_info.get && accessor_info.set {
@@ -3998,6 +4001,27 @@ fn extract_call_info(fn_node: &Node, call_node: &Node, source: &[u8]) -> Option<
                 }
             }
 
+            // #2085: `this.method()` where an intervening plain function
+            // breaks the `this`-binding chain to the lexically enclosing
+            // class (e.g. a bare `function` passed to
+            // `setTimeout`/`addEventListener`) — `this` is not guaranteed to
+            // be that class's instance at runtime, so resolving this as a
+            // same-class call would be a false positive. The real target is
+            // statically unknowable here, so this is flagged the same way
+            // other undecidable dynamic call shapes are, rather than
+            // guessed at.
+            if obj.as_ref().map(|o| o.kind()) == Some("this")
+                && this_rebinding_breaks_class_scope(fn_node, source)
+            {
+                return Some(Call {
+                    name: "<dynamic:unresolved>".to_string(),
+                    line: call_line,
+                    dynamic: Some(true),
+                    dynamic_kind: Some("unresolved-dynamic".to_string()),
+                    ..Default::default()
+                });
+            }
+
             let receiver = obj.as_ref().map(|o| extract_receiver_name(o, source));
             Some(Call {
                 name: prop_text.to_string(),
@@ -4219,6 +4243,91 @@ const JS_CLASS_KINDS: &[&str] = &["class_declaration", "abstract_class_declarati
 
 fn find_parent_class(node: &Node, source: &[u8]) -> Option<String> {
     find_enclosing_type_name(node, JS_CLASS_KINDS, source)
+}
+
+/// Plain (non-arrow) function scopes that do NOT inherit `this` lexically
+/// from their enclosing scope — JS/TS rebinds `this` at every ordinary
+/// function call unless the function is explicitly bound (see
+/// `is_bound_to_outer_this`). Arrow functions are deliberately excluded:
+/// they close over the enclosing scope's `this` rather than establishing
+/// their own, so they are transparent to a `this`-binding walk. Distinct
+/// from `JS_FN_SCOPE_KINDS` above, which serves an unrelated typeMap-reset
+/// purpose and also treats arrow functions and methods as boundaries.
+const JS_THIS_REBINDING_BOUNDARY_KINDS: &[&str] = &[
+    "function_declaration",
+    "function_expression",
+    "generator_function_declaration",
+    "generator_function",
+];
+
+/// True when `fn_node` (a function_declaration/function_expression/generator
+/// variant) is the direct receiver of an inline `.bind(this)` call —
+/// `function () { ... }.bind(this)` explicitly re-establishes the enclosing
+/// `this` at the point the function is created, so it does not rebind
+/// `this` away from the enclosing scope despite being a plain function.
+///
+/// Deliberately narrow: only the immediate `fn.bind(this)` shape is
+/// recognized. A named function referenced and bound elsewhere falls
+/// through to the conservative (boundary-respecting) treatment — a missed
+/// resolution, not an incorrect one. Mirrors `isBoundToOuterThis` in
+/// src/extractors/javascript.ts.
+fn is_bound_to_outer_this(fn_node: &Node, source: &[u8]) -> bool {
+    let Some(parent) = fn_node.parent() else { return false };
+    if parent.kind() != "member_expression" {
+        return false;
+    }
+    if parent.child_by_field_name("object").map(|o| o.id()) != Some(fn_node.id()) {
+        return false;
+    }
+    let Some(prop) = parent.child_by_field_name("property") else { return false };
+    if node_text(&prop, source) != "bind" {
+        return false;
+    }
+    let Some(call_expr) = parent.parent() else { return false };
+    if call_expr.kind() != "call_expression" {
+        return false;
+    }
+    if call_expr.child_by_field_name("function").map(|f| f.id()) != Some(parent.id()) {
+        return false;
+    }
+    let Some(args) = call_expr
+        .child_by_field_name("arguments")
+        .or_else(|| find_child(&call_expr, "arguments"))
+    else {
+        return false;
+    };
+    for i in 0..args.child_count() {
+        let Some(child) = args.child(i) else { continue };
+        match child.kind() {
+            "(" | ")" | "," => continue,
+            other => return other == "this",
+        }
+    }
+    false
+}
+
+fn is_this_rebinding_boundary(node: &Node, source: &[u8]) -> bool {
+    JS_THIS_REBINDING_BOUNDARY_KINDS.contains(&node.kind()) && !is_bound_to_outer_this(node, source)
+}
+
+/// Like `find_parent_class`, but stops (returning `None`) at an intervening
+/// plain function scope rather than walking through it — the scope-respecting
+/// lookup a `this`-qualified receiver's enclosing class needs (#2085). A
+/// non-arrow function does not inherit `this` from its enclosing method, so
+/// `this` inside it is not guaranteed to be that method's class instance.
+fn find_parent_class_for_this_binding(node: &Node, source: &[u8]) -> Option<String> {
+    find_enclosing_type_name_with_boundary(node, JS_CLASS_KINDS, source, |n| {
+        is_this_rebinding_boundary(n, source)
+    })
+}
+
+/// True when `node`'s enclosing class (if any) cannot be reached from `node`
+/// without crossing a `this`-rebinding boundary — i.e. there IS a lexically
+/// enclosing class, but an intervening plain function breaks the `this`
+/// chain to it (#2085). Returns false when there is no enclosing class at
+/// all, since there is nothing to falsely attribute `this` to in that case.
+fn this_rebinding_breaks_class_scope(node: &Node, source: &[u8]) -> bool {
+    find_parent_class(node, source).is_some() && find_parent_class_for_this_binding(node, source).is_none()
 }
 
 /// Like `find_parent_class` but stops at function scope boundaries.
@@ -8499,6 +8608,97 @@ mod tests {
         assert!(
             !s.calls.iter().any(|c| c.name == "unknownProp"),
             "a plain (non-accessor) this.field read must never produce a call, tagged or not; got: {:?}",
+            s.calls
+        );
+    }
+
+    // #2085: a plain (non-arrow) function does not inherit `this` lexically —
+    // `this.method()` inside one is not guaranteed to be the enclosing
+    // class's instance, so it must not resolve as a same-class call.
+
+    #[test]
+    fn flags_this_call_inside_plain_callback_as_unresolved() {
+        let s = parse_ts(
+            "class Session {\n\
+               isReady(): boolean { return true; }\n\
+               checkExplicit(): void {\n\
+                 setTimeout(function () {\n\
+                   return this.isReady();\n\
+                 }, 100);\n\
+               }\n\
+             }",
+        );
+        let call = s
+            .calls
+            .iter()
+            .find(|c| c.dynamic_kind.as_deref() == Some("unresolved-dynamic"))
+            .expect("expected the this.isReady() call to be flagged unresolved-dynamic");
+        assert_eq!(call.name, "<dynamic:unresolved>");
+        assert_eq!(call.dynamic, Some(true));
+        assert_eq!(call.dynamic_kind.as_deref(), Some("unresolved-dynamic"));
+        assert!(
+            call.receiver.is_none(),
+            "must not carry a 'this' receiver that would resolve to Session"
+        );
+    }
+
+    #[test]
+    fn still_resolves_this_call_inside_arrow_callback() {
+        let s = parse_ts(
+            "class Session {\n\
+               isReady(): boolean { return true; }\n\
+               checkArrow(): void {\n\
+                 setTimeout(() => {\n\
+                   return this.isReady();\n\
+                 }, 100);\n\
+               }\n\
+             }",
+        );
+        let call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "isReady")
+            .expect("arrow callbacks are transparent to this-binding");
+        assert_eq!(call.receiver.as_deref(), Some("this"));
+    }
+
+    #[test]
+    fn still_resolves_this_call_inside_explicitly_bound_callback() {
+        let s = parse_ts(
+            "class Session {\n\
+               isReady(): boolean { return true; }\n\
+               checkBound(): void {\n\
+                 setTimeout(function () {\n\
+                   return this.isReady();\n\
+                 }.bind(this), 100);\n\
+               }\n\
+             }",
+        );
+        let call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "isReady")
+            .expect(".bind(this) explicitly re-establishes the enclosing this");
+        assert_eq!(call.receiver.as_deref(), Some("this"));
+    }
+
+    #[test]
+    fn flags_this_accessor_read_inside_plain_callback_as_unconfirmed() {
+        let s = parse_ts(
+            "class Session {\n\
+               get ready(): boolean { return this._ready; }\n\
+               private _ready = true;\n\
+               checkExplicit(): void {\n\
+                 setTimeout(function () {\n\
+                   return this.ready;\n\
+                 }, 100);\n\
+               }\n\
+             }",
+        );
+        assert!(
+            !s.calls.iter().any(|c| c.name == "ready"),
+            "a this.field accessor read inside an unbound plain function must not \
+             resolve to the enclosing class's accessor; got: {:?}",
             s.calls
         );
     }

@@ -155,12 +155,20 @@ export function rustVisibility(node: TreeSitterNode): 'public' | 'private' {
  * Walk up the parent chain to find an enclosing node whose type is in `typeNames`.
  * Returns the text of `nameField` (default `'name'`) on the matching ancestor, or null.
  *
+ * `isBoundary`, when passed, is checked against every ancestor before the
+ * `typeNames` match — if it returns true, the walk stops immediately and
+ * returns null even though a matching ancestor might exist further up. Used
+ * by callers that need a scope-respecting lookup (e.g. `this`-binding: a
+ * plain function does not inherit the enclosing class's `this`, so the walk
+ * must not cross it — see JS/TS's `findParentClassForThisBinding`).
+ *
  * Replaces per-language `findParentClass` / `findParentType` / `findCurrentImpl` helpers.
  */
 export function findParentNode(
   node: TreeSitterNode,
   typeNames: readonly string[],
   nameField: string = 'name',
+  isBoundary?: (n: TreeSitterNode) => boolean,
 ): string | null {
   let current = node.parent;
   while (current) {
@@ -168,6 +176,7 @@ export function findParentNode(
       const nameNode = current.childForFieldName(nameField);
       return nameNode ? nameNode.text : null;
     }
+    if (isBoundary?.(current)) return null;
     current = current.parent;
   }
   return null;
