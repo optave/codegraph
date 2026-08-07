@@ -16,9 +16,13 @@
  * unaffected.
  */
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { debug, warn } from '../../../infrastructure/logger.js';
 import type { CallAssignment, ExtractorOutput, TypeMapEntry } from '../../../types.js';
+
+const _require = createRequire(import.meta.url);
 
 // typescript is not a hard dependency — lazy-load it so JS-only projects
 // and environments without typescript installed work without error.
@@ -37,12 +41,32 @@ export function hasClassicCompilerApi(mod: Partial<TsModule> | null | undefined)
   return typeof mod?.readConfigFile === 'function';
 }
 
-async function loadTs(): Promise<TsModule | null> {
+/**
+ * Resolve the `typescript` module path starting from `rootDir` — the
+ * analyzed project's own directory — before falling back to resolution from
+ * codegraph's own module location. A bare `import('typescript')` resolves
+ * via Node's module search from *this file's* location, which finds the
+ * analyzed project's own install only by hoisting coincidence; a globally
+ * installed codegraph CLI (a documented, supported install mode) analyzing
+ * a project with its own `typescript` — of any version — would otherwise
+ * never see it at all (#2106 review), silently and incorrectly falling back
+ * to whatever (or no) `typescript` codegraph itself happens to resolve.
+ */
+export function resolveTsModulePath(rootDir: string): string {
+  try {
+    return _require.resolve('typescript', { paths: [rootDir] });
+  } catch {
+    return _require.resolve('typescript');
+  }
+}
+
+async function loadTs(rootDir: string): Promise<TsModule | null> {
   if (_ts !== undefined) return _ts;
   try {
+    const resolvedPath = resolveTsModulePath(rootDir);
     // TypeScript 6+ ships dual CJS/ESM exports; `.default` is the CJS interop
     // namespace and is present and non-null in both TS 5.x and TS 6.x.
-    const mod = (await import('typescript')).default as TsModule;
+    const mod = (await import(pathToFileURL(resolvedPath).href)).default as TsModule;
     // Detected explicitly (rather than letting createProgram's TypeError
     // propagate into its own catch, indistinguishable from an ordinary
     // per-project tsconfig failure) so this specific, permanent
@@ -118,7 +142,7 @@ export async function enrichTypeMapWithTsc(
   const tsRelPaths = [...fileSymbols.keys()].filter(isTsFile);
   if (tsRelPaths.length === 0) return;
 
-  const ts = await loadTs();
+  const ts = await loadTs(rootDir);
   if (!ts) return;
 
   const tsconfigPath = findTsconfig(rootDir);
