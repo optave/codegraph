@@ -154,6 +154,18 @@ function maskQuotedStrings(input) {
     const ch = input[i];
     if (quote) {
       if (quoteExecTriggered) {
+        // Mirror the escaped-quote handling below: an escaped `\"` inside an
+        // exec-triggered double-quoted payload is NOT the closing quote —
+        // treating it as one (Greptile review) would end the exemption
+        // early and let the real remainder of the payload (which can
+        // contain a real dangerous command, e.g.
+        // `bash -c "echo \"x\" && git clean -fd"`) fall through to normal
+        // masking, hiding it.
+        if (ch === '\\' && quote === '"' && i + 1 < input.length) {
+          out += ch + input[i + 1];
+          i++;
+          continue;
+        }
         out += ch;
         if (ch === quote) quote = null;
         continue;

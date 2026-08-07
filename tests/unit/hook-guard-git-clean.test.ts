@@ -147,6 +147,14 @@ describe('guard-git.sh does not false-positive on quoted text (#2099)', () => {
     expect(isDenied('bash -c "echo hello"')).toBe(false);
   });
 
+  it('still blocks a dangerous command after an escaped quote inside an executable -c payload (Greptile review)', () => {
+    // An escaped \" inside `bash -c "..."` is not the closing quote — ending
+    // the exec-trigger exemption there would let the real remainder of the
+    // payload (a genuine git clean -fd here) fall through to normal
+    // masking and get hidden.
+    expect(isDenied('bash -c "echo \\"x\\" && git clean -fd"')).toBe(true);
+  });
+
   it('still blocks a command substitution inside an ordinary double-quoted argument (Greptile review)', () => {
     // $(...) and `...` execute even inside an otherwise-inert double-quoted
     // string — real bash actually runs `git clean -fd` here when expanding
