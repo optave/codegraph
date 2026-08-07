@@ -1338,7 +1338,19 @@ A reported line is not automatically a bug — `main` may have legitimately supe
 
 After the integrity check passes, re-run local verification and push, then re-evaluate the five gate conditions from Phase: Solve and Merge Loop before merging.
 
-**Exit condition:** Every PR listed in `parked.txt` is merged, or is reported as needing human review with a specific reason. No catch-up merge was pushed without a passing I4 integrity check. Every drain-phase merge's post-merge CI on `main` was confirmed green (I8) before the next merge in the pass. Drain stopped only once a pass merged nothing 3 times in a row, or the 15-pass safety cap was hit — never on a fixed pass count while merges were still happening.
+### Housekeep after the drain loop exits
+
+Every catch-up merge above cuts/checks-out a branch the same way Phase 2's Solve and Merge Loop does, so it leaves exactly the same kind of local-branch residue that Phase 3's step 3a runs `/housekeep` to clean up — but the drain loop has its own exit points (all merged, 3-stall, or 15-pass cap) separate from the batch loop, so nothing calls `/housekeep` again after it. Run it once, exactly like 3a, after the drain loop above has actually stopped (do not call it once per pass — it is idempotent, but there is nothing new to clean between passes that haven't yet merged anything):
+
+```bash
+mkdir -p .codegraph/fixer
+DRY_RUN=$(cat .codegraph/fixer/dry-run)
+echo "fixer: drain loop finished — running housekeeping before the final report"
+```
+
+Invoke the `housekeep` skill: `/housekeep --dry-run` if `DRY_RUN` is `true`, otherwise plain `/housekeep`. The same confirmation posture from 3a applies unchanged: confirm deletion only for local branches this run itself recorded as `merged` in `state.json` (drain-phase merges included — they are recorded exactly the same way as Phase 2 merges), decline every worktree-removal prompt including this run's own worktree, and decline everything else.
+
+**Exit condition:** Every PR listed in `parked.txt` is merged, or is reported as needing human review with a specific reason. No catch-up merge was pushed without a passing I4 integrity check. Every drain-phase merge's post-merge CI on `main` was confirmed green (I8) before the next merge in the pass. Drain stopped only once a pass merged nothing 3 times in a row, or the 15-pass safety cap was hit — never on a fixed pass count while merges were still happening. `/housekeep` has run once after the drain loop stopped, mirroring 3a.
 
 ---
 
