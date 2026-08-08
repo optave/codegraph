@@ -230,6 +230,17 @@ impl Display for Foo {}`);
     );
   });
 
+  it('keeps the bare base name for non-Option/Result generics (Vec<T>, etc.)', () => {
+    // Only Option/Result need the type argument preserved (to unwrap a
+    // Some(x)/Ok(x) binding) — every other generic keeps its original bare name
+    // so CHA/RTA's instantiated-types matching against trait-implementor names is
+    // unaffected (Greptile review, PR #2371).
+    const symbols = parseRust(`fn get_users() -> Vec<User> { Vec::new() }`);
+    expect(symbols.returnTypeMap.get('get_users')).toEqual(
+      expect.objectContaining({ type: 'Vec' }),
+    );
+  });
+
   // ── Calls embedded in macro invocation arguments (#2214) ──────────────────
 
   it('scans macro arguments for a method call', () => {

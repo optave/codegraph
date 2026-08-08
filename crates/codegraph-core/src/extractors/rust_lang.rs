@@ -578,11 +578,28 @@ fn extract_rust_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<
             }
             None
         }
-        // Keep the full generic text (`Option<User>`, not just `Option`) — callers
-        // that only care about the base type still get a usable prefix, and
-        // unwrap_option_result_type() below needs the type argument to type an
-        // if-let/while-let-unwrapped binding from a generic return type (#2214).
-        "generic_type" => Some(node_text(type_node, source)),
+        // For every OTHER generic type (Vec<T>, HashMap<K, V>, a user-defined
+        // Container<T>, ...), keep the original nominal-base-name behavior — impl
+        // blocks' own qualified names use the source-literal generic syntax too
+        // (`impl<T> Container<T>` extracts as "Container<T>", not "Container"), so
+        // a concretely-instantiated receiver ("Container<User>") could never match
+        // it either way; but CHA/RTA's instantiated-types matching (buildChaContext
+        // in cha.ts / build_cha_context) DOES compare bare type_map entries against
+        // trait-implementor names, so keeping other generics parameterized here
+        // would silently break that unrelated, currently-working nominal match
+        // (Greptile review, PR #2371). Option/Result are the only shapes this fix
+        // actually needs full text for — a Some(x)/Ok(x) if-let/while-let binding's
+        // real type is the type ARGUMENT, not the wrapper, and unwrap_option_result_type()
+        // below needs that argument text to compute it.
+        "generic_type" => {
+            let text = node_text(type_node, source);
+            let base = text.split('<').next().unwrap_or(text).trim();
+            if base == "Option" || base == "Result" {
+                Some(text)
+            } else {
+                Some(base)
+            }
+        }
         _ => None,
     }
 }
@@ -1148,6 +1165,21 @@ mod tests {
             .find(|e| e.name == "get_user")
             .unwrap();
         assert_eq!(entry.type_name, "Option<User>");
+    }
+
+    #[test]
+    fn return_type_map_keeps_bare_base_name_for_non_option_result_generics() {
+        // Only Option/Result need the type argument preserved (to unwrap a
+        // Some(x)/Ok(x) binding) — every other generic keeps its original bare
+        // name so CHA/RTA's instantiated-types matching against trait-implementor
+        // names is unaffected (Greptile review, PR #2371).
+        let s = parse_rust("fn get_users() -> Vec<User> { Vec::new() }");
+        let entry = s
+            .return_type_map
+            .iter()
+            .find(|e| e.name == "get_users")
+            .unwrap();
+        assert_eq!(entry.type_name, "Vec");
     }
 
     // ── Calls embedded in macro invocation arguments (#2214) ──────────────────

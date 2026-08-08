@@ -423,12 +423,23 @@ function extractRustTypeName(typeNode: TreeSitterNode): string | null {
       }
     }
   }
-  // Generic: keep the full text (`Option<User>`, not just `Option`) — callers
-  // that only care about the base type still get a usable prefix, and
-  // unwrapOptionResultType() in build-edges.ts needs the type argument to type
-  // an if-let/while-let-unwrapped binding from a generic return type (#2214).
+  // For every OTHER generic type (Vec<T>, HashMap<K, V>, a user-defined
+  // Container<T>, ...), keep the original nominal-base-name behavior — impl
+  // blocks' own qualified names use the source-literal generic syntax too
+  // (`impl<T> Container<T>` extracts as "Container<T>", not "Container"), so a
+  // concretely-instantiated receiver ("Container<User>") could never match it
+  // either way; but CHA/RTA's instantiated-types matching (buildChaContext in
+  // cha.ts) DOES compare bare typeMap entries against trait-implementor names,
+  // so keeping other generics parameterized here would silently break that
+  // unrelated, currently-working nominal match (Greptile review, PR #2371).
+  // Option/Result are the only shapes this fix actually needs full text for — a
+  // Some(x)/Ok(x) if-let/while-let binding's real type is the type ARGUMENT, not
+  // the wrapper, and unwrapOptionResultType() in build-edges.ts needs that
+  // argument text to compute it.
   if (t === 'generic_type') {
-    return typeNode.text;
+    const text = typeNode.text;
+    const base = text.split('<')[0]?.trim() ?? text;
+    return base === 'Option' || base === 'Result' ? text : base;
   }
   return null;
 }
