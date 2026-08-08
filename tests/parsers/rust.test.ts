@@ -250,6 +250,19 @@ impl Display for Foo {}`);
     );
   });
 
+  it('preserves the full text for a reference-wrapped Option (Option<&T>)', () => {
+    // `Option<&User>` (a common shape for a cached-field getter) must preserve
+    // the type argument, including the reference sigil, the same way any other
+    // Option<T> does — unwrapOptionResultType in build-edges.ts strips the `&`
+    // at injection time, not extraction time (Greptile review, PR #2371).
+    const symbols = parseRust(
+      `struct UserService { cached: User }\nimpl UserService {\n  fn get_user_ref(&self) -> Option<&User> { Some(&self.cached) }\n}`,
+    );
+    expect(symbols.returnTypeMap.get('UserService.get_user_ref')).toEqual(
+      expect.objectContaining({ type: 'Option<&User>' }),
+    );
+  });
+
   // ── Calls embedded in macro invocation arguments (#2214) ──────────────────
 
   it('scans macro arguments for a method call', () => {

@@ -1206,6 +1206,24 @@ mod tests {
         assert_eq!(entry.type_name, "std::option::Option<User>");
     }
 
+    #[test]
+    fn return_type_map_preserves_full_text_for_a_reference_wrapped_option() {
+        // `Option<&User>` (a common shape for a cached-field getter) must
+        // preserve the type argument, including the reference sigil, the same
+        // way any other Option<T> does — pipeline.rs's unwrap_option_result_type
+        // strips the `&` at injection time, not extraction time (Greptile
+        // review, PR #2371).
+        let s = parse_rust(
+            "struct UserService { cached: User }\nimpl UserService {\n  pub fn get_user_ref(&self) -> Option<&User> { Some(&self.cached) }\n}",
+        );
+        let entry = s
+            .return_type_map
+            .iter()
+            .find(|e| e.name == "UserService.get_user_ref")
+            .unwrap();
+        assert_eq!(entry.type_name, "Option<&User>");
+    }
+
     // ── Calls embedded in macro invocation arguments (#2214) ──────────────────
 
     #[test]

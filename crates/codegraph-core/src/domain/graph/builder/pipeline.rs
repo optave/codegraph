@@ -1761,6 +1761,7 @@ fn unwrap_option_result_type(type_name: &str) -> Option<&str> {
 /// Without this, a nested generic payload would inject a parameterized name where
 /// every other path in this pipeline injects a bare one (Greptile review, PR #2371).
 fn normalize_unwrapped_generic_arg(arg: &str) -> Option<&str> {
+    let arg = strip_reference_sigil(arg.trim());
     if arg.is_empty() {
         return None;
     }
@@ -1773,6 +1774,26 @@ fn normalize_unwrapped_generic_arg(arg: &str) -> Option<&str> {
     } else {
         Some(inner_base)
     }
+}
+
+/// Strip a leading `&`/`&mut `/`&'a `/`&'a mut ` reference sigil, the same way
+/// `extract_rust_type_name`'s `reference_type` branch does for a direct
+/// annotation — `Option<&User>`/`Option<&'a mut User>`'s bound value's real
+/// receiver type is `User`, not the reference syntax around it (Greptile
+/// review, PR #2371).
+fn strip_reference_sigil(s: &str) -> &str {
+    let Some(rest) = s.strip_prefix('&') else {
+        return s;
+    };
+    let mut rest = rest.trim_start();
+    if rest.starts_with('\'') {
+        if let Some(idx) = rest.find(char::is_whitespace) {
+            rest = rest[idx..].trim_start();
+        }
+    }
+    rest.strip_prefix("mut ")
+        .map(str::trim_start)
+        .unwrap_or(rest)
 }
 
 /// Inject cross-file return types into a single file's `type_map`.
@@ -2806,6 +2827,56 @@ mod tests {
         assert_eq!(
             unwrap_option_result_type("Option<Option<User>>"),
             Some("Option<User>")
+        );
+    }
+
+    #[test]
+    fn unwrap_option_result_type_strips_a_reference_sigil() {
+        // Option<&User>'s bound value's real receiver type is User, not the
+        // reference syntax around it (Greptile review, PR #2371).
+        assert_eq!(unwrap_option_result_type("Option<&User>"), Some("User"));
+    }
+
+    #[test]
+    fn end_to_end_injects_bare_nominal_type_for_a_reference_wrapped_option() {
+        let mut service = FileSymbols::new("service.rs".to_string());
+        service
+            .return_type_map
+            .push(entry("UserService.get_user_ref", "Option<&User>", 1.0));
+
+        let mut main = FileSymbols::new("main.rs".to_string());
+        main.type_map.push(entry("service", "UserService", 0.9));
+        main.call_assignments
+            .push(crate::types::NativeCallAssignment {
+                var_name: "user".to_string(),
+                callee_name: "get_user_ref".to_string(),
+                receiver_type_name: None,
+                receiver_var_name: Some("service".to_string()),
+                unwrap_generic: true,
+            });
+
+        let mut file_symbols = BTreeMap::new();
+        file_symbols.insert("service.rs".to_string(), service);
+        file_symbols.insert("main.rs".to_string(), main);
+        let import_ctx = make_import_ctx(&file_symbols);
+
+        let conn = Connection::open_in_memory().unwrap();
+        propagate_return_types_across_files(&conn, &mut file_symbols, &import_ctx);
+
+        let main = &file_symbols["main.rs"];
+        let seeded = main
+            .type_map
+            .iter()
+            .find(|t| t.name == "user")
+            .expect("user should be seeded, unwrapped from Option<&User> to bare User");
+        assert_eq!(seeded.type_name, "User");
+    }
+
+    #[test]
+    fn unwrap_option_result_type_strips_a_mut_reference_with_a_lifetime() {
+        assert_eq!(
+            unwrap_option_result_type("Result<&'a mut User, String>"),
+            Some("User")
         );
     }
 

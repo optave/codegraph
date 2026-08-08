@@ -702,11 +702,28 @@ function unwrapOptionResultType(typeName: string): string | undefined {
  * path in this pipeline injects a bare one (Greptile review, PR #2371).
  */
 function normalizeUnwrappedGenericArg(arg: string): string | undefined {
-  if (!arg) return undefined;
-  const ltIdx = arg.indexOf('<');
-  if (ltIdx === -1) return arg;
-  const innerBase = arg.slice(0, ltIdx).trim();
-  return isOptionOrResultBase(innerBase) ? arg : innerBase;
+  const stripped = stripReferenceSigil(arg.trim());
+  if (!stripped) return undefined;
+  const ltIdx = stripped.indexOf('<');
+  if (ltIdx === -1) return stripped;
+  const innerBase = stripped.slice(0, ltIdx).trim();
+  return isOptionOrResultBase(innerBase) ? stripped : innerBase;
+}
+
+/**
+ * Strip a leading `&`/`&mut `/`&'a `/`&'a mut ` reference sigil, the same way
+ * extractRustTypeName's reference_type branch does for a direct annotation —
+ * Option<&User>/Option<&'a mut User>'s bound value's real receiver type is
+ * User, not the reference syntax around it (Greptile review, PR #2371).
+ */
+function stripReferenceSigil(s: string): string {
+  if (!s.startsWith('&')) return s;
+  let rest = s.slice(1).trimStart();
+  if (rest.startsWith("'")) {
+    const idx = rest.search(/\s/);
+    if (idx !== -1) rest = rest.slice(idx).trimStart();
+  }
+  return rest.startsWith('mut ') ? rest.slice(4).trimStart() : rest;
 }
 
 // ── Call edges (native engine) ──────────────────────────────────────────
