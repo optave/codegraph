@@ -1,0 +1,90 @@
+# Reminds PR authors when a description references an issue with a non-closing
+# phrase ("Refs #N", "Related #N", bare "(#N)") but no closing keyword for that
+# same number — the pattern behind issue #2181, where merged PRs silently left
+# already-fixed issues open because "Refs #N" looks like a valid reference but
+# does not trigger GitHub's auto-close. Informational only: a non-closing
+# reference is often intentional (partial fix, related work), so this never
+# fails the build — it only makes the gap visible for a human to confirm.
+#
+# Uses pull_request_target (not pull_request) so the check also works on PRs
+# from forks, which get a read-only GITHUB_TOKEN under pull_request. This is
+# safe without the workflow_run split codegraph-impact-comment.yml uses,
+# because this job never checks out or executes the PR's head content — it
+# only reads the trusted event payload's `pull_request.body` field.
+name: Closing Keyword Check
+on:
+  pull_request_target:
+    types: [opened, edited, reopened]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: closing-keyword-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for non-closing issue references
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+
+            const closingKeywords = /\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/gi;
+            const closedIssues = new Set();
+            for (let m; (m = closingKeywords.exec(body)); ) closedIssues.add(m[1]);
+
+            const refPattern = /\b(?:refs?|related(?:\s+to)?|see)\s+#(\d+)|\(#(\d+)\)/gi;
+            const flagged = new Set();
+            for (let m; (m = refPattern.exec(body)); ) {
+              const num = m[1] || m[2];
+              if (!closedIssues.has(num)) flagged.add(num);
+            }
+
+            const marker = '<!-- closing-keyword-check -->';
+            const prNumber = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+
+            if (flagged.size === 0) {
+              if (existing) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                });
+              }
+              return;
+            }
+
+            const issueList = [...flagged].map((n) => `#${n}`).join(', ');
+            const commentBody =
+              `${marker}\n` +
+              `**Heads up:** this PR references ${issueList} without a closing keyword ` +
+              '(`Closes #N` / `Fixes #N`). If this PR fully resolves ' +
+              `${issueList}, update the description so the issue auto-closes on merge — ` +
+              'otherwise disregard this comment.';
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: commentBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: commentBody,
+              });
+            }

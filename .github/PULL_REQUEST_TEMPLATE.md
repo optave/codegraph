@@ -26,4 +26,6 @@ N/A
 
 ## Related issues
 
-<!-- Link related issues: Fixes #123, Closes #456 -->
+<!-- Use a closing keyword if this PR fully resolves the issue: Closes #123, Fixes #456.
+     "Refs #123" / "Related #123" will NOT auto-close the issue on merge — only use those
+     for a non-closing reference. -->
