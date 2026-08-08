@@ -45,7 +45,7 @@ Your goal is to install the published package, exercise every feature, compare e
 
    > **Tip:** To find the latest dev version, run:
    > ```bash
-   > gh release list --repo optave/codegraph --json tagName --jq '.[] | select(.tagName | startswith("dev-v")) | .tagName' | head -1 | sed 's/^dev-v//'
+   > gh release list --repo optave/ops-codegraph-tool --json tagName --jq '.[] | select(.tagName | startswith("dev-v")) | .tagName' | head -1 | sed 's/^dev-v//'
    > ```
 
 3. Verify the install: `npx codegraph --version` should print `$ARGUMENTS`.
@@ -292,7 +292,7 @@ For each bug found during testing:
 ### 7a. Check for duplicates
 
 ```bash
-gh issue list --repo optave/codegraph --state open --search "<bug title keywords>"
+gh issue list --repo optave/ops-codegraph-tool --state open --search "<bug title keywords>"
 ```
 
 If a matching issue already exists, skip creating a new one. Add a comment with your findings if you have new information.
@@ -302,7 +302,7 @@ If a matching issue already exists, skip creating a new one. Add a comment with 
 For each **new** bug, create a GitHub issue:
 
 ```bash
-gh issue create --repo optave/codegraph \
+gh issue create --repo optave/ops-codegraph-tool \
   --title "bug: <concise title>" \
   --label "bug,dogfood" \
   --body "$(cat <<'ISSUE_EOF'

@@ -481,21 +481,82 @@ export const halsteadScala: HalsteadRules = {
 // ─── Dart ─────────────────────────────────────────────────────────────────────
 //
 // Dart uses `function_signature` for top-level functions and `method_signature`
-// for class methods (both confirmed in extractor). The extractor uses
-// `childForFieldName('name')` for the function name on both node types.
+// for class methods. Per tree-sitter-dart's node-types.json:
+//   - function_signature declares ONE named field, `name`; its parameter
+//     list (`formal_parameter_list`) is an unnamed positional child.
+//   - method_signature declares NO named fields at all — a method's actual
+//     `function_signature` (or getter_signature/setter_signature/
+//     constructor_signature) is nested one level inside it, alongside the
+//     SIBLING `function_body` that belongs to method_signature itself
+//     (#2182). So a method's name/params come from the nested signature
+//     node, while its body's scope is attributed to the outer
+//     method_signature node — extractDartFunctionName/getDartParamListNode
+//     below resolve each accordingly, mirroring the same walk the extractor
+//     (src/extractors/dart.ts's extractDartFunctionName) already does for
+//     symbol-table name resolution.
 // Dart call: `selector` node with `argument_part` — the extractor uses this.
 // There is no standard `call_expression` node type in tree-sitter-dart.
 // We use `function_signature` as the primary function node type.
-// Parameters: `childForFieldName('parameters')` on function_signature (confirmed in extractor).
+
+/** Child node types that carry a method's own `name`/parameter-list fields. */
+const DART_NESTED_SIGNATURE_TYPES = new Set([
+  'function_signature',
+  'getter_signature',
+  'setter_signature',
+  'constructor_signature',
+]);
+
+/**
+ * function_signature has a direct `name` field; method_signature has none —
+ * its name lives on the nested signature child described above.
+ */
+function extractDartFunctionName(node: TreeSitterNode): string | null {
+  const direct = node.childForFieldName('name');
+  if (direct) return direct.text;
+  for (const child of node.namedChildren) {
+    if (DART_NESTED_SIGNATURE_TYPES.has(child.type)) {
+      const nested = child.childForFieldName('name');
+      if (nested) return nested.text;
+    }
+  }
+  return null;
+}
+
+/**
+ * function_signature exposes NO named field for its parameter list
+ * (confirmed via node-types.json: `name` is its only declared field) —
+ * `formal_parameter_list` is an unnamed positional child, so
+ * `paramListField` (a field-name lookup) can never find it.
+ *
+ * Deliberately does NOT descend into a nested signature child for
+ * method_signature: the nested function_signature/getter_signature/etc. is
+ * ITSELF a separate entry in functionNodes, so the walker already visits
+ * it as its own boundary and independently finds its own direct
+ * formal_parameter_list. Falling back into it here would attribute the
+ * same params to method_signature's scope too, double-counting them.
+ */
+function getDartParamListNode(funcNode: TreeSitterNode): TreeSitterNode | null {
+  for (const child of funcNode.namedChildren) {
+    if (child.type === 'formal_parameter_list') return child;
+  }
+  return null;
+}
 
 function extractDartParamName(node: TreeSitterNode): string[] | null {
-  // Dart: parameter types include 'formal_parameter', 'named_formal_parameter',
-  // 'optional_formal_parameter', and bare 'identifier'
-  if (
-    node.type === 'formal_parameter' ||
-    node.type === 'optional_formal_parameter' ||
-    node.type === 'named_formal_parameter'
-  ) {
+  // `[int x, int y]` (optional-positional) / `{int x, int y}` (named) param
+  // groups wrap MULTIPLE formal_parameter children in one
+  // optional_formal_parameters node (node-types.json — confirmed there is
+  // no singular optional_formal_parameter/named_formal_parameter type in
+  // this grammar). Recurse to collect every name inside the group.
+  if (node.type === 'optional_formal_parameters') {
+    const names: string[] = [];
+    for (const child of node.namedChildren) {
+      const childNames = extractDartParamName(child);
+      if (childNames) names.push(...childNames);
+    }
+    return names.length > 0 ? names : null;
+  }
+  if (node.type === 'formal_parameter') {
     const nameNode = node.childForFieldName('name');
     if (nameNode) return [nameNode.text];
     // Fallback: last identifier child is usually the name
@@ -511,14 +572,27 @@ function extractDartParamName(node: TreeSitterNode): string[] | null {
 
 export const dataflowDart: DataflowRulesConfig = makeDataflowRules({
   functionNodes: new Set(['function_signature', 'method_signature']),
+  // tree-sitter-dart puts a function's body in a SIBLING node, not a child
+  // of function_signature/method_signature (#2182) — without this, every
+  // return/assignment/call/mutation inside the body is invisible to the
+  // dataflow walker since it never descends into the sibling while this
+  // function's scope is active.
+  bodySiblingTypes: new Set(['function_body']),
   nameField: 'name',
+  // method_signature has no name field of its own (see extractDartFunctionName's
+  // doc comment) — without this, every return/assignment/call/mutation
+  // inside a Dart METHOD's body was silently dropped, since handleReturn
+  // et al. gate on `scope.funcName` being truthy.
+  nameExtractor: extractDartFunctionName,
 
-  paramListField: 'parameters',
-  paramWrapperTypes: new Set([
-    'formal_parameter',
-    'optional_formal_parameter',
-    'named_formal_parameter',
-  ]),
+  // function_signature/method_signature expose no named field for their
+  // parameter list (only `name` is a declared field per node-types.json) —
+  // paramListField (a field-name lookup) can never find formal_parameter_list,
+  // which is an unnamed positional child. This was ALSO silently broken,
+  // not just the body-sibling issue: every Dart parameter extraction
+  // returned nothing, contrary to this repo's #2182 report assuming
+  // parameter extraction "happened to work."
+  getParamListNode: getDartParamListNode,
   extractParamName: extractDartParamName,
 
   returnNode: 'return_statement',

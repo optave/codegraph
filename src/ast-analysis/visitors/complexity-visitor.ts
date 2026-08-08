@@ -269,6 +269,7 @@ export function createComplexityVisitor(
   return {
     name: 'complexity',
     functionNodeTypes: cRules.functionNodes,
+    bodySiblingTypes: cRules.bodySiblingTypes ?? undefined,
 
     enterFunction(
       funcNode: TreeSitterNode,

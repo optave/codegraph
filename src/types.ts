@@ -1042,11 +1042,21 @@ export interface Visitor {
   exitFunction?(funcNode: TreeSitterNode, funcName: string | null, context: VisitorContext): void;
   finish?(): unknown;
   functionNodeTypes?: Set<string>;
+  /**
+   * Node types whose content is a function's body but lives as a SIBLING of
+   * the function boundary node rather than nested inside it (e.g. tree-sitter
+   * Dart's function_signature/function_body split, #2182). When set, the
+   * walker keeps the function's scope active through this sibling before
+   * firing exitFunction, instead of only ever seeing the boundary node's own
+   * children.
+   */
+  bodySiblingTypes?: Set<string>;
 }
 
 /** Options for walkWithVisitors. */
 export interface WalkOptions {
   functionNodeTypes?: Set<string>;
+  bodySiblingTypes?: Set<string>;
   nestingNodeTypes?: Set<string>;
   getFunctionName?: (node: TreeSitterNode) => string | null;
 }
@@ -1105,6 +1115,13 @@ export interface ComplexityRules {
   optionalChainType: string | null;
   nestingNodes: Set<string>;
   functionNodes: Set<string>;
+  /**
+   * Node types whose content is a function's body but is a SIBLING of the
+   * matched functionNodes node rather than nested inside it (e.g. Dart's
+   * function_signature/function_body split, #2182). Optional — omitted for
+   * every language where the body nests normally.
+   */
+  bodySiblingTypes?: Set<string> | null;
   ifNodeType: string | null;
   elseNodeType: string | null;
   elifNodeType: string | null;
@@ -1118,6 +1135,8 @@ export interface HalsteadRules {
   operandLeafTypes: Set<string>;
   compoundOperators: Set<string>;
   skipTypes: Set<string>;
+  /** See ComplexityRules.bodySiblingTypes — same split-signature/body case (#2182). */
+  bodySiblingTypes?: Set<string> | null;
 }
 
 /** CFG rules for a language (merged result of CFG_DEFAULTS + overrides). */
@@ -1156,6 +1175,8 @@ export interface CfgRulesConfig {
 /** Dataflow rules for a language (merged result of DATAFLOW_DEFAULTS + overrides). */
 export interface DataflowRulesConfig {
   functionNodes: Set<string>;
+  /** See ComplexityRules.bodySiblingTypes — same split-signature/body case (#2182). */
+  bodySiblingTypes?: Set<string> | null;
   nameField: string;
   /** Override for languages with nested function name structures (e.g. C/C++). */
   nameExtractor: ((node: TreeSitterNode) => string | null) | null;
