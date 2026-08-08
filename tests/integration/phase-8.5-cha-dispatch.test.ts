@@ -244,4 +244,55 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
       `Expected NO runJob → AbstractJob.run edge (AbstractJob is never instantiated).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
     ).toBeUndefined();
   });
+
+  // ── CHA additive over an earlier-tier short-circuit (issue #2139) ──────
+  // dispatchGreeting(g: IGreeter) calls g.greet() — but this file also
+  // imports a free function named `greet`. On the native engine, the
+  // import-aware resolution tier matched call.name ("greet") regardless of
+  // receiver and returned before CHA/RTA ever ran, so neither implementor
+  // edge was ever produced. CHA must now fire additively regardless of
+  // what the primary cascade already resolved.
+
+  it('CHA additive: emits dispatchGreeting → FormalGreeter.greet despite a same-named free-function import', () => {
+    const edge = callEdges.find(
+      (e) =>
+        e.caller_name === 'dispatchGreeting' &&
+        e.callee_name === 'FormalGreeter.greet' &&
+        e.callee_file === 'FormalGreeter.ts',
+    );
+    expect(
+      edge,
+      `Expected dispatchGreeting → FormalGreeter.greet edge (CHA must be additive, not short-circuited by the free-function import match).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
+    ).toBeDefined();
+    expect(edge?.technique).toBe('cha');
+  });
+
+  it('CHA additive: emits dispatchGreeting → CasualGreeter.greet despite a same-named free-function import', () => {
+    const edge = callEdges.find(
+      (e) =>
+        e.caller_name === 'dispatchGreeting' &&
+        e.callee_name === 'CasualGreeter.greet' &&
+        e.callee_file === 'CasualGreeter.ts',
+    );
+    expect(
+      edge,
+      `Expected dispatchGreeting → CasualGreeter.greet edge (CHA must be additive, not short-circuited by the free-function import match).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
+    ).toBeDefined();
+    expect(edge?.technique).toBe('cha');
+  });
+
+  it('CHA additive: still emits the primary import-aware edge to the free function greet()', () => {
+    // runGreetings() also calls bare greet() — the free-function import edge
+    // this issue's fix must not regress or duplicate away.
+    const edge = callEdges.find(
+      (e) =>
+        e.caller_name === 'runGreetings' &&
+        e.callee_name === 'greet' &&
+        e.callee_file === 'greet.ts',
+    );
+    expect(
+      edge,
+      `Expected runGreetings → greet (free function) edge to survive alongside the new CHA edges.\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
+    ).toBeDefined();
+  });
 });

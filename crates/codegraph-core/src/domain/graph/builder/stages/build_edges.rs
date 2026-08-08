@@ -336,6 +336,69 @@ fn resolve_cha_dispatch<'a>(
     results
 }
 
+/// Additive typed-receiver CHA dispatch expansion (issue #2139). Mirrors the
+/// typed-receiver branch of `emitChaCallEdgesForCall` in `build-edges.ts`
+/// exactly: unlike tier 3.7 inside `resolve_call_targets` above (which only
+/// fires when the whole mutually-exclusive resolution cascade already found
+/// nothing), this runs unconditionally for every receiver call, additive to
+/// whatever the cascade already resolved.
+///
+/// That distinction is the actual bug this closes: an earlier cascade tier
+/// (e.g. import-aware resolution, which matches `call.name` regardless of
+/// receiver) can return a target and short-circuit the whole cascade before
+/// tier 3.7 ever runs — so a genuinely interface-typed, multi-implementer
+/// receiver dispatch (`repo.getClassHierarchy()` where `getClassHierarchy`
+/// is *also* an importable free function) never reached CHA resolution at
+/// all. WASM has no such gap because `emitChaCallEdgesForCall` is called as
+/// an unconditional additive step (Step 6 of `buildFileCallEdges`), not a
+/// last-resort fallback tier.
+///
+/// `this`/`self`/`super` dispatch is intentionally excluded — that's handled
+/// separately (and already correctly) by `runPostNativeThisDispatch`
+/// (native-orchestrator.ts); mixing the two would risk duplicate or
+/// conflicting edges for the same call site.
+fn emit_cha_dispatch_edges(
+    ctx: &EdgeContext,
+    call: &CallInfo,
+    caller_id: u32,
+    type_map: &HashMap<&str, (&str, f64)>,
+    seen_edges: &mut HashSet<u64>,
+    pts_edge_map: &HashMap<u64, usize>,
+    edges: &mut Vec<ComputedEdge>,
+) {
+    let Some(ref receiver) = call.receiver else {
+        return;
+    };
+    if ctx.builtin_set.contains(receiver.as_str())
+        || receiver == "this"
+        || receiver == "self"
+        || receiver == "super"
+    {
+        return;
+    }
+
+    let Some(&(type_name, _)) = type_map.get(receiver.as_str()) else {
+        return;
+    };
+
+    for t in resolve_cha_dispatch(ctx, type_name, call.name.as_str()) {
+        let edge_key = ((caller_id as u64) << 32) | (t.id as u64);
+        if t.id != caller_id && !seen_edges.contains(&edge_key) && !pts_edge_map.contains_key(&edge_key)
+        {
+            seen_edges.insert(edge_key);
+            edges.push(ComputedEdge {
+                source_id: caller_id,
+                target_id: t.id,
+                kind: "calls".to_string(),
+                confidence: CHA_TYPED_DISPATCH_CONFIDENCE,
+                dynamic: 0,
+                dynamic_kind: None,
+                technique: Some("cha".to_string()),
+            });
+        }
+    }
+}
+
 /// Collect the set of property/method names ever invoked via member-call
 /// syntax (`x.name(...)`) across every file currently being processed —
 /// regardless of whether the receiver `x` itself resolves to anything.
@@ -1137,6 +1200,19 @@ fn process_file<'a>(
             confidence_override,
             &mut seen_edges,
             &mut pts_edge_map,
+            edges,
+        );
+
+        // #2139: additive typed-receiver CHA dispatch — see doc comment on
+        // emit_cha_dispatch_edges for why this must be unconditional rather
+        // than folded into resolve_call_targets' mutually-exclusive cascade.
+        emit_cha_dispatch_edges(
+            ctx,
+            call,
+            caller_id,
+            &fc.type_map,
+            &mut seen_edges,
+            &pts_edge_map,
             edges,
         );
 
@@ -5042,11 +5118,18 @@ mod call_edge_tests {
         );
     }
 
-    /// When the interface's own qualified method already passes the
-    /// proximity gate (same directory as the caller), the existing
-    /// type-aware tier must win outright — the CHA fallback must not run at
-    /// all, let alone override an already-successful resolution with a
-    /// different target or a different (flat) confidence.
+    /// #2139: CHA dispatch is additive, not a last-resort fallback — when the
+    /// interface's own qualified method already passes the proximity gate
+    /// (tier 3, `typed`), the caller still ALSO gets a CHA-expanded edge to
+    /// every instantiated concrete implementer (`emit_cha_dispatch_edges`,
+    /// run unconditionally from `process_file`). This mirrors WASM's actual
+    /// behavior exactly — `emitChaCallEdgesForCall` in build-edges.ts runs as
+    /// an unconditional Step 6 regardless of what the earlier cascade
+    /// resolved, verified empirically against `resolveViaRepo` in this same
+    /// repo (both engines emit the direct `Repository.findNodeById` hit AND
+    /// the three `{InMemory,Native,Sqlite}Repository.findNodeById` CHA
+    /// edges). Before #2139 this test asserted the opposite (mutually
+    /// exclusive) — that assumption was never actually WASM-parity-correct.
     #[test]
     fn cha_typed_dispatch_fallback_does_not_override_successful_proximity_lookup() {
         let all_nodes = vec![
@@ -5108,21 +5191,30 @@ mod call_edge_tests {
         let calls_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert_eq!(
             calls_edges.len(),
-            1,
-            "expected exactly one calls edge (the direct interface hit); got: {:?}",
+            2,
+            "expected both the direct interface hit AND the additive CHA-expanded edge; got: {:?}",
             calls_edges
                 .iter()
                 .map(|e| (e.source_id, e.target_id, e.confidence))
                 .collect::<Vec<_>>()
         );
-        let edge = calls_edges[0];
-        assert_eq!(
-            edge.target_id, 2,
-            "expected the interface method (same-dir proximity hit), not the CHA fallback"
-        );
+
+        let direct = calls_edges
+            .iter()
+            .find(|e| e.target_id == 2)
+            .expect("expected the interface method (same-dir proximity hit)");
         assert!(
-            (edge.confidence - CHA_TYPED_DISPATCH_CONFIDENCE).abs() > 1e-9,
-            "expected proximity-based confidence, not the flat CHA_TYPED_DISPATCH_CONFIDENCE"
+            (direct.confidence - CHA_TYPED_DISPATCH_CONFIDENCE).abs() > 1e-9,
+            "expected proximity-based confidence on the direct hit, not the flat CHA_TYPED_DISPATCH_CONFIDENCE"
+        );
+
+        let cha = calls_edges
+            .iter()
+            .find(|e| e.target_id == 4)
+            .expect("expected the additive CHA-expanded edge to LocalImpl.run");
+        assert!(
+            (cha.confidence - CHA_TYPED_DISPATCH_CONFIDENCE).abs() < 1e-9,
+            "expected the flat CHA_TYPED_DISPATCH_CONFIDENCE on the CHA-expanded edge"
         );
     }
 
