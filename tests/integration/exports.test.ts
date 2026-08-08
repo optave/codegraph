@@ -275,10 +275,16 @@ describe('exportsData — import type consumer crediting (#1724)', () => {
     const configIface = insertNode(db, 'Config', 'interface', 'types.ts', 1);
     // Interface exported from types.ts, genuinely never referenced anywhere.
     const unusedIface = insertNode(db, 'Unused', 'interface', 'types.ts', 10);
+    // Exported function called from a bare top-level statement in
+    // consumer.ts with no enclosing function/binding — findCaller falls
+    // back to the *file* node as the call's source in that case, so this
+    // is a genuine 'calls' edge sourced from a file-kind node (#2189).
+    const topLevelTarget = insertNode(db, 'topLevelTarget', 'function', 'types.ts', 20);
 
     const markExported = db.prepare('UPDATE nodes SET exported = 1 WHERE id = ?');
     markExported.run(configIface);
     markExported.run(unusedIface);
+    markExported.run(topLevelTarget);
 
     // consumer.ts does `import type { Config } from './types'`. The builder
     // emits the symbol-level edge with the importing *file* as source (see
@@ -286,6 +292,9 @@ describe('exportsData — import type consumer crediting (#1724)', () => {
     // and incremental.ts) since the import statement — not a specific
     // function — is what references the type.
     insertEdge(db, fConsumer, configIface, 'imports-type');
+    // consumer.ts calls topLevelTarget() from a bare top-level statement —
+    // a real 'calls' edge sourced from the file node itself (#2189).
+    insertEdge(db, fConsumer, topLevelTarget, 'calls');
 
     db.close();
   });
@@ -315,6 +324,20 @@ describe('exportsData — import type consumer crediting (#1724)', () => {
     // importing file), unlike a real caller whose name is a function/method.
     expect(config.consumers[0].name).toBe('consumer.ts');
     expect(config.consumers[0].line).toBe(0);
+  });
+
+  // Regression coverage for #2189: a genuine top-level `calls` edge sourced
+  // from a file node (findCaller's fallback for a bare top-level statement
+  // with no enclosing function/binding) must NOT be misclassified as a
+  // type-only import just because its source happens to be file-kind —
+  // the discriminator must key off the *edge* kind, not the source node's
+  // kind, which the two rows in this fixture happen to share.
+  test('a real top-level call sourced from a file node is discriminated as symbol-level, not file-level (#2189)', () => {
+    const data = exportsData('types.ts', dbPath2);
+    const target = data.results.find((r) => r.name === 'topLevelTarget');
+    expect(target).toBeDefined();
+    expect(target.consumers.length).toBe(1);
+    expect(target.consumers[0].consumerKind).toBe('symbol');
   });
 
   test('interface consumed only via `import type` is excluded from --unused', () => {
