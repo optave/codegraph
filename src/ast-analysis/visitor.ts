@@ -12,6 +12,7 @@
  */
 
 import { debug } from '../infrastructure/logger.js';
+import { findBodySiblingNode } from '../shared/ast-nodes.js';
 import type {
   ScopeEntry,
   TreeSitterNode,
@@ -27,6 +28,17 @@ function mergeFunctionNodeTypes(visitors: Visitor[], base: Set<string>): Set<str
   for (const v of visitors) {
     if (v.functionNodeTypes) {
       for (const t of v.functionNodeTypes) merged.add(t);
+    }
+  }
+  return merged;
+}
+
+/** Merge each visitor's custom bodySiblingTypes into the master set. */
+function mergeBodySiblingTypes(visitors: Visitor[], base: Set<string>): Set<string> {
+  const merged = new Set(base);
+  for (const v of visitors) {
+    if (v.bodySiblingTypes) {
+      for (const t of v.bodySiblingTypes) merged.add(t);
     }
   }
   return merged;
@@ -155,22 +167,37 @@ function collectResults(visitors: Visitor[]): WalkResults {
 interface WalkState {
   visitors: Visitor[];
   allFuncTypes: Set<string>;
+  bodySiblingTypes: Set<string>;
   nestingNodeTypes: Set<string>;
   getFunctionName: (node: TreeSitterNode) => string | null;
   context: VisitorContext;
   scopeStack: ScopeEntry[];
   skipDepths: Map<number, number>;
+  /**
+   * IDs (TreeSitterNode.id, not object references — tree-sitter node
+   * wrapper objects aren't stable across separate .child()/.parent calls
+   * for the same underlying AST position, confirmed by the existing
+   * .id-based sibling comparison in src/extractors/dart.ts) of body-sibling
+   * nodes already walked as part of their function's scope (see the
+   * isFuncBoundary branch in walkNode). The node's own parent will still
+   * reach this same node later in its normal child iteration — without
+   * this guard it would be walked (and its enterNode/enterFunction effects
+   * double-dispatched) a second time, outside the function's scope.
+   */
+  consumedSiblingIds: Set<number>;
 }
 
 /** Build walk state from options: resolve function types, init visitors, create shared context. */
 function buildWalkState(visitors: Visitor[], langId: string, options: WalkOptions): WalkState {
   const {
     functionNodeTypes = new Set<string>(),
+    bodySiblingTypes = new Set<string>(),
     nestingNodeTypes = new Set<string>(),
     getFunctionName = () => null,
   } = options;
 
   const allFuncTypes = mergeFunctionNodeTypes(visitors, functionNodeTypes);
+  const allBodySiblingTypes = mergeBodySiblingTypes(visitors, bodySiblingTypes);
   initVisitors(visitors, langId);
 
   const scopeStack: ScopeEntry[] = [];
@@ -184,17 +211,20 @@ function buildWalkState(visitors: Visitor[], langId: string, options: WalkOption
   return {
     visitors,
     allFuncTypes,
+    bodySiblingTypes: allBodySiblingTypes,
     nestingNodeTypes,
     getFunctionName,
     context,
     scopeStack,
     skipDepths: new Map<number, number>(),
+    consumedSiblingIds: new Set<number>(),
   };
 }
 
 /** Single DFS step: dispatch enter/exit hooks and recurse into children. */
 function walkNode(state: WalkState, node: TreeSitterNode | null, depth: number): void {
   if (!node) return;
+  if (state.consumedSiblingIds.has(node.id)) return;
   if (depth > MAX_WALK_DEPTH) {
     debug(`walkWithVisitors: AST depth limit (${MAX_WALK_DEPTH}) hit — subtree truncated`);
     return;
@@ -203,11 +233,13 @@ function walkNode(state: WalkState, node: TreeSitterNode | null, depth: number):
   const {
     visitors,
     allFuncTypes,
+    bodySiblingTypes,
     nestingNodeTypes,
     getFunctionName,
     context,
     scopeStack,
     skipDepths,
+    consumedSiblingIds,
   } = state;
   const type = node.type;
   const isFuncBoundary = allFuncTypes.has(type);
@@ -235,6 +267,24 @@ function walkNode(state: WalkState, node: TreeSitterNode | null, depth: number):
   clearSkipFlags(skipDepths, visitors.length, depth);
 
   if (isFuncBoundary) {
+    // Some grammars (e.g. tree-sitter-dart's function_signature/method_signature)
+    // put the function's actual body in a SIBLING node instead of nesting it —
+    // the children loop above never reaches it. Walk it now, while this
+    // function's scope is still on scopeStack, before firing exitFunction.
+    if (bodySiblingTypes.size > 0) {
+      const bodySibling = findBodySiblingNode(node, bodySiblingTypes);
+      // Walk BEFORE marking consumed: walkNode's own early-return guard
+      // checks consumedSiblingIds unconditionally, so marking it first
+      // would make this very call a no-op. The mark only needs to be in
+      // place before the sibling's actual PARENT later reaches it
+      // naturally (via a fresh, non-identical Node wrapper for the same
+      // AST position — hence comparing by .id, not by reference).
+      if (bodySibling && !consumedSiblingIds.has(bodySibling.id)) {
+        walkNode(state, bodySibling, depth + 1);
+        consumedSiblingIds.add(bodySibling.id);
+      }
+    }
+
     dispatchExitFunction(visitors, skipDepths, node, funcName, context, depth);
     scopeStack.pop();
     context.currentFunction =
@@ -250,6 +300,8 @@ function walkNode(state: WalkState, node: TreeSitterNode | null, depth: number):
  * @param {string} langId     - language identifier
  * @param {object} [options]
  * @param {Set}    [options.functionNodeTypes] - set of node types that are function boundaries
+ * @param {Set}    [options.bodySiblingTypes]  - set of node types that are a function's body but
+ *                                               live as a sibling of the boundary node, not a child (#2182)
  * @param {Set}    [options.nestingNodeTypes]  - set of node types that increase nesting depth
  * @param {function} [options.getFunctionName] - (funcNode) => string|null
  * @returns {object} Map of visitor.name → finish() result

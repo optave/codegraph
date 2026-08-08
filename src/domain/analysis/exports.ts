@@ -20,7 +20,7 @@ const _consumersStmtCache: StmtCache<{
   name: string;
   file: string;
   line: number;
-  sourceKind: string;
+  edgeKind: string;
 }> = new WeakMap();
 const _reexportsFromStmtCache: StmtCache<{ file: string }> = new WeakMap();
 const _reexportsToStmtCache: StmtCache<{ file: string }> = new WeakMap();
@@ -184,7 +184,7 @@ function exportsFileImpl(
   const consumersStmt = cachedStmt(
     _consumersStmtCache,
     db,
-    `SELECT n.name, n.file, n.line, n.kind AS sourceKind FROM edges e JOIN nodes n ON e.source_id = n.id
+    `SELECT n.name, n.file, n.line, e.kind AS edgeKind FROM edges e JOIN nodes n ON e.source_id = n.id
          WHERE e.target_id = ? AND e.kind IN ('calls', 'imports-type')`,
   );
   const reexportsFromStmt = cachedStmt(
@@ -232,7 +232,7 @@ function exportsFileImpl(
         name: string;
         file: string;
         line: number;
-        sourceKind: string;
+        edgeKind: string;
       }>;
       if (noTests) consumers = consumers.filter((c) => !isTestFile(c.file));
 
@@ -244,17 +244,24 @@ function exportsFileImpl(
         role: s.role || null,
         signature: fileLines ? extractSignature(fileLines, s.line, displayOpts) : null,
         summary: fileLines ? extractSummary(fileLines, s.line, displayOpts) : null,
-        // `consumerKind` discriminates a real caller/constructor symbol
-        // (source is a function/method/class node with a genuine call-site
-        // line) from a whole-file reference such as `import type { X }`
-        // (source is the importing file node itself — see the comment on
-        // `consumersStmt` above). Renderers must not treat `name`/`line` on
-        // a `'file'` entry as a caller symbol/call-site (#1830).
+        // `consumerKind` discriminates a real caller/constructor symbol (a
+        // genuine `calls` edge, with a real call-site line) from a
+        // whole-file reference such as `import type { X }` (an
+        // `imports-type` edge, always sourced from the importing file node
+        // itself — see emitNamedSymbolEdges). Keyed off the *edge* kind,
+        // not the source node's kind: findCaller falls back to the file
+        // node as a call's source for a genuine top-level call with no
+        // enclosing function/binding (e.g. a bare statement at module
+        // scope), so a `calls` edge can legitimately have a file-kind
+        // source too — using source kind alone would misclassify that real
+        // call as a type-only import (Greptile, #1973/#2189). Renderers
+        // must not treat `name`/`line` on a `'file'` entry as a caller
+        // symbol/call-site (#1830).
         consumers: consumers.map((c) => ({
           name: c.name,
           file: c.file,
           line: c.line,
-          consumerKind: c.sourceKind === 'file' ? ('file' as const) : ('symbol' as const),
+          consumerKind: c.edgeKind === 'imports-type' ? ('file' as const) : ('symbol' as const),
         })),
         consumerCount: consumers.length,
       };

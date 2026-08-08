@@ -14,6 +14,7 @@ import { walkWithVisitors } from '../ast-analysis/visitor.js';
 import { createComplexityVisitor } from '../ast-analysis/visitors/complexity-visitor.js';
 import { getFunctionNodeId } from '../db/index.js';
 import { debug, info } from '../infrastructure/logger.js';
+import { findBodySiblingNode } from '../shared/ast-nodes.js';
 import type {
   BetterSqlite3Database,
   ComplexityRules,
@@ -112,6 +113,14 @@ export function computeHalsteadMetrics(
   }
 
   walk(functionNode);
+
+  // Some grammars (e.g. tree-sitter-dart) put the function's body in a
+  // sibling node rather than nesting it inside functionNode (#2182) — walk
+  // it too, additively, so its operators/operands aren't silently missed.
+  if (rules.bodySiblingTypes) {
+    const bodySibling = findBodySiblingNode(functionNode, rules.bodySiblingTypes);
+    if (bodySibling) walk(bodySibling);
+  }
 
   return summarizeHalsteadCounts(operators, operands);
 }
@@ -328,6 +337,16 @@ export function computeFunctionComplexity(
   }
 
   walk(functionNode, 0, true);
+
+  // Some grammars (e.g. tree-sitter-dart) put the function's body in a
+  // sibling node rather than nesting it inside functionNode (#2182) — walk
+  // it too, additively (isTopFunction=false, so a nested function inside
+  // the body is still treated as nested rather than as this function's own
+  // top-level scope again).
+  if (rules.bodySiblingTypes) {
+    const bodySibling = findBodySiblingNode(functionNode, rules.bodySiblingTypes);
+    if (bodySibling) walk(bodySibling, 0, false);
+  }
 
   return { cognitive: acc.cognitive, cyclomatic: acc.cyclomatic, maxNesting: acc.maxNesting };
 }
