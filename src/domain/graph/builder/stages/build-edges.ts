@@ -684,11 +684,29 @@ function unwrapOptionResultType(typeName: string): string | undefined {
     if (c === '<') depth++;
     else if (c === '>') depth--;
     else if (c === ',' && depth === 0) {
-      const first = inner.slice(0, i).trim();
-      return first || undefined;
+      return normalizeUnwrappedGenericArg(inner.slice(0, i).trim());
     }
   }
-  return inner.trim() || undefined;
+  return normalizeUnwrappedGenericArg(inner.trim());
+}
+
+/**
+ * Apply the same nominal-vs-full-generic rule extractRustTypeName applies at
+ * extraction time to an unwrapped Some(x)/Ok(x) binding's inner type — bare for
+ * an ordinary generic (Option<Vec<User>>'s inner Vec<User> becomes x's type
+ * Vec, matching how a direct `let x: Vec<User> = ...` annotation would type
+ * it), full text for a nested Option/Result (Option<Option<User>>'s inner
+ * Option<User> stays Option<User> — if-let only strips one layer, so x's real
+ * type still needs its own type argument for a later unwrap). Without this, a
+ * nested generic payload would inject a parameterized name where every other
+ * path in this pipeline injects a bare one (Greptile review, PR #2371).
+ */
+function normalizeUnwrappedGenericArg(arg: string): string | undefined {
+  if (!arg) return undefined;
+  const ltIdx = arg.indexOf('<');
+  if (ltIdx === -1) return arg;
+  const innerBase = arg.slice(0, ltIdx).trim();
+  return isOptionOrResultBase(innerBase) ? arg : innerBase;
 }
 
 // ── Call edges (native engine) ──────────────────────────────────────────

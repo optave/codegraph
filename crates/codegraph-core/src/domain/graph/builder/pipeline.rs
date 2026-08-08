@@ -1743,16 +1743,35 @@ fn unwrap_option_result_type(type_name: &str) -> Option<&str> {
             '>' => depth -= 1,
             ',' if depth == 0 => {
                 let first = inner[..i].trim();
-                return if first.is_empty() { None } else { Some(first) };
+                return normalize_unwrapped_generic_arg(first);
             }
             _ => {}
         }
     }
-    let first = inner.trim();
-    if first.is_empty() {
-        None
+    normalize_unwrapped_generic_arg(inner.trim())
+}
+
+/// Apply the same nominal-vs-full-generic rule `extract_rust_type_name` applies
+/// at extraction time to an unwrapped `Some(x)`/`Ok(x)` binding's inner type —
+/// bare for an ordinary generic (`Option<Vec<User>>`'s inner `Vec<User>` becomes
+/// `x`'s type `Vec`, matching how a direct `let x: Vec<User> = ...` annotation
+/// would type it), full text for a nested Option/Result (`Option<Option<User>>`'s
+/// inner `Option<User>` stays `Option<User>` — if-let only strips one layer, so
+/// `x`'s real type still needs its own type argument for a later unwrap).
+/// Without this, a nested generic payload would inject a parameterized name where
+/// every other path in this pipeline injects a bare one (Greptile review, PR #2371).
+fn normalize_unwrapped_generic_arg(arg: &str) -> Option<&str> {
+    if arg.is_empty() {
+        return None;
+    }
+    let Some((inner_base, _rest)) = arg.split_once('<') else {
+        return Some(arg);
+    };
+    let inner_base = inner_base.trim();
+    if crate::extractors::rust_lang::is_option_or_result_base(inner_base) {
+        Some(arg)
     } else {
-        Some(first)
+        Some(inner_base)
     }
 }
 
@@ -2768,10 +2787,25 @@ mod tests {
     }
 
     #[test]
-    fn unwrap_option_result_type_handles_nested_generics_in_the_first_argument() {
+    fn unwrap_option_result_type_normalizes_an_ordinary_generic_inner_type_to_its_bare_name() {
+        // Result<Vec<User>, String>'s inner type argument is itself a generic —
+        // the unwrapped type must be bare "Vec", matching how a direct
+        // `let x: Vec<User> = ...` annotation would type it, not the
+        // parameterized "Vec<User>" (Greptile review, PR #2371).
         assert_eq!(
             unwrap_option_result_type("Result<Vec<User>, String>"),
-            Some("Vec<User>")
+            Some("Vec")
+        );
+    }
+
+    #[test]
+    fn unwrap_option_result_type_keeps_a_nested_option_result_inner_type_parameterized() {
+        // if-let only strips one layer — Option<Option<User>>'s inner type
+        // argument is itself Option/Result, so it keeps its own type argument
+        // (needed for a later unwrap), unlike an ordinary generic.
+        assert_eq!(
+            unwrap_option_result_type("Option<Option<User>>"),
+            Some("Option<User>")
         );
     }
 
