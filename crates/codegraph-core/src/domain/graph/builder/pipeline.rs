@@ -725,6 +725,12 @@ pub fn run_pipeline(
     import_edges::persist_reexport_renames(conn, &import_ctx.reexport_map)
         .map_err(|e| format!("reexport rename persistence failed: {e}"))?;
 
+    // #2138: persist this pass's own return-type evidence before it's read
+    // back below — gives a later incremental build a durable, whole-graph
+    // view of files it doesn't itself re-parse.
+    import_edges::persist_return_types(conn, &file_symbols)
+        .map_err(|e| format!("return type persistence failed: {e}"))?;
+
     // Build import edges. A write failure here (transaction-start, a
     // malformed chunk, or commit) propagates via `?` instead of being
     // discarded — the old `run_pipeline` had no way to know edges were
@@ -737,7 +743,7 @@ pub fn run_pipeline(
     // Phase 8.2: cross-file return-type propagation — seed each file's
     // type_map with the return types of imported functions before call-edge
     // building, mirroring propagateReturnTypesAcrossFiles in build-edges.ts.
-    propagate_return_types_across_files(&mut file_symbols, &import_ctx);
+    propagate_return_types_across_files(conn, &mut file_symbols, &import_ctx);
 
     // Build call edges using existing Rust edge_builder (internal path)
     // For now, call edges are built via the existing napi-exported function's
@@ -1602,12 +1608,13 @@ fn collect_imported_names_for_file(
 /// so method calls and receiver edges on that variable resolve. Must run
 /// before `build_and_insert_call_edges`.
 fn propagate_return_types_across_files(
+    conn: &Connection,
     file_symbols: &mut BTreeMap<String, FileSymbols>,
     import_ctx: &ImportEdgeContext,
 ) {
     use crate::domain::graph::builder::stages::build_edges::PROPAGATION_HOP_PENALTY;
 
-    let (return_type_index, global_return_types) = build_return_type_index(file_symbols);
+    let (return_type_index, global_return_types) = build_return_type_index(conn, file_symbols);
     if return_type_index.is_empty() {
         return;
     }
@@ -1633,7 +1640,17 @@ fn propagate_return_types_across_files(
 /// - `return_type_index`: `rel_path → (fn_name → (type_name, confidence))`
 /// - `global_return_types`: flat map for qualified `Type.method` lookups; higher
 ///   confidence wins, tie-break is deterministic (paths visited in sorted order).
+///
+/// #2138: unions in DB-persisted return types (`return_types`, written by
+/// `persist_return_types`) for files not present in `file_symbols` — i.e.
+/// files this build pass didn't itself re-parse. On a scoped incremental
+/// build a barrel-adjacent file can get its outgoing edges wiped and
+/// re-derived from this index alone; without the DB union, dispatch to a
+/// factory/getter defined in an untouched file (e.g. `getWasmWorkerPool()`)
+/// silently drops out. Files with fresh in-memory data are never overridden
+/// by (potentially stale) persisted rows.
 fn build_return_type_index(
+    conn: &Connection,
     file_symbols: &BTreeMap<String, FileSymbols>,
 ) -> (
     HashMap<String, HashMap<String, (String, f64)>>,
@@ -1647,6 +1664,31 @@ fn build_return_type_index(
         let per_file = return_type_index.entry(rel_path.clone()).or_default();
         for e in &symbols.return_type_map {
             per_file.insert(e.name.clone(), (e.type_name.clone(), e.confidence));
+        }
+    }
+
+    let fresh_files: HashSet<String> = return_type_index.keys().cloned().collect();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT file, fn_name, type_name, confidence FROM return_types")
+    {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                let (file, fn_name, type_name, confidence) = row;
+                if fresh_files.contains(&file) {
+                    continue;
+                }
+                return_type_index
+                    .entry(file)
+                    .or_default()
+                    .insert(fn_name, (type_name, confidence));
+            }
         }
     }
 
@@ -2421,7 +2463,8 @@ mod tests {
         file_symbols.insert("driver.js".to_string(), driver);
         let import_ctx = make_import_ctx(&file_symbols);
 
-        propagate_return_types_across_files(&mut file_symbols, &import_ctx);
+        let conn = Connection::open_in_memory().unwrap();
+        propagate_return_types_across_files(&conn, &mut file_symbols, &import_ctx);
 
         let driver = &file_symbols["driver.js"];
         let seeded = driver
@@ -2456,7 +2499,8 @@ mod tests {
         file_symbols.insert("driver.js".to_string(), driver);
         let import_ctx = make_import_ctx(&file_symbols);
 
-        propagate_return_types_across_files(&mut file_symbols, &import_ctx);
+        let conn = Connection::open_in_memory().unwrap();
+        propagate_return_types_across_files(&conn, &mut file_symbols, &import_ctx);
 
         let driver = &file_symbols["driver.js"];
         let seeded = driver
@@ -2495,7 +2539,8 @@ mod tests {
         file_symbols.insert("driver.js".to_string(), driver);
         let import_ctx = make_import_ctx(&file_symbols);
 
-        propagate_return_types_across_files(&mut file_symbols, &import_ctx);
+        let conn = Connection::open_in_memory().unwrap();
+        propagate_return_types_across_files(&conn, &mut file_symbols, &import_ctx);
 
         let driver = &file_symbols["driver.js"];
         let svc_entries: Vec<_> = driver.type_map.iter().filter(|t| t.name == "svc").collect();

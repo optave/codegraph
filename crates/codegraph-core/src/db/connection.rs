@@ -502,6 +502,32 @@ const MIGRATIONS: &[Migration] = &[
       CREATE INDEX IF NOT EXISTS idx_invoked_property_names_name ON invoked_property_names(name);
     "#,
     },
+    Migration {
+        // #2138: durable, per-file record of every function/method's
+        // inferred return type — needed so cross-file return-type
+        // propagation (propagate_return_types_across_files /
+        // propagateReturnTypesAcrossFiles) can resolve
+        // `const x = importedFactory(); x.method()`-shaped dispatch to a
+        // file this build never re-parsed. Without this, an incremental
+        // build that re-parses a barrel-adjacent file wipes that file's
+        // outgoing calls/receiver edges and re-derives them from an
+        // in-memory return-type index scoped only to this build's file set,
+        // so a factory/getter defined in an untouched file silently drops
+        // out of dispatch resolution until a full --no-incremental rebuild.
+        // Populated once per full or incremental build (both engines).
+        // Mirrors src/db/migrations.ts v30.
+        version: 30,
+        up: r#"
+      CREATE TABLE IF NOT EXISTS return_types (
+        file TEXT NOT NULL,
+        fn_name TEXT NOT NULL,
+        type_name TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        PRIMARY KEY (file, fn_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_return_types_file ON return_types(file);
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────

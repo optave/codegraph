@@ -540,6 +540,15 @@ function buildImportEdgesNative(
  * the callee's return type in the source file's returnTypeMap and inject it.
  *
  * Called once before call-edge building so both the native and JS paths benefit.
+ *
+ * #2138: on a scoped incremental build, `fileSymbols` only contains the files
+ * this pass actually re-parsed — a barrel-adjacent file dragged into the
+ * changed set gets its outgoing edges wiped and re-derived from this
+ * in-memory index alone, silently losing dispatch to a factory/getter
+ * defined in an untouched file. Unioning in `return_types` (persisted once
+ * per build, see persistReturnTypes) closes that gap for files this pass
+ * didn't itself parse — in-memory entries always win since they reflect
+ * this revision.
  */
 function propagateReturnTypesAcrossFiles(
   fileSymbols: Map<string, ExtractorOutput>,
@@ -550,6 +559,18 @@ function propagateReturnTypesAcrossFiles(
   const returnTypeIndex = new Map<string, Map<string, TypeMapEntry>>();
   for (const [relPath, symbols] of fileSymbols) {
     if (symbols.returnTypeMap?.size) returnTypeIndex.set(relPath, symbols.returnTypeMap);
+  }
+  const freshFiles = new Set(returnTypeIndex.keys());
+  for (const row of ctx.db
+    .prepare('SELECT file, fn_name, type_name, confidence FROM return_types')
+    .all() as Array<{ file: string; fn_name: string; type_name: string; confidence: number }>) {
+    if (freshFiles.has(row.file)) continue; // fresh in-memory data wins
+    let perFile = returnTypeIndex.get(row.file);
+    if (!perFile) {
+      perFile = new Map();
+      returnTypeIndex.set(row.file, perFile);
+    }
+    perFile.set(row.fn_name, { type: row.type_name, confidence: row.confidence });
   }
   if (returnTypeIndex.size === 0) return;
 
@@ -982,6 +1003,33 @@ function persistInvokedPropertyNames(ctx: PipelineContext): void {
       const names = collectInvokedPropertyNames([symbols.calls]);
       for (const name of names) {
         insertStmt.run(relPath, name);
+      }
+    }
+  });
+  tx();
+}
+
+/**
+ * Persist per-file return-type evidence (#2138) into `return_types` — gives
+ * a later incremental build's propagateReturnTypesAcrossFiles() a durable,
+ * whole-graph view of files it doesn't itself re-parse. See that function's
+ * doc comment for the false-negative this closes.
+ *
+ * Deletes and re-inserts per file so a file whose return types changed (or
+ * were removed entirely) never leaves stale rows behind for it.
+ */
+function persistReturnTypes(ctx: PipelineContext): void {
+  const { db, fileSymbols } = ctx;
+  const deleteStmt = db.prepare('DELETE FROM return_types WHERE file = ?');
+  const insertStmt = db.prepare(
+    'INSERT OR IGNORE INTO return_types (file, fn_name, type_name, confidence) VALUES (?, ?, ?, ?)',
+  );
+
+  const tx = db.transaction(() => {
+    for (const [relPath, symbols] of fileSymbols) {
+      deleteStmt.run(relPath);
+      for (const [fnName, entry] of symbols.returnTypeMap ?? []) {
+        insertStmt.run(relPath, fnName, entry.type, entry.confidence);
       }
     }
   });
@@ -2511,6 +2559,8 @@ function buildCallEdgesPhase(
   // #2087: persist once per pass regardless of which sub-path below resolves
   // this build's edges — see persistInvokedPropertyNames doc comment.
   persistInvokedPropertyNames(ctx);
+  // #2138: same rationale, for cross-file return-type propagation.
+  persistReturnTypes(ctx);
 
   // Skip native call-edge path for small incremental builds: napi-rs
   // marshaling overhead for allNodes exceeds Rust computation savings.
@@ -2636,9 +2686,11 @@ export async function buildEdges(ctx: PipelineContext): Promise<void> {
   const native = ctx.engineName === 'native' ? loadNative() : null;
 
   // Phase 8.2: Augment typeMaps with cross-file return-type propagation before
-  // the transaction opens. This is pure in-memory mutation (no DB I/O) and must
-  // run outside the transaction to avoid leaving ctx.fileSymbols in a partial
-  // state if the transaction rolls back unexpectedly.
+  // the transaction opens. This only reads return_types (#2138) — the write
+  // happens later in persistReturnTypes, inside buildCallEdgesPhase — so it's
+  // still safe to run outside the transaction, avoiding leaving
+  // ctx.fileSymbols in a partial state if the transaction rolls back
+  // unexpectedly.
   propagateReturnTypesAcrossFiles(ctx.fileSymbols, ctx, ctx.rootDir);
   // Phase 8.5: Build CHA context after propagation so typeMap confidence values
   // (used for RTA seeding) reflect any cross-file propagated types.

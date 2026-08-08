@@ -1123,6 +1123,10 @@ pub fn purge_changed_files(
         // never leaves stale rows behind for the incremental #1895 liveness
         // check to read later.
         ("DELETE FROM invoked_property_names WHERE file = ?1", false),
+        // #2138: per-file return-type evidence — cleared so a deleted (or
+        // changed) file never leaves stale rows behind for cross-file
+        // return-type propagation to read on a later incremental build.
+        ("DELETE FROM return_types WHERE file = ?1", false),
         // Core tables (errors logged)
         ("DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?1) OR target_id IN (SELECT id FROM nodes WHERE file = ?1)", true),
         ("DELETE FROM nodes WHERE file = ?1", true),
@@ -1169,6 +1173,7 @@ pub fn clear_all_graph_data(conn: &Connection, has_embeddings: bool) {
          DELETE FROM cfg_edges; DELETE FROM cfg_blocks; DELETE FROM node_metrics; \
          DELETE FROM edges; DELETE FROM function_complexity; DELETE FROM dataflow; \
          DELETE FROM ast_nodes; DELETE FROM reexport_renames; DELETE FROM invoked_property_names; \
+         DELETE FROM return_types; \
          DELETE FROM nodes; DELETE FROM file_hashes;",
     );
     if has_embeddings {

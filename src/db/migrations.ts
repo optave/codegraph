@@ -544,6 +544,38 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_invoked_property_names_name ON invoked_property_names(name);
     `,
   },
+  {
+    // #2138: durable, per-file record of every function/method's inferred
+    // return type — needed so cross-file return-type propagation
+    // (propagateReturnTypesAcrossFiles / propagate_return_types_across_files)
+    // can resolve `const x = importedFactory(); x.method()`-shaped dispatch
+    // to a file this build never re-parsed.
+    //
+    // Without this, an incremental build that re-parses a barrel-adjacent
+    // file (Stage 6b) wipes that file's outgoing calls/receiver edges and
+    // re-derives them from an in-memory return-type index built only from
+    // *this build's* file set — so a factory/getter defined in an untouched
+    // file (e.g. `getWasmWorkerPool()` in wasm-worker-pool.ts) silently
+    // drops out, and the edges it fed are lost until a full
+    // `--no-incremental` rebuild. Persisting this table once per full or
+    // incremental build (both engines — the native orchestrator mirrors this
+    // via import_edges::persist_return_types in Rust) gives every build a
+    // durable, whole-graph view for files it didn't itself parse.
+    //
+    // Deletes and re-inserts per file so a file whose return types changed
+    // (or were removed) never leaves stale rows behind for it.
+    version: 30,
+    up: `
+      CREATE TABLE IF NOT EXISTS return_types (
+        file TEXT NOT NULL,
+        fn_name TEXT NOT NULL,
+        type_name TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        PRIMARY KEY (file, fn_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_return_types_file ON return_types(file);
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {

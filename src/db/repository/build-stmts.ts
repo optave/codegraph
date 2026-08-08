@@ -24,6 +24,10 @@ interface PurgeStmts {
    *  in — cleared so a deleted (or no-longer-matching) file never leaves
    *  stale rows behind for the incremental #1895 liveness check to read. */
   invokedPropertyNames: SqliteStatement | null;
+  /** #2138: per-file return-type evidence — cleared so a deleted (or
+   *  changed) file never leaves stale rows behind for cross-file
+   *  return-type propagation to read on a later incremental build. */
+  returnTypes: SqliteStatement | null;
 }
 
 interface PurgeOpts {
@@ -92,6 +96,7 @@ function preparePurgeStmts(db: BetterSqlite3Database): PurgeStmts {
     fileHashes: tryPrepare('DELETE FROM file_hashes WHERE file = ?'),
     reexportRenames: tryPrepare('DELETE FROM reexport_renames WHERE barrel_file = ?'),
     invokedPropertyNames: tryPrepare('DELETE FROM invoked_property_names WHERE file = ?'),
+    returnTypes: tryPrepare('DELETE FROM return_types WHERE file = ?'),
   };
 }
 
@@ -126,6 +131,7 @@ function runPurge(stmts: PurgeStmts, file: string, opts: PurgeOpts = {}): void {
   stmts.astNodes?.run(file);
   stmts.reexportRenames?.run(file);
   stmts.invokedPropertyNames?.run(file);
+  stmts.returnTypes?.run(file);
 
   // Core tables
   stmts.edges.run({ f: file });

@@ -333,6 +333,53 @@ pub fn persist_invoked_property_names(
     Ok(())
 }
 
+/// Persist per-file return-type evidence (#2138) into `return_types` — gives
+/// a later incremental build's `propagate_return_types_across_files` a
+/// durable, whole-graph view of files it doesn't itself re-parse this pass.
+/// Mirrors `persistReturnTypes` in `build-edges.ts`. See that function's doc
+/// comment (and `propagate_return_types_across_files`'s) for the
+/// dispatch-edge loss this closes.
+///
+/// Deletes and re-inserts per file so a file whose return types changed (or
+/// were removed entirely) never leaves stale rows behind for it.
+pub fn persist_return_types(
+    conn: &Connection,
+    file_symbols: &BTreeMap<String, FileSymbols>,
+) -> Result<(), String> {
+    if file_symbols.is_empty() {
+        return Ok(());
+    }
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("persist_return_types: failed to start transaction: {e}"))?;
+    {
+        let mut delete_stmt = tx
+            .prepare("DELETE FROM return_types WHERE file = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut insert_stmt = tx
+            .prepare(
+                "INSERT OR IGNORE INTO return_types (file, fn_name, type_name, confidence) VALUES (?1, ?2, ?3, ?4)",
+            )
+            .map_err(|e| e.to_string())?;
+        for (rel_path, symbols) in file_symbols {
+            delete_stmt.execute([rel_path]).map_err(|e| e.to_string())?;
+            for entry in &symbols.return_type_map {
+                insert_stmt
+                    .execute(rusqlite::params![
+                        rel_path,
+                        entry.name,
+                        entry.type_name,
+                        entry.confidence
+                    ])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    tx.commit()
+        .map_err(|e| format!("persist_return_types: commit failed: {e}"))?;
+    Ok(())
+}
+
 /// Detect which of `candidate_paths` are barrel-only (reexport count >=
 /// definition count).
 ///
