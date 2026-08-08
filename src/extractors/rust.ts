@@ -468,17 +468,40 @@ export function isOptionOrResultBase(base: string): boolean {
  * other variant this isn't confident unwrapping). Mirrors
  * `unwrap_option_result_pattern` in `rust_lang.rs`.
  */
-function unwrapOptionResultPattern(pattern: TreeSitterNode): TreeSitterNode {
-  if (pattern.type !== 'tuple_struct_pattern') return pattern;
-  const typeNode = pattern.childForFieldName('type');
-  if (!typeNode) return pattern;
-  const variant = typeNode.text;
-  if (variant !== 'Some' && variant !== 'Ok') return pattern;
-  for (let i = 0; i < pattern.namedChildCount; i++) {
-    const child = pattern.namedChild(i);
-    if (child && child.id !== typeNode.id) return child;
+/**
+ * Unwrap zero or more layers of `Some(...)`/`Ok(...)` wrapping — e.g.
+ * `Some(Some(user))` for a `Option<Option<User>>`-returning call, not just one
+ * layer — returning the innermost non-Some/Ok pattern and how many layers were
+ * stripped. The caller unwraps the callee's declared return type the same
+ * number of times (#2214, Greptile review on PR #2371 — a single unwrap left a
+ * doubly-nested pattern's binding untyped entirely, since `Some(Some(x))`'s
+ * inner pattern is itself a `tuple_struct_pattern`, not an `identifier`, and
+ * the original single-pass version gave up on it).
+ */
+function unwrapOptionResultPattern(pattern: TreeSitterNode): {
+  pattern: TreeSitterNode;
+  depth: number;
+} {
+  let current = pattern;
+  let depth = 0;
+  while (true) {
+    if (current.type !== 'tuple_struct_pattern') return { pattern: current, depth };
+    const typeNode = current.childForFieldName('type');
+    if (!typeNode) return { pattern: current, depth };
+    const variant = typeNode.text;
+    if (variant !== 'Some' && variant !== 'Ok') return { pattern: current, depth };
+    let next: TreeSitterNode | undefined;
+    for (let i = 0; i < current.namedChildCount; i++) {
+      const child = current.namedChild(i);
+      if (child && child.id !== typeNode.id) {
+        next = child;
+        break;
+      }
+    }
+    if (!next) return { pattern: current, depth };
+    current = next;
+    depth++;
   }
-  return pattern;
 }
 
 // ── Return-type map extraction (Phase 8.2 parity, #1876) ────────────────────
@@ -573,8 +596,7 @@ function recordRustCallAssignment(node: TreeSitterNode, ctx: ExtractorOutput): v
   const rawPattern = node.childForFieldName('pattern');
   const value = node.childForFieldName('value');
   if (!rawPattern || value?.type !== 'call_expression') return;
-  const pattern = unwrapOptionResultPattern(rawPattern);
-  const unwrapGeneric = pattern.id !== rawPattern.id;
+  const { pattern, depth: unwrapDepth } = unwrapOptionResultPattern(rawPattern);
   if (pattern.type !== 'identifier') return;
   // A bare fieldless-variant/unit-struct pattern (`if let None = expr`, `if let
   // NameValidator = expr`) is syntactically identical to a variable binding —
@@ -588,7 +610,7 @@ function recordRustCallAssignment(node: TreeSitterNode, ctx: ExtractorOutput): v
   const varName = pattern.text;
 
   if (fn.type === 'identifier') {
-    ctx.callAssignments.push({ varName, calleeName: fn.text, unwrapGeneric });
+    ctx.callAssignments.push({ varName, calleeName: fn.text, unwrapDepth });
     return;
   }
   if (fn.type === 'scoped_identifier') {
@@ -599,7 +621,7 @@ function recordRustCallAssignment(node: TreeSitterNode, ctx: ExtractorOutput): v
         varName,
         calleeName: name.text,
         receiverTypeName: path.text,
-        unwrapGeneric,
+        unwrapDepth,
       });
     }
     return;
@@ -622,7 +644,7 @@ function recordRustCallAssignment(node: TreeSitterNode, ctx: ExtractorOutput): v
         calleeName: field.text,
         receiverTypeName,
         receiverVarName,
-        unwrapGeneric,
+        unwrapDepth,
       });
     }
   }

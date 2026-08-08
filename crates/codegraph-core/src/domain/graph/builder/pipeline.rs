@@ -1878,24 +1878,30 @@ fn inject_return_types_for_file(
         };
 
         if let Some((type_name, confidence)) = found {
-            // `ca.unwrap_generic` means the binding came from a refutable
-            // `Some(x)`/`Ok(x)` pattern — the callee's declared return type is
-            // itself `Option<T>`/`Result<T, _>`, and `x`'s real type is the
-            // unwrapped `T`, not the wrapper. If the declared type turns out not
-            // to actually be a generic Option/Result (a mismatch between the
-            // pattern and the callee's real signature), decline to inject rather
-            // than propagate the wrapper type as if it were `x`'s type (#2214).
-            let resolved_type_name = if ca.unwrap_generic {
-                match unwrap_option_result_type(type_name) {
-                    Some(inner) => Some(inner.to_string()),
-                    None => None,
+            // `ca.unwrap_depth` means the binding came from unwrapping that many
+            // layers of a refutable `Some(x)`/`Ok(x)` pattern — `Some(Some(x))`
+            // is 2, not 1. The callee's declared return type is itself wrapped
+            // that many layers deep (`Option<Option<T>>` for depth 2), and `x`'s
+            // real type is what's left after unwrapping all of them, not the
+            // wrapper. If a layer turns out not to actually be a generic
+            // Option/Result (a mismatch between the pattern and the callee's
+            // real signature), decline to inject rather than propagate a
+            // half-unwrapped type as if it were `x`'s type (#2214).
+            let mut current = type_name.as_str();
+            let mut unwrap_failed = false;
+            for _ in 0..ca.unwrap_depth {
+                match unwrap_option_result_type(current) {
+                    Some(inner) => current = inner,
+                    None => {
+                        unwrap_failed = true;
+                        break;
+                    }
                 }
-            } else {
-                Some(type_name.clone())
-            };
-            let Some(resolved_type_name) = resolved_type_name else {
+            }
+            if unwrap_failed {
                 continue;
-            };
+            }
+            let resolved_type_name = current.to_string();
 
             let propagated = confidence - hop_penalty;
             if propagated > 0.0 {
@@ -2589,7 +2595,7 @@ mod tests {
                 callee_name: "buildService".to_string(),
                 receiver_type_name: None,
                 receiver_var_name: None,
-                unwrap_generic: false,
+                unwrap_depth: 0,
             });
 
         let mut file_symbols = BTreeMap::new();
@@ -2627,7 +2633,7 @@ mod tests {
                 callee_name: "create".to_string(),
                 receiver_type_name: Some("Factory".to_string()),
                 receiver_var_name: None,
-                unwrap_generic: false,
+                unwrap_depth: 0,
             });
 
         let mut file_symbols = BTreeMap::new();
@@ -2667,7 +2673,7 @@ mod tests {
                 callee_name: "get_user".to_string(),
                 receiver_type_name: None,
                 receiver_var_name: Some("service".to_string()),
-                unwrap_generic: true,
+                unwrap_depth: 1,
             });
 
         let mut file_symbols = BTreeMap::new();
@@ -2704,7 +2710,7 @@ mod tests {
                 callee_name: "get_user".to_string(),
                 receiver_type_name: None,
                 receiver_var_name: Some("service".to_string()),
-                unwrap_generic: true,
+                unwrap_depth: 1,
             });
 
         let mut file_symbols = BTreeMap::new();
@@ -2733,7 +2739,7 @@ mod tests {
                 callee_name: "find_by_id".to_string(),
                 receiver_type_name: None,
                 receiver_var_name: Some("repo".to_string()),
-                unwrap_generic: false,
+                unwrap_depth: 0,
             });
 
         let mut file_symbols = BTreeMap::new();
@@ -2773,7 +2779,7 @@ mod tests {
                 callee_name: "buildService".to_string(),
                 receiver_type_name: None,
                 receiver_var_name: None,
-                unwrap_generic: false,
+                unwrap_depth: 0,
             });
 
         let mut file_symbols = BTreeMap::new();
@@ -2852,7 +2858,7 @@ mod tests {
                 callee_name: "get_user_ref".to_string(),
                 receiver_type_name: None,
                 receiver_var_name: Some("service".to_string()),
-                unwrap_generic: true,
+                unwrap_depth: 1,
             });
 
         let mut file_symbols = BTreeMap::new();
@@ -2869,6 +2875,49 @@ mod tests {
             .iter()
             .find(|t| t.name == "user")
             .expect("user should be seeded, unwrapped from Option<&User> to bare User");
+        assert_eq!(seeded.type_name, "User");
+    }
+
+    #[test]
+    fn end_to_end_injects_correctly_for_a_doubly_nested_option_at_depth_two() {
+        // `if let Some(Some(user)) = get_nested_option()` — the callee's
+        // Option<Option<User>> return must be unwrapped twice, not once
+        // (Greptile review, PR #2371).
+        let mut service = FileSymbols::new("service.js".to_string());
+        service
+            .return_type_map
+            .push(entry("get_nested_option", "Option<Option<User>>", 1.0));
+
+        let mut driver = FileSymbols::new("driver.js".to_string());
+        driver.imports.push(Import::new(
+            "./service.js".to_string(),
+            vec!["get_nested_option".to_string()],
+            1,
+        ));
+        driver
+            .call_assignments
+            .push(crate::types::NativeCallAssignment {
+                var_name: "user".to_string(),
+                callee_name: "get_nested_option".to_string(),
+                receiver_type_name: None,
+                receiver_var_name: None,
+                unwrap_depth: 2,
+            });
+
+        let mut file_symbols = BTreeMap::new();
+        file_symbols.insert("service.js".to_string(), service);
+        file_symbols.insert("driver.js".to_string(), driver);
+        let import_ctx = make_import_ctx(&file_symbols);
+
+        let conn = Connection::open_in_memory().unwrap();
+        propagate_return_types_across_files(&conn, &mut file_symbols, &import_ctx);
+
+        let driver = &file_symbols["driver.js"];
+        let seeded = driver
+            .type_map
+            .iter()
+            .find(|t| t.name == "user")
+            .expect("user should be seeded, unwrapped twice from Option<Option<User>> to User");
         assert_eq!(seeded.type_name, "User");
     }
 

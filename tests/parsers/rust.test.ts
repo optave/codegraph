@@ -191,7 +191,7 @@ impl Display for Foo {}`);
         calleeName: 'get_user',
         receiverTypeName: undefined,
         receiverVarName: 'service',
-        unwrapGeneric: true,
+        unwrapDepth: 1,
       }),
     );
   });
@@ -199,19 +199,31 @@ impl Display for Foo {}`);
   it('records a call assignment for an if-let Ok-bound bare call', () => {
     const symbols = parseRust(`fn f() {\n  if let Ok(user) = build_user() {}\n}`);
     const ca = symbols.callAssignments.find((c) => c.varName === 'user');
-    expect(ca).toEqual(expect.objectContaining({ calleeName: 'build_user', unwrapGeneric: true }));
+    expect(ca).toEqual(expect.objectContaining({ calleeName: 'build_user', unwrapDepth: 1 }));
   });
 
   it('unwraps a while-let Some-bound call assignment too', () => {
     const symbols = parseRust(`fn f() {\n  while let Some(item) = next_item() {}\n}`);
     const ca = symbols.callAssignments.find((c) => c.varName === 'item');
-    expect(ca).toEqual(expect.objectContaining({ calleeName: 'next_item', unwrapGeneric: true }));
+    expect(ca).toEqual(expect.objectContaining({ calleeName: 'next_item', unwrapDepth: 1 }));
   });
 
   it('does not mark a plain let binding as unwrapped', () => {
     const symbols = parseRust(`fn f() {\n  let service = build_service();\n}`);
     const ca = symbols.callAssignments.find((c) => c.varName === 'service');
-    expect(ca?.unwrapGeneric).toBe(false);
+    expect(ca?.unwrapDepth).toBe(0);
+  });
+
+  it('records a doubly-nested Some pattern with depth two', () => {
+    // `Some(Some(x))` — destructuring a doubly-nested `Option<Option<T>>` in a
+    // single pattern, the idiomatic way to do it, not two sequential if-lets —
+    // must unwrap both layers, not give up after the first (Greptile review,
+    // PR #2371).
+    const symbols = parseRust(`fn f() {\n  if let Some(Some(user)) = get_nested_option() {}\n}`);
+    const ca = symbols.callAssignments.find((c) => c.varName === 'user');
+    expect(ca).toEqual(
+      expect.objectContaining({ calleeName: 'get_nested_option', unwrapDepth: 2 }),
+    );
   });
 
   it('does not treat a None/unit-variant pattern as a call assignment', () => {

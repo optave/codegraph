@@ -621,22 +621,40 @@ fn extract_rust_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<
 /// binding `x`, the same way `let x = expr;` already is. Returns `pattern`
 /// unchanged for any other shape (a bare identifier, `None`, `Err(_)`, or any
 /// other variant this isn't confident unwrapping).
-fn unwrap_option_result_pattern<'a>(pattern: Node<'a>, source: &[u8]) -> Node<'a> {
-    if pattern.kind() != "tuple_struct_pattern" {
-        return pattern;
+/// Unwrap zero or more layers of `Some(...)`/`Ok(...)` wrapping — e.g.
+/// `Some(Some(user))` for a `Option<Option<User>>`-returning call, not just
+/// one layer — returning the innermost non-Some/Ok pattern and how many
+/// layers were stripped. The caller unwraps the callee's declared return type
+/// the same number of times (#2214, Greptile review on PR #2371 — a single
+/// unwrap left a doubly-nested pattern's binding untyped entirely, since
+/// `Some(Some(x))`'s inner pattern is itself a `tuple_struct_pattern`, not an
+/// `identifier`, and the original single-pass version gave up on it).
+fn unwrap_option_result_pattern<'a>(pattern: Node<'a>, source: &[u8]) -> (Node<'a>, u32) {
+    let mut current = pattern;
+    let mut depth = 0u32;
+    loop {
+        if current.kind() != "tuple_struct_pattern" {
+            return (current, depth);
+        }
+        let Some(type_node) = current.child_by_field_name("type") else {
+            return (current, depth);
+        };
+        let variant = node_text(&type_node, source);
+        if variant != "Some" && variant != "Ok" {
+            return (current, depth);
+        }
+        let mut cursor = current.walk();
+        let inner = current
+            .named_children(&mut cursor)
+            .find(|c| c.id() != type_node.id());
+        match inner {
+            Some(next) => {
+                current = next;
+                depth += 1;
+            }
+            None => return (current, depth),
+        }
     }
-    let Some(type_node) = pattern.child_by_field_name("type") else {
-        return pattern;
-    };
-    let variant = node_text(&type_node, source);
-    if variant != "Some" && variant != "Ok" {
-        return pattern;
-    }
-    let mut cursor = pattern.walk();
-    let inner = pattern
-        .named_children(&mut cursor)
-        .find(|c| c.id() != type_node.id());
-    inner.unwrap_or(pattern)
 }
 
 fn match_rust_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
@@ -789,8 +807,7 @@ fn match_rust_call_assignments(
     let Some(pattern) = node.child_by_field_name("pattern") else {
         return;
     };
-    let unwrapped_pattern = unwrap_option_result_pattern(pattern, source);
-    let unwrap_generic = unwrapped_pattern.id() != pattern.id();
+    let (unwrapped_pattern, unwrap_depth) = unwrap_option_result_pattern(pattern, source);
     if unwrapped_pattern.kind() != "identifier" {
         return;
     }
@@ -825,7 +842,7 @@ fn match_rust_call_assignments(
                 callee_name: node_text(&fn_node, source).to_string(),
                 receiver_type_name: None,
                 receiver_var_name: None,
-                unwrap_generic,
+                unwrap_depth,
             });
         }
         "scoped_identifier" => {
@@ -837,7 +854,7 @@ fn match_rust_call_assignments(
                     callee_name: node_text(&name, source).to_string(),
                     receiver_type_name: Some(node_text(&path, source).to_string()),
                     receiver_var_name: None,
-                    unwrap_generic,
+                    unwrap_depth,
                 });
             }
         }
@@ -868,7 +885,7 @@ fn match_rust_call_assignments(
                         callee_name: node_text(&field, source).to_string(),
                         receiver_type_name: receiver_type,
                         receiver_var_name,
-                        unwrap_generic,
+                        unwrap_depth,
                     });
                 }
             }
@@ -1119,7 +1136,7 @@ mod tests {
         // raw receiver name rather than a resolved type.
         assert_eq!(ca.receiver_type_name, None);
         assert_eq!(ca.receiver_var_name.as_deref(), Some("service"));
-        assert!(ca.unwrap_generic);
+        assert_eq!(ca.unwrap_depth, 1);
     }
 
     #[test]
@@ -1131,7 +1148,7 @@ mod tests {
             .find(|c| c.var_name == "user")
             .unwrap();
         assert_eq!(ca.callee_name, "build_user");
-        assert!(ca.unwrap_generic);
+        assert_eq!(ca.unwrap_depth, 1);
     }
 
     #[test]
@@ -1143,7 +1160,7 @@ mod tests {
             .find(|c| c.var_name == "item")
             .unwrap();
         assert_eq!(ca.callee_name, "next_item");
-        assert!(ca.unwrap_generic);
+        assert_eq!(ca.unwrap_depth, 1);
     }
 
     #[test]
@@ -1154,7 +1171,7 @@ mod tests {
             .iter()
             .find(|c| c.var_name == "service")
             .unwrap();
-        assert!(!ca.unwrap_generic);
+        assert_eq!(ca.unwrap_depth, 0);
     }
 
     #[test]
@@ -1163,6 +1180,22 @@ mod tests {
         // wrong (there is no value), so these must not be recorded at all.
         let s = parse_rust("fn f() {\n  if let None = build_service() {}\n}");
         assert!(s.call_assignments.is_empty());
+    }
+
+    #[test]
+    fn records_a_doubly_nested_some_pattern_with_depth_two() {
+        // `Some(Some(x))` — destructuring a doubly-nested `Option<Option<T>>` in
+        // a single pattern, the idiomatic way to do it, not two sequential
+        // if-lets — must unwrap both layers, not give up after the first
+        // (Greptile review, PR #2371).
+        let s = parse_rust("fn f() {\n  if let Some(Some(user)) = get_nested_option() {}\n}");
+        let ca = s
+            .call_assignments
+            .iter()
+            .find(|c| c.var_name == "user")
+            .unwrap();
+        assert_eq!(ca.callee_name, "get_nested_option");
+        assert_eq!(ca.unwrap_depth, 2);
     }
 
     // ── Full generic return types (#2214) ─────────────────────────────────────

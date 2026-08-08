@@ -727,13 +727,15 @@ export interface CallAssignment {
    */
   receiverVarName?: string;
   /**
-   * True when this assignment came from unwrapping a refutable `Some(x)`/`Ok(x)`
-   * pattern (`if let`/`while let`/`let-else`) — the callee's declared return type
-   * must itself be unwrapped from its outer `Option<T>`/`Result<T, _>` generic
-   * before being used to type `varName`. Mirrors `NativeCallAssignment.unwrapGeneric`
+   * How many layers of a refutable `Some(x)`/`Ok(x)` pattern (`if let`/
+   * `while let`/`let-else`) this assignment came from unwrapping — 0/undefined
+   * means a plain `let x = expr;` binding. `Some(Some(x))` (unwrapping a
+   * doubly-nested `Option<Option<T>>` return) is 2, not 1 — the callee's
+   * declared return type must itself be unwrapped this many times before
+   * being used to type `varName`. Mirrors `NativeCallAssignment.unwrap_depth`
    * in `crates/codegraph-core/src/types.rs` (#2214).
    */
-  unwrapGeneric?: boolean;
+  unwrapDepth?: number;
 }
 
 /**

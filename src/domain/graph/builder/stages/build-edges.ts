@@ -642,16 +642,20 @@ function propagateReturnTypesAcrossFiles(
       }
 
       if (returnEntry) {
-        // ca.unwrapGeneric means the binding came from a refutable `Some(x)`/
-        // `Ok(x)` pattern — the callee's declared return type is itself
-        // `Option<T>`/`Result<T, _>`, and `x`'s real type is the unwrapped `T`,
-        // not the wrapper. If the declared type turns out not to actually be a
-        // generic Option/Result (a mismatch between the pattern and the
-        // callee's real signature), decline to inject rather than propagate
-        // the wrapper type as if it were `x`'s type (#2214).
-        const resolvedType = ca.unwrapGeneric
-          ? unwrapOptionResultType(returnEntry.type)
-          : returnEntry.type;
+        // ca.unwrapDepth means the binding came from unwrapping that many
+        // layers of a refutable `Some(x)`/`Ok(x)` pattern — `Some(Some(x))` is
+        // 2, not 1. The callee's declared return type is itself wrapped that
+        // many layers deep (`Option<Option<T>>` for depth 2), and `x`'s real
+        // type is what's left after unwrapping all of them, not the wrapper.
+        // If a layer turns out not to actually be a generic Option/Result (a
+        // mismatch between the pattern and the callee's real signature),
+        // decline to inject rather than propagate a half-unwrapped type as if
+        // it were `x`'s type (#2214).
+        let resolvedType: string | undefined = returnEntry.type;
+        for (let i = 0; i < (ca.unwrapDepth ?? 0); i++) {
+          resolvedType =
+            resolvedType === undefined ? undefined : unwrapOptionResultType(resolvedType);
+        }
         if (resolvedType === undefined) continue;
 
         const propagatedConf = returnEntry.confidence - PROPAGATION_HOP_PENALTY;

@@ -1668,7 +1668,7 @@ fn match_js_call_assignments(node: &Node, source: &[u8], symbols: &mut FileSymbo
                 callee_name: node_text(&fn_node, source).to_string(),
                 receiver_type_name: None,
                 receiver_var_name: None,
-                unwrap_generic: false,
+                unwrap_depth: 0,
             });
         }
         "member_expression" => {
@@ -1691,7 +1691,7 @@ fn match_js_call_assignments(node: &Node, source: &[u8], symbols: &mut FileSymbo
                 callee_name: node_text(&prop, source).to_string(),
                 receiver_type_name: receiver_type,
                 receiver_var_name: None,
-                unwrap_generic: false,
+                unwrap_depth: 0,
             });
         }
         _ => {}
