@@ -555,6 +555,19 @@ function propagateReturnTypesAcrossFiles(
   ctx: PipelineContext,
   rootDir: string,
 ): void {
+  // #2138: skip entirely — including the return_types DB read below — when
+  // nothing in this build needs cross-file resolution. A no-op or small
+  // incremental rebuild with no call-assignments anywhere must not pay for
+  // a whole-table SELECT it has no use for.
+  let anyCallAssignments = false;
+  for (const symbols of fileSymbols.values()) {
+    if (symbols.callAssignments?.length) {
+      anyCallAssignments = true;
+      break;
+    }
+  }
+  if (!anyCallAssignments) return;
+
   // Index: filePath → per-file return-type map
   const returnTypeIndex = new Map<string, Map<string, TypeMapEntry>>();
   for (const [relPath, symbols] of fileSymbols) {

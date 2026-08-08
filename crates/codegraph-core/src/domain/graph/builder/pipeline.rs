@@ -1614,6 +1614,15 @@ fn propagate_return_types_across_files(
 ) {
     use crate::domain::graph::builder::stages::build_edges::PROPAGATION_HOP_PENALTY;
 
+    // #2138: skip entirely — including the return_types DB read added below
+    // — when nothing in this build needs cross-file resolution. A no-op or
+    // small incremental rebuild with no call-assignments anywhere must not
+    // pay for a whole-table SELECT it has no use for (this guard is what
+    // keeps that read off the no-op rebuild's hot path).
+    if !file_symbols.values().any(|s| !s.call_assignments.is_empty()) {
+        return;
+    }
+
     let (return_type_index, global_return_types) = build_return_type_index(conn, file_symbols);
     if return_type_index.is_empty() {
         return;
