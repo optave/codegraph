@@ -343,15 +343,29 @@ export function exportJSON(
       .all() as Array<{ id: number; name: string; kind: string; file: string; line: number }>;
     if (noTests) nodes = nodes.filter((n) => !isTestFile(n.file));
 
+    // sourceId/targetId (#2144): file-level edges' source/target are file
+    // path strings for backward compatibility with existing `codegraph
+    // export -f json` consumers, but that means they don't join against
+    // this same payload's nodes[].id the way function-level mode's edges
+    // do. sourceId/targetId are purely additive so a consumer that wants
+    // the same id-based join function-level mode already supports can use
+    // them without breaking anyone reading source/target as file paths.
     let edges = db
       .prepare(`
-      SELECT DISTINCT n1.file AS source, n2.file AS target, e.kind, e.confidence
+      SELECT DISTINCT n1.file AS source, n2.file AS target, n1.id AS sourceId, n2.id AS targetId, e.kind, e.confidence
       FROM edges e
       JOIN nodes n1 ON e.source_id = n1.id
       JOIN nodes n2 ON e.target_id = n2.id
       WHERE n1.file != n2.file AND e.confidence >= ?
     `)
-      .all(minConf) as Array<{ source: string; target: string; kind: string; confidence: number }>;
+      .all(minConf) as Array<{
+      source: string;
+      target: string;
+      sourceId: number;
+      targetId: number;
+      kind: string;
+      confidence: number;
+    }>;
     if (noTests) edges = edges.filter((e) => !isTestFile(e.source) && !isTestFile(e.target));
 
     const base = { nodes, edges };

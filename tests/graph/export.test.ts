@@ -287,6 +287,26 @@ describe('exportJSON', () => {
     expect(functionLevel.nodes.some((n) => n.kind === 'function')).toBe(true);
     db.close();
   });
+
+  it('file-level edges carry sourceId/targetId that join against nodes[].id (#2144)', () => {
+    const db = createTestDb();
+    const a = insertNode(db, 'src/a.js', 'file', 'src/a.js', 0);
+    const b = insertNode(db, 'src/b.js', 'file', 'src/b.js', 0);
+    insertEdge(db, a, b, 'imports');
+
+    const data = exportJSON(db);
+    const nodeIds = new Set(data.nodes.map((n) => n.id));
+    expect(data.edges.length).toBeGreaterThan(0);
+    for (const edge of data.edges) {
+      // source/target remain file path strings for backward compatibility —
+      // sourceId/targetId are the additive, node-id-based join.
+      expect(typeof edge.source).toBe('string');
+      expect(typeof edge.target).toBe('string');
+      expect(nodeIds.has(edge.sourceId)).toBe(true);
+      expect(nodeIds.has(edge.targetId)).toBe(true);
+    }
+    db.close();
+  });
 });
 
 describe('exportGraphML', () => {
