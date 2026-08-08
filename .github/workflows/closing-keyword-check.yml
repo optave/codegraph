@@ -52,7 +52,12 @@ jobs:
               repo: context.repo.repo,
               issue_number: prNumber,
             });
-            const existing = comments.find((c) => c.body.includes(marker));
+            // Restrict to the workflow's own bot-authored comments — matching on the
+            // marker text alone would let a PR participant plant it in their own
+            // comment and have a later edit/reopen event overwrite or delete it.
+            const existing = comments.find(
+              (c) => c.body.includes(marker) && c.user.login === 'github-actions[bot]'
+            );
 
             if (flagged.size === 0) {
               if (existing) {
