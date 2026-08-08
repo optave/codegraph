@@ -17,6 +17,22 @@ async function ensureParser() {
   };
 }
 
+// Dart's grammar puts a function's body in a SIBLING node
+// (function_signature + function_body under the same parent), not a child
+// (#2182) — used below to test the bodySiblingTypes walker mechanism
+// against a real grammar that actually needs it.
+let parseDart: any;
+
+async function ensureDartParser() {
+  if (parseDart) return;
+  const { createParsers, getParser } = await import('../../src/domain/parser.js');
+  const parsers = await createParsers();
+  parseDart = (code) => {
+    const p = getParser(parsers, 'test.dart');
+    return p.parse(code);
+  };
+}
+
 const { walkWithVisitors } = await import('../../src/ast-analysis/visitor.js');
 
 describe('walkWithVisitors', () => {
@@ -233,5 +249,97 @@ describe('walkWithVisitors', () => {
 
     const results = walkWithVisitors(tree.rootNode, [visitor], 'javascript');
     expect(results.noFinish).toBeUndefined();
+  });
+});
+
+describe('bodySiblingTypes (#2182)', () => {
+  it('walks a function boundary node whose body is a sibling, not a child, before firing exitFunction', async () => {
+    await ensureDartParser();
+    const tree = parseDart('int add(int a, int b) {\n  return a + b;\n}\n');
+    const order: string[] = [];
+    const visitor = {
+      name: 'order',
+      functionNodeTypes: new Set(['function_signature']),
+      bodySiblingTypes: new Set(['function_body']),
+      enterFunction() {
+        order.push('enterFunction');
+      },
+      enterNode(node) {
+        order.push(`enter:${node.type}`);
+      },
+      exitFunction() {
+        order.push('exitFunction');
+      },
+    };
+
+    walkWithVisitors(tree.rootNode, [visitor], 'dart', {
+      functionNodeTypes: new Set(['function_signature']),
+      getFunctionName: (n) => n.childForFieldName('name')?.text ?? null,
+    });
+
+    const exitIdx = order.indexOf('exitFunction');
+    const bodyIdx = order.indexOf('enter:function_body');
+    const returnIdx = order.indexOf('enter:return_statement');
+    expect(exitIdx).toBeGreaterThan(-1);
+    expect(bodyIdx).toBeGreaterThan(-1);
+    expect(returnIdx).toBeGreaterThan(-1);
+    // The sibling body — and everything inside it — must be walked before
+    // exitFunction pops the function's scope, or scope-dependent visitors
+    // (e.g. dataflow's return/assignment tracking) silently see nothing.
+    expect(bodyIdx).toBeLessThan(exitIdx);
+    expect(returnIdx).toBeLessThan(exitIdx);
+  });
+
+  it('does not walk the sibling body twice (once injected, once via the parent’s own natural iteration)', async () => {
+    await ensureDartParser();
+    const tree = parseDart('int add(int a, int b) {\n  return a + b;\n}\n');
+    let functionBodyEnterCount = 0;
+    const visitor = {
+      name: 'count',
+      functionNodeTypes: new Set(['function_signature']),
+      bodySiblingTypes: new Set(['function_body']),
+      enterNode(node) {
+        if (node.type === 'function_body') functionBodyEnterCount++;
+      },
+    };
+
+    walkWithVisitors(tree.rootNode, [visitor], 'dart', {
+      functionNodeTypes: new Set(['function_signature']),
+    });
+
+    expect(functionBodyEnterCount).toBe(1);
+  });
+
+  it('keeps each function’s body-sibling walk in its own scope frame across two sibling functions', async () => {
+    await ensureDartParser();
+    const tree = parseDart(
+      'int helper(int z) {\n  return z;\n}\nint caller(int a) {\n  return a;\n}\n',
+    );
+    const returnsByFunc: Record<string, string[]> = {};
+    const visitor = {
+      name: 'scoped-returns',
+      functionNodeTypes: new Set(['function_signature']),
+      bodySiblingTypes: new Set(['function_body']),
+      enterFunction(_node, funcName) {
+        if (funcName) returnsByFunc[funcName] = [];
+      },
+      enterNode(node, context) {
+        if (node.type === 'return_statement') {
+          const active = context.currentFunction;
+          const name = active?.childForFieldName?.('name')?.text;
+          if (name) returnsByFunc[name].push(node.text);
+        }
+      },
+    };
+
+    walkWithVisitors(tree.rootNode, [visitor], 'dart', {
+      functionNodeTypes: new Set(['function_signature']),
+      getFunctionName: (n) => n.childForFieldName('name')?.text ?? null,
+    });
+
+    expect(returnsByFunc.helper).toHaveLength(1);
+    expect(returnsByFunc.caller).toHaveLength(1);
+    expect(returnsByFunc.helper[0]).toContain('return z');
+    expect(returnsByFunc.caller[0]).toContain('return a');
   });
 });

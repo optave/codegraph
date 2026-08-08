@@ -506,6 +506,17 @@ static RUBY_DATAFLOW: DataflowRules = DataflowRules {
 };
 
 /// Get dataflow rules for a language ID string.
+///
+/// No "dart" arm — unlike the languages above, Dart dataflow only exists on
+/// the TS/WASM side today (`src/ast-analysis/rules/b2.ts`'s `dataflowDart`,
+/// fixed for the function_signature/function_body sibling-body split by
+/// #2182). Porting it here needs a `body_sibling_types`-aware `visit()`
+/// (see `crate::shared::ast_nodes::find_body_sibling_node`), and note tree-
+/// sitter-dart's Rust grammar differs structurally from the WASM one used
+/// by TS: function_signature/function_body are children of an intermediate
+/// `function_declaration` wrapper (not direct children of the top-level
+/// node), and function_signature DOES expose a `parameters` field here
+/// (TS's WASM grammar has no such field — confirmed while fixing #2182).
 fn get_dataflow_rules(lang_id: &str) -> Option<&'static DataflowRules> {
     match lang_id {
         "javascript" | "typescript" | "tsx" => Some(&JS_TS_DATAFLOW),

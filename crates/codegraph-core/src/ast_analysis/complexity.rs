@@ -787,6 +787,15 @@ pub static GROOVY_RULES: LangRules = LangRules {
 };
 
 /// Look up complexity rules by language ID (matches `COMPLEXITY_RULES` keys in JS).
+///
+/// No "dart" arm yet (tracked by #1923's tier-2 rollout). When one is added:
+/// tree-sitter-dart puts a function's body in a SIBLING node, not a child of
+/// function_signature/method_signature (#2182 — see
+/// `src/ast-analysis/rules/b2.ts`'s `dataflowDart` for the TS-side fix and
+/// `crate::shared::ast_nodes::find_body_sibling_node` for the ready-to-use
+/// Rust helper). `LangRules` will need a `body_sibling_types` field and
+/// `walk()` below will need to call the helper additively, mirroring
+/// `src/ast-analysis/visitor.ts`'s `bodySiblingTypes` handling.
 pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
     match lang_id {
         "javascript" | "typescript" | "tsx" => Some(&JS_TS_RULES),

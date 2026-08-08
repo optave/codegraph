@@ -542,6 +542,7 @@ export function createDataflowVisitor(rules: AnyRules): Visitor {
   return {
     name: 'dataflow',
     functionNodeTypes: rules.functionNodes,
+    bodySiblingTypes: rules.bodySiblingTypes ?? undefined,
 
     enterFunction(
       funcNode: TreeSitterNode,
