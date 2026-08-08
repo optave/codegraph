@@ -63,6 +63,20 @@ function tokenize(line: string): string[] {
 // group's own (which only lists the subcommands themselves, not flags).
 const COMMAND_GROUPS = new Set(['registry', 'snapshot']);
 
+/**
+ * Check that `token` (e.g. "--staged") appears in `helpText` as a whole
+ * flag name, not merely as a substring of a longer one (e.g. a renamed
+ * "--staged-changes" would otherwise still match "--staged" via plain
+ * `.includes()`, silently missing the rename — Greptile, #2212 review).
+ * Bounded on the left by start-of-line/whitespace/comma (commander's
+ * `-x, --flag` list format) and on the right by whitespace/comma/`<`
+ * (a value placeholder) or end-of-line.
+ */
+function hasFlag(helpText: string, token: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[\\s,])${escaped}(?=[\\s,<]|$)`, 'm').test(helpText);
+}
+
 describe('docs/examples/CLI.md commands and flags are real (#2212)', () => {
   const doc = fs.readFileSync(CLI_DOC_PATH, 'utf-8');
   const commandLines = extractCommandLines(doc);
@@ -107,7 +121,7 @@ describe('docs/examples/CLI.md commands and flags are real (#2212)', () => {
       for (const token of flagTokens) {
         if (!token.startsWith('-') || token === '-') continue;
         expect(
-          cmdHelp.includes(token),
+          hasFlag(cmdHelp, token),
           `flag "${token}" not found in \`codegraph ${helpArgs.join(' ')} --help\`:\n${cmdHelp}`,
         ).toBe(true);
       }
