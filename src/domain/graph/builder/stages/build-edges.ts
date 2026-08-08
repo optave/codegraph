@@ -614,9 +614,23 @@ function propagateReturnTypesAcrossFiles(
     for (const ca of symbols.callAssignments) {
       if (symbols.typeMap.has(ca.varName)) continue; // already resolved locally
 
+      // A method call whose receiver's type wasn't known at extraction time
+      // (ca.receiverVarName) may have just been resolved by an earlier
+      // call-assignment in this same file — e.g. `service` in `const service =
+      // buildService(); ... service.getUser(1)` only becomes typed once
+      // `service`'s own cross-file return type is injected into symbols.typeMap
+      // (mutated in place by this same loop, below). Retry against the
+      // receiver's now-resolved type before falling back to a bare
+      // global-function lookup (#2214).
+      const receiverResolvedType = ca.receiverVarName
+        ? symbols.typeMap.get(ca.receiverVarName)?.type
+        : undefined;
+
       let returnEntry: TypeMapEntry | undefined;
       if (ca.receiverTypeName) {
         returnEntry = globalReturnTypeMap.get(`${ca.receiverTypeName}.${ca.calleeName}`);
+      } else if (receiverResolvedType) {
+        returnEntry = globalReturnTypeMap.get(`${receiverResolvedType}.${ca.calleeName}`);
       } else {
         const importedFrom = importedNamesMap.get(ca.calleeName);
         // The return-type index for the imported file is keyed by the
@@ -627,12 +641,53 @@ function propagateReturnTypesAcrossFiles(
       }
 
       if (returnEntry) {
+        // ca.unwrapGeneric means the binding came from a refutable `Some(x)`/
+        // `Ok(x)` pattern — the callee's declared return type is itself
+        // `Option<T>`/`Result<T, _>`, and `x`'s real type is the unwrapped `T`,
+        // not the wrapper. If the declared type turns out not to actually be a
+        // generic Option/Result (a mismatch between the pattern and the
+        // callee's real signature), decline to inject rather than propagate
+        // the wrapper type as if it were `x`'s type (#2214).
+        const resolvedType = ca.unwrapGeneric
+          ? unwrapOptionResultType(returnEntry.type)
+          : returnEntry.type;
+        if (resolvedType === undefined) continue;
+
         const propagatedConf = returnEntry.confidence - PROPAGATION_HOP_PENALTY;
         if (propagatedConf > 0)
-          setTypeMapEntry(symbols.typeMap, ca.varName, returnEntry.type, propagatedConf);
+          setTypeMapEntry(symbols.typeMap, ca.varName, resolvedType, propagatedConf);
       }
     }
   }
+}
+
+/**
+ * If `typeName` is `Option<T>` or `Result<T, E>`, return `T` — the type a
+ * refutable `Some(x)`/`Ok(x)` pattern (`if let`/`while let`/`let-else`) binds
+ * `x` to. Handles nested generics in the first type argument
+ * (`Result<Vec<User>, String>` → `Vec<User>`) by tracking bracket depth rather
+ * than splitting on the first comma. Returns `undefined` for any other shape,
+ * including a malformed generic string, so the caller can decline to inject a
+ * guessed type rather than propagate something wrong. Mirrors
+ * `unwrap_option_result_type` in `pipeline.rs` (#2214).
+ */
+function unwrapOptionResultType(typeName: string): string | undefined {
+  const ltIdx = typeName.indexOf('<');
+  if (ltIdx === -1 || !typeName.endsWith('>')) return undefined;
+  const base = typeName.slice(0, ltIdx).trim();
+  if (base !== 'Option' && base !== 'Result') return undefined;
+  const inner = typeName.slice(ltIdx + 1, -1);
+  let depth = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '<') depth++;
+    else if (c === '>') depth--;
+    else if (c === ',' && depth === 0) {
+      const first = inner.slice(0, i).trim();
+      return first || undefined;
+    }
+  }
+  return inner.trim() || undefined;
 }
 
 // ── Call edges (native engine) ──────────────────────────────────────────

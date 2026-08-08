@@ -715,6 +715,25 @@ export interface CallAssignment {
   calleeName: string;
   /** Resolved receiver type, if the call is a method call (e.g. service.getRepo()). */
   receiverTypeName?: string;
+  /**
+   * Raw receiver identifier for a method call (`receiver.method()`) whose
+   * receiver's type wasn't resolvable at extraction time — e.g. `service` in
+   * `service.get_user(1)`, when `service`'s own type only becomes known via
+   * cross-file return-type propagation. Lets injection retry resolving the
+   * receiver's type once its own call-assignment has been injected earlier in
+   * the same pass, instead of giving up the way a bare `receiverTypeName:
+   * undefined` would (mirrors `NativeCallAssignment.receiver_var_name` in
+   * `crates/codegraph-core/src/types.rs`, #2214).
+   */
+  receiverVarName?: string;
+  /**
+   * True when this assignment came from unwrapping a refutable `Some(x)`/`Ok(x)`
+   * pattern (`if let`/`while let`/`let-else`) — the callee's declared return type
+   * must itself be unwrapped from its outer `Option<T>`/`Result<T, _>` generic
+   * before being used to type `varName`. Mirrors `NativeCallAssignment.unwrapGeneric`
+   * in `crates/codegraph-core/src/types.rs` (#2214).
+   */
+  unwrapGeneric?: boolean;
 }
 
 /**

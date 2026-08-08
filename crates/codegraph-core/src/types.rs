@@ -374,6 +374,23 @@ pub struct NativeCallAssignment {
     pub callee_name: String,
     #[napi(js_name = "receiverTypeName")]
     pub receiver_type_name: Option<String>,
+    /// Raw receiver identifier for a method call (`receiver.method()`) whose
+    /// receiver's type wasn't resolvable at extraction time — e.g. `service` in
+    /// `service.get_user(1)`, when `service`'s own type only becomes known via
+    /// cross-file return-type propagation. Lets injection retry resolving the
+    /// receiver's type once its own call-assignment has been injected earlier in
+    /// the same pass, instead of giving up the way a bare `receiver_type_name:
+    /// None` would (mirrors `CallAssignment.receiverVarName` in `src/types.ts`, #2214).
+    #[napi(js_name = "receiverVarName")]
+    pub receiver_var_name: Option<String>,
+    /// True when this assignment came from unwrapping a refutable `Some(x)`/`Ok(x)`
+    /// pattern (`if let`/`while let`/`let-else`) — the callee's declared return type
+    /// must itself be unwrapped from its outer `Option<T>`/`Result<T, _>` generic
+    /// before being used to type `var_name` (mirrors `CallAssignment.unwrapGeneric`
+    /// in `src/types.ts`).
+    #[napi(js_name = "unwrapGeneric")]
+    #[serde(default)]
+    pub unwrap_generic: bool,
 }
 
 /// Function-reference binding for Phase 8.3 points-to analysis.

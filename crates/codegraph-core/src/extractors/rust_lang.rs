@@ -327,6 +327,85 @@ fn handle_macro_invocation(node: &Node, source: &[u8], symbols: &mut FileSymbols
             ..Default::default()
         });
     }
+    // Macro arguments (`println!("{}", user.display_name())`) are an opaque
+    // `token_tree` to tree-sitter-rust — macros can have arbitrary token syntax, so
+    // the grammar never parses their contents into call_expression/field_expression
+    // nodes the way it does everywhere else. walk_tree's generic recursion still
+    // visits every token inside, but none of them match `call_expression`, so a real
+    // call embedded in a macro argument (the common `println!`/`format!`/`write!`/
+    // `assert!` case) was silently invisible to call-edge resolution. Scan the flat
+    // token sequence directly for the two call shapes tree-sitter still tokenizes
+    // recognizably — bare `ident(...)` and single-hop method `ident.ident(...)` — and
+    // record them the same way handle_call_expr would. Mirrors
+    // `scanMacroTokensForCalls` in `src/extractors/rust.ts` (#2214).
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "token_tree" {
+                scan_macro_tokens_for_calls(&child, source, symbols);
+            }
+        }
+    }
+}
+
+fn scan_macro_tokens_for_calls(token_tree: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let mut children = Vec::new();
+    for i in 0..token_tree.child_count() {
+        if let Some(child) = token_tree.child(i) {
+            children.push(child);
+        }
+    }
+
+    let mut i = 0;
+    while i < children.len() {
+        let c = &children[i];
+        if c.kind() == "token_tree" {
+            scan_macro_tokens_for_calls(c, source, symbols);
+            i += 1;
+            continue;
+        }
+        if c.kind() != "identifier" {
+            i += 1;
+            continue;
+        }
+
+        // `receiver . method ( ... )` — single-hop method call.
+        if let (Some(dot), Some(method_name), Some(args_after_method)) = (
+            children.get(i + 1),
+            children.get(i + 2),
+            children.get(i + 3),
+        ) {
+            if dot.kind() == "."
+                && method_name.kind() == "identifier"
+                && args_after_method.kind() == "token_tree"
+                && node_text(args_after_method, source).starts_with('(')
+            {
+                symbols.calls.push(Call {
+                    name: node_text(method_name, source).to_string(),
+                    line: start_line(method_name),
+                    receiver: Some(node_text(c, source).to_string()),
+                    ..Default::default()
+                });
+                i += 4;
+                continue;
+            }
+        }
+
+        // Bare `name ( ... )` — free-function call.
+        if let Some(args_after_bare) = children.get(i + 1) {
+            if args_after_bare.kind() == "token_tree"
+                && node_text(args_after_bare, source).starts_with('(')
+            {
+                symbols.calls.push(Call {
+                    name: node_text(c, source).to_string(),
+                    line: start_line(c),
+                    ..Default::default()
+                });
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
 }
 
 // ── Extended kinds helpers ──────────────────────────────────────────────────
@@ -499,9 +578,37 @@ fn extract_rust_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<
             }
             None
         }
-        "generic_type" => type_node.child(0).map(|n| node_text(&n, source)),
+        // Keep the full generic text (`Option<User>`, not just `Option`) — callers
+        // that only care about the base type still get a usable prefix, and
+        // unwrap_option_result_type() below needs the type argument to type an
+        // if-let/while-let-unwrapped binding from a generic return type (#2214).
+        "generic_type" => Some(node_text(type_node, source)),
         _ => None,
     }
+}
+
+/// Unwrap a single-argument `Some(x)`/`Ok(x)` tuple-struct pattern to its inner
+/// `x` pattern, so `if let Some(x) = expr`/`if let Ok(x) = expr` (and the
+/// `while let`/`let-else` equivalents) can be treated as a call-assignment
+/// binding `x`, the same way `let x = expr;` already is. Returns `pattern`
+/// unchanged for any other shape (a bare identifier, `None`, `Err(_)`, or any
+/// other variant this isn't confident unwrapping).
+fn unwrap_option_result_pattern<'a>(pattern: Node<'a>, source: &[u8]) -> Node<'a> {
+    if pattern.kind() != "tuple_struct_pattern" {
+        return pattern;
+    }
+    let Some(type_node) = pattern.child_by_field_name("type") else {
+        return pattern;
+    };
+    let variant = node_text(&type_node, source);
+    if variant != "Some" && variant != "Ok" {
+        return pattern;
+    }
+    let mut cursor = pattern.walk();
+    let inner = pattern
+        .named_children(&mut cursor)
+        .find(|c| c.id() != type_node.id());
+    inner.unwrap_or(pattern)
 }
 
 fn match_rust_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
@@ -645,13 +752,31 @@ fn match_rust_call_assignments(
     symbols: &mut FileSymbols,
     _depth: usize,
 ) {
-    if node.kind() != "let_declaration" {
+    // `let_declaration` covers `let x = expr;` (and `let Some(x) = expr else {...};`
+    // let-else); `let_condition` is the `if let`/`while let` condition node (#2214) —
+    // both have `pattern`/`value` fields shaped identically.
+    if node.kind() != "let_declaration" && node.kind() != "let_condition" {
         return;
     }
     let Some(pattern) = node.child_by_field_name("pattern") else {
         return;
     };
-    if pattern.kind() != "identifier" {
+    let unwrapped_pattern = unwrap_option_result_pattern(pattern, source);
+    let unwrap_generic = unwrapped_pattern.id() != pattern.id();
+    if unwrapped_pattern.kind() != "identifier" {
+        return;
+    }
+    // A bare fieldless-variant/unit-struct pattern (`if let None = expr`, `if let
+    // NameValidator = expr`) is syntactically identical to a variable binding —
+    // tree-sitter has no way to distinguish them by grammar alone. By Rust
+    // convention a real binding is snake_case, so an uppercase-leading name is a
+    // pattern match against a value, not a new variable — recording it as one
+    // would fabricate a call-assignment for a variable that doesn't exist (#2214).
+    if node_text(&unwrapped_pattern, source)
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_uppercase())
+    {
         return;
     }
     let Some(value) = node.child_by_field_name("value") else {
@@ -663,7 +788,7 @@ fn match_rust_call_assignments(
     let Some(fn_node) = value.child_by_field_name("function") else {
         return;
     };
-    let var_name = node_text(&pattern, source).to_string();
+    let var_name = node_text(&unwrapped_pattern, source).to_string();
 
     match fn_node.kind() {
         "identifier" => {
@@ -671,6 +796,8 @@ fn match_rust_call_assignments(
                 var_name,
                 callee_name: node_text(&fn_node, source).to_string(),
                 receiver_type_name: None,
+                receiver_var_name: None,
+                unwrap_generic,
             });
         }
         "scoped_identifier" => {
@@ -681,6 +808,8 @@ fn match_rust_call_assignments(
                     var_name,
                     callee_name: node_text(&name, source).to_string(),
                     receiver_type_name: Some(node_text(&path, source).to_string()),
+                    receiver_var_name: None,
+                    unwrap_generic,
                 });
             }
         }
@@ -689,15 +818,29 @@ fn match_rust_call_assignments(
             let receiver = fn_node.child_by_field_name("value");
             if let (Some(field), Some(receiver)) = (field, receiver) {
                 if receiver.kind() == "identifier" {
+                    let receiver_name = node_text(&receiver, source).to_string();
                     let receiver_type = symbols
                         .type_map
                         .iter()
-                        .find(|e| e.name == node_text(&receiver, source))
+                        .find(|e| e.name == receiver_name)
                         .map(|e| e.type_name.clone());
+                    // Preserve the raw receiver identifier even when its type isn't
+                    // known yet at extraction time (e.g. `service` in
+                    // `service.get_user(1)`, whose type only becomes known via
+                    // cross-file return-type propagation) so injection can retry
+                    // resolution once the receiver's own call-assignment has itself
+                    // been injected earlier in the same pass (#2214).
+                    let receiver_var_name = if receiver_type.is_none() {
+                        Some(receiver_name)
+                    } else {
+                        None
+                    };
                     symbols.call_assignments.push(NativeCallAssignment {
                         var_name,
                         callee_name: node_text(&field, source).to_string(),
                         receiver_type_name: receiver_type,
+                        receiver_var_name,
+                        unwrap_generic,
                     });
                 }
             }
@@ -928,5 +1071,112 @@ mod tests {
             .unwrap();
         assert_eq!(ca.callee_name, "find_by_id");
         assert_eq!(ca.receiver_type_name.as_deref(), Some("UserRepository"));
+    }
+
+    // ── if-let/while-let pattern-binding call assignments (#2214) ────────────
+
+    #[test]
+    fn records_call_assignment_for_if_let_some_bound_method_call() {
+        let s = parse_rust(
+            "fn f() {\n  let service = build_service();\n  if let Some(user) = service.get_user(1) {}\n}",
+        );
+        let ca = s
+            .call_assignments
+            .iter()
+            .find(|c| c.var_name == "user")
+            .unwrap();
+        assert_eq!(ca.callee_name, "get_user");
+        // `service`'s type isn't known at extraction time (it only becomes known
+        // via cross-file return-type propagation), so resolution defers to the
+        // raw receiver name rather than a resolved type.
+        assert_eq!(ca.receiver_type_name, None);
+        assert_eq!(ca.receiver_var_name.as_deref(), Some("service"));
+        assert!(ca.unwrap_generic);
+    }
+
+    #[test]
+    fn records_call_assignment_for_if_let_ok_bound_bare_call() {
+        let s = parse_rust("fn f() {\n  if let Ok(user) = build_user() {}\n}");
+        let ca = s
+            .call_assignments
+            .iter()
+            .find(|c| c.var_name == "user")
+            .unwrap();
+        assert_eq!(ca.callee_name, "build_user");
+        assert!(ca.unwrap_generic);
+    }
+
+    #[test]
+    fn while_let_some_bound_call_assignment_is_also_unwrapped() {
+        let s = parse_rust("fn f() {\n  while let Some(item) = next_item() {}\n}");
+        let ca = s
+            .call_assignments
+            .iter()
+            .find(|c| c.var_name == "item")
+            .unwrap();
+        assert_eq!(ca.callee_name, "next_item");
+        assert!(ca.unwrap_generic);
+    }
+
+    #[test]
+    fn plain_let_binding_is_not_marked_as_unwrapped() {
+        let s = parse_rust("fn f() {\n  let service = build_service();\n}");
+        let ca = s
+            .call_assignments
+            .iter()
+            .find(|c| c.var_name == "service")
+            .unwrap();
+        assert!(!ca.unwrap_generic);
+    }
+
+    #[test]
+    fn does_not_treat_none_or_err_pattern_as_a_call_assignment() {
+        // `None`/`Err(_)` aren't Some/Ok — unwrapping a value out of them would be
+        // wrong (there is no value), so these must not be recorded at all.
+        let s = parse_rust("fn f() {\n  if let None = build_service() {}\n}");
+        assert!(s.call_assignments.is_empty());
+    }
+
+    // ── Full generic return types (#2214) ─────────────────────────────────────
+
+    #[test]
+    fn return_type_map_preserves_full_generic_return_type() {
+        let s = parse_rust("fn get_user() -> Option<User> { None }");
+        let entry = s
+            .return_type_map
+            .iter()
+            .find(|e| e.name == "get_user")
+            .unwrap();
+        assert_eq!(entry.type_name, "Option<User>");
+    }
+
+    // ── Calls embedded in macro invocation arguments (#2214) ──────────────────
+
+    #[test]
+    fn scans_macro_arguments_for_a_method_call() {
+        let s = parse_rust(r#"fn f(user: User) { println!("{}", user.display_name()); }"#);
+        let call = s.calls.iter().find(|c| c.name == "display_name").unwrap();
+        assert_eq!(call.receiver.as_deref(), Some("user"));
+        // The macro invocation itself is still recorded alongside the call it wraps.
+        assert!(s.calls.iter().any(|c| c.name == "println!"));
+    }
+
+    #[test]
+    fn scans_macro_arguments_for_a_bare_function_call() {
+        let s = parse_rust(r#"fn f() { println!("{}", compute_total()); }"#);
+        assert!(s
+            .calls
+            .iter()
+            .any(|c| c.name == "compute_total" && c.receiver.is_none()));
+    }
+
+    #[test]
+    fn scans_nested_macro_arguments_recursively() {
+        let s = parse_rust(r#"fn f() { assert_eq!(compute_total(), other.value()); }"#);
+        assert!(s.calls.iter().any(|c| c.name == "compute_total"));
+        assert!(s
+            .calls
+            .iter()
+            .any(|c| c.name == "value" && c.receiver.as_deref() == Some("other")));
     }
 }
