@@ -24,7 +24,10 @@
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const WORKER_ENV_KEY = '__BENCH_ENGINE__';
+// Exported so tests can verify forkWorker() only sets CODEGRAPH_ENGINE for
+// this exact envKey (the engine-comparison fork), not for other callers'
+// own envKey (e.g. embedding-benchmark.ts's model-name workers, issue #2140).
+export const WORKER_ENV_KEY = '__BENCH_ENGINE__';
 const TARGETS_ENV_KEY = '__BENCH_TARGETS__';
 
 /**
@@ -75,8 +78,17 @@ export function forkWorker(scriptPath, envKey, workerName, argv = [], timeoutMs 
 
 		console.error(`\n[fork] Spawning ${workerName} worker (pid isolation)...`);
 
+		// CODEGRAPH_ENGINE only makes sense when workerName IS an engine choice
+		// ('wasm'/'native') — true for forkEngines' own two calls below (envKey
+		// === WORKER_ENV_KEY), but not for embedding-benchmark.ts's model-name
+		// workers (envKey === its own MODEL_WORKER_KEY), which would otherwise
+		// set CODEGRAPH_ENGINE to a model name like "minilm" and trip the
+		// invalid-engine-value warning on every embed call inside that worker.
+		const env = { ...process.env, [envKey]: workerName };
+		if (envKey === WORKER_ENV_KEY) env.CODEGRAPH_ENGINE = workerName;
+
 		const child = fork(scriptPath, argv, {
-			env: { ...process.env, [envKey]: workerName, CODEGRAPH_ENGINE: workerName },
+			env,
 			stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
 		});
 
