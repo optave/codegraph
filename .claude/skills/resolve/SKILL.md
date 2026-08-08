@@ -60,7 +60,7 @@ fi
 # Detect repo slug dynamically so the skill works in any fork or renamed org
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null \
   || git remote get-url origin 2>/dev/null \
-     | sed -nE 's#^(git@github\.com:|https://github\.com/)([^/]+/[^/]+)/?$#\2#p' \
+     | sed -nE 's#^(git@github\.com:|https://github\.com/|ssh://git@github\.com/)([^/]+/[^/]+)/?$#\2#p' \
      | sed -E 's/\.git$//')
 if [ -z "$REPO" ]; then
   echo "ERROR: could not detect GitHub repo slug — ensure 'gh' is authenticated or 'origin' points to GitHub"
@@ -81,7 +81,7 @@ Persist PR metadata for use in later phases (shell variables don't survive acros
 PR_NUMBER=$(echo "${ARGUMENTS:-}" | tr -d '[:space:]#')
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null \
   || git remote get-url origin 2>/dev/null \
-     | sed -nE 's#^(git@github\.com:|https://github\.com/)([^/]+/[^/]+)/?$#\2#p' \
+     | sed -nE 's#^(git@github\.com:|https://github\.com/|ssh://git@github\.com/)([^/]+/[^/]+)/?$#\2#p' \
      | sed -E 's/\.git$//')
 mkdir -p .codegraph/resolve
 # Trap ensures .codegraph/resolve/ is always cleaned up on non-zero exit, even after a crash.
