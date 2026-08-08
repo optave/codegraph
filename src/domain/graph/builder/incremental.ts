@@ -454,6 +454,53 @@ function persistInvokedPropertyNamesForFile(
   }
 }
 
+// Lazily-cached prepared statements for the #2138 return-type registry.
+let _returnTypesDb: BetterSqlite3Database | null = null;
+let _returnTypesDeleteStmt: SqliteStatement | null = null;
+let _returnTypesInsertStmt: SqliteStatement | null = null;
+
+function getReturnTypeStmts(db: BetterSqlite3Database): {
+  deleteStmt: SqliteStatement;
+  insertStmt: SqliteStatement;
+} {
+  if (_returnTypesDb !== db) {
+    _returnTypesDb = db;
+    _returnTypesDeleteStmt = db.prepare('DELETE FROM return_types WHERE file = ?');
+    _returnTypesInsertStmt = db.prepare(
+      'INSERT OR IGNORE INTO return_types (file, fn_name, type_name, confidence) VALUES (?, ?, ?, ?)',
+    );
+  }
+  return { deleteStmt: _returnTypesDeleteStmt!, insertStmt: _returnTypesInsertStmt! };
+}
+
+/**
+ * Persist this file's return-type evidence (#2138) into `return_types` —
+ * the durable counterpart of `persistReturnTypes` in `build-edges.ts`
+ * (full-build path), needed here because `codegraph watch`'s single-file
+ * rebuild never goes through that stage but DOES purge this file's existing
+ * `return_types` row via `purgeFileData` before this function runs. Without
+ * this write-back, a file's return-type evidence would be permanently
+ * erased the first time it's touched via `codegraph watch` — worse than
+ * never having the row at all, since a later scoped `codegraph build`
+ * incremental rebuild that depends on it (issue #2138's own fix) would then
+ * find nothing where a stale-but-present row previously existed.
+ *
+ * Always deletes this file's existing rows first (even when it now defines
+ * no functions with an inferable return type) so a file that lost its only
+ * such function never leaves a stale row behind.
+ */
+function persistReturnTypesForFile(
+  db: BetterSqlite3Database,
+  relPath: string,
+  symbols: ExtractorOutput,
+): void {
+  const { deleteStmt, insertStmt } = getReturnTypeStmts(db);
+  deleteStmt.run(relPath);
+  for (const [fnName, entry] of symbols.returnTypeMap ?? []) {
+    insertStmt.run(relPath, fnName, entry.type, entry.confidence);
+  }
+}
+
 /**
  * Persist this file's barrel re-export rename pairs (`export { X as Y } from
  * …`) into `reexport_renames` (#1967) — the durable counterpart of
@@ -1440,6 +1487,11 @@ function buildCallEdges(
   // for future rebuilds of OTHER files, regardless of what this rebuild
   // itself needed it for.
   persistInvokedPropertyNamesForFile(db, relPath, ownInvokedPropertyNames);
+  // #2138: same rationale — purgeFileData (called before this function runs)
+  // already deleted this file's return_types row; restore it so a later
+  // scoped `codegraph build` incremental rebuild can still resolve dispatch
+  // through this file's factories/getters.
+  persistReturnTypesForFile(db, relPath, symbols);
   return edgesAdded;
 }
 

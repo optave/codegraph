@@ -46,6 +46,8 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { getNodeId as getNodeIdQuery, initSchema, openDb } from '../../src/db/index.js';
+import { rebuildFile } from '../../src/domain/graph/builder/incremental.js';
 import { buildGraph } from '../../src/domain/graph/builder.js';
 import type { EngineMode } from '../../src/types.js';
 
@@ -117,6 +119,49 @@ function readEdges(dbPath: string, kind: 'calls' | 'receiver') {
   }
 }
 
+function readReturnTypes(dbPath: string) {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    return db
+      .prepare('SELECT file, fn_name, type_name FROM return_types ORDER BY file, fn_name')
+      .all() as Array<{ file: string; fn_name: string; type_name: string }>;
+  } finally {
+    db.close();
+  }
+}
+
+function makeStmts(db: ReturnType<typeof openDb>) {
+  return {
+    insertNode: db.prepare(
+      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
+    ),
+    getNodeId: {
+      get: (name: string, kind: string, file: string, line: number) => {
+        const id = getNodeIdQuery(db, name, kind, file, line);
+        return id != null ? { id } : undefined;
+      },
+    },
+    insertEdge: db.prepare(
+      'INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, ?, ?)',
+    ),
+    countNodes: db.prepare('SELECT COUNT(*) as c FROM nodes WHERE file = ?'),
+    countEdges: db.prepare(
+      'SELECT COUNT(*) as c FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)',
+    ),
+    findNodeInFile: db.prepare(
+      "SELECT id, kind, file FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant') AND file = ?",
+    ),
+    findNodeByName: db.prepare(
+      "SELECT id, file, kind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
+    ),
+    listSymbols: db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? AND kind != 'file'"),
+    upsertFileHash: db.prepare(
+      'INSERT OR REPLACE INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)',
+    ),
+    deleteFileHash: db.prepare('DELETE FROM file_hashes WHERE file = ?'),
+  };
+}
+
 const ENGINES: EngineMode[] = ['wasm', 'native'];
 
 describe.each(ENGINES)(
@@ -169,3 +214,70 @@ describe.each(ENGINES)(
     });
   },
 );
+
+/**
+ * Regression guard for a gap found in review: `codegraph watch`'s
+ * single-file rebuild (`rebuildFile`/`buildCallEdges` in incremental.ts)
+ * purges a rebuilt file's `return_types` row via `purgeFileData` (issue
+ * #2138's own purge-statement addition) but, before this fix, never wrote
+ * it back — permanently erasing that file's return-type evidence the first
+ * time it was touched via watch mode. A later scoped `codegraph build`
+ * incremental rebuild (this issue's actual fix) would then find no
+ * evidence at all for that file, worse than the pre-fix state where the
+ * table didn't exist. `persistReturnTypesForFile` closes this by
+ * restoring the row immediately after the purge, every time.
+ */
+describe('codegraph watch restores return_types after purging it (#2138 review)', () => {
+  let watchDir: string;
+  let dbPath: string;
+
+  beforeAll(async () => {
+    watchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-2138-watch-'));
+    writeFixture(watchDir);
+    dbPath = path.join(watchDir, '.codegraph', 'graph.db');
+
+    await buildGraph(watchDir, { incremental: false, skipRegistry: true, engine: 'wasm' });
+    expect(readReturnTypes(dbPath)).toContainEqual({
+      file: 'producer.js',
+      fn_name: 'getPool',
+      type_name: 'Pool',
+    });
+
+    // Rebuild producer.js itself via codegraph watch's single-file path —
+    // this purges (and, with the fix, restores) its own return_types row.
+    const producerFile = path.join(watchDir, 'producer.js');
+    fs.appendFileSync(producerFile, '\n// touch\n');
+    const db = openDb(dbPath);
+    initSchema(db);
+    await rebuildFile(db, watchDir, producerFile, makeStmts(db), { engine: 'wasm' }, null);
+    db.close();
+  }, 60_000);
+
+  afterAll(() => {
+    try {
+      if (watchDir) fs.rmSync(watchDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it("producer.js's return_types row survives its own watch-mode rebuild", () => {
+    expect(readReturnTypes(dbPath)).toContainEqual({
+      file: 'producer.js',
+      fn_name: 'getPool',
+      type_name: 'Pool',
+    });
+  });
+
+  it('a later scoped incremental build can still resolve dispatch through producer.js', async () => {
+    // Touch ONLY trigger.js, exactly like the main describe block above —
+    // proves the watch-rebuilt row is not just present but actually usable
+    // by the main build pipeline's cross-file propagation.
+    fs.appendFileSync(path.join(watchDir, 'trigger.js'), '\n// touch\n');
+    await buildGraph(watchDir, { incremental: true, skipRegistry: true, engine: 'wasm' });
+
+    const edges = readEdges(dbPath, 'calls');
+    expect(edges.find((e) => e.tgt === 'Pool.doWork')).toBeDefined();
+    expect(readEdges(dbPath, 'receiver').find((e) => e.tgt === 'Pool')).toBeDefined();
+  });
+});
