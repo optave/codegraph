@@ -77,6 +77,7 @@ export function makeCfgRules(overrides: Partial<CfgRulesConfig>): CfgRulesConfig
 export const DATAFLOW_DEFAULTS: DataflowRulesConfig = {
   // Scope entry
   functionNodes: new Set(), // REQUIRED: non-empty
+  bodySiblingTypes: null, // set for grammars where the body is a sibling of functionNodes, not a child (#2182)
 
   // Function name extraction
   nameField: 'name',
