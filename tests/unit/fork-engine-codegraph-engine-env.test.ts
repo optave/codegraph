@@ -40,6 +40,11 @@ describe('forkWorker CODEGRAPH_ENGINE gating (#2140)', () => {
     fs.writeFileSync(scriptPath, CHILD_SCRIPT);
 
     const result = await forkWorker(scriptPath, '__BENCH_MODEL__', 'minilm', []);
-    expect(result).toEqual({ codegraphEngine: null });
+    // Compares against whatever this test process's own CODEGRAPH_ENGINE
+    // happens to be (undefined normally, but forkWorker() still inherits
+    // the parent env otherwise) rather than hardcoding null — a shell/CI
+    // environment with CODEGRAPH_ENGINE ambiently set would otherwise fail
+    // this assertion despite the worker name correctly not being applied.
+    expect(result).toEqual({ codegraphEngine: process.env.CODEGRAPH_ENGINE ?? null });
   });
 });
