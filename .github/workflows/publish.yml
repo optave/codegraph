@@ -33,7 +33,7 @@ jobs:
       # Only the scheduled path below actually reads repo history (git rev-list);
       # release/workflow_dispatch exit immediately with should_run=true and never
       # touch the checkout, so skip the full-depth clone for those triggers.
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'schedule'
         with:
           fetch-depth: 0
@@ -87,8 +87,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
 
@@ -97,10 +97,10 @@ jobs:
       # Without this, npm install pulls the last-published binary, which lags
       # behind PR changes that touch both the TS and Rust extractors.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: crates/codegraph-core
 
@@ -130,7 +130,7 @@ jobs:
       version: ${{ steps.compute.outputs.version }}
       npm_tag: ${{ steps.compute.outputs.npm_tag }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -211,28 +211,28 @@ jobs:
       CODEGRAPH_FAST_SKIP_DIAG: "1"
 
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: "npm"
 
       - name: Setup Python (for resolution benchmark + tracer validation)
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
 
       - name: Setup Go (for resolution benchmark + tracer validation)
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "stable"
           cache: false
 
       - name: Download native artifact (linux-x64)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: native-linux-x64
           path: crates/codegraph-core/
@@ -340,7 +340,7 @@ jobs:
         run: npm run test:regression-guard
 
       - name: Upload benchmark history files
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: benchmark-files
           path: |
@@ -354,7 +354,7 @@ jobs:
       # gate in the Benchmark workflow). Separated from the history-files
       # artifact because consumers read different shapes.
       - name: Upload benchmark JSON results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: benchmark-results-json
           path: |
@@ -373,9 +373,9 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
 
@@ -399,7 +399,7 @@ jobs:
         run: npm pkg delete scripts.prepublishOnly
 
       - name: Download native artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: ${{ runner.temp }}/artifacts/
 
@@ -548,7 +548,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: main
@@ -556,7 +556,7 @@ jobs:
 
       # Node 24 required: ships with npm v11 which supports OIDC trusted publishing.
       # Node 22 ships with npm v10 which lacks the OIDC handshake protocol needed by the npm registry.
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
 
@@ -581,7 +581,7 @@ jobs:
         run: npm pkg delete scripts.prepublishOnly
 
       - name: Download native artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: ${{ runner.temp }}/artifacts/
 
