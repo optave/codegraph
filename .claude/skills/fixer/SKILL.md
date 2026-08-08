@@ -671,7 +671,7 @@ A PR merges only when **all five** gate conditions hold. Evaluate them together;
 | # | Condition | Check |
 |---|-----------|-------|
 | G1 | Greptile confidence is 5/5 | `Confidence Score: 5/5` in the Greptile summary |
-| G2 | Every reviewer comment addressed and replied to | zero unanswered Greptile/Claude comments |
+| G2 | Every reviewer comment addressed and replied to, with content that actually addresses it | zero unanswered Greptile/Claude comments (structural), plus a semantic read of each review-body reply (#2160) |
 | G3 | Branch is up to date with `main` | `git merge-base --is-ancestor origin/main HEAD` |
 | G4 | No merge conflicts | `mergeable == MERGEABLE` |
 | G5 | Every check green | the whole `statusCheckRollup`, not just the six required contexts |
@@ -761,23 +761,39 @@ ME=$(gh api user --jq '.login')
 # "after" range too and retroactively "answer" all of them by account+timestamp alone,
 # which is temporal correlation, not evidence that specific review's content was read.
 # Requiring the reply to land strictly before the NEXT review closes that gap.
+#
+# #2160: structural (account + timestamp window) is still not semantic (does the reply's
+# CONTENT address THIS review's content) — pairs.json captures both bodies for every
+# structurally-answered review so the agent step below can actually read and judge them,
+# instead of the gate treating a structural match alone as proof the feedback was addressed.
+echo "[]" > .codegraph/fixer/g2-review-pairs.json
 REVIEW_TIMES=$(printf '%s\n' "$REVIEWS" | jq -r '[.[] | select(.body != "")] | sort_by(.submitted_at) | .[].submitted_at')
 IDX=0
 for SINCE in $REVIEW_TIMES; do
   IDX=$((IDX + 1))
   UNTIL=$(printf '%s\n' "$REVIEW_TIMES" | sed -n "$((IDX + 1))p")
+  REVIEWER=$(printf '%s\n' "$REVIEWS" | jq -r --arg since "$SINCE" '[.[] | select(.submitted_at == $since)][0].user.login')
+  REVIEW_BODY=$(printf '%s\n' "$REVIEWS" | jq -r --arg since "$SINCE" '[.[] | select(.submitted_at == $since)][0].body')
   if [ -n "$UNTIL" ]; then
-    REPLY_IN_WINDOW=$(printf '%s\n' "$ISSUE_COMMENTS" | jq --arg since "$SINCE" --arg until "$UNTIL" --arg me "$ME" \
-      '[.[] | select(.created_at > $since) | select(.created_at < $until) | select(.user.login == $me) | select((.body | test("^@(greptileai|claude)\\s*$")) | not)] | length')
+    REPLY_BODIES=$(printf '%s\n' "$ISSUE_COMMENTS" | jq -c --arg since "$SINCE" --arg until "$UNTIL" --arg me "$ME" \
+      '[.[] | select(.created_at > $since) | select(.created_at < $until) | select(.user.login == $me) | select((.body | test("^@(greptileai|claude)\\s*$")) | not) | .body]')
   else
-    REPLY_IN_WINDOW=$(printf '%s\n' "$ISSUE_COMMENTS" | jq --arg since "$SINCE" --arg me "$ME" \
-      '[.[] | select(.created_at > $since) | select(.user.login == $me) | select((.body | test("^@(greptileai|claude)\\s*$")) | not)] | length')
+    REPLY_BODIES=$(printf '%s\n' "$ISSUE_COMMENTS" | jq -c --arg since "$SINCE" --arg me "$ME" \
+      '[.[] | select(.created_at > $since) | select(.user.login == $me) | select((.body | test("^@(greptileai|claude)\\s*$")) | not) | .body]')
   fi
-  [ "$REPLY_IN_WINDOW" -eq 0 ] && UNANSWERED=$((UNANSWERED + 1))
+  REPLY_IN_WINDOW=$(printf '%s\n' "$REPLY_BODIES" | jq 'length')
+  if [ "$REPLY_IN_WINDOW" -eq 0 ]; then
+    UNANSWERED=$((UNANSWERED + 1))
+  else
+    jq --arg reviewer "$REVIEWER" --arg reviewBody "$REVIEW_BODY" --argjson replyBodies "$REPLY_BODIES" \
+      '. + [{reviewer: $reviewer, reviewBody: $reviewBody, replyBodies: $replyBodies}]' \
+      .codegraph/fixer/g2-review-pairs.json > .codegraph/fixer/g2-review-pairs.json.tmp \
+      && mv .codegraph/fixer/g2-review-pairs.json.tmp .codegraph/fixer/g2-review-pairs.json
+  fi
 done
 
 if [ "$UNANSWERED" -eq 0 ]; then
-  echo "G2 PASS: no unanswered reviewer comments"
+  echo "G2 PASS (structural): no unanswered reviewer comments — see g2-review-pairs.json for semantic verification"
 else
   echo "G2 FAIL: $UNANSWERED unanswered reviewer item(s) (inline comments and/or review bodies, any reviewer)"; GATE_FAIL=1
 fi
@@ -843,6 +859,22 @@ printf '%s\n' "score=${SCORE:-none};greptile_hash=$GREPTILE_HASH;unanswered=$UNA
   > .codegraph/fixer/gate-signature
 ```
 
+**Semantic verification of G2** (issue #2160). The structural check above confirms a reply exists in the right acknowledgment window and isn't a bare `@greptileai`/`@claude` trigger — it does not confirm the reply's *content* actually addresses that specific review's content. GitHub gives no API-level "reply to a review body" thread the way inline comments have, so this step can't be made purely mechanical; it is a judgment call for you to make now, using your own reading of the content, not a separate tool dispatch — you already have this judgment available while executing this skill, so there is no scenario where it's unavailable and the structural result alone must stand in uncorrected.
+
+Read `.codegraph/fixer/g2-review-pairs.json`. If the array is empty, there is nothing to judge — skip this step, G2 stands as computed above. Otherwise, for each `{reviewer, reviewBody, replyBodies}` entry, judge whether at least one of `replyBodies` plausibly addresses what `reviewBody` raised (a generic "will look into this", an off-topic reply, or a reply addressing a *different* finding than this specific review's own content all fail this check).
+
+If **any** entry fails, the structural PASS above was not the true result — correct the gate state before treating this round as converged:
+
+```bash
+mkdir -p .codegraph/fixer
+echo 1 > .codegraph/fixer/gate-fail
+# Any distinguishing suffix works here — it only needs to differ from a round where
+# every check genuinely passed, so a semantic-only failure doesn't collapse onto an
+# identical signature and misread as a stall on the next round's comparison.
+printf '%s;semantic_fail=1\n' "$(cat .codegraph/fixer/gate-signature)" > .codegraph/fixer/gate-signature
+echo "G2 FAIL (semantic): a reply exists in the acknowledgment window but its content does not address that review's feedback — post a real, substantive reply addressing it, then re-run this gate"
+```
+
 Track convergence rounds and park only when the PR is genuinely **blocked** (I6) — never on a fixed round count. This is the only place `outcome` is set to `parked`:
 
 ```bash
@@ -886,7 +918,7 @@ fi
 
 **Fixing each failed condition:**
 
-- **G1 / G2 — reviewer feedback.** Address every comment from every reviewer, including nits, and reply to each explaining what you did. Critically, **mine the Greptile summary body itself, not just the inline comments** — a score below 5/5 always names at least one gap in prose, and those gaps frequently have no inline comment. Any score below 5/5 with no inline comments means the finding is summary-only. If something is genuinely out of scope, file a tracked `follow-up` issue first and reference it in the reply — never defer untracked. Re-trigger Greptile with a `@greptileai` comment **only after** every Greptile comment has a reply. Re-trigger `@claude` only if you addressed Claude's own feedback. `/sweep` already encodes this whole procedure — delegating to it is the preferred route rather than re-deriving it here.
+- **G1 / G2 — reviewer feedback.** Address every comment from every reviewer, including nits, and reply to each explaining what you did. Critically, **mine the Greptile summary body itself, not just the inline comments** — a score below 5/5 always names at least one gap in prose, and those gaps frequently have no inline comment. Any score below 5/5 with no inline comments means the finding is summary-only. If something is genuinely out of scope, file a tracked `follow-up` issue first and reference it in the reply — never defer untracked. Re-trigger Greptile with a `@greptileai` comment **only after** every Greptile comment has a reply. Re-trigger `@claude` only if you addressed Claude's own feedback. `/sweep` already encodes this whole procedure — delegating to it is the preferred route rather than re-deriving it here. A reply landing in the right window is not the same as it addressing the review — see G2's semantic verification step in 2f before treating a review-body reply as real.
 - **G3 — behind main.** On the happy path this cannot happen; I2 makes it structurally impossible. If it does, something merged to `main` mid-run. Use the safe catch-up merge from Phase: Drain Parked PRs, including its diff-integrity check.
 - **G4 — conflicts.** Run `/resolve <pr>`. Never resolve by hand here and never rebase (I5).
 - **G5 — red checks.** Read the logs (`gh run view <run-id> --log-failed`), diagnose, fix in code, re-verify locally, push. One known exception: the `Pre-publish benchmark gate` fails intermittently by a razor-thin margin on unrelated PRs — rerun that job once before treating it as a real regression.
