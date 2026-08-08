@@ -383,7 +383,9 @@ fn emit_cha_dispatch_edges(
 
     for t in resolve_cha_dispatch(ctx, type_name, call.name.as_str()) {
         let edge_key = ((caller_id as u64) << 32) | (t.id as u64);
-        if t.id != caller_id && !seen_edges.contains(&edge_key) && !pts_edge_map.contains_key(&edge_key)
+        if t.id != caller_id
+            && !seen_edges.contains(&edge_key)
+            && !pts_edge_map.contains_key(&edge_key)
         {
             seen_edges.insert(edge_key);
             edges.push(ComputedEdge {
