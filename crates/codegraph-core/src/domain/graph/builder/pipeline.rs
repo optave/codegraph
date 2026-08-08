@@ -1619,7 +1619,10 @@ fn propagate_return_types_across_files(
     // small incremental rebuild with no call-assignments anywhere must not
     // pay for a whole-table SELECT it has no use for (this guard is what
     // keeps that read off the no-op rebuild's hot path).
-    if !file_symbols.values().any(|s| !s.call_assignments.is_empty()) {
+    if !file_symbols
+        .values()
+        .any(|s| !s.call_assignments.is_empty())
+    {
         return;
     }
 
