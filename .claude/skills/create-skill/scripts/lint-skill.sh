@@ -31,7 +31,12 @@ warn()  { echo "WARN:  $1"; WARNINGS=$((WARNINGS + 1)); }
 # Extract bash blocks (skip quadruple-backtick example regions) and check
 # if UPPER_CASE variables assigned in one block are referenced in a later
 # block without file-based persistence.
-BLOCKS_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.blocks")
+# Trailing X's only (no suffix) — BSD mktemp (macOS) only randomizes a
+# trailing X run; a suffix after it (e.g. ".blocks") returns the template
+# literally instead of a unique path (issue #2157). The extension isn't
+# load-bearing here (this file is only ever grepped/awked, never dispatched
+# by codegraph's extension-based language detection).
+BLOCKS_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
 trap 'rm -f "$BLOCKS_FILE"' EXIT
 
 # Extract bash blocks with block index, skipping those inside ```` regions.
@@ -293,6 +298,19 @@ fi
 while IFS=$'\t' read -r bnum line; do
   if [[ "$line" =~ find[[:space:]].*-quit ]]; then
     warn "bash block $bnum: 'find -quit' is GNU-only — use 'head -1' or 'grep -q' instead (Pattern 13)"
+  fi
+done < "$BLOCKS_FILE"
+
+# ── Check 10b: mktemp template with a non-trailing X run (issue #2157) ──
+# BSD mktemp (macOS) only randomizes a TRAILING run of X's — a suffix
+# directly after it (tmp.XXXXXXXXXX.ext) returns the template literally
+# instead of creating a unique path, causing silent collisions across
+# concurrent runs and "File exists" failures on re-runs. Matches any X{6,}
+# run immediately followed by something other than another X, a closing
+# quote/paren, or whitespace.
+while IFS=$'\t' read -r bnum line; do
+  if [[ "$line" =~ mktemp ]] && [[ "$line" =~ X{6,}[^X\"\'\ \)] ]]; then
+    warn "bash block $bnum: mktemp template's X run is not trailing — BSD mktemp (macOS) won't randomize it; use a trailing-X template, or mktemp -d a directory and place the named/extensioned file inside it (Pattern 3/13)"
   fi
 done < "$BLOCKS_FILE"
 

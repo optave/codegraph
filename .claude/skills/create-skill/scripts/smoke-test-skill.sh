@@ -17,7 +17,11 @@ if [ ! -f "$SKILL_FILE" ]; then
   exit 1
 fi
 
-TMPBLOCK=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.sh")
+# Trailing X's only (no suffix) — BSD mktemp (macOS) only randomizes a
+# trailing X run; a suffix after it (e.g. ".sh") returns the template
+# literally instead of a unique path (issue #2157). bash -n below doesn't
+# need the .sh extension anyway.
+TMPBLOCK=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
 trap 'rm -f "$TMPBLOCK"' EXIT
 
 PASS=0

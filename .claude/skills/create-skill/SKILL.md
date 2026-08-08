@@ -181,8 +181,13 @@ git show HEAD:$FILE 2>/dev/null | codegraph where --file -
 **Correct:**
 ````markdown
 ```bash
-PREV_FILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js")  # adjust extension to match the language of $FILE; template syntax is portable (macOS + Linux)
-trap 'rm -f "$PREV_FILE"' EXIT
+# mktemp -d with a trailing-X template, then a named file with the right
+# extension inside it — a suffix directly after the X run (mktemp
+# "tmp.XXXXXXXXXX.js") returns the template literally on macOS BSD mktemp
+# instead of randomizing it (issue #2157); only a trailing X run is portable.
+PREV_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
+PREV_FILE="$PREV_DIR/prev.js"  # adjust extension to match the language of $FILE
+trap 'rm -rf "$PREV_DIR"' EXIT
 # $FILE is expected to be set by the surrounding loop, e.g. for FILE in $(git diff --name-only HEAD); do ... done
 # 2>/dev/null: suppress git's "fatal: Path X does not exist in HEAD" — the else branch already warns the user
 if git show HEAD:"$FILE" > "$PREV_FILE" 2>/dev/null; then
@@ -190,17 +195,19 @@ if git show HEAD:"$FILE" > "$PREV_FILE" 2>/dev/null; then
 else
   echo "WARN: $FILE is new or unreadable in HEAD — skipping before/after comparison"
 fi
-rm -f "$PREV_FILE"
+rm -rf "$PREV_DIR"
 trap - EXIT
 ```
 ````
 
 ### Pattern 3: Temp files need extensions
 
-Codegraph's language detection is extension-based. Temp files passed to codegraph must have the correct extension:
+Codegraph's language detection is extension-based. Temp files passed to codegraph must have the correct extension — but `mktemp`'s own template can only end in a trailing `X` run (a suffix directly after the X's, like `tmp.XXXXXXXXXX.js`, returns the template literally instead of randomizing it on macOS BSD `mktemp` — issue #2157). Create a temp directory instead and place the named, extensioned file inside it:
 
 ```bash
-mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.js"    # NOT just mktemp — template syntax is cross-platform (macOS + Linux)
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")   # NOT just mktemp — template syntax is cross-platform (macOS + Linux)
+trap 'rm -rf "$TMP_DIR"' EXIT
+TMP_FILE="$TMP_DIR/probe.js"    # extension lives on the file name, not the mktemp template
 ```
 
 ### Pattern 4: No hardcoded temp paths
@@ -281,7 +288,7 @@ This supports both idempotent re-runs and resume-after-failure.
 
 Avoid shell constructs that behave differently across platforms:
 - Use `find ... -name "*.ext" | grep -q .` instead of `find ... -quit` (non-portable) or glob expansion (`ls *.ext`) which differs between bash versions
-- Use `mktemp` with template syntax (`mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.ext"`) — GNU flags like `--suffix` and `-p` are not available on macOS BSD `mktemp`
+- Use `mktemp` with template syntax (`mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX"`) — GNU flags like `--suffix` and `-p` are not available on macOS BSD `mktemp`. The `X` run must be **trailing** — a suffix directly after it (`tmp.XXXXXXXXXX.ext`) returns the template literally instead of randomizing it on macOS BSD `mktemp` (issue #2157); when an extension is required (Pattern 3), `mktemp -d` a directory and place the named file inside it instead
 - Use `sed -i.bak` instead of `sed -i ''` (GNU vs BSD incompatibility)
 - Document any platform-specific behavior with a comment: `# NOTE: requires GNU coreutils`
 
@@ -290,7 +297,7 @@ Avoid shell constructs that behave differently across platforms:
 Any phase that creates temp files or modifies repo state must set a cleanup trap. Without it, errors mid-phase leak temp files or leave dirty state:
 
 ```bash
-TMPFILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX.json")
+TMPFILE=$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")
 trap 'rm -f "$TMPFILE"' EXIT
 # ... operations that might fail ...
 # Reset when done if more work follows:
@@ -556,7 +563,7 @@ trap - EXIT
 Mentally trace a second execution of the skill on the same state:
 - Does Phase 0 handle pre-existing artifacts (skip, warn, overwrite)?
 - Do file-creation steps fail if the file already exists?
-- Are `mktemp` paths unique across runs (they should be by default)?
+- Are `mktemp` paths unique across runs? Check every template's `X` run is **trailing** (`tmp.XXXXXXXXXX`, not `tmp.XXXXXXXXXX.ext`) — a suffix after the X's breaks uniqueness on macOS BSD `mktemp` (issue #2157) even though it works on Linux
 
 Document any idempotency fix applied.
 
