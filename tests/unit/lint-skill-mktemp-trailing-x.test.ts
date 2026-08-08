@@ -31,6 +31,26 @@ const LINT_SCRIPT = path.join(
   'lint-skill.sh',
 );
 
+// lint-skill.sh requires bash 4+ (associative arrays). macOS ships bash 3.2
+// (Apple stopped updating it at the GPLv2/v3 boundary) as the `bash` on
+// PATH, including on GitHub Actions' macos-latest runner — resolve a real
+// bash 4+ explicitly rather than assuming plain "bash" is adequate.
+function resolveBash4(): string | null {
+  const candidates = ['/opt/homebrew/bin/bash', '/usr/local/bin/bash', 'bash'];
+  for (const candidate of candidates) {
+    try {
+      const version = execFileSync(candidate, ['--version'], { encoding: 'utf8' });
+      const match = version.match(/version (\d+)\./);
+      if (match && Number(match[1]) >= 4) return candidate;
+    } catch {
+      // candidate not on PATH — try the next one
+    }
+  }
+  return null;
+}
+
+const BASH4 = resolveBash4();
+
 const FRONTMATTER = `---
 name: lint-test-skill
 description: test
@@ -51,64 +71,83 @@ rules here
 example here
 `;
 
-function runLint(bashBlock: string): { stdout: string; status: number | null } {
+function runLint(bashBlock: string): { stdout: string; ranSuccessfully: boolean } {
   const content = `${FRONTMATTER}\n\`\`\`bash\n${bashBlock}\n\`\`\`\n\n**Exit condition:** done\n`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-skill-mktemp-'));
   const skillPath = path.join(dir, 'SKILL.md');
   fs.writeFileSync(skillPath, content);
   try {
-    const result = execFileSync('bash', [LINT_SCRIPT, skillPath], { encoding: 'utf8' });
-    return { stdout: result, status: 0 };
+    const result = execFileSync(BASH4!, [LINT_SCRIPT, skillPath], { encoding: 'utf8' });
+    return { stdout: result, ranSuccessfully: true };
   } catch (err) {
-    const e = err as { stdout?: string; status?: number | null };
-    return { stdout: e.stdout ?? '', status: e.status ?? 1 };
+    const e = err as { stdout?: string };
+    const stdout = e.stdout ?? '';
+    // lint-skill.sh only exits non-zero when it found an ERROR (as opposed
+    // to a warning) — this test's fixtures only ever trigger warnings, so a
+    // non-zero exit here means the script itself failed to run (e.g. a
+    // bash-version mismatch), not that it ran and found nothing.
+    return { stdout, ranSuccessfully: /lint-skill: \d+ error/.test(stdout) };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
-describe('lint-skill.sh flags mktemp templates with a non-trailing X run (#2157)', () => {
-  it('flags a suffix directly after the X run (the exact bug reported)', () => {
-    const { stdout } = runLint('TMPFILE=$(mktemp "/tmp/tmp.XXXXXXXXXX.js")');
-    expect(stdout).toContain("mktemp template's X run is not trailing");
-  });
+// Every "does not flag" assertion below is meaningless if the script never
+// actually ran (e.g. execFileSync throwing before producing output) — an
+// empty/missing stdout would vacuously satisfy `not.toContain(...)`.
+// Asserting ranSuccessfully first turns a silent script failure into a
+// loud, specific test failure instead of a false pass.
+describe.skipIf(BASH4 === null)(
+  'lint-skill.sh flags mktemp templates with a non-trailing X run (#2157)',
+  () => {
+    it('flags a suffix directly after the X run (the exact bug reported)', () => {
+      const { stdout, ranSuccessfully } = runLint('TMPFILE=$(mktemp "/tmp/tmp.XXXXXXXXXX.js")');
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain("mktemp template's X run is not trailing");
+    });
 
-  it('flags a non-extension suffix too (any character directly after the X run)', () => {
-    const { stdout } = runLint('BLOCKS_FILE=$(mktemp "/tmp/tmp.XXXXXXXXXX.blocks")');
-    expect(stdout).toContain("mktemp template's X run is not trailing");
-  });
+    it('flags a non-extension suffix too (any character directly after the X run)', () => {
+      const { stdout, ranSuccessfully } = runLint(
+        'BLOCKS_FILE=$(mktemp "/tmp/tmp.XXXXXXXXXX.blocks")',
+      );
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain("mktemp template's X run is not trailing");
+    });
 
-  it('does not flag a trailing-X-only template', () => {
-    const { stdout } = runLint('TMPFILE=$(mktemp "/tmp/tmp.XXXXXXXXXX")');
-    expect(stdout).not.toContain("mktemp template's X run is not trailing");
-  });
+    it('does not flag a trailing-X-only template', () => {
+      const { stdout, ranSuccessfully } = runLint('TMPFILE=$(mktemp "/tmp/tmp.XXXXXXXXXX")');
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).not.toContain("mktemp template's X run is not trailing");
+    });
 
-  it('does not flag mktemp -d with a trailing-X template (the recommended fix)', () => {
-    const { stdout } = runLint(
-      [
-        'TMP_DIR=$(mktemp -d "/tmp/tmp.XXXXXXXXXX")',
-        'trap \'rm -rf "$TMP_DIR"\' EXIT',
-        'TMP_FILE="$TMP_DIR/probe.js"',
-      ].join('\n'),
-    );
-    expect(stdout).not.toContain("mktemp template's X run is not trailing");
-  });
+    it('does not flag mktemp -d with a trailing-X template (the recommended fix)', () => {
+      const { stdout, ranSuccessfully } = runLint(
+        [
+          'TMP_DIR=$(mktemp -d "/tmp/tmp.XXXXXXXXXX")',
+          'trap \'rm -rf "$TMP_DIR"\' EXIT',
+          'TMP_FILE="$TMP_DIR/probe.js"',
+        ].join('\n'),
+      );
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).not.toContain("mktemp template's X run is not trailing");
+    });
 
-  it('does not flag a bare mktemp -d with no template at all', () => {
-    const { stdout } = runLint('WORK_DIR=$(mktemp -d)');
-    expect(stdout).not.toContain("mktemp template's X run is not trailing");
-  });
-});
+    it('does not flag a bare mktemp -d with no template at all', () => {
+      const { stdout, ranSuccessfully } = runLint('WORK_DIR=$(mktemp -d)');
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).not.toContain("mktemp template's X run is not trailing");
+    });
+  },
+);
 
-describe('.claude/skills/create-skill/SKILL.md itself has no non-trailing-X mktemp templates', () => {
-  it('passes lint-skill.sh with no mktemp-related warnings', () => {
-    const realSkillPath = path.join(REPO_ROOT, '.claude', 'skills', 'create-skill', 'SKILL.md');
-    let stdout: string;
-    try {
-      stdout = execFileSync('bash', [LINT_SCRIPT, realSkillPath], { encoding: 'utf8' });
-    } catch (err) {
-      stdout = (err as { stdout?: string }).stdout ?? '';
-    }
-    expect(stdout).not.toContain("mktemp template's X run is not trailing");
-  });
-});
+describe.skipIf(BASH4 === null)(
+  '.claude/skills/create-skill/SKILL.md itself has no non-trailing-X mktemp templates',
+  () => {
+    it('passes lint-skill.sh with no mktemp-related warnings', () => {
+      const realSkillPath = path.join(REPO_ROOT, '.claude', 'skills', 'create-skill', 'SKILL.md');
+      const stdout = execFileSync(BASH4!, [LINT_SCRIPT, realSkillPath], { encoding: 'utf8' });
+      expect(stdout).toContain('lint-skill: 0 error');
+      expect(stdout).not.toContain("mktemp template's X run is not trailing");
+    });
+  },
+);
