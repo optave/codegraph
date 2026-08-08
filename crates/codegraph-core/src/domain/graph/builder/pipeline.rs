@@ -1732,7 +1732,7 @@ fn build_return_type_index(
 /// `unwrapOptionResultType` in `build-edges.ts` (#2214).
 fn unwrap_option_result_type(type_name: &str) -> Option<&str> {
     let (base, rest) = type_name.split_once('<')?;
-    if base.trim() != "Option" && base.trim() != "Result" {
+    if !crate::extractors::rust_lang::is_option_or_result_base(base.trim()) {
         return None;
     }
     let inner = rest.strip_suffix('>')?;
@@ -2783,5 +2783,16 @@ mod tests {
     #[test]
     fn unwrap_option_result_type_returns_none_for_an_unrelated_generic() {
         assert_eq!(unwrap_option_result_type("Vec<User>"), None);
+    }
+
+    #[test]
+    fn unwrap_option_result_type_unwraps_a_fully_qualified_option() {
+        // `fn f() -> std::option::Option<User>` is valid Rust and just as common
+        // as the bare `Option<User>` spelling in no-std or disambiguating code
+        // (Greptile review, PR #2371).
+        assert_eq!(
+            unwrap_option_result_type("std::option::Option<User>"),
+            Some("User")
+        );
     }
 }

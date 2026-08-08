@@ -562,6 +562,17 @@ fn is_known_unit_struct(name: &str, symbols: &FileSymbols) -> bool {
         .any(|d| d.kind == "struct" && d.name == name)
 }
 
+/// True when `base` names `Option`/`Result`, bare (`Option`) or fully qualified
+/// (`std::option::Option`, `core::result::Result`) — both spellings are valid
+/// Rust and equally common in a `-> ReturnType` position. Mirrors
+/// `isOptionOrResultBase` in `src/extractors/rust.ts` and is checked identically
+/// at unwrap time by `unwrap_option_result_type` in `pipeline.rs` (#2214, Greptile
+/// review on PR #2371 — a qualified spelling was silently treated as an unrelated
+/// generic, dropping the type argument a Some(x)/Ok(x) binding needs).
+pub(crate) fn is_option_or_result_base(base: &str) -> bool {
+    base == "Option" || base == "Result" || base.ends_with("::Option") || base.ends_with("::Result")
+}
+
 fn extract_rust_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
     match type_node.kind() {
         "type_identifier" | "identifier" | "scoped_type_identifier" => {
@@ -594,7 +605,7 @@ fn extract_rust_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<
         "generic_type" => {
             let text = node_text(type_node, source);
             let base = text.split('<').next().unwrap_or(text).trim();
-            if base == "Option" || base == "Result" {
+            if is_option_or_result_base(base) {
                 Some(text)
             } else {
                 Some(base)
@@ -1180,6 +1191,19 @@ mod tests {
             .find(|e| e.name == "get_users")
             .unwrap();
         assert_eq!(entry.type_name, "Vec");
+    }
+
+    #[test]
+    fn return_type_map_preserves_full_text_for_a_fully_qualified_option() {
+        // `std::option::Option<User>` is just as valid as the bare `Option<User>`
+        // spelling and must be recognized the same way (Greptile review, PR #2371).
+        let s = parse_rust("fn get_user() -> std::option::Option<User> { None }");
+        let entry = s
+            .return_type_map
+            .iter()
+            .find(|e| e.name == "get_user")
+            .unwrap();
+        assert_eq!(entry.type_name, "std::option::Option<User>");
     }
 
     // ── Calls embedded in macro invocation arguments (#2214) ──────────────────

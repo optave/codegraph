@@ -9,6 +9,7 @@ import { performance } from 'node:perf_hooks';
 import { getNodeId } from '../../../../db/index.js';
 import { setTypeMapEntry } from '../../../../extractors/helpers.js';
 import { PROPAGATION_HOP_PENALTY } from '../../../../extractors/javascript.js';
+import { isOptionOrResultBase } from '../../../../extractors/rust.js';
 import { debug } from '../../../../infrastructure/logger.js';
 import { loadNative } from '../../../../infrastructure/native.js';
 import { getOrCreatePerDbChunkStmt } from '../../../../shared/chunked-stmt-cache.js';
@@ -675,7 +676,7 @@ function unwrapOptionResultType(typeName: string): string | undefined {
   const ltIdx = typeName.indexOf('<');
   if (ltIdx === -1 || !typeName.endsWith('>')) return undefined;
   const base = typeName.slice(0, ltIdx).trim();
-  if (base !== 'Option' && base !== 'Result') return undefined;
+  if (!isOptionOrResultBase(base)) return undefined;
   const inner = typeName.slice(ltIdx + 1, -1);
   let depth = 0;
   for (let i = 0; i < inner.length; i++) {

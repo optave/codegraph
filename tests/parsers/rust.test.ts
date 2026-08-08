@@ -241,6 +241,15 @@ impl Display for Foo {}`);
     );
   });
 
+  it('preserves the full text for a fully-qualified Option (std::option::Option<T>)', () => {
+    // `std::option::Option<User>` is just as valid as the bare `Option<User>`
+    // spelling and must be recognized the same way (Greptile review, PR #2371).
+    const symbols = parseRust(`fn get_user() -> std::option::Option<User> { None }`);
+    expect(symbols.returnTypeMap.get('get_user')).toEqual(
+      expect.objectContaining({ type: 'std::option::Option<User>' }),
+    );
+  });
+
   // ── Calls embedded in macro invocation arguments (#2214) ──────────────────
 
   it('scans macro arguments for a method call', () => {

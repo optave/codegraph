@@ -439,9 +439,24 @@ function extractRustTypeName(typeNode: TreeSitterNode): string | null {
   if (t === 'generic_type') {
     const text = typeNode.text;
     const base = text.split('<')[0]?.trim() ?? text;
-    return base === 'Option' || base === 'Result' ? text : base;
+    return isOptionOrResultBase(base) ? text : base;
   }
   return null;
+}
+
+/**
+ * True when `base` names Option/Result, bare (`Option`) or fully qualified
+ * (`std::option::Option`, `core::result::Result`) — both spellings are valid
+ * Rust and equally common in a `-> ReturnType` position. Mirrors
+ * `is_option_or_result_base` in `rust_lang.rs` and is checked identically at
+ * unwrap time by `unwrapOptionResultType` in `build-edges.ts` (#2214, Greptile
+ * review on PR #2371 — a qualified spelling was silently treated as an
+ * unrelated generic, dropping the type argument a Some(x)/Ok(x) binding needs).
+ */
+export function isOptionOrResultBase(base: string): boolean {
+  return (
+    base === 'Option' || base === 'Result' || base.endsWith('::Option') || base.endsWith('::Result')
+  );
 }
 
 /**
