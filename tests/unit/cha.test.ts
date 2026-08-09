@@ -94,6 +94,30 @@ describe('resolveThisDispatch — cross-file name collision (issue #2062)', () =
     expect(result).toEqual([]);
   });
 
+  it('does not resolve super() to an unrelated same-named class when the base is a plain constructor function (issue #2238)', () => {
+    // classes.js's own `A` is a plain function constructor (`function A(x)
+    // {...}`) — functions have no `.constructor` method to find, by
+    // definition. An unrelated file's `class A { constructor() {} }` must
+    // not be treated as the real ancestor just because the #2062 same-file
+    // check only looked for a class/interface/etc.-kind `A`, not a
+    // function-kind one.
+    const lookup = makeLookup(
+      { 'A.constructor': [{ id: 1, file: 'super.js', kind: 'method', line: 1 }] },
+      { A: { 'classes.js': [{ id: 2, file: 'classes.js', kind: 'function', line: 1 }] } },
+    );
+    const chaCtx = makeChaCtx({ D: 'A' }, { 'D|classes.js': 'A' });
+
+    const result = resolveThisDispatch(
+      'constructor',
+      'D.constructor',
+      'super',
+      chaCtx,
+      lookup,
+      'classes.js',
+    );
+    expect(result).toEqual([]);
+  });
+
   it('resolves a legitimate cross-file super call when the base class is not declared in the caller file at all', () => {
     // dog.ts imports Animal from base.ts — Animal is genuinely absent from
     // dog.ts, so the cross-file match is legitimate heritage, not a
