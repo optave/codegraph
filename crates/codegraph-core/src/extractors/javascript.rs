@@ -154,6 +154,17 @@ impl SymbolExtractor for JsExtractor {
 
 // ── Type inference helpers ──────────────────────────────────────────────────
 
+/// Generic type wrappers that transform their argument into an unrelated
+/// opaque type (`ReturnType<typeof fn>`, `InstanceType<typeof Ctor>`, …) —
+/// their own name is never a legitimate receiver type, so `extract_simple_type_name`
+/// must return `None` rather than the wrapper's own name (#2235).
+const OPAQUE_TYPE_TRANSFORM_WRAPPERS: [&str; 4] = [
+    "ReturnType",
+    "InstanceType",
+    "Parameters",
+    "ConstructorParameters",
+];
+
 /// Extract simple type name from a type_annotation node.
 /// Returns the type name for simple types and generics, None for unions/intersections/arrays.
 fn extract_simple_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
@@ -162,7 +173,8 @@ fn extract_simple_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a
             match child.kind() {
                 "type_identifier" | "identifier" => return Some(node_text(&child, source)),
                 "generic_type" => {
-                    return child.child(0).map(|n| node_text(&n, source));
+                    let base = child.child(0).map(|n| node_text(&n, source));
+                    return base.filter(|b| !OPAQUE_TYPE_TRANSFORM_WRAPPERS.contains(b));
                 }
                 "parenthesized_type" => return extract_simple_type_name(&child, source),
                 _ => {}
@@ -247,10 +259,21 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
         return;
     }
     let var_name = node_text(&name_n, source);
+    // Also seed a function-scoped key alongside the bare one (#2235) — two
+    // different functions in this file each declaring their own
+    // differently-typed local of this same name would otherwise silently
+    // collide under the bare key. Mirrors TS handleVarDeclaratorTypeMap.
+    let enclosing_qualifier = find_enclosing_function_qualifier(node, source);
     // Type annotation: confidence 0.9
     if let Some(type_anno) = find_child(node, "type_annotation") {
         if let Some(type_name) = extract_simple_type_name(&type_anno, source) {
-            push_type_map_entry(symbols, var_name.to_string(), type_name.to_string());
+            push_scoped_type_map_entry(
+                symbols,
+                enclosing_qualifier.as_deref(),
+                var_name,
+                type_name.to_string(),
+                0.9,
+            );
         }
     }
     let Some(value_n) = node.child_by_field_name("value") else {
@@ -259,11 +282,13 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
     // Constructor: confidence 1.0 (overrides annotation in edge builder)
     if value_n.kind() == "new_expression" {
         if let Some(type_name) = extract_new_expr_type_name(&value_n, source) {
-            symbols.type_map.push(TypeMapEntry {
-                name: var_name.to_string(),
-                type_name: type_name.to_string(),
-                confidence: 1.0,
-            });
+            push_scoped_type_map_entry(
+                symbols,
+                enclosing_qualifier.as_deref(),
+                var_name,
+                type_name.to_string(),
+                1.0,
+            );
         }
     }
     // Phase 8.3e: Object.create({ key: fn }) → composite pts key per property
@@ -291,11 +316,13 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
                 if let Some((type_name, confidence)) = same_file_entry {
                     let propagated = confidence - PROPAGATION_HOP_PENALTY;
                     if propagated > 0.0 {
-                        symbols.type_map.push(TypeMapEntry {
-                            name: var_name.to_string(),
+                        push_scoped_type_map_entry(
+                            symbols,
+                            enclosing_qualifier.as_deref(),
+                            var_name,
                             type_name,
-                            confidence: propagated,
-                        });
+                            propagated,
+                        );
                     }
                 }
             }
@@ -337,6 +364,11 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
 /// on the rest binding's own name. Mirrors `handleParamTypeMap` in
 /// `src/extractors/javascript.ts`.
 fn handle_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    // Also seed a function-scoped key alongside the bare one (#2235) — see
+    // handle_var_declarator_type_map's identical rationale for local
+    // variables, which applies equally to two different functions' own
+    // same-named typed parameters.
+    let enclosing_qualifier = find_enclosing_function_qualifier(node, source);
     let name_node = node
         .child_by_field_name("pattern")
         .or_else(|| node.child_by_field_name("left"))
@@ -347,10 +379,12 @@ fn handle_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
             return;
         };
         if let Some(type_name) = extract_simple_type_name(&type_anno, source) {
-            push_type_map_entry(
+            push_scoped_type_map_entry(
                 symbols,
-                node_text(&name_node, source).to_string(),
+                enclosing_qualifier.as_deref(),
+                node_text(&name_node, source),
                 type_name.to_string(),
+                0.9,
             );
         }
         return;
@@ -394,10 +428,12 @@ fn handle_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
             let rest_id = inner.child(1).or_else(|| inner.child_by_field_name("name"));
             if let Some(rest_id) = rest_id {
                 if rest_id.kind() == "identifier" {
-                    push_type_map_entry(
+                    push_scoped_type_map_entry(
                         symbols,
-                        node_text(&rest_id, source).to_string(),
+                        enclosing_qualifier.as_deref(),
+                        node_text(&rest_id, source),
                         type_name.to_string(),
+                        0.9,
                     );
                 }
             }
@@ -9678,6 +9714,92 @@ mod tests {
             "type_map should not seed the full annotation type onto 'rest' when a sibling property is destructured out; got: {:?}",
             s.type_map
         );
+    }
+
+    // #2235: a same-named parameter/local in two different functions in the
+    // same file collides under the bare typeMap key — the function-scoped
+    // key (`callerName::name`) disambiguates them. Mirrors the TS test suite
+    // in tests/parsers/javascript.test.ts.
+    #[test]
+    fn typed_parameter_seeds_a_function_scoped_key_alongside_the_bare_key() {
+        let s = parse_ts("function processOrder(db: OrderDb) {}");
+        let bare = s.type_map.iter().find(|t| t.name == "db");
+        assert_eq!(
+            bare.map(|t| (t.type_name.as_str(), t.confidence)),
+            Some(("OrderDb", 0.9))
+        );
+        let scoped = s.type_map.iter().find(|t| t.name == "processOrder::db");
+        assert_eq!(
+            scoped.map(|t| (t.type_name.as_str(), t.confidence)),
+            Some(("OrderDb", 0.9)),
+            "expected a processOrder::db scoped entry; got: {:?}",
+            s.type_map
+        );
+    }
+
+    #[test]
+    fn typed_local_seeds_a_function_scoped_key_alongside_the_bare_key() {
+        let s = parse_ts("function makeOrder() { const db: OrderDb = getDb(); }");
+        let scoped = s.type_map.iter().find(|t| t.name == "makeOrder::db");
+        assert_eq!(
+            scoped.map(|t| (t.type_name.as_str(), t.confidence)),
+            Some(("OrderDb", 0.9)),
+            "expected a makeOrder::db scoped entry; got: {:?}",
+            s.type_map
+        );
+    }
+
+    #[test]
+    fn constructor_typed_local_seeds_a_function_scoped_key_alongside_the_bare_key() {
+        let s = parse_ts("function makeOrderConn() { const conn = new OrderDb(); }");
+        let scoped = s.type_map.iter().find(|t| t.name == "makeOrderConn::conn");
+        assert_eq!(
+            scoped.map(|t| (t.type_name.as_str(), t.confidence)),
+            Some(("OrderDb", 1.0)),
+            "expected a makeOrderConn::conn scoped entry; got: {:?}",
+            s.type_map
+        );
+    }
+
+    #[test]
+    fn prevents_cross_function_collision_for_same_named_parameters() {
+        let s = parse_ts(
+            "function processOrder(db: OrderDb) { db.commit(); } \
+             function processUser(db: UserDb) { db.commit(); }",
+        );
+        let order_scoped = s.type_map.iter().find(|t| t.name == "processOrder::db");
+        assert_eq!(
+            order_scoped.map(|t| (t.type_name.as_str(), t.confidence)),
+            Some(("OrderDb", 0.9))
+        );
+        let user_scoped = s.type_map.iter().find(|t| t.name == "processUser::db");
+        assert_eq!(
+            user_scoped.map(|t| (t.type_name.as_str(), t.confidence)),
+            Some(("UserDb", 0.9)),
+            "expected each function to keep its own scoped entry despite the shared param name; got: {:?}",
+            s.type_map
+        );
+    }
+
+    // #2235: ReturnType<typeof fn>/InstanceType<typeof Ctor>/Parameters<typeof
+    // fn>/ConstructorParameters<typeof Ctor> transform their argument into an
+    // unrelated type — the wrapper's own name is never a legitimate receiver
+    // type, unlike an ordinary generic (Map<string, number> -> Map).
+    #[test]
+    fn does_not_seed_a_type_map_entry_for_opaque_generic_type_transform_wrappers() {
+        let s = parse_ts(
+            "function processOrder(db: ReturnType<typeof makeConn>) {} \
+             function processInstance(x: InstanceType<typeof Ctor>) {} \
+             function processArgs(a: Parameters<typeof fn>) {} \
+             function processCtorArgs(a: ConstructorParameters<typeof Ctor>) {}",
+        );
+        for name in ["db", "x", "a"] {
+            assert!(
+                s.type_map.iter().find(|t| t.name == name).is_none(),
+                "expected no type_map entry for '{name}'; got: {:?}",
+                s.type_map
+            );
+        }
     }
 
     // The object_rest_param_bindings extraction itself (the value-chase

@@ -614,13 +614,19 @@ export function resolveCallTargets(
 export function resolveReceiverEdge(
   lookup: CallNodeLookup,
   call: { name: string; receiver: string },
-  caller: { id: number },
+  caller: { id: number; callerName?: string | null },
   relPath: string,
   typeMap: Map<string, unknown>,
   seenCallEdges: Set<string>,
   importedNames: ReadonlyMap<string, unknown>,
 ): { callerId: number; receiverId: number; confidence: number } | null {
-  const typeEntry = typeMap.get(call.receiver);
+  // Function-scoped key (`callerName::receiver`) checked before the bare key
+  // so a same-named local/parameter in a DIFFERENT function in this file
+  // can't shadow the entry seeded for the function actually making this call
+  // (#2235; mirrors resolveReceiverTypeName in resolver/strategy.ts).
+  const typeEntry =
+    (caller.callerName ? typeMap.get(`${caller.callerName}::${call.receiver}`) : undefined) ??
+    typeMap.get(call.receiver);
   const typeName = typeEntry
     ? typeof typeEntry === 'string'
       ? typeEntry

@@ -1250,6 +1250,7 @@ fn process_file<'a>(
             ctx,
             call,
             caller_id,
+            caller_name,
             fc.rel_path,
             &fc.type_map,
             &fc.imported_names,
@@ -1764,18 +1765,23 @@ fn resolve_call_targets_core<'a>(
         } else {
             None
         };
+        // Function-scoped key (`callerName::name`) is consulted before the bare
+        // fallback keys below so a same-named local/parameter/rest-binding in a
+        // DIFFERENT function in this file can't shadow the correct entry for the
+        // function actually making this call (Phase 8.3f rest-param collision,
+        // #1358; generalized to plain locals/parameters, #2235).
         let type_lookup = class_scoped_key
             .as_deref()
             .and_then(|k| type_map.get(k))
-            .or_else(|| type_map.get(effective_receiver))
-            .or_else(|| type_map.get(receiver.as_str()))
             .or_else(|| {
                 if caller_name.is_empty() {
                     None
                 } else {
                     type_map.get(rest_param_key.as_str())
                 }
-            });
+            })
+            .or_else(|| type_map.get(effective_receiver))
+            .or_else(|| type_map.get(receiver.as_str()));
         // Inline new-expression receiver: `(new Foo).bar()` — extract the constructor name
         // when no typeMap entry exists for the complex receiver expression.
         // Mirrors the regex `/^\(?\s*new\s+([A-Z_$][A-Za-z0-9_$]*)/` in call-resolver.ts.
@@ -2295,6 +2301,7 @@ fn emit_receiver_edge(
     ctx: &EdgeContext,
     call: &CallInfo,
     caller_id: u32,
+    caller_name: &str,
     rel_path: &str,
     type_map: &HashMap<&str, (&str, f64)>,
     imported_names: &HashMap<&str, &str>,
@@ -2312,7 +2319,19 @@ fn emit_receiver_edge(
         return;
     }
 
-    let type_entry = type_map.get(receiver.as_str());
+    // Function-scoped key (`callerName::receiver`) checked before the bare key
+    // so a same-named local/parameter in a DIFFERENT function in this file
+    // can't shadow the entry seeded for the function actually making this
+    // call (#2235; mirrors resolveReceiverEdge in call-resolver.ts).
+    let scoped_key = if caller_name.is_empty() {
+        None
+    } else {
+        Some(format!("{}::{}", caller_name, receiver))
+    };
+    let type_entry = scoped_key
+        .as_deref()
+        .and_then(|k| type_map.get(k))
+        .or_else(|| type_map.get(receiver.as_str()));
     let effective_receiver = type_entry.map(|&(t, _)| t).unwrap_or(receiver.as_str());
 
     // Block global fallback only when the same-file node is a local definition,
