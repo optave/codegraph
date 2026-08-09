@@ -275,6 +275,18 @@ impl Display for Foo {}`);
     );
   });
 
+  it('preserves a reference to a generic Option (&Option<T>)', () => {
+    // `&Option<User>` (a reference TO the Option, not a reference stored
+    // inside it) — the old reference_type handling only matched a bare
+    // type_identifier/scoped_type_identifier child, never a generic_type
+    // child, so this shape returned null entirely and the whole return type
+    // was dropped (Greptile review, PR #2371).
+    const symbols = parseRust(`fn get_user() -> &Option<User> { &None }`);
+    expect(symbols.returnTypeMap.get('get_user')).toEqual(
+      expect.objectContaining({ type: 'Option<User>' }),
+    );
+  });
+
   // ── Calls embedded in macro invocation arguments (#2214) ──────────────────
 
   it('scans macro arguments for a method call', () => {

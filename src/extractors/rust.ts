@@ -414,14 +414,16 @@ function extractRustTypeName(typeNode: TreeSitterNode): string | null {
   const t = typeNode.type;
   if (t === 'type_identifier' || t === 'identifier') return typeNode.text;
   if (t === 'scoped_type_identifier') return typeNode.text;
-  // Reference: &MyType or &mut MyType → MyType
+  // Reference: &MyType, &mut MyType, &Option<User> → recurse on the referent
+  // via the `type` field (ignoring lifetime/mut modifiers, which aren't part of
+  // it) rather than hand-matching type_identifier/scoped_type_identifier — a
+  // referent that's itself generic (&Option<User>) previously matched neither
+  // arm of the old child-loop and silently returned null, dropping the return
+  // type before the Option/Result unwrap logic ever saw it (Greptile review,
+  // PR #2371).
   if (t === 'reference_type') {
-    for (let i = 0; i < typeNode.childCount; i++) {
-      const child = typeNode.child(i);
-      if (child && (child.type === 'type_identifier' || child.type === 'scoped_type_identifier')) {
-        return child.text;
-      }
-    }
+    const referent = typeNode.childForFieldName('type');
+    return referent ? extractRustTypeName(referent) : null;
   }
   // For every OTHER generic type (Vec<T>, HashMap<K, V>, a user-defined
   // Container<T>, ...), keep the original nominal-base-name behavior — impl

@@ -580,16 +580,16 @@ fn extract_rust_type_name<'a>(type_node: &Node<'a>, source: &'a [u8]) -> Option<
         "type_identifier" | "identifier" | "scoped_type_identifier" => {
             Some(node_text(type_node, source))
         }
+        // Reference: &MyType, &mut MyType, &Option<User> → recurse on the referent
+        // via the `type` field (ignoring lifetime/mut modifiers, which aren't part
+        // of it) rather than hand-matching type_identifier/scoped_type_identifier —
+        // a referent that's itself generic (`&Option<User>`) previously matched
+        // neither arm of the old child-loop and silently returned None, dropping
+        // the return type before the Option/Result unwrap logic ever saw it
+        // (Greptile review, PR #2371).
         "reference_type" => {
-            for i in 0..type_node.child_count() {
-                if let Some(child) = type_node.child(i) {
-                    if child.kind() == "type_identifier" || child.kind() == "scoped_type_identifier"
-                    {
-                        return Some(node_text(&child, source));
-                    }
-                }
-            }
-            None
+            let referent = type_node.child_by_field_name("type")?;
+            extract_rust_type_name(&referent, source)
         }
         // For every OTHER generic type (Vec<T>, HashMap<K, V>, a user-defined
         // Container<T>, ...), keep the original nominal-base-name behavior — impl
@@ -1257,6 +1257,22 @@ mod tests {
             .find(|e| e.name == "UserService.get_user_ref")
             .unwrap();
         assert_eq!(entry.type_name, "Option<&User>");
+    }
+
+    #[test]
+    fn return_type_map_preserves_a_reference_to_a_generic_option() {
+        // `&Option<User>` (a reference TO the Option, not a reference stored
+        // inside it) — the old reference_type handling only matched a bare
+        // type_identifier/scoped_type_identifier child, never a generic_type
+        // child, so this shape returned None entirely and the whole return
+        // type was dropped (Greptile review, PR #2371).
+        let s = parse_rust("fn get_user() -> &Option<User> { &None }");
+        let entry = s
+            .return_type_map
+            .iter()
+            .find(|e| e.name == "get_user")
+            .unwrap();
+        assert_eq!(entry.type_name, "Option<User>");
     }
 
     // ── Calls embedded in macro invocation arguments (#2214) ──────────────────
