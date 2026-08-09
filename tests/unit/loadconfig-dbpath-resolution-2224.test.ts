@@ -84,4 +84,31 @@ describe('resolveDbConfig / deriveRootDirFromDbPath (#2224)', () => {
       fs.rmSync(conventionalDir, { recursive: true, force: true });
     }
   });
+
+  it('walks up past a --db file nested several levels deep in a non-git project', () => {
+    // os.tmpdir() is not itself inside a git repository, so findRepoRoot
+    // returns null here — the walk-up must not stop after just one
+    // directory in that case (Greptile review: a null git ceiling
+    // previously made the search give up immediately).
+    const nonGitRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-2224-nogit-'));
+    try {
+      fs.writeFileSync(
+        path.join(nonGitRoot, '.codegraphrc.json'),
+        JSON.stringify({ db: { busyTimeoutMs: REPO_BUSY_TIMEOUT_MS } }),
+      );
+      const nestedDir = path.join(nonGitRoot, 'nested', 'deep');
+      fs.mkdirSync(nestedDir, { recursive: true });
+      const nestedDbFile = path.join(nestedDir, 'custom.db');
+      fs.writeFileSync(nestedDbFile, '');
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(unrelatedCwd);
+      try {
+        expect(resolveDbConfig(nestedDbFile).db?.busyTimeoutMs).toBe(REPO_BUSY_TIMEOUT_MS);
+      } finally {
+        cwdSpy.mockRestore();
+      }
+    } finally {
+      fs.rmSync(nonGitRoot, { recursive: true, force: true });
+    }
+  });
 });

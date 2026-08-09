@@ -406,17 +406,20 @@ interface ResolvedDbSettings {
 }
 
 /**
- * Walk up from `startDir` toward `ceiling` looking for a project config file
- * (any name in CONFIG_FILES) — mirrors walkUpForDbPath's structure/ceiling
- * handling, but the marker being searched for is the project's config file
- * rather than .codegraph/graph.db itself.
+ * Walk up from `startDir` looking for a project config file (any name in
+ * CONFIG_FILES), stopping at `ceiling` (the git root) if one is given —
+ * but, unlike walkUpForDbPath's search for .codegraph/graph.db (an
+ * auto-generated build artifact, where walking past an unknown boundary
+ * risks attaching to a stale one from an unrelated ancestor), an explicit,
+ * user-authored .codegraphrc.json carries no such risk: a --db file nested
+ * under a non-git project's root legitimately expects config resolution to
+ * walk all the way up to the filesystem root to find it (issue #2224).
  */
 function walkUpForConfigDir(startDir: string, ceiling: string | null): string | null {
   let dir = startDir;
   while (true) {
     if (CONFIG_FILES.some((name) => fs.existsSync(path.join(dir, name)))) return dir;
     if (ceiling && isSameDirectory(dir, ceiling)) return null;
-    if (!ceiling) return null;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
