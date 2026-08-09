@@ -132,6 +132,23 @@ describe('resolveThisDispatch — cross-file name collision (issue #2062)', () =
     expect(result).toEqual([{ id: 5, file: 'base.ts', kind: 'method', line: 5 }]);
   });
 
+  it('resolves a legitimate cross-file super call even when an unrelated local variable shares the base name (Greptile finding on PR #2400)', () => {
+    // dog.ts imports Animal from base.ts, and ALSO happens to declare an
+    // unrelated top-level `const Animal = ...` (or similarly non-heritage-
+    // capable local) for some other purpose. That local has nothing to do
+    // with the class hierarchy and must not be mistaken for the real
+    // heritage declaration — only a class/interface/etc.-kind or function
+    // -kind same-named local is disqualifying (issue #2238's own fix).
+    const lookup = makeLookup(
+      { 'Animal.speak': [{ id: 5, file: 'base.ts', kind: 'method', line: 5 }] },
+      { Animal: { 'dog.ts': [{ id: 9, file: 'dog.ts', kind: 'variable', line: 3 }] } },
+    );
+    const chaCtx = makeChaCtx({ Dog: 'Animal' }, { 'Dog|dog.ts': 'Animal' });
+
+    const result = resolveThisDispatch('speak', 'Dog.speak', 'super', chaCtx, lookup, 'dog.ts');
+    expect(result).toEqual([{ id: 5, file: 'base.ts', kind: 'method', line: 5 }]);
+  });
+
   it('still prefers the same-file candidate when both same-file and cross-file candidates exist', () => {
     const sameFile = { id: 1, file: 'a.ts', kind: 'method', line: 1 };
     const crossFile = { id: 2, file: 'b.ts', kind: 'method', line: 2 };
