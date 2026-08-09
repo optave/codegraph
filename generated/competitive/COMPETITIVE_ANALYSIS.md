@@ -1,6 +1,6 @@
 # Competitive Analysis — Code Graph / Code Intelligence Tools
 
-**Date:** 2026-03-29 (updated from 2026-03-21)
+**Date:** 2026-08-08 (updated from 2026-03-29)
 **Scope:** 140+ code analysis tools evaluated, 87+ ranked against `@optave/codegraph`
 
 ---
@@ -51,6 +51,7 @@ Ranked by weighted score across 6 dimensions (each 1–5):
 | 36 | 3.0 | [Adrninistrator/java-all-call-graph](https://github.com/Adrninistrator/java-all-call-graph) | 551 | Java | Apache-2.0 | Complete Java bytecode call graphs, Spring/MyBatis-aware, SQL-queryable DB |
 | 36 | 3.0 | [Technologicat/pyan](https://github.com/Technologicat/pyan) | 395 | Python | GPL-2.0 | Python 3 call graph generator, module import analysis, cycle detection, interactive HTML |
 | 37 | 3.0 | [clouditor/cloud-property-graph](https://github.com/clouditor/cloud-property-graph) | 28 | Kotlin | Apache-2.0 | Connects code property graphs with cloud runtime security assessment |
+| 38 | 3.0 | [zilliztech/claude-context](https://github.com/zilliztech/claude-context) | 12,338 | TypeScript | MIT | MCP semantic code search: hybrid BM25 + dense-vector retrieval via Milvus, AST-aware chunking for 10 languages (text-splitter fallback for the rest), Merkle-DAG incremental re-indexing, VS Code extension + 10 agent-client integrations. Backed by Zilliz (Milvus), Trendshift-featured. **Requires a Milvus/Zilliz Cloud vector DB + embedding API key — no local/keyless mode. Read-only semantic retrieval, no call graph or structural analysis** |
 
 ### Tier 2: Niche & Single-Language Tools (score 2.0–2.9)
 
@@ -172,6 +173,7 @@ Ranked by weighted score across 6 dimensions (each 1–5):
 | 36 | java-all-call-graph | 4 | 4 | 3 | 1 | 3 | 3 |
 | 37 | pyan | 3 | 3 | 5 | 1 | 4 | 2 |
 | 38 | cloud-property-graph | 4 | 4 | 2 | 2 | 4 | 2 |
+| 39 | claude-context | 3 | 1 | 2 | 3 | 4 | 5 |
 
 **Scoring criteria:**
 - **Features** (1-5): breadth of tools, MCP integration, search, visualization, export
@@ -316,6 +318,13 @@ Ranked by weighted score across 6 dimensions (each 1–5):
 - **Published benchmarks**: 67% fewer tool calls and measurable Claude Code token reduction — compelling marketing. *(Gap closed: our `context`, `audit`, and `batch` compound commands provide equivalent or better token savings)*
 - **One-liner setup**: `npx @colbymchenry/codegraph` with interactive installer auto-configures Claude Code
 - **Where we win**: We have 41 CLI commands vs their MCP-only approach, confidence-scored edges, dataflow/CFG/AST analysis, complexity metrics, architecture boundaries, cycle detection, dead code/export detection, community detection, sequence diagrams, and CI gates. Their tool is a lightweight MCP wrapper; ours is a full code intelligence platform
+
+### vs claude-context (#38, 12,338 stars — viral, Zilliz-backed)
+- **Explosive popularity + real engineering backing**: 12,338 stars, 906 forks, Trendshift-featured, built by Zilliz (the company behind the Milvus vector database). Discord community, VS Code extension alongside the MCP server, and setup docs for 10+ agent clients (Claude Code, Cursor, Codex CLI, Gemini CLI, Qwen Code, Cline, Roo Code, Windsurf, Augment, Void)
+- **AST-aware chunking**: splits code along syntactic boundaries — not fixed-size windows — for 10 languages (JS/TS/Python/Java/C/C++/Go/Rust/C#/Scala), falling back to a generic text splitter for the rest. Published evaluation claims ~40% token reduction at equivalent retrieval quality vs naive full-file context
+- **Hybrid BM25 + dense-vector search**: combines lexical and semantic retrieval in one query, backed by a real vector database (Milvus) rather than an in-process index
+- **Merkle-DAG incremental re-indexing**: a `FileSynchronizer` hashes every file and skips unchanged ones on re-index (`packages/core/src/sync/`) — a genuine O(changed) mechanism, comparable to our own hash-based tiering
+- **Where we win**: claude-context is retrieval-only — no call graph, no impact analysis, no dead code detection, no complexity metrics, no CI gates, no dataflow/CFG, no architecture boundary enforcement. It answers "what looks similar to this query?", not "what breaks if I change this?" It also requires a Milvus/Zilliz Cloud vector database plus a paid embedding-provider API key (OpenAI/VoyageAI/Ollama/Gemini) — there is no local, keyless, zero-cost path, unlike our fully local default. Different product category: a semantic-search layer for LLM context, not a structural graph tool
 
 ---
 
