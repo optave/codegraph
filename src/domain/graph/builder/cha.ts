@@ -388,27 +388,51 @@ export function resolveThisDispatch(
 
 /**
  * Resolve `${methodName}` on `cls` or, if `cls` inherits it without
- * overriding, the nearest ancestor (via `chaCtx.parents`) that actually
- * declares it. A direct qualified lookup alone (`${cls}.${methodName}`)
- * misses whenever `cls` is instantiated but doesn't override the dispatched
- * method — the method node is registered under the declaring ANCESTOR's
- * qualified name, not `cls`'s (issue #2237). Mirrors the ancestor-walk in
- * `resolveThisDispatch`'s own `while` loop.
+ * overriding, the nearest ancestor (via `chaCtx.parents`/`parentsByFile`)
+ * that actually declares it. A direct qualified lookup alone
+ * (`${cls}.${methodName}`) misses whenever `cls` is instantiated but doesn't
+ * override the dispatched method — the method node is registered under the
+ * declaring ANCESTOR's qualified name, not `cls`'s (issue #2237). Mirrors
+ * the ancestor-walk in `resolveThisDispatch`'s own `while` loop.
+ *
+ * `clsFile`, when known (propagated from a file-scoped BFS hop in
+ * `resolveChaTargets`), is used to prefer a same-file qualified-method
+ * lookup and a same-file parent-edge lookup at each step — otherwise an
+ * unrelated file's identically-named class (with its own identically-named
+ * method, or its own different parent chain) can still leak in even after
+ * `resolveChaTargets` has correctly scoped which concrete class to walk
+ * from (Greptile review finding on PR #2399). Each step falls back to the
+ * bare/global lookup when the scoped one finds nothing — never a regression
+ * versus the pre-fix behavior, only a preference when file identity is
+ * actually known. The ancestor's own file is not generally knowable (it may
+ * be an unrelated imported base), so `clsFile` is carried forward as an
+ * optimistic guess for the next hop only when a same-file parent edge was
+ * actually found; otherwise it is cleared to `null`.
  */
 function resolveMethodViaAncestors(
   cls: string,
+  clsFile: string | null,
   methodName: string,
   chaCtx: ChaContext,
   lookup: CallNodeLookup,
 ): ReadonlyArray<ResolvedCandidate> {
   let current: string | undefined = cls;
+  let currentFile = clsFile;
   const visited = new Set<string>();
   while (current && !visited.has(current)) {
     visited.add(current);
     const qualified = `${current}.${methodName}`;
-    const found = lookup.byName(qualified).filter((n) => n.kind === 'method');
+    const scopedFound = currentFile ? lookup.byNameAndFile(qualified, currentFile) : [];
+    const found = (scopedFound.length > 0 ? scopedFound : lookup.byName(qualified)).filter(
+      (n) => n.kind === 'method',
+    );
     if (found.length > 0) return found;
-    current = chaCtx.parents.get(current);
+    const scopedParent: string | undefined = currentFile
+      ? chaCtx.parentsByFile.get(`${current}|${currentFile}`)
+      : undefined;
+    const nextFile = scopedParent ? currentFile : null;
+    current = scopedParent ?? chaCtx.parents.get(current);
+    currentFile = nextFile;
   }
   return [];
 }
@@ -428,21 +452,23 @@ function resolveMethodViaAncestors(
  * overriding it, `resolveMethodViaAncestors` walks up to find the declaring
  * ancestor instead of missing the edge entirely (#2237).
  *
- * When `callerFile` is provided and that file ALSO locally declares a
- * class/interface named `typeName`, the ROOT level of the BFS prefers
- * `chaCtx.implementorsByFile` over the bare (project-wide) `implementors`
- * map — disambiguating two unrelated files that each declare their own
- * same-named interface/base class (#2237; mirrors `resolveThisDispatch`'s
- * same-file preference). Only the root level is scoped this way: the
- * collision this guards against is specifically a colliding TOP-LEVEL type
- * name, and legitimate multi-file hierarchies (a shared interface's
- * implementors declared across many files, e.g. issue #2078) must keep
- * resolving through the bare map at every level below the root — a
- * same-named collision several hops down the same hierarchy is a rarer,
- * compound scenario left out of scope here (same as #2062's fix, which is
- * also a single-hop heuristic). When `typeName` has no local declaration in
- * `callerFile` (the common cross-file-dispatch case), the scoped bucket is
- * empty and this falls through to the prior, unchanged behavior.
+ * At every BFS level (not just the root), when the current node's file is
+ * known, this prefers `chaCtx.implementorsByFile` over the bare
+ * (project-wide) `implementors` map — disambiguating two unrelated files
+ * that each declare their own same-named interface/base class (#2237;
+ * mirrors `resolveThisDispatch`'s same-file preference). The starting node's
+ * file is `callerFile` (when provided); a discovered child's file is known
+ * ONLY when its parent was found via the scoped bucket — `implementorsByFile`
+ * is populated exactly when the child's own file also locally declares that
+ * parent, so the child is *guaranteed* to live in that same file. A child
+ * reached only through the bare map has an unknown file, and the walk keeps
+ * resolving through the bare map for its own children (and their eventual
+ * method resolution — see `resolveMethodViaAncestors`) exactly as before:
+ * legitimate multi-file hierarchies (a shared interface's implementors
+ * declared across many files, e.g. issue #2078) must keep working. Every
+ * scoped lookup falls back to the bare one when it finds nothing, so this is
+ * never a regression — only a precision gain when file identity happens to
+ * be known.
  */
 export function resolveChaTargets(
   typeName: string,
@@ -453,17 +479,19 @@ export function resolveChaTargets(
 ): ReadonlyArray<ResolvedCandidate> {
   const results: Array<ResolvedCandidate> = [];
 
-  const queue: string[] = [typeName];
+  const queue: Array<{ name: string; file: string | null }> = [
+    { name: typeName, file: callerFile ?? null },
+  ];
   const visited = new Set<string>();
   visited.add(typeName);
-  let isRoot = true;
 
   while (queue.length > 0) {
-    const current = queue.shift()!;
-    const scoped =
-      isRoot && callerFile ? chaCtx.implementorsByFile.get(`${current}|${callerFile}`) : undefined;
+    const { name: current, file: currentFile } = queue.shift()!;
+    const scoped = currentFile
+      ? chaCtx.implementorsByFile.get(`${current}|${currentFile}`)
+      : undefined;
     const children = scoped ?? chaCtx.implementors.get(current);
-    isRoot = false;
+    const childFile = scoped ? currentFile : null;
     if (!children?.length) continue;
 
     for (const cls of children) {
@@ -471,11 +499,11 @@ export function resolveChaTargets(
       visited.add(cls);
 
       if (chaCtx.instantiatedTypes.has(cls)) {
-        results.push(...resolveMethodViaAncestors(cls, methodName, chaCtx, lookup));
+        results.push(...resolveMethodViaAncestors(cls, childFile, methodName, chaCtx, lookup));
       }
 
       // Traverse even non-instantiated classes — they may have instantiated subclasses.
-      queue.push(cls);
+      queue.push({ name: cls, file: childFile });
     }
   }
 

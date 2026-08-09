@@ -61,13 +61,14 @@ function makeChaTargetsCtx(opts: {
   implementors?: Record<string, string[]>;
   implementorsByFile?: Record<string, string[]>;
   parents?: Record<string, string>;
+  parentsByFile?: Record<string, string>;
   instantiatedTypes?: string[];
 }): ChaContext {
   return {
     implementors: new Map(Object.entries(opts.implementors ?? {})),
     implementorsByFile: new Map(Object.entries(opts.implementorsByFile ?? {})),
     parents: new Map(Object.entries(opts.parents ?? {})),
-    parentsByFile: new Map(),
+    parentsByFile: new Map(Object.entries(opts.parentsByFile ?? {})),
     instantiatedTypes: new Set(opts.instantiatedTypes ?? []),
   };
 }
@@ -232,9 +233,10 @@ describe('resolveChaTargets — cross-file same-name collision (issue #2237, par
     expect(result).toEqual([{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }]);
   });
 
-  it('only scopes the root level — deeper BFS hops still use the bare map', () => {
-    // Handler is ambiguous (two files), but AbstractHandler (one hop down)
-    // is not — its own children must still resolve via the bare map so a
+  it('falls back to the bare map for a deeper hop with no scoped entry of its own', () => {
+    // Handler is ambiguous (two files) and scoped at the root, but
+    // AbstractHandler (one hop down) has no implementorsByFile entry of its
+    // own — its children must still resolve via the bare map so a
     // legitimate multi-file transitive hierarchy below the disambiguated
     // root keeps working.
     const lookup = makeLookup({
@@ -251,6 +253,57 @@ describe('resolveChaTargets — cross-file same-name collision (issue #2237, par
 
     const result = resolveChaTargets('Handler', 'run', chaCtx, lookup, 'file1.ts');
     expect(result).toEqual([{ id: 1, file: 'concrete.ts', kind: 'method', line: 1 }]);
+  });
+
+  it('preserves file identity through the method lookup when two files declare the same implementor class name (Greptile finding on PR #2399)', () => {
+    // Both file1.ts and file2.ts independently declare their own HandlerA
+    // implementing their own (unrelated) Handler interface, each with its
+    // own `run` method. Scoping the root to file1.ts must also carry that
+    // file identity into the qualified-method lookup — otherwise
+    // lookup.byName('HandlerA.run') returns both files' methods.
+    const lookup = makeLookup(
+      {
+        'HandlerA.run': [
+          { id: 1, file: 'file1.ts', kind: 'method', line: 1 },
+          { id: 2, file: 'file2.ts', kind: 'method', line: 2 },
+        ],
+      },
+      {
+        'HandlerA.run': {
+          'file1.ts': [{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }],
+        },
+      },
+    );
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { Handler: ['HandlerA'] },
+      implementorsByFile: { 'Handler|file1.ts': ['HandlerA'] },
+      instantiatedTypes: ['HandlerA'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup, 'file1.ts');
+    expect(result).toEqual([{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }]);
+  });
+
+  it('preserves file identity through the ancestor walk when two files declare the same class with different parents (Greptile finding on PR #2399)', () => {
+    // file1.ts's ConcreteHandler extends RealBase; an unrelated file2.ts also
+    // declares its own ConcreteHandler extending a different OtherBase. The
+    // bare parents map is first-write-wins and here (deliberately) points
+    // the wrong way, as if file2's edge were recorded first project-wide —
+    // the file-scoped parentsByFile entry for file1 must still win.
+    const lookup = makeLookup({
+      'RealBase.run': [{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }],
+      'OtherBase.run': [{ id: 2, file: 'file2.ts', kind: 'method', line: 2 }],
+    });
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { Handler: ['ConcreteHandler'] },
+      implementorsByFile: { 'Handler|file1.ts': ['ConcreteHandler'] },
+      parents: { ConcreteHandler: 'OtherBase' },
+      parentsByFile: { 'ConcreteHandler|file1.ts': 'RealBase' },
+      instantiatedTypes: ['ConcreteHandler'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup, 'file1.ts');
+    expect(result).toEqual([{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }]);
   });
 });
 

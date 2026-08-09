@@ -671,6 +671,7 @@ function buildChaImplementorsMap(db: BetterSqlite3Database): {
   implementors: Map<string, string[]>;
   implementorsByFile: Map<string, string[]>;
   parents: Map<string, string>;
+  parentsByFile: Map<string, string>;
 } {
   const hierarchyRows = db
     .prepare(`
@@ -706,6 +707,7 @@ function buildChaImplementorsMap(db: BetterSqlite3Database): {
   const implementors = new Map<string, string[]>();
   const implementorsByFile = new Map<string, string[]>();
   const parents = new Map<string, string>();
+  const parentsByFile = new Map<string, string>();
   for (const row of hierarchyRows) {
     let list = implementors.get(row.parent_name);
     if (!list) {
@@ -723,11 +725,14 @@ function buildChaImplementorsMap(db: BetterSqlite3Database): {
       }
       if (!scoped.includes(row.child_name)) scoped.push(row.child_name);
     }
-    if (row.edge_kind === 'extends' && !parents.has(row.child_name)) {
-      parents.set(row.child_name, row.parent_name);
+    if (row.edge_kind === 'extends') {
+      if (!parents.has(row.child_name)) {
+        parents.set(row.child_name, row.parent_name);
+      }
+      parentsByFile.set(`${row.child_name}|${row.child_file}`, row.parent_name);
     }
   }
-  return { implementors, implementorsByFile, parents };
+  return { implementors, implementorsByFile, parents, parentsByFile };
 }
 
 /**
@@ -913,6 +918,7 @@ function expandChaEdges(
   implementors: Map<string, string[]>,
   implementorsByFile: Map<string, string[]>,
   parents: Map<string, string>,
+  parentsByFile: Map<string, string>,
   instantiated: Set<string>,
   noRtaEvidence: boolean,
 ): { newEdgeCount: number; affectedFiles: Set<string> } {
@@ -962,19 +968,24 @@ function expandChaEdges(
     // abstract/non-instantiated classes sit between the call-site type and
     // the concrete leaf implementations (issue #1311).
     //
-    // Root level prefers implementorsByFile when caller_file also locally
-    // declares typeName — disambiguates two unrelated files that each
-    // declare their own same-named interface/base class (#2237; mirrors
-    // resolveChaTargets's identical root-only scoping in cha.ts).
-    const bfsQueue: string[] = [typeName];
+    // Every BFS level (not just the root) prefers implementorsByFile when
+    // the current node's file is known — disambiguating two unrelated files
+    // that each declare their own same-named interface/base class (#2237;
+    // mirrors resolveChaTargets's identical scoping in cha.ts). A child's
+    // file is known ONLY when its parent was found via the scoped bucket —
+    // implementorsByFile is populated exactly when the child's own file also
+    // locally declares that parent, so the child is guaranteed to live
+    // there. Every scoped lookup falls back to the bare one when it finds
+    // nothing, so this is never a regression.
+    const bfsQueue: Array<{ name: string; file: string | null }> = [
+      { name: typeName, file: caller_file },
+    ];
     const bfsVisited = new Set<string>([typeName]);
-    let isRoot = true;
     while (bfsQueue.length > 0) {
-      const current = bfsQueue.shift()!;
-      const scoped =
-        isRoot && caller_file ? implementorsByFile.get(`${current}|${caller_file}`) : undefined;
+      const { name: current, file: currentFile } = bfsQueue.shift()!;
+      const scoped = currentFile ? implementorsByFile.get(`${current}|${currentFile}`) : undefined;
       const children = scoped ?? implementors.get(current);
-      isRoot = false;
+      const childFile = scoped ? currentFile : null;
       if (!children?.length) continue;
 
       for (const cls of children) {
@@ -986,20 +997,35 @@ function expandChaEdges(
           // dispatched method without overriding it (#2237) — a direct
           // qualified lookup alone misses since the method node is
           // registered under the ancestor's qualified name, not `cls`'s.
+          // `ancestorFile`, when known, prefers a same-file method lookup
+          // and a same-file parent-edge lookup at each step (Greptile review
+          // finding on PR #2399) — otherwise an unrelated file's identically
+          // -named class can still leak in even after the BFS above has
+          // correctly scoped which concrete class to walk from.
           let ancestor: string | undefined = cls;
+          let ancestorFile = childFile;
           const ancestorVisited = new Set<string>();
           let methodNodes: Array<{ id: number; method_file: string | null }> = [];
           while (ancestor && !ancestorVisited.has(ancestor)) {
             ancestorVisited.add(ancestor);
-            const found = findMethodStmt.all(`${ancestor}.${methodSuffix}`) as Array<{
+            const allFound = findMethodStmt.all(`${ancestor}.${methodSuffix}`) as Array<{
               id: number;
               method_file: string | null;
             }>;
+            const scopedFound = ancestorFile
+              ? allFound.filter((n) => n.method_file === ancestorFile)
+              : [];
+            const found = scopedFound.length > 0 ? scopedFound : allFound;
             if (found.length > 0) {
               methodNodes = found;
               break;
             }
-            ancestor = parents.get(ancestor);
+            const scopedParent: string | undefined = ancestorFile
+              ? parentsByFile.get(`${ancestor}|${ancestorFile}`)
+              : undefined;
+            const nextFile = scopedParent ? ancestorFile : null;
+            ancestor = scopedParent ?? parents.get(ancestor);
+            ancestorFile = nextFile;
           }
           for (const methodNode of methodNodes) {
             if (methodNode.id === source_id) continue; // skip self-loops
@@ -1019,7 +1045,7 @@ function expandChaEdges(
         }
 
         // Always traverse children — non-instantiated classes may have instantiated subclasses.
-        bfsQueue.push(cls);
+        bfsQueue.push({ name: cls, file: childFile });
       }
     }
   }
@@ -1079,7 +1105,7 @@ function runPostNativeCha(
     .get();
   if (!hasHierarchy) return empty;
 
-  const { implementors, implementorsByFile, parents } = buildChaImplementorsMap(db);
+  const { implementors, implementorsByFile, parents, parentsByFile } = buildChaImplementorsMap(db);
   if (implementors.size === 0) return empty;
 
   const { instantiated, noRtaEvidence } = buildChaRtaSet(db);
@@ -1092,6 +1118,7 @@ function runPostNativeCha(
     implementors,
     implementorsByFile,
     parents,
+    parentsByFile,
     instantiated,
     noRtaEvidence,
   );

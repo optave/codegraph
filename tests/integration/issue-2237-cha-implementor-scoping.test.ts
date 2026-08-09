@@ -72,6 +72,67 @@ export function makeConcrete(): IHandler {
   return new ConcreteHandler();
 }
 `,
+  // Greptile review finding on PR #2399: mod3 and mod4 each independently
+  // declare their own SAME-named "Recv" interface AND their own same-named
+  // "RecvA" class implementing it, each with its own "process" method.
+  // Scoping the BFS root to mod3 must also carry that file identity into
+  // the qualified-method lookup — otherwise a bare lookup for "RecvA.process"
+  // returns both files' methods.
+  'mod3/samename.ts': `
+export interface Recv {
+  process(): void;
+}
+export class RecvA implements Recv {
+  process() {}
+}
+export function handleSame(r: Recv) {
+  r.process();
+}
+export function makeRecvA(): Recv {
+  return new RecvA();
+}
+`,
+  'mod4/samename-other.ts': `
+export interface Recv {
+  process(): void;
+}
+export class RecvA implements Recv {
+  process() {}
+}
+export function makeOtherRecvA(): Recv {
+  return new RecvA();
+}
+`,
+  // Greptile review finding on PR #2399: mod6 declares its own UNRELATED
+  // "AncestorTarget" extending "OtherAncestor" (with its own "go" method) —
+  // an entirely different hierarchy from mod5's, which merely happens to
+  // share the concrete class's bare name. mod5's own ancestor walk for its
+  // "AncestorTarget" (extending RealAncestor, implementing IAncestor) must
+  // not cross into mod6's unrelated OtherAncestor.go.
+  'mod5/ancestor.ts': `
+export interface IAncestor {
+  go(): void;
+}
+export class RealAncestor implements IAncestor {
+  go() {}
+}
+export class AncestorTarget extends RealAncestor {}
+export function dispatchAncestor(a: IAncestor) {
+  a.go();
+}
+export function makeAncestorTarget(): IAncestor {
+  return new AncestorTarget();
+}
+`,
+  'mod6/ancestor-other.ts': `
+export class OtherAncestor {
+  go() {}
+}
+export class AncestorTarget extends OtherAncestor {}
+export function makeOtherAncestorTarget(): OtherAncestor {
+  return new AncestorTarget();
+}
+`,
 };
 
 function writeFixture(rootDir: string) {
@@ -131,6 +192,28 @@ function runSuite(engine: 'wasm' | 'native') {
         edges.some((e) => e.src === 'dispatch' && e.tgt === 'AbstractHandler.run'),
         `Expected dispatch -> AbstractHandler.run; got: ${JSON.stringify(edges)}`,
       ).toBe(true);
+    });
+
+    it('preserves file identity through the method lookup for two files sharing the same implementor class name (Greptile finding on PR #2399)', () => {
+      const dbPath = path.join(tmpDir, '.codegraph', 'graph.db');
+      const edges = getCallEdges(dbPath);
+      const ownEdges = edges.filter((e) => e.src === 'handleSame' && e.tgt === 'RecvA.process');
+      expect(
+        ownEdges.length,
+        `Expected exactly one handleSame -> RecvA.process edge (its own file's); got: ${JSON.stringify(edges)}`,
+      ).toBe(1);
+    });
+
+    it('preserves file identity through the ancestor walk for two files sharing the same concrete class name (Greptile finding on PR #2399)', () => {
+      const dbPath = path.join(tmpDir, '.codegraph', 'graph.db');
+      const edges = getCallEdges(dbPath);
+      expect(
+        edges.some((e) => e.src === 'dispatchAncestor' && e.tgt === 'RealAncestor.go'),
+        `Expected dispatchAncestor -> RealAncestor.go; got: ${JSON.stringify(edges)}`,
+      ).toBe(true);
+      expect(edges.some((e) => e.src === 'dispatchAncestor' && e.tgt === 'OtherAncestor.go')).toBe(
+        false,
+      );
     });
   });
 }
