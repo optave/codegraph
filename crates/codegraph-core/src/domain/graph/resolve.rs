@@ -10,17 +10,23 @@ use crate::types::{ImportResolutionInput, PathAliases, ResolvedImport, Workspace
 /// Check file existence using known_files set when available, falling back to FS.
 ///
 /// When `known_files` is provided, candidates may be absolute paths while
-/// the set contains relative paths (normalized with forward slashes).
-/// We try both the raw path and the root-relative version so extension
-/// probing works regardless of the path format (#804).
+/// the set contains relative paths (normalized with forward slashes) — or,
+/// via `normalize_known_files`, absolute paths that are themselves already
+/// forward-slash normalized. `path` is normalized here (not just at the
+/// handful of Rust crate-path call sites that already did their own
+/// `.replace('\\', "/")`) so every caller — including the alias/exports/
+/// js-to-ts-remap resolvers, which pass their candidate through unmodified —
+/// gets a forward-slash-consistent comparison on Windows. We try both the
+/// normalized path and the root-relative version so extension probing works
+/// regardless of the path format (#804, #2216).
 fn file_exists(path: &str, known: Option<&HashSet<String>>, root_dir: &str) -> bool {
     match known {
         Some(set) => {
-            if set.contains(path) {
+            let normalized = path.replace('\\', "/");
+            if set.contains(&normalized) {
                 return true;
             }
             // Candidates are often absolute; known_files are relative — try stripping root
-            let normalized = path.replace('\\', "/");
             let root_normalized = root_dir.replace('\\', "/");
             let root_prefix = if root_normalized.ends_with('/') {
                 root_normalized
@@ -1190,6 +1196,27 @@ mod tests {
 
         // Relative candidate should still match directly
         assert!(file_exists("src/domain/parser.ts", Some(&known), root));
+    }
+
+    #[test]
+    fn file_exists_matches_unnormalized_backslash_candidate_against_absolute_known_files() {
+        // Regression test for #2216: on Windows, callers like
+        // resolve_via_alias build their candidate via PathBuf::display()
+        // without normalizing it — and known_files may be the absolute
+        // convention (ctx.allFiles / getKnownFilesForIncremental, normalized
+        // via normalize_known_files). Simulating that with a literal
+        // backslash-separated candidate string, on a Set already containing
+        // the forward-slash form, must still match — file_exists normalizes
+        // the query path itself rather than relying on the caller to have
+        // done so.
+        let mut known = HashSet::new();
+        known.insert("C:/project/src/index.ts".to_string());
+
+        assert!(file_exists(
+            "C:\\project\\src\\index.ts",
+            Some(&known),
+            "C:/project"
+        ));
     }
 
     #[test]
