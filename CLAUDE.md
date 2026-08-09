@@ -225,6 +225,8 @@ Multiple Claude Code instances may run concurrently in this repo. **Before makin
 **Rules:**
 - Run `/worktree` before making changes (not needed for read-only tasks)
 - **Sync with `origin/main` before starting new feature work.** Run `git fetch origin && git log --oneline origin/main -10` to check recent merges. If starting fresh and the branch is behind main, create a new branch from `origin/main`. When continuing existing PR work, sync only if needed.
+- **Never run `git checkout <branch>` inside an existing worktree to switch to different work.** A worktree directory can be in use by another session; checking out a different branch there mutates shared state and can yank that session's branch out from under it — this isn't hypothetical, it happened (2026-08-09, cause unattributable). If you need to move a commit to a different branch (e.g. after discovering you're not where you expected), don't check out anything else in the same directory — spin up a fresh worktree instead (`git worktree add <new-path> -b <branch>`) and `git cherry-pick <sha>` there; commit objects are shared across all worktrees via the common `.git`, so this needs no checkout in the contaminated directory at all
+- **Verify the checked-out branch immediately before every commit and push** — run `git branch --show-current` and confirm it matches what you expect, don't trust state from earlier in the session. Catches the case above (or any other cause) before it reaches a push
 - Stage only files you explicitly changed
 - Commit with specific file paths: `git commit <files> -m "msg"`
 - Ignore unexpected dirty files — they belong to another session
