@@ -2515,6 +2515,12 @@ export interface NativeAddon {
     knownFiles: string[] | null,
     workspaces?: NativeWorkspacePackage[] | null,
   ): Array<{ fromFile: string; importSource: string; resolvedPath: string }>;
+  /**
+   * Clear the native Rust `crate::`/`self::`/`super::` Cargo target-override
+   * cache (issue #2217) — optional: older published addons predate this
+   * export, so callers must feature-detect via `?.()`.
+   */
+  clearCargoTargetOverridesCache?(): void;
   computeConfidence(callerFile: string, targetFile: string, importedFrom: string | null): number;
   detectCycles(edges: Array<{ source: string; target: string }>): string[][];
   bfsTraversal(

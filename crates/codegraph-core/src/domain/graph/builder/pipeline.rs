@@ -156,9 +156,14 @@ fn pipeline_setup(
     // must happen before Stage 6/6b resolve any imports below. Clearing the
     // exports cache here too matters for a long-lived native process (MCP
     // server, watch mode) running multiple builds: a dependency's
-    // `package.json` can change between builds (issue #2060).
+    // `package.json` can change between builds (issue #2060). This pipeline
+    // calls `resolve::resolve_imports_batch` directly, bypassing lib.rs's
+    // NAPI `resolve_imports` wrapper (and its own cache-clearing) entirely —
+    // so the Cargo target-override cache needs the same explicit reset here
+    // for repeated native full builds in the same process (issue #2217).
     resolve::reset_workspace_resolved_paths();
     resolve::clear_exports_cache();
+    resolve::clear_cargo_target_overrides_cache();
 
     Ok(PipelineSetup {
         config,

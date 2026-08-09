@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Default directories to ignore (mirrors `IGNORE_DIRS` in `src/shared/constants.ts`).
-const DEFAULT_IGNORE_DIRS: &[&str] = &[
+pub(crate) const DEFAULT_IGNORE_DIRS: &[&str] = &[
     "node_modules",
     ".git",
     "dist",

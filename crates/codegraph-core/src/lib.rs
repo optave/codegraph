@@ -131,7 +131,8 @@ pub fn resolve_import(
 /// native process (MCP server, watch mode) that runs multiple builds: a
 /// dependency's `package.json` can change between builds, and a stale
 /// cached `exports` value would keep resolving to the previous build's
-/// target (issue #2060, caught by Greptile review).
+/// target (issue #2060, caught by Greptile review). Clearing the Cargo
+/// target-override cache has the same rationale (issue #2217).
 #[napi]
 pub fn resolve_imports(
     inputs: Vec<ImportResolutionInput>,
@@ -148,6 +149,7 @@ pub fn resolve_imports(
     let workspace_map = workspaces.map(|w| domain::graph::resolve::workspaces_from_packages(&w));
     domain::graph::resolve::reset_workspace_resolved_paths();
     domain::graph::resolve::clear_exports_cache();
+    domain::graph::resolve::clear_cargo_target_overrides_cache();
     domain::graph::resolve::resolve_imports_batch(
         &inputs,
         &root_dir,
@@ -155,6 +157,18 @@ pub fn resolve_imports(
         known_set.as_ref(),
         workspace_map.as_ref(),
     )
+}
+
+/// Clear the native Rust `crate::`/`self::`/`super::` Cargo target-override
+/// cache (issue #2217) — called from `resolveImportPath`'s JS-side
+/// `clearCargoTargetOverridesCache()` (`resolve.ts`) so watch mode's
+/// `rebuildFile`, which calls `resolve_import` (this file's single-import
+/// entry point, not the batch one that already self-clears every build),
+/// can force a fresh Cargo.toml scan once per rebuild in a long-lived
+/// process.
+#[napi]
+pub fn clear_cargo_target_overrides_cache() {
+    domain::graph::resolve::clear_cargo_target_overrides_cache();
 }
 
 /// Compute proximity-based confidence for call resolution.
