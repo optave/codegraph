@@ -94,7 +94,7 @@ export function audit(
 ): void {
   const data: AuditResult = auditData(target, customDbPath, opts);
 
-  if (outputResult(data, null, opts)) return;
+  if (outputResult(data, null, opts, customDbPath)) return;
 
   if (data.functions.length === 0) {
     if (data.found === false) {

@@ -89,7 +89,7 @@ function renderDriftAnalysis(d: DriftAnalysis, driftScore: number): void {
 export function communities(customDbPath: string | undefined, opts: CommunitiesCliOpts = {}): void {
   const data = communitiesData(customDbPath, opts) as unknown as CommunitiesResult;
 
-  if (outputResult(data, 'communities', opts)) return;
+  if (outputResult(data, 'communities', opts, customDbPath)) return;
 
   if (data.summary.communityCount === 0) {
     console.log(

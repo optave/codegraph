@@ -84,7 +84,7 @@ function tryRenderGraphFormat(format: string, data: CfgData): boolean {
 export function cfg(name: string, customDbPath: string | undefined, opts: CfgCliOpts = {}): void {
   const data = cfgData(name, customDbPath, opts);
 
-  if (outputResult(data, 'results', opts)) return;
+  if (outputResult(data, 'results', opts, customDbPath)) return;
 
   if (data.warning) {
     console.log(`⚠  ${data.warning}`);

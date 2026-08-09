@@ -138,7 +138,7 @@ function printReexportedSection(data: ExportsDataResult, opts: ExportsOpts): voi
 
 export function fileExports(file: string, customDbPath: string, opts: ExportsOpts = {}): void {
   const data = exportsData(file, customDbPath, opts) as ExportsDataResult;
-  if (outputResult(data, 'results', opts)) return;
+  if (outputResult(data, 'results', opts, customDbPath)) return;
 
   const hasReexported = data.reexportedSymbols && data.reexportedSymbols.length > 0;
 

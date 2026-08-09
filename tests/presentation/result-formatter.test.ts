@@ -3,9 +3,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock the config loader so it doesn't touch disk
-vi.mock('../../src/infrastructure/config.js', () => ({
-  loadConfig: () => ({ display: { maxColWidth: 40 } }),
+// Mock the config resolver so it doesn't touch disk. outputResult resolves
+// its fallback display config via resolveDbConfig(customDbPath) — not a bare
+// loadConfig() off process.cwd() — since #2222.
+const resolveDbConfigMock = vi.fn(() => ({ display: { maxColWidth: 40 } }));
+vi.mock('../../src/db/index.js', () => ({
+  resolveDbConfig: resolveDbConfigMock,
 }));
 
 const { outputResult } = await import('../../src/presentation/result-formatter.js');
@@ -15,6 +18,8 @@ describe('outputResult', () => {
 
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    resolveDbConfigMock.mockClear();
+    resolveDbConfigMock.mockReturnValue({ display: { maxColWidth: 40 } });
   });
 
   afterEach(() => {
@@ -73,6 +78,27 @@ describe('outputResult', () => {
     // Should contain table formatting (box-drawing chars)
     const output = logSpy.mock.calls[0][0];
     expect(output).toContain('\u2500');
+  });
+
+  it('resolves the fallback display config from customDbPath, not process.cwd() (#2222)', () => {
+    const data = { items: [{ file: 'a.js', lines: 10 }] };
+    outputResult(data, 'items', { table: true }, '/some/other/repo');
+    expect(resolveDbConfigMock).toHaveBeenCalledWith('/some/other/repo');
+  });
+
+  it('does not call resolveDbConfig when opts.display is already provided', () => {
+    const data = { items: [{ file: 'a.js', lines: 10 }] };
+    outputResult(data, 'items', { table: true, display: { maxColWidth: 3 } }, '/some/other/repo');
+    expect(resolveDbConfigMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the resolved config\u2019s maxColWidth to truncate table cells', () => {
+    resolveDbConfigMock.mockReturnValue({ display: { maxColWidth: 5 } });
+    const data = { items: [{ name: 'ThisIsALongSymbolName' }] };
+    outputResult(data, 'items', { table: true }, '/some/other/repo');
+    const output = logSpy.mock.calls[0][0];
+    expect(output).not.toContain('ThisIsALongSymbolName');
+    expect(output).toContain('This\u2026'); // truncEnd: (maxColWidth - 1) chars + ellipsis
   });
 
   it('csv escapes commas and quotes in values', () => {
