@@ -16,6 +16,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Codegraph Workflow
 
+> **New to this repo?** Read [`.codegraph/basics.md`](.codegraph/basics.md) — it carries this repo's structure, entrypoints, coupling hotspots, and health baseline, plus the caveats that make raw numbers here misleading (notably that `-T` under-filters `tests/`, inflating the dead-code count ~3x — [#2256](https://github.com/optave/ops-codegraph-tool/issues/2256)). It is the org-standard entry point: every Optave repo has one.
+
 Hooks handle: file-level deps on reads, graph rebuild after edits, commit-time checks (cycles, dead exports, diff-impact, lint). **Use these for function-level understanding when modifying source code:**
 
 ### Before modifying code:
