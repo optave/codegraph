@@ -231,6 +231,10 @@ function setupWatcher(rootDir: string, opts: { engine?: string; dbPath?: string 
     // buildPointsToMapForFile's own default parameter instead of honoring a
     // .codegraphrc.json override, diverging from the full-build path below.
     pointsToMaxIterations: config.analysis.pointsToMaxIterations,
+    // #2242: without this, rebuildFile only resolved tsconfig/jsconfig
+    // aliases, silently excluding aliases configured via .codegraphrc.json's
+    // own `aliases` field that a full build does honor.
+    aliases: config.aliases,
   };
   const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
   info(`Watch mode using ${engineName} engine${engineVersion ? ` (v${engineVersion})` : ''}`);

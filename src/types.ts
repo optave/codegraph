@@ -1342,6 +1342,16 @@ export interface EngineOpts {
    * (`DEFAULTS.analysis.pointsToMaxIterations`).
    */
   pointsToMaxIterations?: number;
+  /**
+   * `.codegraphrc.json`'s own `aliases` config field, resolved from
+   * `config.aliases`. Threaded through incremental/watch-mode rebuilds
+   * (`rebuildFile` in `incremental.ts`) so codegraph-configured aliases
+   * apply identically to `codegraph watch` and a full build (#2242) — a
+   * full build merges this on top of tsconfig/jsconfig aliases via
+   * `mergeConfigAliases`; `rebuildFile` does the same using this field
+   * since it has no `PipelineContext`/`ctx.config` to read from directly.
+   */
+  aliases?: Record<string, unknown>;
   /** Persistent NativeDatabase connection for build writes (Phase 6.15). */
   nativeDb?: NativeDatabase;
   /**

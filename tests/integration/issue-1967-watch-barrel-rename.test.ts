@@ -304,7 +304,7 @@ describe.each(ENGINES)(
              JOIN nodes n2 ON e.target_id = n2.id
              WHERE n1.kind = 'file' AND n1.file = 'barrel.ts'
              AND n2.kind = 'file' AND n2.file = 'utils/foo.ts'
-             AND e.kind IN ('imports', 'reexports')`,
+             AND e.kind = 'reexports'`,
           )
           .get();
         expect(row).toBeDefined();

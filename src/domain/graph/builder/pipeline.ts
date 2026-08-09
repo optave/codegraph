@@ -32,7 +32,7 @@ import { getActiveEngine } from '../../parser.js';
 import { writeJournalHeader } from '../journal.js';
 import { setWorkspaces } from '../resolve.js';
 import { PipelineContext } from './context.js';
-import { loadPathAliases } from './helpers.js';
+import { loadPathAliases, mergeConfigAliases } from './helpers.js';
 import { buildEdges } from './stages/build-edges.js';
 import { buildStructure } from './stages/build-structure.js';
 // Pipeline stages
@@ -157,17 +157,7 @@ function warnOnEmbeddingsWipe(ctx: PipelineContext): void {
 
 function loadAliases(ctx: PipelineContext): void {
   ctx.aliases = loadPathAliases(ctx.rootDir);
-  if (ctx.config.aliases) {
-    for (const [key, value] of Object.entries(ctx.config.aliases)) {
-      if (typeof value !== 'string') {
-        warn(`Alias target for "${key}" must be a string, got ${typeof value}. Skipping.`);
-        continue;
-      }
-      const pattern = key.endsWith('/') ? `${key}*` : key;
-      const target = path.resolve(ctx.rootDir, value);
-      ctx.aliases.paths[pattern] = [target.endsWith('/') ? `${target}*` : `${target}/*`];
-    }
-  }
+  mergeConfigAliases(ctx.aliases, ctx.config.aliases, ctx.rootDir);
   if (ctx.aliases.baseUrl || Object.keys(ctx.aliases.paths).length > 0) {
     info(
       `Loaded path aliases: baseUrl=${ctx.aliases.baseUrl || 'none'}, ${Object.keys(ctx.aliases.paths).length} path mappings`,

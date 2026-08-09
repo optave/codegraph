@@ -298,6 +298,31 @@ export function loadPathAliases(rootDir: string): PathAliases {
 }
 
 /**
+ * Merge `.codegraphrc.json`'s own `aliases` config field into `aliases.paths`
+ * (mutating in place), matching `pipeline.ts`'s `loadAliases` stage exactly —
+ * shared so `rebuildFile` (watch-mode single-file rebuild, `incremental.ts`)
+ * resolves the SAME alias set a full build does, not just tsconfig/jsconfig
+ * (issue #2242 review — codegraph-configured aliases were silently excluded
+ * from watch rebuilds even after tsconfig/jsconfig aliases were fixed).
+ */
+export function mergeConfigAliases(
+  aliases: PathAliases,
+  configAliases: Record<string, unknown> | undefined,
+  rootDir: string,
+): void {
+  if (!configAliases) return;
+  for (const [key, value] of Object.entries(configAliases)) {
+    if (typeof value !== 'string') {
+      warn(`Alias target for "${key}" must be a string, got ${typeof value}. Skipping.`);
+      continue;
+    }
+    const pattern = key.endsWith('/') ? `${key}*` : key;
+    const target = path.resolve(rootDir, value);
+    aliases.paths[pattern] = [target.endsWith('/') ? `${target}*` : `${target}/*`];
+  }
+}
+
+/**
  * Compute MD5 hash of file contents for incremental builds.
  */
 export function fileHash(content: string): string {

@@ -29,6 +29,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { initSchema, openDb } from '../../src/db/index.js';
 import { rebuildFile } from '../../src/domain/graph/builder/incremental.js';
 import { buildGraph } from '../../src/domain/graph/builder.js';
+import { loadConfig } from '../../src/infrastructure/config.js';
 import type { EngineMode } from '../../src/types.js';
 import { createIncrementalStmts } from '../helpers/incremental-stmts.js';
 
@@ -63,7 +64,7 @@ function writeFixture(dir: string) {
   }
 }
 
-function hasFileEdge(dbPath: string, fromFile: string, toFile: string): boolean {
+function hasReexportsEdge(dbPath: string, fromFile: string, toFile: string): boolean {
   const db = new Database(dbPath, { readonly: true });
   try {
     const row = db
@@ -72,7 +73,7 @@ function hasFileEdge(dbPath: string, fromFile: string, toFile: string): boolean 
          JOIN nodes n1 ON e.source_id = n1.id
          JOIN nodes n2 ON e.target_id = n2.id
          WHERE n1.kind = 'file' AND n1.file = ? AND n2.kind = 'file' AND n2.file = ?
-         AND e.kind IN ('imports', 'reexports')`,
+         AND e.kind = 'reexports'`,
       )
       .get(fromFile, toFile);
     return row !== undefined;
@@ -97,7 +98,7 @@ describe.each(ENGINES)(
       dbPath = path.join(watchDir, '.codegraph', 'graph.db');
 
       // Sanity check: the full build resolved the alias-based reexport.
-      expect(hasFileEdge(dbPath, 'barrel.ts', 'utils/foo.ts')).toBe(true);
+      expect(hasReexportsEdge(dbPath, 'barrel.ts', 'utils/foo.ts')).toBe(true);
 
       // Touch the DEEPEST file — barrel.ts (which imports it via alias) is
       // a reverse dep and gets reparsed via rebuildReverseDepEdges.
@@ -115,7 +116,89 @@ describe.each(ENGINES)(
     });
 
     it("barrel.ts's alias-resolved reexports edge survives the reverse-dep cascade", () => {
-      expect(hasFileEdge(dbPath, 'barrel.ts', 'utils/foo.ts')).toBe(true);
+      expect(hasReexportsEdge(dbPath, 'barrel.ts', 'utils/foo.ts')).toBe(true);
+    });
+  },
+);
+
+/**
+ * Regression coverage for a Greptile finding on this same PR: `rebuildFile`
+ * resolved tsconfig/jsconfig aliases correctly but silently excluded
+ * aliases configured via `.codegraphrc.json`'s own `aliases` field — which
+ * `pipeline.ts`'s full-build `loadAliases` stage merges on top of
+ * tsconfig/jsconfig via `mergeConfigAliases`. Fixed by threading
+ * `config.aliases` through `EngineOpts.aliases` (set once in
+ * `setupWatcher`, mirroring the existing `pointsToMaxIterations` pattern)
+ * so `rebuildFile` applies the exact same merge.
+ *
+ * Fixture deliberately has NO tsconfig.json/jsconfig.json at all — the
+ * alias is defined ONLY via `.codegraphrc.json`, isolating this from the
+ * tsconfig/jsconfig path already covered above.
+ */
+const CODEGRAPHRC = JSON.stringify({ aliases: { '@utils/': './utils/' } });
+
+const CONFIG_ALIAS_FILES: Record<string, string> = {
+  '.codegraphrc.json': CODEGRAPHRC,
+  'utils/foo.ts': `
+export function realName(): string {
+  return 'real';
+}
+`,
+  'barrel.ts': `
+export { realName } from '@utils/foo';
+`,
+};
+
+function writeConfigAliasFixture(dir: string) {
+  for (const [rel, content] of Object.entries(CONFIG_ALIAS_FILES)) {
+    const abs = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+}
+
+describe.each(ENGINES)(
+  'codegraph watch preserves a .codegraphrc.json-configured alias edge (#2242 review) — initial build: %s',
+  (engine) => {
+    let watchDir: string;
+    let dbPath: string;
+
+    beforeAll(async () => {
+      watchDir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2242-config-alias-${engine}-`));
+      writeConfigAliasFixture(watchDir);
+
+      await buildGraph(watchDir, { incremental: false, skipRegistry: true, engine });
+      dbPath = path.join(watchDir, '.codegraph', 'graph.db');
+
+      // Sanity check: the full build resolved the .codegraphrc.json alias.
+      expect(hasReexportsEdge(dbPath, 'barrel.ts', 'utils/foo.ts')).toBe(true);
+
+      // Touch barrel.ts directly — exercises rebuildEdgesForTargetFile.
+      const barrelFile = path.join(watchDir, 'barrel.ts');
+      fs.appendFileSync(barrelFile, '\n// touch\n');
+
+      const db = openDb(dbPath);
+      initSchema(db);
+      // Mirrors setupWatcher's engineOpts construction (watcher.ts): the
+      // real config.aliases threaded through, not a hand-picked value.
+      const config = loadConfig(watchDir);
+      await rebuildFile(
+        db,
+        watchDir,
+        barrelFile,
+        createIncrementalStmts(db),
+        { engine, aliases: config.aliases },
+        null,
+      );
+      db.close();
+    }, 60_000);
+
+    afterAll(() => {
+      if (watchDir) fs.rmSync(watchDir, { recursive: true, force: true });
+    });
+
+    it("barrel.ts's .codegraphrc.json-alias-resolved reexports edge survives being reparsed under watch", () => {
+      expect(hasReexportsEdge(dbPath, 'barrel.ts', 'utils/foo.ts')).toBe(true);
     });
   },
 );
