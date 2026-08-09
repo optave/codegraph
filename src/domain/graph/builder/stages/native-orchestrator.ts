@@ -48,7 +48,7 @@ import {
 import { computeConfidence, getWorkspacesForNative } from '../../resolve.js';
 import { isConstructorMethodSuffix, type ResolvedCandidate } from '../../resolver/strategy.js';
 import type { CallNodeLookup } from '../call-resolver.js';
-import { resolveDefinePropertyAccessorTarget } from '../call-resolver.js';
+import { RECEIVER_KINDS, resolveDefinePropertyAccessorTarget } from '../call-resolver.js';
 import type { ChaContext } from '../cha.js';
 import { resolveThisDispatch } from '../cha.js';
 import type { PipelineContext } from '../context.js';
@@ -652,19 +652,60 @@ export async function runPostNativeAnalysis(
 
 // ── CHA post-pass helpers ────────────────────────────────────────────────────
 
-/** Build implementors map: parent/interface name → [child/implementing class names]. */
-function buildChaImplementorsMap(db: BetterSqlite3Database): Map<string, string[]> {
+/**
+ * Build implementors map: parent/interface name → [child/implementing class
+ * names], plus its file-scoped variant and the child→parent map used to walk
+ * up to a declaring ancestor.
+ *
+ * `implementorsByFile` (`${parentName}|${childFile}` → children) is
+ * populated only when `childFile` ALSO locally declares a class/interface
+ * named `parentName` — the child's heritage reference most plausibly means
+ * that co-located declaration, not an unrelated same-named one elsewhere
+ * (issue #2237). Mirrors `ChaContext.implementorsByFile` in `cha.ts` and the
+ * equivalent fix in `builder/helpers.ts`'s `buildImplementorMap` (the
+ * WASM-path twin of this function) — both are independent implementations
+ * of the same DB-driven CHA post-pass pattern and must carry the identical
+ * fix.
+ */
+function buildChaImplementorsMap(db: BetterSqlite3Database): {
+  implementors: Map<string, string[]>;
+  implementorsByFile: Map<string, string[]>;
+  parents: Map<string, string>;
+} {
   const hierarchyRows = db
     .prepare(`
-      SELECT src.name AS child_name, tgt.name AS parent_name
+      SELECT src.name AS child_name, src.file AS child_file, tgt.name AS parent_name, e.kind AS edge_kind
       FROM edges e
       JOIN nodes src ON e.source_id = src.id
       JOIN nodes tgt ON e.target_id = tgt.id
       WHERE e.kind IN ('extends', 'implements')
     `)
-    .all() as Array<{ child_name: string; parent_name: string }>;
+    .all() as Array<{
+    child_name: string;
+    child_file: string;
+    parent_name: string;
+    edge_kind: string;
+  }>;
+
+  const receiverKindsList = [...RECEIVER_KINDS];
+  const localNameRows = db
+    .prepare(
+      `SELECT file, name FROM nodes WHERE kind IN (${receiverKindsList.map(() => '?').join(',')})`,
+    )
+    .all(...receiverKindsList) as Array<{ file: string; name: string }>;
+  const localNamesByFile = new Map<string, Set<string>>();
+  for (const row of localNameRows) {
+    let names = localNamesByFile.get(row.file);
+    if (!names) {
+      names = new Set();
+      localNamesByFile.set(row.file, names);
+    }
+    names.add(row.name);
+  }
 
   const implementors = new Map<string, string[]>();
+  const implementorsByFile = new Map<string, string[]>();
+  const parents = new Map<string, string>();
   for (const row of hierarchyRows) {
     let list = implementors.get(row.parent_name);
     if (!list) {
@@ -672,8 +713,21 @@ function buildChaImplementorsMap(db: BetterSqlite3Database): Map<string, string[
       implementors.set(row.parent_name, list);
     }
     if (!list.includes(row.child_name)) list.push(row.child_name);
+
+    if (localNamesByFile.get(row.child_file)?.has(row.parent_name)) {
+      const key = `${row.parent_name}|${row.child_file}`;
+      let scoped = implementorsByFile.get(key);
+      if (!scoped) {
+        scoped = [];
+        implementorsByFile.set(key, scoped);
+      }
+      if (!scoped.includes(row.child_name)) scoped.push(row.child_name);
+    }
+    if (row.edge_kind === 'extends' && !parents.has(row.child_name)) {
+      parents.set(row.child_name, row.parent_name);
+    }
   }
-  return implementors;
+  return { implementors, implementorsByFile, parents };
 }
 
 /**
@@ -857,6 +911,8 @@ function expandChaEdges(
   db: BetterSqlite3Database,
   callToMethods: ChaCallRow[],
   implementors: Map<string, string[]>,
+  implementorsByFile: Map<string, string[]>,
+  parents: Map<string, string>,
   instantiated: Set<string>,
   noRtaEvidence: boolean,
 ): { newEdgeCount: number; affectedFiles: Set<string> } {
@@ -905,11 +961,20 @@ function expandChaEdges(
     // BFS over the implementors map — handles multi-level hierarchies where
     // abstract/non-instantiated classes sit between the call-site type and
     // the concrete leaf implementations (issue #1311).
+    //
+    // Root level prefers implementorsByFile when caller_file also locally
+    // declares typeName — disambiguates two unrelated files that each
+    // declare their own same-named interface/base class (#2237; mirrors
+    // resolveChaTargets's identical root-only scoping in cha.ts).
     const bfsQueue: string[] = [typeName];
     const bfsVisited = new Set<string>([typeName]);
+    let isRoot = true;
     while (bfsQueue.length > 0) {
       const current = bfsQueue.shift()!;
-      const children = implementors.get(current);
+      const scoped =
+        isRoot && caller_file ? implementorsByFile.get(`${current}|${caller_file}`) : undefined;
+      const children = scoped ?? implementors.get(current);
+      isRoot = false;
       if (!children?.length) continue;
 
       for (const cls of children) {
@@ -917,11 +982,25 @@ function expandChaEdges(
         bfsVisited.add(cls);
 
         if (noRtaEvidence || instantiated.has(cls)) {
-          const qualifiedName = `${cls}.${methodSuffix}`;
-          const methodNodes = findMethodStmt.all(qualifiedName) as Array<{
-            id: number;
-            method_file: string | null;
-          }>;
+          // Walk up to the declaring ancestor when `cls` inherits the
+          // dispatched method without overriding it (#2237) — a direct
+          // qualified lookup alone misses since the method node is
+          // registered under the ancestor's qualified name, not `cls`'s.
+          let ancestor: string | undefined = cls;
+          const ancestorVisited = new Set<string>();
+          let methodNodes: Array<{ id: number; method_file: string | null }> = [];
+          while (ancestor && !ancestorVisited.has(ancestor)) {
+            ancestorVisited.add(ancestor);
+            const found = findMethodStmt.all(`${ancestor}.${methodSuffix}`) as Array<{
+              id: number;
+              method_file: string | null;
+            }>;
+            if (found.length > 0) {
+              methodNodes = found;
+              break;
+            }
+            ancestor = parents.get(ancestor);
+          }
           for (const methodNode of methodNodes) {
             if (methodNode.id === source_id) continue; // skip self-loops
             const key = `${source_id}|${methodNode.id}`;
@@ -1000,14 +1079,22 @@ function runPostNativeCha(
     .get();
   if (!hasHierarchy) return empty;
 
-  const implementors = buildChaImplementorsMap(db);
+  const { implementors, implementorsByFile, parents } = buildChaImplementorsMap(db);
   if (implementors.size === 0) return empty;
 
   const { instantiated, noRtaEvidence } = buildChaRtaSet(db);
   const scopeToChangedFiles = computeChaScope(db, changedFiles);
   const callToMethods = fetchChaCallToMethods(db, changedFiles, scopeToChangedFiles);
 
-  return expandChaEdges(db, callToMethods, implementors, instantiated, noRtaEvidence);
+  return expandChaEdges(
+    db,
+    callToMethods,
+    implementors,
+    implementorsByFile,
+    parents,
+    instantiated,
+    noRtaEvidence,
+  );
 }
 
 // Extensions covered by the JS/TS extractor — the only extractor that
@@ -1338,6 +1425,7 @@ async function runPostNativeThisDispatch(
 
   const chaCtx: ChaContext = {
     implementors: new Map(), // not needed for this/super resolution
+    implementorsByFile: new Map(), // not needed for this/super resolution
     parents,
     parentsByFile,
     instantiatedTypes: new Set(), // not needed for this/super resolution

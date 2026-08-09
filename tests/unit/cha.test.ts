@@ -10,7 +10,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { CallNodeLookup } from '../../src/domain/graph/builder/call-resolver.js';
-import { type ChaContext, resolveThisDispatch } from '../../src/domain/graph/builder/cha.js';
+import {
+  type ChaContext,
+  resolveChaTargets,
+  resolveThisDispatch,
+} from '../../src/domain/graph/builder/cha.js';
 
 type Candidate = { id: number; file: string; kind: string; line: number };
 
@@ -45,9 +49,26 @@ function makeChaCtx(
 ): ChaContext {
   return {
     implementors: new Map(),
+    implementorsByFile: new Map(),
     parents: new Map(Object.entries(parents)),
     parentsByFile: new Map(Object.entries(parentsByFile)),
     instantiatedTypes: new Set(),
+  };
+}
+
+/** Build a ChaContext for resolveChaTargets tests (implementors-focused). */
+function makeChaTargetsCtx(opts: {
+  implementors?: Record<string, string[]>;
+  implementorsByFile?: Record<string, string[]>;
+  parents?: Record<string, string>;
+  instantiatedTypes?: string[];
+}): ChaContext {
+  return {
+    implementors: new Map(Object.entries(opts.implementors ?? {})),
+    implementorsByFile: new Map(Object.entries(opts.implementorsByFile ?? {})),
+    parents: new Map(Object.entries(opts.parents ?? {})),
+    parentsByFile: new Map(),
+    instantiatedTypes: new Set(opts.instantiatedTypes ?? []),
   };
 }
 
@@ -155,5 +176,139 @@ describe('resolveThisDispatch — cross-file name collision (issue #2062)', () =
     const lookup = makeLookup({});
     const chaCtx = makeChaCtx({});
     expect(resolveThisDispatch('bar', 'plainFunction', 'this', chaCtx, lookup, 'x.ts')).toEqual([]);
+  });
+});
+
+describe('resolveChaTargets — cross-file same-name collision (issue #2237, part 1)', () => {
+  it('does not merge two unrelated same-named interfaces declared in different files', () => {
+    // file1.ts declares its own Handler + HandlerA implements Handler.
+    // file2.ts independently declares an UNRELATED Handler + HandlerB implements Handler.
+    // Dispatching from a caller in file1.ts must reach only HandlerA, never HandlerB.
+    const lookup = makeLookup({
+      'HandlerA.run': [{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }],
+      'HandlerB.run': [{ id: 2, file: 'file2.ts', kind: 'method', line: 2 }],
+    });
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { Handler: ['HandlerA', 'HandlerB'] },
+      implementorsByFile: { 'Handler|file1.ts': ['HandlerA'] },
+      instantiatedTypes: ['HandlerA', 'HandlerB'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup, 'file1.ts');
+    expect(result).toEqual([{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }]);
+  });
+
+  it('falls back to the bare implementors map when the caller file has no local declaration', () => {
+    // Legitimate cross-file dispatch (issue #2078): the caller's file never
+    // declares IWorker locally at all, so there is no scoped bucket to
+    // prefer — all implementors declared anywhere must still be reachable.
+    const lookup = makeLookup({
+      'ConcreteWorker.doWork': [{ id: 1, file: 'concrete.ts', kind: 'method', line: 1 }],
+      'MockWorker.doWork': [{ id: 2, file: 'mock.ts', kind: 'method', line: 2 }],
+    });
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { IWorker: ['ConcreteWorker', 'MockWorker'] },
+      instantiatedTypes: ['ConcreteWorker', 'MockWorker'],
+    });
+
+    const result = resolveChaTargets('IWorker', 'doWork', chaCtx, lookup, 'dispatcher.ts');
+    expect(result).toEqual([
+      { id: 1, file: 'concrete.ts', kind: 'method', line: 1 },
+      { id: 2, file: 'mock.ts', kind: 'method', line: 2 },
+    ]);
+  });
+
+  it('falls back to the bare implementors map when callerFile is not provided', () => {
+    const lookup = makeLookup({
+      'HandlerA.run': [{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }],
+    });
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { Handler: ['HandlerA'] },
+      implementorsByFile: { 'Handler|file1.ts': ['HandlerA'] },
+      instantiatedTypes: ['HandlerA'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup);
+    expect(result).toEqual([{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }]);
+  });
+
+  it('only scopes the root level — deeper BFS hops still use the bare map', () => {
+    // Handler is ambiguous (two files), but AbstractHandler (one hop down)
+    // is not — its own children must still resolve via the bare map so a
+    // legitimate multi-file transitive hierarchy below the disambiguated
+    // root keeps working.
+    const lookup = makeLookup({
+      'ConcreteHandler.run': [{ id: 1, file: 'concrete.ts', kind: 'method', line: 1 }],
+    });
+    const chaCtx = makeChaTargetsCtx({
+      implementors: {
+        Handler: ['AbstractHandler'],
+        AbstractHandler: ['ConcreteHandler'],
+      },
+      implementorsByFile: { 'Handler|file1.ts': ['AbstractHandler'] },
+      instantiatedTypes: ['ConcreteHandler'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup, 'file1.ts');
+    expect(result).toEqual([{ id: 1, file: 'concrete.ts', kind: 'method', line: 1 }]);
+  });
+});
+
+describe('resolveChaTargets — inherited (non-overriding) method walk (issue #2237, part 2)', () => {
+  it('walks up to the declaring ancestor when the instantiated class inherits without overriding', () => {
+    // ConcreteHandler is instantiated and implements Handler transitively via
+    // AbstractHandler, but never defines its own `run` — only AbstractHandler
+    // does. A direct qualified lookup on ConcreteHandler.run must fall
+    // through to AbstractHandler.run instead of missing the edge entirely.
+    const lookup = makeLookup({
+      'AbstractHandler.run': [{ id: 1, file: 'abstract.ts', kind: 'method', line: 1 }],
+    });
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { Handler: ['ConcreteHandler'] },
+      parents: { ConcreteHandler: 'AbstractHandler' },
+      instantiatedTypes: ['ConcreteHandler'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup);
+    expect(result).toEqual([{ id: 1, file: 'abstract.ts', kind: 'method', line: 1 }]);
+  });
+
+  it('prefers the concrete class own override over an ancestor default when both exist', () => {
+    const lookup = makeLookup({
+      'ConcreteHandler.run': [{ id: 1, file: 'concrete.ts', kind: 'method', line: 1 }],
+      'AbstractHandler.run': [{ id: 2, file: 'abstract.ts', kind: 'method', line: 2 }],
+    });
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { Handler: ['ConcreteHandler'] },
+      parents: { ConcreteHandler: 'AbstractHandler' },
+      instantiatedTypes: ['ConcreteHandler'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup);
+    expect(result).toEqual([{ id: 1, file: 'concrete.ts', kind: 'method', line: 1 }]);
+  });
+
+  it('returns [] when neither the class nor any ancestor declares the method', () => {
+    const lookup = makeLookup({});
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { Handler: ['ConcreteHandler'] },
+      parents: { ConcreteHandler: 'AbstractHandler' },
+      instantiatedTypes: ['ConcreteHandler'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup);
+    expect(result).toEqual([]);
+  });
+
+  it('does not infinite-loop on a cyclic parents chain', () => {
+    const lookup = makeLookup({});
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { Handler: ['A'] },
+      parents: { A: 'B', B: 'A' },
+      instantiatedTypes: ['A'],
+    });
+
+    const result = resolveChaTargets('Handler', 'run', chaCtx, lookup);
+    expect(result).toEqual([]);
   });
 });

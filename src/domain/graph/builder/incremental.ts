@@ -1950,7 +1950,7 @@ function emitChaDispatchForCall(
         : (typeEntry as { type?: string }).type
       : null;
     if (typeName) {
-      chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup);
+      chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup, relPath);
       isTypedReceiverDispatch = true;
     }
   }

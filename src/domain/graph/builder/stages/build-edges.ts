@@ -1017,7 +1017,7 @@ function buildChaPostPass(
             : (typeEntry as { type?: string }).type
           : null;
         if (typeName) {
-          chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup);
+          chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup, relPath);
           isTypedReceiverDispatch = true;
         }
       }
@@ -1868,7 +1868,7 @@ function emitChaCallEdgesForCall(
         : (typeEntry as { type?: string }).type
       : null;
     if (typeName) {
-      chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup);
+      chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup, relPath);
       isTypedReceiverDispatch = true;
     }
   }

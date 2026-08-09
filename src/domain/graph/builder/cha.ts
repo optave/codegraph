@@ -24,8 +24,21 @@ import { RECEIVER_KINDS } from './call-resolver.js';
 // ── CHA context ──────────────────────────────────────────────────────────────
 
 export interface ChaContext {
-  /** interface/class name → concrete classes that implement or extend it */
+  /** interface/class name → concrete classes that implement or extend it.
+   * Ambiguous when two unrelated files each declare their own class/interface
+   * of the same bare name — prefer `implementorsByFile` whenever the caller's
+   * own file locally declares a matching root type (issue #2237). */
   readonly implementors: ReadonlyMap<string, readonly string[]>;
+  /** `${parentName}|${parentDeclaringFile}` → concrete classes recorded while
+   * that same file ALSO locally declares a class/interface named `parentName`
+   * — i.e. the child's `implements`/`extends` reference most plausibly means
+   * THIS file's own declaration, not an unrelated same-named one elsewhere.
+   * Disambiguates two independent files each declaring their own same-named
+   * interface/base class (issue #2237); mirrors `parentsByFile`'s composite
+   * key, applied to the inverse (parent → children) direction. Empty/missing
+   * for a given `${parentName}|${file}` pair means no local anchor was found
+   * for that file — callers fall back to the bare `implementors` map. */
+  readonly implementorsByFile: ReadonlyMap<string, readonly string[]>;
   /**
    * class name → direct parent class name (from `extends`), first-write-wins
    * across the whole project. Ambiguous when the same bare class name is
@@ -43,6 +56,7 @@ export interface ChaContext {
 
 export const EMPTY_CHA_CONTEXT: ChaContext = {
   implementors: new Map(),
+  implementorsByFile: new Map(),
   parents: new Map(),
   parentsByFile: new Map(),
   instantiatedTypes: new Set(),
@@ -50,9 +64,16 @@ export const EMPTY_CHA_CONTEXT: ChaContext = {
 
 /**
  * Record a class's `implements` relationship into the implementors map
- * (interface/class name → concrete classes that implement it).
+ * (interface/class name → concrete classes that implement it), plus the
+ * file-scoped map when `file` also locally declares a same-named parent.
  */
-function recordImplements(cls: ClassRelation, implementors: Map<string, string[]>): void {
+function recordImplements(
+  cls: ClassRelation,
+  implementors: Map<string, string[]>,
+  implementorsByFile: Map<string, string[]>,
+  file: string,
+  localClassNames: ReadonlySet<string>,
+): void {
   if (!cls.implements) return;
   let list = implementors.get(cls.implements);
   if (!list) {
@@ -60,20 +81,30 @@ function recordImplements(cls: ClassRelation, implementors: Map<string, string[]
     implementors.set(cls.implements, list);
   }
   if (!list.includes(cls.name)) list.push(cls.name);
+
+  // File-scoped: only when this file ALSO locally declares a class/interface
+  // named `cls.implements` — the child's reference most plausibly means that
+  // co-located declaration, not an unrelated same-named one elsewhere (#2237).
+  if (localClassNames.has(cls.implements)) {
+    addToFileScoped(implementorsByFile, cls.implements, file, cls.name);
+  }
 }
 
 /**
  * Record a class's `extends` relationship into the parents map (child →
  * direct parent, for this/super hierarchy walking), the file-scoped parents
  * map (same, but disambiguated by the declaring file), and the implementors
- * map (parent → children, for CHA dispatch expansion via extends).
+ * map (parent → children, for CHA dispatch expansion via extends) — plus its
+ * own file-scoped map, mirroring `recordImplements`.
  */
 function recordExtends(
   cls: ClassRelation,
   implementors: Map<string, string[]>,
+  implementorsByFile: Map<string, string[]>,
   parents: Map<string, string>,
   parentsByFile: Map<string, string>,
   file: string,
+  localClassNames: ReadonlySet<string>,
 ): void {
   if (!cls.extends) return;
   // child → parent (for this/super hierarchy walking)
@@ -86,6 +117,25 @@ function recordExtends(
     implementors.set(cls.extends, list);
   }
   if (!list.includes(cls.name)) list.push(cls.name);
+
+  if (localClassNames.has(cls.extends)) {
+    addToFileScoped(implementorsByFile, cls.extends, file, cls.name);
+  }
+}
+
+function addToFileScoped(
+  implementorsByFile: Map<string, string[]>,
+  parentName: string,
+  file: string,
+  childName: string,
+): void {
+  const key = `${parentName}|${file}`;
+  let scoped = implementorsByFile.get(key);
+  if (!scoped) {
+    scoped = [];
+    implementorsByFile.set(key, scoped);
+  }
+  if (!scoped.includes(childName)) scoped.push(childName);
 }
 
 /**
@@ -117,19 +167,38 @@ function collectInstantiatedTypes(symbols: ExtractorOutput, instantiatedTypes: S
  */
 export function buildChaContext(fileSymbols: ReadonlyMap<string, ExtractorOutput>): ChaContext {
   const implementors = new Map<string, string[]>();
+  const implementorsByFile = new Map<string, string[]>();
   const parents = new Map<string, string>();
   const parentsByFile = new Map<string, string>();
   const instantiatedTypes = new Set<string>();
 
   for (const [file, symbols] of fileSymbols) {
+    // `symbols.classes` only lists class RELATIONS (entries with an extends/
+    // implements clause) — a bare `interface Handler {}` with no heritage
+    // never appears there, so a same-file-anchor check against it alone
+    // would miss the exact "plain interface, no relation" shape that's the
+    // whole point of the collision this map protects against (#2237).
+    // `symbols.definitions` covers every declared symbol regardless of
+    // heritage; RECEIVER_KINDS narrows it to class/interface/struct/etc.
+    const localClassNames = new Set(
+      symbols.definitions.filter((d) => RECEIVER_KINDS.has(d.kind)).map((d) => d.name),
+    );
     for (const cls of symbols.classes) {
-      recordImplements(cls, implementors);
-      recordExtends(cls, implementors, parents, parentsByFile, file);
+      recordImplements(cls, implementors, implementorsByFile, file, localClassNames);
+      recordExtends(
+        cls,
+        implementors,
+        implementorsByFile,
+        parents,
+        parentsByFile,
+        file,
+        localClassNames,
+      );
     }
     collectInstantiatedTypes(symbols, instantiatedTypes);
   }
 
-  return { implementors, parents, parentsByFile, instantiatedTypes };
+  return { implementors, implementorsByFile, parents, parentsByFile, instantiatedTypes };
 }
 
 /**
@@ -171,7 +240,30 @@ export function buildChaContextFromDb(db: BetterSqlite3Database): ChaContext {
   }>;
   if (hierarchyRows.length === 0) return EMPTY_CHA_CONTEXT;
 
+  // Per-file locally-declared class/interface/struct/etc. names — used to
+  // build implementorsByFile below: a child's implements/extends reference
+  // most plausibly means a same-file declaration when one exists, rather
+  // than an unrelated same-named declaration elsewhere (#2237).
+  const receiverKindsList = [...RECEIVER_KINDS];
+  const localNameRows = db
+    .prepare(`
+      SELECT file, name
+      FROM nodes
+      WHERE kind IN (${receiverKindsList.map(() => '?').join(',')})
+    `)
+    .all(...receiverKindsList) as Array<{ file: string; name: string }>;
+  const localNamesByFile = new Map<string, Set<string>>();
+  for (const row of localNameRows) {
+    let names = localNamesByFile.get(row.file);
+    if (!names) {
+      names = new Set();
+      localNamesByFile.set(row.file, names);
+    }
+    names.add(row.name);
+  }
+
   const implementors = new Map<string, string[]>();
+  const implementorsByFile = new Map<string, string[]>();
   const parents = new Map<string, string>();
   const parentsByFile = new Map<string, string>();
   for (const row of hierarchyRows) {
@@ -181,6 +273,9 @@ export function buildChaContextFromDb(db: BetterSqlite3Database): ChaContext {
       implementors.set(row.parent_name, list);
     }
     if (!list.includes(row.child_name)) list.push(row.child_name);
+    if (localNamesByFile.get(row.child_file)?.has(row.parent_name)) {
+      addToFileScoped(implementorsByFile, row.parent_name, row.child_file, row.child_name);
+    }
     if (row.edge_kind === 'extends') {
       if (!parents.has(row.child_name)) parents.set(row.child_name, row.parent_name);
       parentsByFile.set(`${row.child_name}|${row.child_file}`, row.parent_name);
@@ -197,7 +292,7 @@ export function buildChaContextFromDb(db: BetterSqlite3Database): ChaContext {
     .all() as Array<{ name: string }>;
   const instantiatedTypes = new Set(rtaRows.map((r) => r.name));
 
-  return { implementors, parents, parentsByFile, instantiatedTypes };
+  return { implementors, implementorsByFile, parents, parentsByFile, instantiatedTypes };
 }
 
 // ── this / self / super resolution ──────────────────────────────────────────
@@ -292,6 +387,33 @@ export function resolveThisDispatch(
 // ── CHA dispatch expansion ───────────────────────────────────────────────────
 
 /**
+ * Resolve `${methodName}` on `cls` or, if `cls` inherits it without
+ * overriding, the nearest ancestor (via `chaCtx.parents`) that actually
+ * declares it. A direct qualified lookup alone (`${cls}.${methodName}`)
+ * misses whenever `cls` is instantiated but doesn't override the dispatched
+ * method — the method node is registered under the declaring ANCESTOR's
+ * qualified name, not `cls`'s (issue #2237). Mirrors the ancestor-walk in
+ * `resolveThisDispatch`'s own `while` loop.
+ */
+function resolveMethodViaAncestors(
+  cls: string,
+  methodName: string,
+  chaCtx: ChaContext,
+  lookup: CallNodeLookup,
+): ReadonlyArray<ResolvedCandidate> {
+  let current: string | undefined = cls;
+  const visited = new Set<string>();
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const qualified = `${current}.${methodName}`;
+    const found = lookup.byName(qualified).filter((n) => n.kind === 'method');
+    if (found.length > 0) return found;
+    current = chaCtx.parents.get(current);
+  }
+  return [];
+}
+
+/**
  * CHA + RTA: given a receiver type (class or interface), return all concrete
  * method implementations reachable via the class hierarchy.
  *
@@ -302,22 +424,46 @@ export function resolveThisDispatch(
  * BFS over the implementors map handles multi-level hierarchies (e.g.
  * IFoo → AbstractFoo → ConcreteFoo) so that abstract intermediate classes
  * are transparently skipped while their concrete subclasses are still reached.
+ * When an instantiated class inherits the dispatched method rather than
+ * overriding it, `resolveMethodViaAncestors` walks up to find the declaring
+ * ancestor instead of missing the edge entirely (#2237).
+ *
+ * When `callerFile` is provided and that file ALSO locally declares a
+ * class/interface named `typeName`, the ROOT level of the BFS prefers
+ * `chaCtx.implementorsByFile` over the bare (project-wide) `implementors`
+ * map — disambiguating two unrelated files that each declare their own
+ * same-named interface/base class (#2237; mirrors `resolveThisDispatch`'s
+ * same-file preference). Only the root level is scoped this way: the
+ * collision this guards against is specifically a colliding TOP-LEVEL type
+ * name, and legitimate multi-file hierarchies (a shared interface's
+ * implementors declared across many files, e.g. issue #2078) must keep
+ * resolving through the bare map at every level below the root — a
+ * same-named collision several hops down the same hierarchy is a rarer,
+ * compound scenario left out of scope here (same as #2062's fix, which is
+ * also a single-hop heuristic). When `typeName` has no local declaration in
+ * `callerFile` (the common cross-file-dispatch case), the scoped bucket is
+ * empty and this falls through to the prior, unchanged behavior.
  */
 export function resolveChaTargets(
   typeName: string,
   methodName: string,
   chaCtx: ChaContext,
   lookup: CallNodeLookup,
+  callerFile?: string | null,
 ): ReadonlyArray<ResolvedCandidate> {
   const results: Array<ResolvedCandidate> = [];
 
   const queue: string[] = [typeName];
   const visited = new Set<string>();
   visited.add(typeName);
+  let isRoot = true;
 
   while (queue.length > 0) {
     const current = queue.shift()!;
-    const children = chaCtx.implementors.get(current);
+    const scoped =
+      isRoot && callerFile ? chaCtx.implementorsByFile.get(`${current}|${callerFile}`) : undefined;
+    const children = scoped ?? chaCtx.implementors.get(current);
+    isRoot = false;
     if (!children?.length) continue;
 
     for (const cls of children) {
@@ -325,9 +471,7 @@ export function resolveChaTargets(
       visited.add(cls);
 
       if (chaCtx.instantiatedTypes.has(cls)) {
-        const qualified = `${cls}.${methodName}`;
-        const found = lookup.byName(qualified).filter((n) => n.kind === 'method');
-        results.push(...found);
+        results.push(...resolveMethodViaAncestors(cls, methodName, chaCtx, lookup));
       }
 
       // Traverse even non-instantiated classes — they may have instantiated subclasses.

@@ -192,11 +192,24 @@ struct EdgeContext<'a> {
     /// pass from every file's `classes` (`extends`/`implements`). Used by
     /// `resolve_call_targets_core`'s CHA fallback tier only — mirrors the
     /// `implementors` half of `ChaContext`/`buildChaContext` in
-    /// `src/domain/graph/builder/cha.ts` (the `parents` half, used for
-    /// `this`/`self`/`super` dispatch, has no native equivalent here — that
-    /// dispatch is handled separately by `runPostNativeThisDispatch` in
-    /// `native-orchestrator.ts`).
+    /// `src/domain/graph/builder/cha.ts`.
     cha_implementors: HashMap<&'a str, Vec<&'a str>>,
+    /// `${parentName}|${parentDeclaringFile}` → concrete classes recorded
+    /// while that same file ALSO locally declares a class/interface named
+    /// `parentName` — disambiguates two unrelated files each declaring their
+    /// own same-named interface/base class (issue #2237). Mirrors
+    /// `ChaContext.implementorsByFile` in `cha.ts`. Owned `String` key since
+    /// it's a composite built at map-construction time.
+    cha_implementors_by_file: HashMap<String, Vec<&'a str>>,
+    /// Class name → direct parent class name (from `extends`), first-write-
+    /// wins across the whole build pass. Used only to walk up to a declaring
+    /// ancestor when an instantiated concrete class inherits the dispatched
+    /// method without overriding it (issue #2237's Issue 2) — mirrors the
+    /// `parents` half of `ChaContext`/`buildChaContext` in `cha.ts` (file-
+    /// scoped disambiguation, `parentsByFile`, is not needed here: this walk
+    /// starts from a class already uniquely identified by the BFS above, not
+    /// from an ambiguous bare name).
+    cha_parents: HashMap<&'a str, &'a str>,
     /// RTA: class names that appear as a high-confidence (>= 0.9) typeMap
     /// target anywhere in this build pass — mirrors the typeMap fallback
     /// branch of `collectInstantiatedTypes` in `cha.ts` (the native
@@ -226,6 +239,7 @@ impl<'a> EdgeContext<'a> {
             .iter()
             .copied()
             .collect();
+        let cha = build_cha_context(files);
         Self {
             nodes_by_name,
             nodes_by_name_and_file,
@@ -235,41 +249,98 @@ impl<'a> EdgeContext<'a> {
                 files,
                 extra_invoked_property_names,
             ),
-            cha_implementors: build_cha_implementors_map(files),
+            cha_implementors: cha.implementors,
+            cha_implementors_by_file: cha.implementors_by_file,
+            cha_parents: cha.parents,
             cha_instantiated_types: collect_cha_instantiated_types(files),
         }
     }
 }
 
-/// Build the CHA implementors map: interface/class name → concrete classes
-/// that implement or extend it. Both `implements` and `extends` relationships
-/// feed the same map (an abstract base class dispatches to its subclasses
-/// exactly like an interface dispatches to its implementors) so a multi-level
-/// hierarchy (`IFoo` → `AbstractFoo` → `ConcreteFoo`) is BFS-reachable in one
-/// structure. Mirrors `recordImplements`/`recordExtends`'s shared
-/// contribution to `ChaContext.implementors` in `cha.ts`'s `buildChaContext`
-/// (the separate `parents` map `buildChaContext` also produces is only used
-/// for `this`/`self`/`super` walking, which is out of scope here — see
-/// `EdgeContext.cha_implementors` doc comment).
-fn build_cha_implementors_map<'a>(files: &'a [FileEdgeInput]) -> HashMap<&'a str, Vec<&'a str>> {
+/// Output of [`build_cha_context`] — mirrors `ChaContext` in `cha.ts`.
+struct ChaBuildOutput<'a> {
+    implementors: HashMap<&'a str, Vec<&'a str>>,
+    implementors_by_file: HashMap<String, Vec<&'a str>>,
+    parents: HashMap<&'a str, &'a str>,
+}
+
+/// Build the CHA implementors/parents maps: interface/class name → concrete
+/// classes that implement or extend it (`implementors`), class name → direct
+/// parent (`parents`), and the file-scoped variant of `implementors`
+/// (`implementors_by_file`). Both `implements` and `extends` relationships
+/// feed the same `implementors` map (an abstract base class dispatches to its
+/// subclasses exactly like an interface dispatches to its implementors) so a
+/// multi-level hierarchy (`IFoo` → `AbstractFoo` → `ConcreteFoo`) is
+/// BFS-reachable in one structure. Mirrors `recordImplements`/`recordExtends`
+/// in `cha.ts`'s `buildChaContext`.
+///
+/// `implementors_by_file` is populated only when the child's own file ALSO
+/// locally declares a class/interface named `parent` — the child's heritage
+/// reference most plausibly means that co-located declaration, not an
+/// unrelated same-named one elsewhere (issue #2237). `parents` is bare-name,
+/// first-write-wins — used only by `resolve_method_via_ancestors`'s walk from
+/// an already-disambiguated concrete class, not for `this`/`self`/`super`
+/// dispatch (handled separately by `runPostNativeThisDispatch`).
+fn build_cha_context<'a>(files: &'a [FileEdgeInput]) -> ChaBuildOutput<'a> {
     let mut implementors: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut implementors_by_file: HashMap<String, Vec<&str>> = HashMap::new();
+    let mut parents: HashMap<&str, &str> = HashMap::new();
+
     for file in files {
+        // `file.classes` only lists class RELATIONS (entries with an
+        // extends/implements clause) — a bare `interface Handler {}` with no
+        // heritage never appears there, so a same-file-anchor check against
+        // it alone would miss the exact "plain interface, no relation"
+        // shape that's the whole point of the collision this map protects
+        // against (#2237). `file.definitions` covers every declared symbol
+        // regardless of heritage; filtering to receiver-like kinds mirrors
+        // `EdgeContext::receiver_kinds`'s own literal set.
+        let local_names: HashSet<&str> = file
+            .definitions
+            .iter()
+            .filter(|d| matches!(d.kind.as_str(), "class" | "struct" | "interface" | "type" | "module"))
+            .map(|d| d.name.as_str())
+            .collect();
         for cls in &file.classes {
             if let Some(ref parent) = cls.implements {
                 let list = implementors.entry(parent.as_str()).or_default();
                 if !list.contains(&cls.name.as_str()) {
                     list.push(&cls.name);
                 }
+                if local_names.contains(parent.as_str()) {
+                    add_to_file_scoped(&mut implementors_by_file, parent, &file.file, &cls.name);
+                }
             }
             if let Some(ref parent) = cls.extends {
+                parents.entry(cls.name.as_str()).or_insert(parent.as_str());
                 let list = implementors.entry(parent.as_str()).or_default();
                 if !list.contains(&cls.name.as_str()) {
                     list.push(&cls.name);
                 }
+                if local_names.contains(parent.as_str()) {
+                    add_to_file_scoped(&mut implementors_by_file, parent, &file.file, &cls.name);
+                }
             }
         }
     }
-    implementors
+    ChaBuildOutput {
+        implementors,
+        implementors_by_file,
+        parents,
+    }
+}
+
+fn add_to_file_scoped<'a>(
+    implementors_by_file: &mut HashMap<String, Vec<&'a str>>,
+    parent: &str,
+    file: &str,
+    child: &'a str,
+) {
+    let key = format!("{}|{}", parent, file);
+    let list = implementors_by_file.entry(key).or_default();
+    if !list.contains(&child) {
+        list.push(child);
+    }
 }
 
 /// RTA: collect instantiated class names from every file's typeMap, keeping
@@ -289,30 +360,85 @@ fn collect_cha_instantiated_types<'a>(files: &'a [FileEdgeInput]) -> HashSet<&'a
     instantiated
 }
 
+/// Resolve `${method_name}` on `cls` or, if `cls` inherits it without
+/// overriding, the nearest ancestor (via `ctx.cha_parents`) that actually
+/// declares it. A direct qualified lookup alone (`${cls}.${method_name}`)
+/// misses whenever `cls` is instantiated but doesn't override the dispatched
+/// method — the method node is registered under the declaring ANCESTOR's
+/// qualified name, not `cls`'s (issue #2237). Mirrors
+/// `resolveMethodViaAncestors` in `cha.ts`.
+fn resolve_method_via_ancestors<'a>(
+    ctx: &EdgeContext<'a>,
+    cls: &'a str,
+    method_name: &str,
+) -> Vec<&'a NodeInfo> {
+    let mut current = Some(cls);
+    let mut visited: HashSet<&str> = HashSet::new();
+    while let Some(cur) = current {
+        if !visited.insert(cur) {
+            break;
+        }
+        let qualified = format!("{}.{}", cur, method_name);
+        if let Some(found) = ctx.nodes_by_name.get(qualified.as_str()) {
+            let methods: Vec<&'a NodeInfo> =
+                found.iter().copied().filter(|n| n.kind == "method").collect();
+            if !methods.is_empty() {
+                return methods;
+            }
+        }
+        current = ctx.cha_parents.get(cur).copied();
+    }
+    Vec::new()
+}
+
 /// CHA + RTA: given a receiver's resolved type name (interface or class),
 /// return all concrete method implementations reachable via the class
 /// hierarchy, filtered to types that are actually instantiated somewhere in
 /// the project (RTA). BFS over the implementors map so multi-level
 /// hierarchies (`IFoo` → `AbstractFoo` → `ConcreteFoo`) transparently skip
 /// non-instantiated intermediate classes while still reaching their
-/// instantiated concrete subclasses. Mirrors `resolveChaTargets` in `cha.ts`
-/// exactly (including the "always traverse children, even non-instantiated
-/// ones" rule) — no confidence filtering is applied here; callers use the
+/// instantiated concrete subclasses. When an instantiated class inherits the
+/// dispatched method rather than overriding it, `resolve_method_via_ancestors`
+/// walks up to find the declaring ancestor instead of missing the edge
+/// entirely (#2237). No confidence filtering is applied here; callers use the
 /// flat `CHA_TYPED_DISPATCH_CONFIDENCE` for any edge built from this tier's
 /// results (file proximity is not meaningful for virtual dispatch).
+///
+/// When `caller_file` is provided and that file ALSO locally declares a
+/// class/interface named `type_name`, the ROOT level of the BFS prefers
+/// `ctx.cha_implementors_by_file` over the bare (project-wide) `cha_implementors`
+/// map — disambiguating two unrelated files that each declare their own
+/// same-named interface/base class (#2237; mirrors `resolveChaTargets`'s
+/// identical root-only scoping in `cha.ts` — see that function's doc comment
+/// for why only the root level is scoped this way).
 fn resolve_cha_dispatch<'a>(
     ctx: &EdgeContext<'a>,
     type_name: &str,
     method_name: &str,
+    caller_file: Option<&str>,
 ) -> Vec<&'a NodeInfo> {
     let mut results: Vec<&'a NodeInfo> = Vec::new();
     let mut queue: VecDeque<&str> = VecDeque::from([type_name]);
     let mut visited: HashSet<&str> = HashSet::new();
     visited.insert(type_name);
+    let mut is_root = true;
 
     while let Some(current) = queue.pop_front() {
-        let Some(children) = ctx.cha_implementors.get(current) else {
-            continue;
+        let scoped = if is_root {
+            caller_file.and_then(|f| {
+                ctx.cha_implementors_by_file
+                    .get(&format!("{}|{}", current, f))
+            })
+        } else {
+            None
+        };
+        is_root = false;
+        let children = match scoped {
+            Some(list) => list,
+            None => match ctx.cha_implementors.get(current) {
+                Some(list) => list,
+                None => continue,
+            },
         };
         for &cls in children {
             if visited.contains(cls) {
@@ -321,10 +447,7 @@ fn resolve_cha_dispatch<'a>(
             visited.insert(cls);
 
             if ctx.cha_instantiated_types.contains(cls) {
-                let qualified = format!("{}.{}", cls, method_name);
-                if let Some(found) = ctx.nodes_by_name.get(qualified.as_str()) {
-                    results.extend(found.iter().filter(|n| n.kind == "method"));
-                }
+                results.extend(resolve_method_via_ancestors(ctx, cls, method_name));
             }
 
             // Always traverse children — non-instantiated classes may have
@@ -363,6 +486,7 @@ fn emit_cha_dispatch_edges(
     call: &CallInfo,
     caller_id: u32,
     caller_name: &str,
+    caller_file: &str,
     type_map: &HashMap<&str, (&str, f64)>,
     seen_edges: &mut HashSet<u64>,
     pts_edge_map: &HashMap<u64, usize>,
@@ -396,7 +520,7 @@ fn emit_cha_dispatch_edges(
         return;
     };
 
-    for t in resolve_cha_dispatch(ctx, type_name, call.name.as_str()) {
+    for t in resolve_cha_dispatch(ctx, type_name, call.name.as_str(), Some(caller_file)) {
         let edge_key = ((caller_id as u64) << 32) | (t.id as u64);
         if t.id != caller_id
             && !seen_edges.contains(&edge_key)
@@ -1228,6 +1352,7 @@ fn process_file<'a>(
             call,
             caller_id,
             caller_name,
+            fc.rel_path,
             &fc.type_map,
             &mut seen_edges,
             &pts_edge_map,
@@ -1872,7 +1997,8 @@ fn resolve_call_targets_core<'a>(
             // genuine receiver (`this`/`self`/`super` dispatch is handled
             // separately by `runPostNativeThisDispatch`).
             if has_concrete_receiver {
-                let cha_targets = resolve_cha_dispatch(ctx, type_name, call.name.as_str());
+                let cha_targets =
+                    resolve_cha_dispatch(ctx, type_name, call.name.as_str(), Some(rel_path));
                 if !cha_targets.is_empty() {
                     *confidence_override = Some(CHA_TYPED_DISPATCH_CONFIDENCE);
                     return prefer_type_aware_over_bare(&bare_targets, cha_targets);
@@ -5331,6 +5457,122 @@ mod call_edge_tests {
         assert!(
             to_real.is_some(),
             "expected BFS to reach RealWorker.doWork through the non-instantiated AbstractWorker; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+    }
+
+    // ── CHA implementor collision + inherited-method walk (issue #2237) ────
+
+    /// Two files each declare their own UNRELATED `Handler` interface + a
+    /// concrete implementer of the same name pattern — dispatching from the
+    /// caller's own file must reach only its own co-located implementer, not
+    /// the other file's unrelated same-named `Handler`'s implementer.
+    #[test]
+    fn cha_dispatch_does_not_merge_two_unrelated_same_named_interfaces() {
+        let all_nodes = vec![
+            node(1, "main", "function", "src/mod1/caller.ts", 1),
+            node(2, "HandlerA.run", "method", "src/mod1/caller.ts", 5),
+            node(3, "HandlerB.run", "method", "src/mod2/other.ts", 5),
+        ];
+
+        let caller_file = make_file(
+            "src/mod1/caller.ts",
+            10,
+            // `Handler` (a bare interface with no heritage of its own) must
+            // still appear in `definitions` — mirrors real extraction, where
+            // `classes` only lists RELATIONS (entries with extends/implements),
+            // never a plain interface/class declaration on its own (#2237).
+            vec![
+                def("main", "function", 1, 10),
+                def("Handler", "interface", 2, 2),
+            ],
+            vec![call("run", 3, Some("h"))],
+            vec![
+                type_map_entry("h", "Handler", 0.9),
+                type_map_entry("a", "HandlerA", 1.0),
+            ],
+            vec![class_info("HandlerA", None, Some("Handler"))],
+        );
+        let other_file = make_file(
+            "src/mod2/other.ts",
+            20,
+            vec![def("Handler", "interface", 2, 2)],
+            vec![],
+            vec![type_map_entry("b", "HandlerB", 1.0)],
+            vec![class_info("HandlerB", None, Some("Handler"))],
+        );
+
+        let edges = build_call_edges(
+            vec![caller_file, other_file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+        );
+
+        let to_a = edges.iter().any(|e| e.kind == "calls" && e.target_id == 2);
+        let to_b = edges.iter().any(|e| e.kind == "calls" && e.target_id == 3);
+        assert!(
+            to_a,
+            "expected a calls edge to HandlerA.run; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+        assert!(
+            !to_b,
+            "did not expect a calls edge to the unrelated file's HandlerB.run; got: {:?}",
+            edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
+        );
+    }
+
+    /// An instantiated concrete class that inherits the dispatched method
+    /// from an ancestor without overriding it must still resolve to that
+    /// ancestor's declaration — a direct qualified lookup on the concrete
+    /// class alone would miss entirely.
+    #[test]
+    fn cha_dispatch_walks_up_to_declaring_ancestor_for_inherited_method() {
+        let all_nodes = vec![
+            node(1, "main", "function", "src/caller.ts", 1),
+            node(2, "AbstractHandler.run", "method", "src/abstract.ts", 3),
+        ];
+
+        let caller_file = make_file(
+            "src/caller.ts",
+            10,
+            vec![def("main", "function", 1, 10)],
+            vec![call("run", 3, Some("h"))],
+            vec![type_map_entry("h", "IHandler", 0.9)],
+            vec![class_info("IHandler", None, None)],
+        );
+        let abstract_file = make_file(
+            "src/abstract.ts",
+            20,
+            vec![],
+            vec![],
+            vec![],
+            vec![class_info("AbstractHandler", None, Some("IHandler"))],
+        );
+        let concrete_file = make_file(
+            "src/concrete.ts",
+            30,
+            vec![],
+            vec![],
+            // Only ConcreteHandler is instantiated — AbstractHandler never is.
+            vec![type_map_entry("c", "ConcreteHandler", 1.0)],
+            vec![class_info("ConcreteHandler", Some("AbstractHandler"), None)],
+        );
+
+        let edges = build_call_edges(
+            vec![caller_file, abstract_file, concrete_file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+        );
+
+        let to_abstract = edges.iter().find(|e| e.kind == "calls" && e.target_id == 2);
+        assert!(
+            to_abstract.is_some(),
+            "expected the inherited method walk to reach AbstractHandler.run; got: {:?}",
             edges.iter().map(|e| (&e.kind, e.source_id, e.target_id)).collect::<Vec<_>>()
         );
     }
