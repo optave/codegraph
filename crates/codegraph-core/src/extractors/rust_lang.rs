@@ -348,18 +348,20 @@ fn handle_macro_invocation(node: &Node, source: &[u8], symbols: &mut FileSymbols
 }
 
 fn scan_macro_tokens_for_calls(token_tree: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let mut children = Vec::new();
-    for i in 0..token_tree.child_count() {
-        if let Some(child) = token_tree.child(i) {
-            children.push(child);
-        }
-    }
-
+    // Index directly via `child(i)` rather than collecting into a `Vec` first —
+    // every macro invocation in the file pays this cost (println!/format!/
+    // assert_eq!/vec! are everywhere in real Rust code), so an allocation per
+    // invocation was a measurable regression on the build-performance
+    // benchmark (Pre-publish benchmark gate, PR #2371).
+    let count = token_tree.child_count();
     let mut i = 0;
-    while i < children.len() {
-        let c = &children[i];
+    while i < count {
+        let Some(c) = token_tree.child(i) else {
+            i += 1;
+            continue;
+        };
         if c.kind() == "token_tree" {
-            scan_macro_tokens_for_calls(c, source, symbols);
+            scan_macro_tokens_for_calls(&c, source, symbols);
             i += 1;
             continue;
         }
@@ -370,19 +372,19 @@ fn scan_macro_tokens_for_calls(token_tree: &Node, source: &[u8], symbols: &mut F
 
         // `receiver . method ( ... )` — single-hop method call.
         if let (Some(dot), Some(method_name), Some(args_after_method)) = (
-            children.get(i + 1),
-            children.get(i + 2),
-            children.get(i + 3),
+            token_tree.child(i + 1),
+            token_tree.child(i + 2),
+            token_tree.child(i + 3),
         ) {
             if dot.kind() == "."
                 && method_name.kind() == "identifier"
                 && args_after_method.kind() == "token_tree"
-                && node_text(args_after_method, source).starts_with('(')
+                && node_text(&args_after_method, source).starts_with('(')
             {
                 symbols.calls.push(Call {
-                    name: node_text(method_name, source).to_string(),
-                    line: start_line(method_name),
-                    receiver: Some(node_text(c, source).to_string()),
+                    name: node_text(&method_name, source).to_string(),
+                    line: start_line(&method_name),
+                    receiver: Some(node_text(&c, source).to_string()),
                     ..Default::default()
                 });
                 i += 4;
@@ -391,13 +393,13 @@ fn scan_macro_tokens_for_calls(token_tree: &Node, source: &[u8], symbols: &mut F
         }
 
         // Bare `name ( ... )` — free-function call.
-        if let Some(args_after_bare) = children.get(i + 1) {
+        if let Some(args_after_bare) = token_tree.child(i + 1) {
             if args_after_bare.kind() == "token_tree"
-                && node_text(args_after_bare, source).starts_with('(')
+                && node_text(&args_after_bare, source).starts_with('(')
             {
                 symbols.calls.push(Call {
-                    name: node_text(c, source).to_string(),
-                    line: start_line(c),
+                    name: node_text(&c, source).to_string(),
+                    line: start_line(&c),
                     ..Default::default()
                 });
                 i += 2;
