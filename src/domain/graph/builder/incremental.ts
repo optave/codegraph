@@ -228,7 +228,13 @@ function getKnownFilesForIncremental(db: BetterSqlite3Database, rootDir: string)
   const rows = db.prepare("SELECT DISTINCT file FROM nodes WHERE kind = 'file'").all() as Array<{
     file: string;
   }>;
-  return rows.map((r) => path.join(rootDir, r.file));
+  // `r.file` is stored forward-slash-normalized (cross-platform DB
+  // consistency) even for a nested relative path like "service/nested.rs".
+  // Joining it into rootDir in one path.join() call would leave those
+  // internal forward slashes intact on Windows, producing a mixed-separator
+  // absolute path that can't exact-match a purely-backslash candidate built
+  // elsewhere — so join one segment at a time instead.
+  return rows.map((r) => path.join(rootDir, ...r.file.split('/')));
 }
 
 function deleteOutgoingEdges(db: BetterSqlite3Database, relPath: string): void {

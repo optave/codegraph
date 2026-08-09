@@ -485,6 +485,20 @@ function isRustCargoTargetRoot(file: string): boolean {
 }
 
 /**
+ * True if `knownFiles` contains `candidate` (an absolute path) — checking
+ * both the absolute form (as populated by `ctx.allFiles` on the full-build
+ * path and `getKnownFilesForIncremental` on the watch-mode path) and the
+ * root-relative, forward-slash-normalized form (as stored in the `nodes`
+ * table), mirroring the native resolver's `file_exists` dual check. Callers
+ * of `resolveImportPath` are not required to agree on one convention, so
+ * this must accept either.
+ */
+function knownFilesHasFile(knownFiles: Set<string>, candidate: string, rootDir: string): boolean {
+  if (knownFiles.has(candidate)) return true;
+  return knownFiles.has(normalizePath(path.relative(rootDir, candidate)));
+}
+
+/**
  * Find the crate-root .rs file whose directory is an ancestor of
  * `fromFile`, walking up from fromFile's directory and stopping at
  * `rootDir`. Returns the absolute path, or null if none is found among
@@ -508,8 +522,7 @@ function findRustCrateRoot(
   for (;;) {
     for (const name of ['main.rs', 'lib.rs']) {
       const candidate = path.join(dir, name);
-      const rel = normalizePath(path.relative(rootDir, candidate));
-      if (knownFiles.has(rel)) return candidate;
+      if (knownFilesHasFile(knownFiles, candidate, rootDir)) return candidate;
     }
     if (!dir.startsWith(rootDir)) return null;
     const parent = path.dirname(dir);
@@ -534,13 +547,11 @@ function rustParentModuleFile(
   const searchDir = base === 'mod' ? path.dirname(dir) : dir;
 
   for (const candidate of [`${searchDir}.rs`, path.join(searchDir, 'mod.rs')]) {
-    const rel = normalizePath(path.relative(rootDir, candidate));
-    if (knownFiles.has(rel)) return candidate;
+    if (knownFilesHasFile(knownFiles, candidate, rootDir)) return candidate;
   }
   for (const name of ['main.rs', 'lib.rs']) {
     const candidate = path.join(searchDir, name);
-    const rel = normalizePath(path.relative(rootDir, candidate));
-    if (knownFiles.has(rel)) return candidate;
+    if (knownFilesHasFile(knownFiles, candidate, rootDir)) return candidate;
   }
   return null;
 }
@@ -571,15 +582,13 @@ function walkRustModuleSegments(
     const seg = segments[i]!;
     const fileCandidate = path.join(currentDir, `${seg}.rs`);
     const modCandidate = path.join(currentDir, seg, 'mod.rs');
-    const fileRel = normalizePath(path.relative(rootDir, fileCandidate));
-    const modRel = normalizePath(path.relative(rootDir, modCandidate));
 
-    if (knownFiles.has(fileRel)) {
+    if (knownFilesHasFile(knownFiles, fileCandidate, rootDir)) {
       currentFile = fileCandidate;
       currentDir = path.join(currentDir, seg);
       continue;
     }
-    if (knownFiles.has(modRel)) {
+    if (knownFilesHasFile(knownFiles, modCandidate, rootDir)) {
       currentFile = modCandidate;
       currentDir = path.join(currentDir, seg);
       continue;

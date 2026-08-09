@@ -928,6 +928,23 @@ describe('resolveImportPathJS - Rust crate::/self::/super:: paths (#2007)', () =
     expect(result).toBe('crate::service::build_service');
   });
 
+  it('resolves crate:: when knownFiles are absolute paths, not just root-relative ones (#2216)', () => {
+    // ctx.allFiles (full-build path) and getKnownFilesForIncremental
+    // (watch-mode path) both populate knownFiles with absolute paths —
+    // the resolver must not assume the root-relative form used elsewhere
+    // in this describe block is the only one callers pass.
+    const absoluteKnownFiles = knownFiles.map((rel) => path.join(rustDir, rel));
+    const fromFile = path.join(rustDir, 'main.rs');
+    const result = resolveImportPathJS(
+      fromFile,
+      'crate::service::build_service',
+      rustDir,
+      null,
+      absoluteKnownFiles,
+    );
+    expect(result).toBe('service.rs');
+  });
+
   describe('standalone Cargo targets (src/bin/, examples/, tests/, benches/)', () => {
     let targetsDir: string;
     const targetKnownFiles = [
