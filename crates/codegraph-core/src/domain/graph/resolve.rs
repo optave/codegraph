@@ -594,22 +594,151 @@ fn rust_module_dir(file: &str) -> String {
 /// main.rs/lib.rs search below and doesn't need this special case.
 const CARGO_STANDALONE_TARGET_DIRS: [&str; 4] = ["bin", "examples", "tests", "benches"];
 
-/// True if `file` is a standalone Cargo target root — a `.rs` file directly
-/// inside `src/bin/`, `examples/`, `tests/`, or `benches/` (not itself
-/// named main.rs/lib.rs, which the ordinary crate-root search already finds).
-fn is_rust_cargo_target_root(file: &str) -> bool {
+/// A Cargo.toml `[[bin]]`/`[[example]]`/`[[test]]`/`[[bench]]` array-of-table
+/// entry may declare an explicit `path = "..."` override to a custom target
+/// file (issue #2217) — each such target compiles as its own independent
+/// crate, same as a conventional `src/bin/foo.rs`.
+#[derive(serde::Deserialize)]
+struct CargoTargetEntry {
+    path: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct CargoManifestTargets {
+    #[serde(default)]
+    bin: Vec<CargoTargetEntry>,
+    #[serde(default)]
+    example: Vec<CargoTargetEntry>,
+    #[serde(default)]
+    test: Vec<CargoTargetEntry>,
+    #[serde(default)]
+    bench: Vec<CargoTargetEntry>,
+}
+
+impl CargoManifestTargets {
+    fn arrays(&self) -> [&Vec<CargoTargetEntry>; 4] {
+        [&self.bin, &self.example, &self.test, &self.bench]
+    }
+}
+
+/// Cache: root_dir → set of absolute file paths that are independent Cargo
+/// targets declared via an explicit Cargo.toml path override (issue #2217).
+/// Populated lazily on first Rust crate-root lookup for a given root_dir.
+fn cargo_target_overrides_cache() -> &'static Mutex<HashMap<String, HashSet<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Clear the Cargo target-override cache (for testing).
+pub fn clear_cargo_target_overrides_cache() {
+    let mut cache = cargo_target_overrides_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.clear();
+}
+
+/// Find every Cargo.toml under root_dir. A Cargo workspace can have one at
+/// the root plus one per member crate, and a target-path override always
+/// resolves relative to the manifest that declares it, not to root_dir.
+/// Skips the same directories as the ordinary file-collection walk (plus
+/// `target`, Cargo's own build-output directory — see issue #2374).
+fn find_cargo_manifests(root_dir: &str) -> Vec<PathBuf> {
+    let mut manifests = Vec::new();
+    let mut stack = vec![PathBuf::from(root_dir)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let entry_path = entry.path();
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                let is_ignored = name
+                    .to_str()
+                    .map(|n| {
+                        n == "target"
+                            || crate::domain::graph::builder::stages::collect_files::DEFAULT_IGNORE_DIRS
+                                .contains(&n)
+                    })
+                    .unwrap_or(false);
+                if is_ignored {
+                    continue;
+                }
+                stack.push(entry_path);
+            } else if entry.file_name() == "Cargo.toml" {
+                manifests.push(entry_path);
+            }
+        }
+    }
+    manifests
+}
+
+/// Parse a single Cargo.toml's `[[bin]]`/`[[example]]`/`[[test]]`/
+/// `[[bench]]` sections for an explicit `path = "..."` field, returning each
+/// resolved absolute file path. Malformed TOML or an unreadable file yields
+/// no overrides rather than failing the whole resolution — this is a
+/// best-effort enrichment, not a required input.
+fn parse_cargo_target_overrides(manifest_path: &Path) -> Vec<PathBuf> {
+    let Ok(content) = std::fs::read_to_string(manifest_path) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = toml::from_str::<CargoManifestTargets>(&content) else {
+        return Vec::new();
+    };
+    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new(""));
+    let mut overrides = Vec::new();
+    for entries in parsed.arrays() {
+        for entry in entries {
+            let Some(target_path) = entry.path.as_deref().filter(|p| !p.is_empty()) else {
+                continue;
+            };
+            let mut full = manifest_dir.to_path_buf();
+            for segment in target_path.split('/') {
+                full.push(segment);
+            }
+            overrides.push(full);
+        }
+    }
+    overrides
+}
+
+fn get_cargo_target_overrides(root_dir: &str) -> HashSet<String> {
+    let mut cache = cargo_target_overrides_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = cache.get(root_dir) {
+        return existing.clone();
+    }
+    let mut overrides = HashSet::new();
+    for manifest in find_cargo_manifests(root_dir) {
+        for target in parse_cargo_target_overrides(&manifest) {
+            overrides.insert(target.display().to_string());
+        }
+    }
+    cache.insert(root_dir.to_string(), overrides.clone());
+    overrides
+}
+
+/// True if `file` is a standalone Cargo target root — either by directory
+/// convention (a `.rs` file directly inside `src/bin/`, `examples/`,
+/// `tests/`, or `benches/`, not itself named main.rs/lib.rs) or by an
+/// explicit Cargo.toml `path = "..."` override at a non-conventional
+/// location (issue #2217).
+fn is_rust_cargo_target_root(file: &str, root_dir: &str) -> bool {
     let path = Path::new(file);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if stem == "main" || stem == "lib" || stem == "mod" {
         return false;
     }
-    let Some(parent) = path.parent() else {
-        return false;
-    };
-    let Some(dir_name) = parent.file_name().and_then(|s| s.to_str()) else {
-        return false;
-    };
-    CARGO_STANDALONE_TARGET_DIRS.contains(&dir_name)
+    if let Some(dir_name) = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
+        if CARGO_STANDALONE_TARGET_DIRS.contains(&dir_name) {
+            return true;
+        }
+    }
+    get_cargo_target_overrides(root_dir).contains(file)
 }
 
 /// Find the crate-root .rs file whose directory is an ancestor of
@@ -629,7 +758,7 @@ fn find_rust_crate_root(
     root_dir: &str,
     known_files: &HashSet<String>,
 ) -> Option<String> {
-    if is_rust_cargo_target_root(from_file) {
+    if is_rust_cargo_target_root(from_file, root_dir) {
         return Some(from_file.to_string());
     }
     let mut dir = Path::new(from_file).parent()?.to_path_buf();
@@ -661,7 +790,7 @@ fn rust_parent_module_file(
 ) -> Option<String> {
     let path = Path::new(file);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    if stem == "main" || stem == "lib" || is_rust_cargo_target_root(file) {
+    if stem == "main" || stem == "lib" || is_rust_cargo_target_root(file, root_dir) {
         return None;
     }
     let dir = path.parent()?;
@@ -747,12 +876,12 @@ fn walk_rust_module_segments(
 /// the real file that declares its target module (or, for the trailing
 /// item-name case, the module file that item is declared in), by walking
 /// the project's directory tree per Rust's module-file conventions (issue
-/// #2007). Returns `None` (falls through to the bare-specifier fallback)
-/// when `known_files` isn't available or no match is found — e.g. `#[path]`
-/// attribute overrides, or a Cargo.toml `[[bin]]`/`[[example]]`/`[[test]]`/
-/// `[[bench]]` section declaring a target at a custom, non-conventional
-/// path (issue #2217), neither of which this convention-based,
-/// known-files-only resolver models.
+/// #2007), including a Cargo.toml `[[bin]]`/`[[example]]`/`[[test]]`/
+/// `[[bench]]` section declaring a target at a custom, non-conventional path
+/// (issue #2217). Returns `None` (falls through to the bare-specifier
+/// fallback) when `known_files` isn't available or no match is found — e.g.
+/// a `#[path]` attribute override, which this convention-and-manifest-based,
+/// known-files-only resolver still doesn't model.
 fn resolve_rust_use_path(
     from_file: &str,
     import_source: &str,
@@ -1809,17 +1938,23 @@ mod tests {
 
     #[test]
     fn is_rust_cargo_target_root_recognizes_standalone_target_directories() {
-        assert!(is_rust_cargo_target_root("/project/src/bin/tool.rs"));
-        assert!(is_rust_cargo_target_root("/project/examples/demo.rs"));
-        assert!(is_rust_cargo_target_root("/project/tests/integration.rs"));
-        assert!(is_rust_cargo_target_root("/project/benches/bench1.rs"));
+        assert!(is_rust_cargo_target_root("/project/src/bin/tool.rs", "/project"));
+        assert!(is_rust_cargo_target_root("/project/examples/demo.rs", "/project"));
+        assert!(is_rust_cargo_target_root(
+            "/project/tests/integration.rs",
+            "/project"
+        ));
+        assert!(is_rust_cargo_target_root("/project/benches/bench1.rs", "/project"));
         // main.rs/lib.rs/mod.rs are found by the ordinary search, not this path.
-        assert!(!is_rust_cargo_target_root("/project/src/bin/tool/main.rs"));
-        assert!(!is_rust_cargo_target_root("/project/src/main.rs"));
-        assert!(!is_rust_cargo_target_root("/project/src/lib.rs"));
-        assert!(!is_rust_cargo_target_root("/project/src/foo/mod.rs"));
+        assert!(!is_rust_cargo_target_root(
+            "/project/src/bin/tool/main.rs",
+            "/project"
+        ));
+        assert!(!is_rust_cargo_target_root("/project/src/main.rs", "/project"));
+        assert!(!is_rust_cargo_target_root("/project/src/lib.rs", "/project"));
+        assert!(!is_rust_cargo_target_root("/project/src/foo/mod.rs", "/project"));
         // Not one of the special directory names.
-        assert!(!is_rust_cargo_target_root("/project/src/service.rs"));
+        assert!(!is_rust_cargo_target_root("/project/src/service.rs", "/project"));
     }
 
     #[test]
@@ -1849,6 +1984,140 @@ mod tests {
             "/project/tests/integration.rs",
             "super::helper",
             "/project",
+            Some(&known),
+        );
+        assert_eq!(resolved, None);
+    }
+
+    /// Build `<tmp>/Cargo.toml` plus a `custom/location/tool.rs` and
+    /// `custom/location/helper.rs` and `src/{main,shared,nested}.rs`, where
+    /// Cargo.toml declares `custom/location/tool.rs` as a `[[bin]]` path
+    /// override (issue #2217). Returns the project root.
+    fn make_cargo_toml_override_fixture(tmp_name: &str, manifest_body: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(tmp_name);
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("src")).unwrap();
+        fs::create_dir_all(tmp.join("custom").join("location")).unwrap();
+        fs::write(tmp.join("Cargo.toml"), manifest_body).unwrap();
+        fs::write(tmp.join("src").join("main.rs"), "").unwrap();
+        fs::write(tmp.join("src").join("shared.rs"), "").unwrap();
+        fs::write(tmp.join("src").join("nested.rs"), "").unwrap();
+        fs::write(tmp.join("custom").join("location").join("tool.rs"), "").unwrap();
+        fs::write(tmp.join("custom").join("location").join("helper.rs"), "").unwrap();
+        tmp
+    }
+
+    const CARGO_TOML_BIN_OVERRIDE: &str = r#"
+[package]
+name = "demo"
+
+[[bin]]
+name = "tool"
+path = "custom/location/tool.rs"
+"#;
+
+    #[test]
+    fn crate_use_path_treats_a_cargo_toml_bin_override_as_its_own_crate_root() {
+        let tmp = make_cargo_toml_override_fixture(
+            "codegraph_cargo_toml_bin_override_test",
+            CARGO_TOML_BIN_OVERRIDE,
+        );
+        clear_cargo_target_overrides_cache();
+
+        let mut known = HashSet::new();
+        for rel in [
+            "src/main.rs",
+            "src/shared.rs",
+            "src/nested.rs",
+            "custom/location/tool.rs",
+            "custom/location/helper.rs",
+        ] {
+            known.insert(rel.to_string());
+        }
+        let from_file = tmp.join("custom").join("location").join("tool.rs");
+        let resolved = resolve_rust_use_path(
+            from_file.to_str().unwrap(),
+            "crate::helper",
+            tmp.to_str().unwrap(),
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("custom/location/helper.rs".to_string()));
+    }
+
+    #[test]
+    fn crate_use_path_from_a_cargo_toml_override_does_not_see_the_other_crates_module_tree() {
+        // src/nested.rs exists in the OTHER crate's module tree — if the
+        // override crate root wrongly fell back to walking up to src/main.rs,
+        // this would resolve instead of returning None.
+        let tmp = make_cargo_toml_override_fixture(
+            "codegraph_cargo_toml_bin_override_isolation_test",
+            CARGO_TOML_BIN_OVERRIDE,
+        );
+        clear_cargo_target_overrides_cache();
+
+        let mut known = HashSet::new();
+        for rel in [
+            "src/main.rs",
+            "src/nested.rs",
+            "custom/location/tool.rs",
+            "custom/location/helper.rs",
+        ] {
+            known.insert(rel.to_string());
+        }
+        let from_file = tmp.join("custom").join("location").join("tool.rs");
+        let resolved = resolve_rust_use_path(
+            from_file.to_str().unwrap(),
+            "crate::nested::something",
+            tmp.to_str().unwrap(),
+            Some(&known),
+        );
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn crate_use_path_from_src_main_is_unaffected_by_an_unrelated_cargo_toml_override() {
+        let tmp = make_cargo_toml_override_fixture(
+            "codegraph_cargo_toml_bin_override_unaffected_test",
+            CARGO_TOML_BIN_OVERRIDE,
+        );
+        clear_cargo_target_overrides_cache();
+
+        let mut known = HashSet::new();
+        for rel in [
+            "src/main.rs",
+            "src/shared.rs",
+            "custom/location/tool.rs",
+            "custom/location/helper.rs",
+        ] {
+            known.insert(rel.to_string());
+        }
+        let from_file = tmp.join("src").join("main.rs");
+        let resolved = resolve_rust_use_path(
+            from_file.to_str().unwrap(),
+            "crate::shared",
+            tmp.to_str().unwrap(),
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("src/shared.rs".to_string()));
+    }
+
+    #[test]
+    fn crate_use_path_falls_through_gracefully_on_malformed_cargo_toml() {
+        let tmp = make_cargo_toml_override_fixture(
+            "codegraph_cargo_toml_malformed_test",
+            "[[bin\nnot valid toml",
+        );
+        clear_cargo_target_overrides_cache();
+
+        let mut known = HashSet::new();
+        for rel in ["src/main.rs", "custom/location/tool.rs"] {
+            known.insert(rel.to_string());
+        }
+        let from_file = tmp.join("custom").join("location").join("tool.rs");
+        let resolved = resolve_rust_use_path(
+            from_file.to_str().unwrap(),
+            "crate::helper",
+            tmp.to_str().unwrap(),
             Some(&known),
         );
         assert_eq!(resolved, None);

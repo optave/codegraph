@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  clearCargoTargetOverridesCache,
   clearExportsCache,
   clearJsToTsCache,
   clearWorkspaceCache,
@@ -990,5 +991,93 @@ describe('resolveImportPathJS - Rust crate::/self::/super:: paths (#2007)', () =
       );
       expect(result).toBe('super::helper');
     });
+  });
+});
+
+describe('resolveImportPathJS - Cargo.toml [[bin]]/[[example]]/[[test]]/[[bench]] path overrides (#2217)', () => {
+  let projectDir: string;
+
+  beforeAll(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-cargo-toml-'));
+    fs.mkdirSync(path.join(projectDir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'custom', 'location'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'src', 'main.rs'), '');
+    fs.writeFileSync(path.join(projectDir, 'src', 'shared.rs'), '');
+    fs.writeFileSync(path.join(projectDir, 'src', 'nested.rs'), '');
+    fs.writeFileSync(path.join(projectDir, 'custom', 'location', 'tool.rs'), '');
+    fs.writeFileSync(path.join(projectDir, 'custom', 'location', 'helper.rs'), '');
+    fs.writeFileSync(
+      path.join(projectDir, 'Cargo.toml'),
+      `
+[package]
+name = "demo"
+
+[[bin]]
+name = "tool"
+path = "custom/location/tool.rs"
+`,
+    );
+  });
+
+  afterAll(() => {
+    if (projectDir) fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    clearCargoTargetOverridesCache();
+  });
+
+  const knownFiles = [
+    'src/main.rs',
+    'src/shared.rs',
+    'src/nested.rs',
+    'custom/location/tool.rs',
+    'custom/location/helper.rs',
+  ];
+
+  it('treats a Cargo.toml [[bin]] path override as its own crate root, not a submodule of src/main.rs', () => {
+    const fromFile = path.join(projectDir, 'custom', 'location', 'tool.rs');
+    const result = resolveImportPathJS(fromFile, 'crate::helper', projectDir, null, knownFiles);
+    expect(result).toBe('custom/location/helper.rs');
+  });
+
+  it('does not let the override crate root see src/main.rs-relative modules via crate::', () => {
+    // src/nested.rs exists in the OTHER crate's module tree — if the override
+    // crate root wrongly fell back to walking up to src/main.rs, this would
+    // resolve to src/nested.rs instead of falling through to the raw specifier.
+    const fromFile = path.join(projectDir, 'custom', 'location', 'tool.rs');
+    const result = resolveImportPathJS(
+      fromFile,
+      'crate::nested::something',
+      projectDir,
+      null,
+      knownFiles,
+    );
+    expect(result).toBe('crate::nested::something');
+  });
+
+  it('src/main.rs is unaffected by an override declared for a different target', () => {
+    const fromFile = path.join(projectDir, 'src', 'main.rs');
+    const result = resolveImportPathJS(fromFile, 'crate::shared', projectDir, null, knownFiles);
+    expect(result).toBe('src/shared.rs');
+  });
+
+  it('falls through gracefully when Cargo.toml is malformed TOML', () => {
+    fs.writeFileSync(path.join(projectDir, 'Cargo.toml'), '[[bin\nnot valid toml');
+    const fromFile = path.join(projectDir, 'custom', 'location', 'tool.rs');
+    const result = resolveImportPathJS(fromFile, 'crate::helper', projectDir, null, knownFiles);
+    expect(result).toBe('crate::helper');
+    // Restore valid Cargo.toml for any subsequent test run against this fixture.
+    fs.writeFileSync(
+      path.join(projectDir, 'Cargo.toml'),
+      `
+[package]
+name = "demo"
+
+[[bin]]
+name = "tool"
+path = "custom/location/tool.rs"
+`,
+    );
   });
 });
