@@ -124,7 +124,6 @@ interface BranchCompareCliOpts {
   format?: string;
   repoRoot?: string;
   noTests?: boolean;
-  dbPath?: string;
   engine?: string;
   depth?: number;
 }
@@ -137,7 +136,7 @@ export async function branchCompare(
   const data = await branchCompareData(baseRef, targetRef, opts);
 
   if (opts.format === 'json') opts = { ...opts, json: true };
-  if (outputResult(data, null, opts, opts.dbPath)) return;
+  if (outputResult(data, null, opts, opts.repoRoot)) return;
 
   if (opts.format === 'mermaid') {
     console.log(branchCompareMermaid(data));
