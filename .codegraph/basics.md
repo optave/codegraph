@@ -53,13 +53,18 @@ The graph lives at `.codegraph/graph.db` — local build output, gitignored. Onl
   Rust. See `CLAUDE.md` for the full module table.
 - **Most-connected modules** — change these carefully:
 
-  | File | fan-in | fan-out |
-  |---|---|---|
-  | `src/types.ts` | 230 | 1322 |
-  | `src/db/index.ts` | 139 | 95 |
-  | `src/domain/parser.ts` | 88 | 156 |
-  | `src/extractors/javascript.ts` | 7 | 236 |
-  | `src/domain/graph/builder/stages/build-edges.ts` | 3 | 169 |
+  Numbers below are from `codegraph map` (cross-file coupling). Do **not** substitute the fan-out
+  column from `codegraph stats`' "coupling hotspots" — the two commands report different metrics under
+  similar labels, and the `stats` figure is inflated by intra-file containment. `src/types.ts` shows
+  fan-out 1322 there against 1323 symbols declared in the file, which is not cross-file coupling.
+
+  | File | fan-in | fan-out | total |
+  |---|---|---|---|
+  | `src/db/index.ts` | 138 | 95 | 233 |
+  | `src/types.ts` | 229 | 0 | 229 |
+  | `src/domain/parser.ts` | 87 | 82 | 169 |
+  | `src/domain/graph/builder/pipeline.ts` | 97 | 30 | 127 |
+  | `src/domain/graph/builder.ts` | 96 | 9 | 105 |
 
 ## Health baseline (as of 2026-08-09, codegraph 3.16.0)
 
