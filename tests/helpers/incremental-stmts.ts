@@ -37,6 +37,12 @@ export function createIncrementalStmts(db: ReturnType<typeof openDb>): Increment
       "SELECT id, file, kind, line, accessor_kind AS accessorKind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
     ),
     listSymbols: db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? AND kind != 'file'"),
+    hasEnclosingCallable: db.prepare(`
+      SELECT 1 FROM nodes
+      WHERE file = ? AND kind IN ('method', 'function') AND id != ?
+      AND line <= ? AND (end_line IS NULL OR end_line >= ?)
+      LIMIT 1
+    `),
     upsertFileHash: db.prepare(
       'INSERT OR REPLACE INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)',
     ),

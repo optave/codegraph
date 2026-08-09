@@ -78,6 +78,13 @@ export interface IncrementalStmts {
   findNodeInFile: { all: (...params: unknown[]) => unknown[] };
   findNodeByName: { all: (...params: unknown[]) => unknown[] };
   /**
+   * True when `file` has a function/method-kind node other than `excludeId`
+   * whose span encloses `line` — backs `CallNodeLookup.hasEnclosingCallable`
+   * for the watch-mode path (issue #2238 follow-up, Greptile finding on PR
+   * #2400). Params: `(file, excludeId, line, line)`.
+   */
+  hasEnclosingCallable: { get: (...params: unknown[]) => unknown };
+  /**
    * Upsert a `file_hashes` row: `(relPath, hash, mtime, size)`. Called only
    * after a file's edges have been fully rebuilt (#1731) — see the call site
    * in `rebuildFile` for why this can't happen any earlier.
@@ -1072,6 +1079,8 @@ function makeIncrementalLookup(db: BetterSqlite3Database, stmts: IncrementalStmt
     resolveBarrel: (barrelFile, symbolName) => resolveBarrelTarget(db, barrelFile, symbolName),
     nodeId: (name, kind, file, line) =>
       stmts.getNodeId.get(name, kind, file, line) as { id: number } | undefined,
+    hasEnclosingCallable: (file, line, excludeId) =>
+      stmts.hasEnclosingCallable.get(file, excludeId, line, line) !== undefined,
   };
 }
 

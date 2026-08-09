@@ -1320,6 +1320,17 @@ function prepareCallerByLineStmt(db: BetterSqlite3Database) {
  */
 function makePostNativeCallLookup(db: BetterSqlite3Database): CallNodeLookup {
   const findByNameStmt = db.prepare(`SELECT id, file, kind, line FROM nodes WHERE name = ?`);
+  // Mirrors prepareCallerByLineStmt's containment shape but excludes the
+  // candidate's own id — used by resolveThisDispatch (cha.ts) to tell a
+  // module/class-scope function declaration apart from a nested one that
+  // merely shares a base class's bare name (issue #2238 follow-up, Greptile
+  // finding on PR #2400).
+  const hasEnclosingCallableStmt = db.prepare(`
+    SELECT 1 FROM nodes
+    WHERE file = ? AND kind IN ('method', 'function') AND id != ?
+    AND line <= ? AND (end_line IS NULL OR end_line >= ?)
+    LIMIT 1
+  `);
   return {
     byName: (name) => findByNameStmt.all(name) as Array<ResolvedCandidate>,
     byNameAndFile: (name, file) =>
@@ -1327,6 +1338,8 @@ function makePostNativeCallLookup(db: BetterSqlite3Database): CallNodeLookup {
     isBarrel: () => false,
     resolveBarrel: () => null,
     nodeId: () => undefined,
+    hasEnclosingCallable: (file, line, excludeId) =>
+      hasEnclosingCallableStmt.get(file, excludeId, line, line) !== undefined,
   };
 }
 

@@ -17,12 +17,21 @@ import {
 } from '../../src/domain/graph/builder/cha.js';
 
 type Candidate = { id: number; file: string; kind: string; line: number };
+/** `{file}|{line}` entries describing a function/method's OWN enclosing
+ * callable, if any — the fixture-level equivalent of the DB's `end_line`
+ * containment query `hasEnclosingCallable` backs (issue #2238 follow-up,
+ * Greptile finding on PR #2400). */
+type EnclosingKey = string;
 
 /** Build a CallNodeLookup backed by two maps: qualified-name → candidates
- * (byName), and bare-name+file → candidates (byNameAndFile). */
+ * (byName), and bare-name+file → candidates (byNameAndFile). `nestedLines`
+ * lists `${file}|${line}` keys for candidates that are themselves nested
+ * inside another callable — `hasEnclosingCallable` returns true for exactly
+ * those. */
 function makeLookup(
   byNameMap: Record<string, Candidate[]>,
   byNameAndFileMap: Record<string, Record<string, Candidate[]>> = {},
+  nestedLines: ReadonlySet<EnclosingKey> = new Set(),
 ): CallNodeLookup {
   return {
     byName(name) {
@@ -39,6 +48,9 @@ function makeLookup(
     },
     nodeId() {
       return undefined;
+    },
+    hasEnclosingCallable(file, line) {
+      return nestedLines.has(`${file}|${line}`);
     },
   };
 }
@@ -142,6 +154,24 @@ describe('resolveThisDispatch — cross-file name collision (issue #2062)', () =
     const lookup = makeLookup(
       { 'Animal.speak': [{ id: 5, file: 'base.ts', kind: 'method', line: 5 }] },
       { Animal: { 'dog.ts': [{ id: 9, file: 'dog.ts', kind: 'variable', line: 3 }] } },
+    );
+    const chaCtx = makeChaCtx({ Dog: 'Animal' }, { 'Dog|dog.ts': 'Animal' });
+
+    const result = resolveThisDispatch('speak', 'Dog.speak', 'super', chaCtx, lookup, 'dog.ts');
+    expect(result).toEqual([{ id: 5, file: 'base.ts', kind: 'method', line: 5 }]);
+  });
+
+  it('resolves a legitimate cross-file super call even when an unrelated NESTED function shares the base name (Greptile finding on PR #2400)', () => {
+    // dog.ts imports Animal from base.ts and extends it. Somewhere else in
+    // dog.ts, an unrelated method has its own local helper function also
+    // named `Animal` (pure coincidence, nothing to do with the class
+    // hierarchy). A nested function can never be a legitimate `extends`
+    // target — unlike issue #2238's plain TOP-LEVEL constructor function —
+    // so it must not block the real cross-file heritage resolution either.
+    const lookup = makeLookup(
+      { 'Animal.speak': [{ id: 5, file: 'base.ts', kind: 'method', line: 5 }] },
+      { Animal: { 'dog.ts': [{ id: 9, file: 'dog.ts', kind: 'function', line: 12 }] } },
+      new Set(['dog.ts|12']),
     );
     const chaCtx = makeChaCtx({ Dog: 'Animal' }, { 'Dog|dog.ts': 'Animal' });
 

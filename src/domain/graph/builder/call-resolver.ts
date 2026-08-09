@@ -35,6 +35,17 @@ export interface CallNodeLookup {
    */
   resolveBarrel(barrelFile: string, symbolName: string): { file: string; name: string } | null;
   nodeId(name: string, kind: string, file: string, line: number): { id: number } | undefined;
+  /**
+   * True when `file` declares a function/method-kind node, other than
+   * `excludeId`, whose line span encloses `line` — i.e. the node at
+   * `excludeId` is nested inside another callable rather than declared at
+   * module/class scope. Used by `resolveThisDispatch` (cha.ts) to tell a
+   * genuine heritage-capable function declaration (#2238) apart from an
+   * unrelated nested function that merely shares a base class's bare name
+   * (Greptile finding on PR #2400) — a nested function can never legitimately
+   * be an `extends`/prototype heritage target.
+   */
+  hasEnclosingCallable(file: string, line: number, excludeId: number): boolean;
 }
 
 export const RECEIVER_KINDS = new Set(['class', 'struct', 'interface', 'type', 'module']);
