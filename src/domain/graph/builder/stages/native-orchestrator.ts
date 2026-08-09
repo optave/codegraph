@@ -864,17 +864,22 @@ function fetchChaCallToMethods(
   changedFiles: string[] | null,
   scopeToChangedFiles: boolean,
 ): ChaCallRow[] {
-  // No technique exclusion here: this pass's own prior output is tagged
-  // 'cha' (#1996), the same label used by this/super-dispatch edges from a
-  // different pass (runPostNativeThisDispatch) — both are legitimate
-  // candidates for further BFS expansion. Re-examining a previously-expanded
-  // edge as a candidate again is safe: expandChaEdges's BFS already walks the
-  // full multi-level hierarchy in one pass, so re-processing an
-  // already-expanded edge just re-derives pairs already present in `seen`
-  // and is skipped there — no duplicate or incorrect edges, only bounded
-  // redundant work on the rare incremental rebuild where Gate A/B forces a
-  // full rescan. Mirrors the equivalent change in builder/helpers.ts's
-  // runChaPostPass (the WASM-path twin of this function).
+  // No technique exclusion for 'cha'/this-dispatch here: this pass's own
+  // prior output is tagged 'cha' (#1996), the same label used by
+  // this-dispatch edges from a different pass (runPostNativeThisDispatch) —
+  // both are legitimate candidates for further BFS expansion. Re-examining a
+  // previously-expanded edge as a candidate again is safe: expandChaEdges's
+  // BFS already walks the full multi-level hierarchy in one pass, so
+  // re-processing an already-expanded edge just re-derives pairs already
+  // present in `seen` and is skipped there — no duplicate or incorrect
+  // edges, only bounded redundant work on the rare incremental rebuild
+  // where Gate A/B forces a full rescan. Mirrors the equivalent change in
+  // builder/helpers.ts's runChaPostPass (the WASM-path twin of this function).
+  //
+  // 'super-dispatch' IS excluded: `super.method()` is a static, non-virtual
+  // call that always invokes the declaring ancestor's method directly and
+  // can never dispatch to a sibling subclass's override — unlike this/CHA
+  // edges, it must never be treated as an expansion candidate (issue #2243).
   if (scopeToChangedFiles && changedFiles && changedFiles.length > 0) {
     const CHUNK_SIZE = 500;
     const rows: ChaCallRow[] = [];
@@ -889,6 +894,7 @@ function fetchChaCallToMethods(
            JOIN nodes src ON e.source_id = src.id
            WHERE e.kind = 'calls' AND tgt.kind = 'method'
            AND INSTR(tgt.name, '.') > 0
+           AND (e.technique IS NULL OR e.technique != 'super-dispatch')
            AND src.file IN (${ph})`,
         )
         .all(...chunk) as ChaCallRow[];
@@ -904,6 +910,7 @@ function fetchChaCallToMethods(
       JOIN nodes src ON e.source_id = src.id
       WHERE e.kind = 'calls' AND tgt.kind = 'method'
       AND INSTR(tgt.name, '.') > 0
+      AND (e.technique IS NULL OR e.technique != 'super-dispatch')
     `)
     .all() as ChaCallRow[];
 }

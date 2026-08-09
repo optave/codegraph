@@ -787,10 +787,10 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
     debug('runChaPostPass: no constructor-call evidence — proceeding without RTA filter');
   }
 
-  // No technique exclusion here: this pass's own prior output is now tagged
-  // 'cha' (#1996), the same label as this/super-dispatch edges from a
-  // different pass — both are legitimate candidates for further BFS
-  // expansion (e.g. a this-dispatch edge resolved to an ancestor's method
+  // No technique exclusion for 'cha'/this-dispatch here: this pass's own
+  // prior output is now tagged 'cha' (#1996), the same label as this-dispatch
+  // edges from a different pass — both are legitimate candidates for further
+  // BFS expansion (e.g. a this-dispatch edge resolved to an ancestor's method
   // may still need expanding to sibling overrides). Re-examining a
   // previously-expanded edge as a candidate again is safe: the BFS below
   // already walks the full multi-level hierarchy in one pass, so any
@@ -799,6 +799,11 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
   // incorrect edges result, only bounded redundant work on incremental
   // rebuilds that re-scan the whole candidate set (Gate A/B in the native
   // orchestrator's equivalent, `fetchChaCallToMethods`).
+  //
+  // 'super-dispatch' IS excluded: `super.method()` is a static, non-virtual
+  // call that always invokes the declaring ancestor's method directly and
+  // can never dispatch to a sibling subclass's override — unlike this/CHA
+  // edges, it must never be treated as an expansion candidate (issue #2243).
   const callToMethods = db
     .prepare(
       `SELECT e.source_id, src.name AS caller_name, src.file AS caller_file, tgt.name AS method_name
@@ -806,7 +811,8 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
        JOIN nodes tgt ON e.target_id = tgt.id
        JOIN nodes src ON e.source_id = src.id
        WHERE e.kind = 'calls' AND tgt.kind = 'method'
-       AND INSTR(tgt.name, '.') > 0`,
+       AND INSTR(tgt.name, '.') > 0
+       AND (e.technique IS NULL OR e.technique != 'super-dispatch')`,
     )
     .all() as Array<{
     source_id: number;
