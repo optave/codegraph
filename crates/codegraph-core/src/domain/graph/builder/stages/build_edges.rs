@@ -357,10 +357,12 @@ fn resolve_cha_dispatch<'a>(
 /// separately (and already correctly) by `runPostNativeThisDispatch`
 /// (native-orchestrator.ts); mixing the two would risk duplicate or
 /// conflicting edges for the same call site.
+#[allow(clippy::too_many_arguments)]
 fn emit_cha_dispatch_edges(
     ctx: &EdgeContext,
     call: &CallInfo,
     caller_id: u32,
+    caller_name: &str,
     type_map: &HashMap<&str, (&str, f64)>,
     seen_edges: &mut HashSet<u64>,
     pts_edge_map: &HashMap<u64, usize>,
@@ -377,7 +379,20 @@ fn emit_cha_dispatch_edges(
         return;
     }
 
-    let Some(&(type_name, _)) = type_map.get(receiver.as_str()) else {
+    // Function-scoped key checked before the bare key, same as
+    // emit_receiver_edge/resolve_call_targets_core — otherwise a same-named
+    // local/parameter in a DIFFERENT function can still leak its (wrong)
+    // hierarchy into this call's additive CHA expansion (#2235 follow-up).
+    let scoped_key = if caller_name.is_empty() {
+        None
+    } else {
+        Some(format!("{}::{}", caller_name, receiver))
+    };
+    let type_entry = scoped_key
+        .as_deref()
+        .and_then(|k| type_map.get(k))
+        .or_else(|| type_map.get(receiver.as_str()));
+    let Some(&(type_name, _)) = type_entry else {
         return;
     };
 
@@ -1212,6 +1227,7 @@ fn process_file<'a>(
             ctx,
             call,
             caller_id,
+            caller_name,
             &fc.type_map,
             &mut seen_edges,
             &pts_edge_map,

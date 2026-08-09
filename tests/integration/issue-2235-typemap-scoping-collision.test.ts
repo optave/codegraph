@@ -22,6 +22,14 @@
  * name (`"ReturnType"`) were a real receiver type, seeding a bogus bare-key
  * entry that could win the collision over a legitimate same-named parameter
  * elsewhere in the file.
+ *
+ * Also covers a Greptile review finding on the fix itself: the additive
+ * CHA/RTA dispatch pass (`emitChaCallEdgesForCall` / `buildChaPostPass` /
+ * `emitChaDispatchForCall` / Rust `emit_cha_dispatch_edges`) reads the
+ * typeMap independently of the primary receiver resolution above and
+ * originally checked only the bare key, so a same-named receiver in a
+ * different function could still cross-contaminate which class hierarchy
+ * got expanded even after the primary-resolution fix.
  */
 
 import fs from 'node:fs';
@@ -51,6 +59,50 @@ export function makeUserConn(): UserDb {
 }
 export function processOpaque(db: ReturnType<typeof makeUserConn>) {
   db.commit();
+}
+`,
+  'cha.ts': `
+export interface OrderRepo {
+  commit(): void;
+}
+export class OrderRepoA implements OrderRepo {
+  commit() {}
+}
+export class OrderRepoB implements OrderRepo {
+  commit() {}
+}
+export interface UserRepo {
+  commit(): void;
+}
+export class UserRepoA implements UserRepo {
+  commit() {}
+}
+export class UserRepoB implements UserRepo {
+  commit() {}
+}
+export function chaProcessOrder(repo: OrderRepo) {
+  repo.commit();
+}
+export function chaProcessUser(repo: UserRepo) {
+  repo.commit();
+}
+// RTA (Rapid Type Analysis) only expands CHA dispatch to implementors that
+// are actually instantiated somewhere in the project — without this
+// evidence for ALL FOUR concrete classes, the "no RTA evidence anywhere in
+// the project" fallback (treat every implementor as eligible) would mask
+// a real scoping bug in the additive CHA dispatch pass behind a fallback
+// that happens to expand everything regardless of type.
+export function makeOrderRepoA(): OrderRepo {
+  return new OrderRepoA();
+}
+export function makeOrderRepoB(): OrderRepo {
+  return new OrderRepoB();
+}
+export function makeUserRepoA(): UserRepo {
+  return new UserRepoA();
+}
+export function makeUserRepoB(): UserRepo {
+  return new UserRepoB();
 }
 `,
 };
@@ -132,6 +184,45 @@ function runSuite(engine: 'wasm' | 'native') {
       // file: it must not silently start losing to it.
       expect(edges.some((e) => e.src === 'processUser' && e.tgt === 'UserDb.commit')).toBe(true);
       expect(edges.some((e) => e.src === 'processUser' && e.tgt === 'OrderDb.commit')).toBe(false);
+    });
+
+    // The additive CHA/RTA dispatch pass (Phase 8.5) expands a typed-interface
+    // receiver to every concrete implementer — it reads the typeMap
+    // independently of the primary receiver resolution above, and originally
+    // only checked the bare key, so it could still cross-contaminate even
+    // after the primary resolution fix (Greptile finding on PR #2398).
+    it('CHA dispatch expands chaProcessOrder.repo.commit() to both OrderRepo implementers only', () => {
+      const dbPath = path.join(tmpDir, '.codegraph', 'graph.db');
+      const edges = getReceiverLikeEdges(dbPath);
+      expect(edges.some((e) => e.src === 'chaProcessOrder' && e.tgt === 'OrderRepoA.commit')).toBe(
+        true,
+      );
+      expect(edges.some((e) => e.src === 'chaProcessOrder' && e.tgt === 'OrderRepoB.commit')).toBe(
+        true,
+      );
+      expect(edges.some((e) => e.src === 'chaProcessOrder' && e.tgt === 'UserRepoA.commit')).toBe(
+        false,
+      );
+      expect(edges.some((e) => e.src === 'chaProcessOrder' && e.tgt === 'UserRepoB.commit')).toBe(
+        false,
+      );
+    });
+
+    it('CHA dispatch expands chaProcessUser.repo.commit() to both UserRepo implementers only', () => {
+      const dbPath = path.join(tmpDir, '.codegraph', 'graph.db');
+      const edges = getReceiverLikeEdges(dbPath);
+      expect(edges.some((e) => e.src === 'chaProcessUser' && e.tgt === 'UserRepoA.commit')).toBe(
+        true,
+      );
+      expect(edges.some((e) => e.src === 'chaProcessUser' && e.tgt === 'UserRepoB.commit')).toBe(
+        true,
+      );
+      expect(edges.some((e) => e.src === 'chaProcessUser' && e.tgt === 'OrderRepoA.commit')).toBe(
+        false,
+      );
+      expect(edges.some((e) => e.src === 'chaProcessUser' && e.tgt === 'OrderRepoB.commit')).toBe(
+        false,
+      );
     });
   });
 }

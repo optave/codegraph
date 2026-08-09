@@ -1006,7 +1006,11 @@ function buildChaPostPass(
           relPath,
         );
       } else {
-        const typeEntry = typeMap.get(call.receiver);
+        // Function-scoped key checked before the bare key (#2235 follow-up)
+        // — see emitChaCallEdgesForCall's identical comment.
+        const typeEntry = caller.callerName
+          ? (typeMap.get(`${caller.callerName}::${call.receiver}`) ?? typeMap.get(call.receiver))
+          : typeMap.get(call.receiver);
         const typeName = typeEntry
           ? typeof typeEntry === 'string'
             ? typeEntry
@@ -1851,7 +1855,13 @@ function emitChaCallEdgesForCall(
       relPath,
     );
   } else if (!BUILTIN_RECEIVERS.has(call.receiver!)) {
-    const typeEntry = typeMap.get(call.receiver!);
+    // Function-scoped key checked before the bare key, mirroring
+    // resolveReceiverEdge/resolveReceiverTypeName — otherwise a same-named
+    // local/parameter in a DIFFERENT function can still leak its (wrong)
+    // hierarchy into this call's additive CHA expansion (#2235 follow-up).
+    const typeEntry = caller.callerName
+      ? (typeMap.get(`${caller.callerName}::${call.receiver}`) ?? typeMap.get(call.receiver!))
+      : typeMap.get(call.receiver!);
     const typeName = typeEntry
       ? typeof typeEntry === 'string'
         ? typeEntry

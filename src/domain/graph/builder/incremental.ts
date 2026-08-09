@@ -1939,7 +1939,11 @@ function emitChaDispatchForCall(
       relPath,
     );
   } else {
-    const typeEntry = typeMap.get(call.receiver);
+    // Function-scoped key checked before the bare key (#2235 follow-up) —
+    // mirrors emitChaCallEdgesForCall (stages/build-edges.ts, full-build path).
+    const typeEntry = caller.callerName
+      ? (typeMap.get(`${caller.callerName}::${call.receiver}`) ?? typeMap.get(call.receiver))
+      : typeMap.get(call.receiver);
     const typeName = typeEntry
       ? typeof typeEntry === 'string'
         ? typeEntry
