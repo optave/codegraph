@@ -733,7 +733,11 @@ fn is_rust_cargo_target_root(file: &str, root_dir: &str) -> bool {
     if stem == "main" || stem == "lib" || stem == "mod" {
         return false;
     }
-    if let Some(dir_name) = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
+    if let Some(dir_name) = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+    {
         if CARGO_STANDALONE_TARGET_DIRS.contains(&dir_name) {
             return true;
         }
@@ -1938,23 +1942,44 @@ mod tests {
 
     #[test]
     fn is_rust_cargo_target_root_recognizes_standalone_target_directories() {
-        assert!(is_rust_cargo_target_root("/project/src/bin/tool.rs", "/project"));
-        assert!(is_rust_cargo_target_root("/project/examples/demo.rs", "/project"));
+        assert!(is_rust_cargo_target_root(
+            "/project/src/bin/tool.rs",
+            "/project"
+        ));
+        assert!(is_rust_cargo_target_root(
+            "/project/examples/demo.rs",
+            "/project"
+        ));
         assert!(is_rust_cargo_target_root(
             "/project/tests/integration.rs",
             "/project"
         ));
-        assert!(is_rust_cargo_target_root("/project/benches/bench1.rs", "/project"));
+        assert!(is_rust_cargo_target_root(
+            "/project/benches/bench1.rs",
+            "/project"
+        ));
         // main.rs/lib.rs/mod.rs are found by the ordinary search, not this path.
         assert!(!is_rust_cargo_target_root(
             "/project/src/bin/tool/main.rs",
             "/project"
         ));
-        assert!(!is_rust_cargo_target_root("/project/src/main.rs", "/project"));
-        assert!(!is_rust_cargo_target_root("/project/src/lib.rs", "/project"));
-        assert!(!is_rust_cargo_target_root("/project/src/foo/mod.rs", "/project"));
+        assert!(!is_rust_cargo_target_root(
+            "/project/src/main.rs",
+            "/project"
+        ));
+        assert!(!is_rust_cargo_target_root(
+            "/project/src/lib.rs",
+            "/project"
+        ));
+        assert!(!is_rust_cargo_target_root(
+            "/project/src/foo/mod.rs",
+            "/project"
+        ));
         // Not one of the special directory names.
-        assert!(!is_rust_cargo_target_root("/project/src/service.rs", "/project"));
+        assert!(!is_rust_cargo_target_root(
+            "/project/src/service.rs",
+            "/project"
+        ));
     }
 
     #[test]
