@@ -18,11 +18,12 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { getNodeId as getNodeIdQuery, initSchema, openDb } from '../../src/db/index.js';
+import { initSchema, openDb } from '../../src/db/index.js';
 import { rebuildFile } from '../../src/domain/graph/builder/incremental.js';
 import { buildGraph } from '../../src/domain/graph/builder.js';
 import { isNativeAvailable } from '../../src/infrastructure/native.js';
 import type { EngineMode } from '../../src/types.js';
+import { createIncrementalStmts } from '../helpers/incremental-stmts.js';
 
 function writeFixture(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
@@ -144,38 +145,6 @@ describe.skipIf(!isNativeAvailable())('native engine coverage', () => {
   runScenario('native');
 });
 
-function makeStmts(db: ReturnType<typeof openDb>) {
-  return {
-    insertNode: db.prepare(
-      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
-    ),
-    getNodeId: {
-      get: (name: string, kind: string, file: string, line: number) => {
-        const id = getNodeIdQuery(db, name, kind, file, line);
-        return id != null ? { id } : undefined;
-      },
-    },
-    insertEdge: db.prepare(
-      'INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, ?, ?)',
-    ),
-    countNodes: db.prepare('SELECT COUNT(*) as c FROM nodes WHERE file = ?'),
-    countEdges: db.prepare(
-      'SELECT COUNT(*) as c FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)',
-    ),
-    findNodeInFile: db.prepare(
-      "SELECT id, kind, file FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant') AND file = ?",
-    ),
-    findNodeByName: db.prepare(
-      "SELECT id, file, kind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
-    ),
-    listSymbols: db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? AND kind != 'file'"),
-    upsertFileHash: db.prepare(
-      'INSERT OR REPLACE INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)',
-    ),
-    deleteFileHash: db.prepare('DELETE FROM file_hashes WHERE file = ?'),
-  };
-}
-
 function runIncrementalParityScenario(engine: EngineMode): void {
   describe(`incremental rebuild matches full build for accessor reads (#1893) — ${engine}`, () => {
     let incDir: string;
@@ -193,7 +162,7 @@ function runIncrementalParityScenario(engine: EngineMode): void {
       const db = openDb(dbPath);
       try {
         initSchema(db);
-        const stmts = makeStmts(db);
+        const stmts = createIncrementalStmts(db);
         await rebuildFile(db, incDir, filePath, stmts, { engine }, null);
       } finally {
         db.close();

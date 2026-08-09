@@ -22,9 +22,10 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { getNodeId as getNodeIdQuery, initSchema, openDb } from '../../src/db/index.js';
+import { initSchema, openDb } from '../../src/db/index.js';
 import { rebuildFile } from '../../src/domain/graph/builder/incremental.js';
 import { buildGraph } from '../../src/domain/graph/builder.js';
+import { createIncrementalStmts } from '../helpers/incremental-stmts.js';
 
 const FILES: Record<string, string> = {
   'service.js': `
@@ -70,38 +71,6 @@ function readCallEdges(dbPath: string) {
   }
 }
 
-function makeStmts(db: ReturnType<typeof openDb>) {
-  return {
-    insertNode: db.prepare(
-      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
-    ),
-    getNodeId: {
-      get: (name: string, kind: string, file: string, line: number) => {
-        const id = getNodeIdQuery(db, name, kind, file, line);
-        return id != null ? { id } : undefined;
-      },
-    },
-    insertEdge: db.prepare(
-      'INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?, ?, ?, ?, ?)',
-    ),
-    countNodes: db.prepare('SELECT COUNT(*) as c FROM nodes WHERE file = ?'),
-    countEdges: db.prepare(
-      'SELECT COUNT(*) as c FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)',
-    ),
-    findNodeInFile: db.prepare(
-      "SELECT id, kind, file FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant') AND file = ?",
-    ),
-    findNodeByName: db.prepare(
-      "SELECT id, file, kind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
-    ),
-    listSymbols: db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? AND kind != 'file'"),
-    upsertFileHash: db.prepare(
-      'INSERT OR REPLACE INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)',
-    ),
-    deleteFileHash: db.prepare('DELETE FROM file_hashes WHERE file = ?'),
-  };
-}
-
 describe('Incremental rebuildFile passes callerName to resolver (#1370)', () => {
   let fullEdges: ReturnType<typeof readCallEdges>;
   let watchEdges: ReturnType<typeof readCallEdges>;
@@ -124,7 +93,14 @@ describe('Incremental rebuildFile passes callerName to resolver (#1370)', () => 
     // Run the incremental watch path — this is where callerName was missing.
     const db = openDb(path.join(watchDir, '.codegraph', 'graph.db'));
     initSchema(db);
-    await rebuildFile(db, watchDir, watchFile, makeStmts(db), { engine: 'wasm' }, null);
+    await rebuildFile(
+      db,
+      watchDir,
+      watchFile,
+      createIncrementalStmts(db),
+      { engine: 'wasm' },
+      null,
+    );
     db.close();
 
     // Apply the same touch to the full-build copy and rebuild from scratch.
