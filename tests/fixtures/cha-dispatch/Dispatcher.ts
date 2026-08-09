@@ -17,7 +17,9 @@ export function run(): string {
   // real RTA evidence for Lion's sibling subclass, so the "does NOT
   // CHA-expand Lion.speak to sibling Tiger.speak" test actually exercises
   // the super-dispatch guard instead of passing by RTA-filter accident.
-  const tiger = new Tiger();
-  tiger.speak();
+  // Deliberately not called — an unrelated run -> Tiger.speak call edge
+  // would add noise unrelated to what this fixture is testing (Greptile
+  // review on PR #2403).
+  const _tiger = new Tiger();
   return dispatch(w1) + dispatch(w2);
 }
