@@ -18,8 +18,17 @@ function shouldIgnorePath(filePath: string, ignoreSet: ReadonlySet<string>): boo
 /** Prepare all SQL statements needed by the watcher's incremental rebuild. */
 function prepareWatcherStatements(db: ReturnType<typeof openDb>): IncrementalStmts {
   return {
+    // Column set and order mirror the full-build path's getNodeStmt
+    // (src/domain/graph/builder/helpers.ts) — issue #2220: a symbol touched
+    // only by a watch-mode rebuild must get the same qualified_name/scope/
+    // visibility/parent_id/content_hash a full or regular incremental build
+    // would have given it.
     insertNode: db.prepare(
-      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO nodes (name,kind,file,line,end_line,parent_id,qualified_name,scope,visibility,content_hash,accessor_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    ),
+    // Mirrors the full-build path's getExportStmt (issue #2220).
+    markExported: db.prepare(
+      'UPDATE nodes SET exported = 1 WHERE name = ? AND kind = ? AND file = ? AND line = ?',
     ),
     getNodeId: {
       get: (...params: unknown[]) => {

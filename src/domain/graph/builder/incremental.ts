@@ -85,6 +85,11 @@ export interface IncrementalStmts {
   upsertFileHash: { run: (...params: unknown[]) => unknown };
   /** Delete a `file_hashes` row for a file removed from disk. */
   deleteFileHash: { run: (...params: unknown[]) => unknown };
+  /**
+   * Mark a node `exported = 1`, keyed by `(name, kind, file, line)` —
+   * mirrors the full-build path's `markExportedSymbols` (issue #2220).
+   */
+  markExported: { run: (...params: unknown[]) => unknown };
 }
 
 interface RebuildResult {
@@ -102,18 +107,43 @@ interface RebuildResult {
 
 // ── Node insertion ──────────────────────────────────────────────────────
 
+/**
+ * Insert this file's node, its definitions and their children, and its
+ * exports — mirroring `insertDefinitionsAndExports`/`collectChildRowsAndFileEdges`
+ * in `stages/insert-nodes.ts` (the full-build path) so a symbol touched only
+ * by watch-mode rebuilds gets the same `qualified_name`/`scope`/`visibility`/
+ * `parent_id`/`content_hash`/`exported` columns a full or regular incremental
+ * `codegraph build` would have given it (issue #2220) — downstream queries
+ * that filter/join on those columns must not behave differently depending on
+ * which rebuild path last touched a symbol.
+ *
+ * `def.name` scoping mirrors insert-nodes.ts exactly: a dotted definition
+ * name (e.g. some extractors' `ClassName.methodName` convention) yields a
+ * `scope` of everything before the last dot; children get `parent_id` set to
+ * their def's real node id (looked up post-insert, not `lastInsertRowid`,
+ * since `INSERT OR IGNORE` leaves that unreliable for an already-existing
+ * row on a re-rebuild) and a `qualified_name` of `${def.name}.${child.name}`.
+ */
 function insertFileNodes(stmts: IncrementalStmts, relPath: string, symbols: ExtractorOutput): void {
-  stmts.insertNode.run(relPath, 'file', relPath, 0, null, null);
+  stmts.insertNode.run(relPath, 'file', relPath, 0, null, null, null, null, null, null, null);
   for (const def of symbols.definitions) {
+    const dotIdx = def.name.lastIndexOf('.');
+    const scope = dotIdx !== -1 ? def.name.slice(0, dotIdx) : null;
     stmts.insertNode.run(
       def.name,
       def.kind,
       relPath,
       def.line,
       def.endLine || null,
+      null,
+      def.name,
+      scope,
+      def.visibility ?? null,
+      def.contentHash ?? null,
       def.accessorKind ?? null,
     );
     if (def.children?.length) {
+      const defId = stmts.getNodeId.get(def.name, def.kind, relPath, def.line)?.id ?? null;
       for (const child of def.children) {
         stmts.insertNode.run(
           child.name,
@@ -121,13 +151,31 @@ function insertFileNodes(stmts: IncrementalStmts, relPath: string, symbols: Extr
           relPath,
           child.line,
           child.endLine || null,
+          defId,
+          `${def.name}.${child.name}`,
+          def.name,
+          child.visibility ?? null,
+          child.contentHash ?? null,
           null,
         );
       }
     }
   }
   for (const exp of symbols.exports) {
-    stmts.insertNode.run(exp.name, exp.kind, relPath, exp.line, null, null);
+    stmts.insertNode.run(
+      exp.name,
+      exp.kind,
+      relPath,
+      exp.line,
+      null,
+      null,
+      exp.name,
+      null,
+      null,
+      null,
+      null,
+    );
+    stmts.markExported.run(exp.name, exp.kind, relPath, exp.line);
   }
 }
 
