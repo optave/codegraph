@@ -629,7 +629,10 @@ fn cargo_target_overrides_cache() -> &'static Mutex<HashMap<String, HashSet<Stri
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Clear the Cargo target-override cache (for testing).
+/// Clear the Cargo target-override cache — called from the NAPI-exported
+/// `clear_cargo_target_overrides_cache` (issue #2217, so a long-lived
+/// process picks up Cargo.toml edits) and `resolve_imports`'s once-per-build
+/// reset, as well as directly from tests.
 pub fn clear_cargo_target_overrides_cache() {
     let mut cache = cargo_target_overrides_cache()
         .lock()
@@ -722,27 +725,29 @@ fn get_cargo_target_overrides(root_dir: &str) -> HashSet<String> {
     overrides
 }
 
-/// True if `file` is a standalone Cargo target root — either by directory
-/// convention (a `.rs` file directly inside `src/bin/`, `examples/`,
-/// `tests/`, or `benches/`, not itself named main.rs/lib.rs) or by an
-/// explicit Cargo.toml `path = "..."` override at a non-conventional
-/// location (issue #2217).
+/// True if `file` is a standalone Cargo target root — either by an explicit
+/// Cargo.toml `path = "..."` override at a non-conventional location (issue
+/// #2217, checked first since an override is authoritative regardless of
+/// the target's basename) or by directory convention (a `.rs` file directly
+/// inside `src/bin/`, `examples/`, `tests/`, or `benches/`, not itself named
+/// main.rs/lib.rs).
 fn is_rust_cargo_target_root(file: &str, root_dir: &str) -> bool {
+    if get_cargo_target_overrides(root_dir).contains(file) {
+        return true;
+    }
     let path = Path::new(file);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if stem == "main" || stem == "lib" || stem == "mod" {
         return false;
     }
-    if let Some(dir_name) = path
+    let Some(dir_name) = path
         .parent()
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
-    {
-        if CARGO_STANDALONE_TARGET_DIRS.contains(&dir_name) {
-            return true;
-        }
-    }
-    get_cargo_target_overrides(root_dir).contains(file)
+    else {
+        return false;
+    };
+    CARGO_STANDALONE_TARGET_DIRS.contains(&dir_name)
 }
 
 /// Find the crate-root .rs file whose directory is an ancestor of
@@ -2146,6 +2151,94 @@ path = "custom/location/tool.rs"
             Some(&known),
         );
         assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn crate_use_path_recognizes_an_override_target_literally_named_mod_rs() {
+        // mod.rs specifically discriminates the basename-guard bug: unlike
+        // main.rs/lib.rs, find_rust_crate_root's ordinary walk-up never
+        // looks for a file named mod.rs, so there's no coincidental fallback
+        // that would mask an incorrectly-rejected override here.
+        let tmp = std::env::temp_dir().join("codegraph_cargo_toml_basename_mod_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("src")).unwrap();
+        fs::create_dir_all(tmp.join("custom").join("location")).unwrap();
+        fs::write(tmp.join("src").join("main.rs"), "").unwrap();
+        fs::write(tmp.join("custom").join("location").join("mod.rs"), "").unwrap();
+        fs::write(tmp.join("custom").join("location").join("helper.rs"), "").unwrap();
+        fs::write(
+            tmp.join("Cargo.toml"),
+            r#"
+[package]
+name = "demo"
+
+[[bin]]
+name = "tool"
+path = "custom/location/mod.rs"
+"#,
+        )
+        .unwrap();
+        clear_cargo_target_overrides_cache();
+
+        let mut known = HashSet::new();
+        for rel in [
+            "src/main.rs",
+            "custom/location/mod.rs",
+            "custom/location/helper.rs",
+        ] {
+            known.insert(rel.to_string());
+        }
+        let from_file = tmp.join("custom").join("location").join("mod.rs");
+        let resolved = resolve_rust_use_path(
+            from_file.to_str().unwrap(),
+            "crate::helper",
+            tmp.to_str().unwrap(),
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("custom/location/helper.rs".to_string()));
+    }
+
+    #[test]
+    fn crate_use_path_picks_up_a_cargo_toml_override_added_after_the_cache_was_populated() {
+        let tmp = std::env::temp_dir().join("codegraph_cargo_toml_stale_cache_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("src")).unwrap();
+        fs::create_dir_all(tmp.join("custom").join("location")).unwrap();
+        fs::write(tmp.join("src").join("main.rs"), "").unwrap();
+        fs::write(tmp.join("src").join("nested.rs"), "").unwrap();
+        fs::write(tmp.join("custom").join("location").join("tool.rs"), "").unwrap();
+        fs::write(tmp.join("custom").join("location").join("helper.rs"), "").unwrap();
+        // No Cargo.toml yet — populate the cache with "no overrides" first.
+        clear_cargo_target_overrides_cache();
+
+        let mut known = HashSet::new();
+        for rel in [
+            "src/main.rs",
+            "src/nested.rs",
+            "custom/location/tool.rs",
+            "custom/location/helper.rs",
+        ] {
+            known.insert(rel.to_string());
+        }
+        let from_file = tmp.join("custom").join("location").join("tool.rs");
+        let before = resolve_rust_use_path(
+            from_file.to_str().unwrap(),
+            "crate::helper",
+            tmp.to_str().unwrap(),
+            Some(&known),
+        );
+        assert_eq!(before, None); // no override yet — cache now holds "none"
+
+        fs::write(tmp.join("Cargo.toml"), CARGO_TOML_BIN_OVERRIDE).unwrap();
+        clear_cargo_target_overrides_cache();
+
+        let after = resolve_rust_use_path(
+            from_file.to_str().unwrap(),
+            "crate::helper",
+            tmp.to_str().unwrap(),
+            Some(&known),
+        );
+        assert_eq!(after, Some("custom/location/helper.rs".to_string()));
     }
 
     #[test]

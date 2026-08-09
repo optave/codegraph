@@ -1080,4 +1080,95 @@ path = "custom/location/tool.rs"
 `,
     );
   });
+
+  it('recognizes an override target literally named mod.rs at a custom path', () => {
+    // The basename guard exists to defer to the ordinary main.rs/lib.rs
+    // search for the CONVENTIONAL crate root — it must not also reject a
+    // legitimate override target that happens to share that name. mod.rs
+    // specifically discriminates the bug: unlike main.rs/lib.rs, the
+    // ordinary crate-root walk-up never looks for a file named mod.rs, so
+    // there's no coincidental fallback to mask an incorrectly-rejected
+    // override here.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-cargo-toml-basename-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'custom', 'location'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src', 'main.rs'), '');
+      fs.writeFileSync(path.join(dir, 'custom', 'location', 'mod.rs'), '');
+      fs.writeFileSync(path.join(dir, 'custom', 'location', 'helper.rs'), '');
+      fs.writeFileSync(
+        path.join(dir, 'Cargo.toml'),
+        `
+[package]
+name = "demo"
+
+[[bin]]
+name = "tool"
+path = "custom/location/mod.rs"
+`,
+      );
+      const overrideKnownFiles = [
+        'src/main.rs',
+        'custom/location/mod.rs',
+        'custom/location/helper.rs',
+      ];
+      const fromFile = path.join(dir, 'custom', 'location', 'mod.rs');
+      const result = resolveImportPathJS(fromFile, 'crate::helper', dir, null, overrideKnownFiles);
+      expect(result).toBe('custom/location/helper.rs');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('picks up a Cargo.toml override added after the cache was already populated', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-cargo-toml-stale-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'custom', 'location'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src', 'main.rs'), '');
+      fs.writeFileSync(path.join(dir, 'src', 'nested.rs'), '');
+      fs.writeFileSync(path.join(dir, 'custom', 'location', 'tool.rs'), '');
+      fs.writeFileSync(path.join(dir, 'custom', 'location', 'helper.rs'), '');
+      // No Cargo.toml yet — populate the cache with "no overrides" first.
+      const knownFilesForStaleTest = [
+        'src/main.rs',
+        'src/nested.rs',
+        'custom/location/tool.rs',
+        'custom/location/helper.rs',
+      ];
+      const fromFile = path.join(dir, 'custom', 'location', 'tool.rs');
+      const before = resolveImportPathJS(
+        fromFile,
+        'crate::helper',
+        dir,
+        null,
+        knownFilesForStaleTest,
+      );
+      expect(before).toBe('crate::helper'); // no override yet — cache now holds "none"
+
+      fs.writeFileSync(
+        path.join(dir, 'Cargo.toml'),
+        `
+[package]
+name = "demo"
+
+[[bin]]
+name = "tool"
+path = "custom/location/tool.rs"
+`,
+      );
+      clearCargoTargetOverridesCache();
+
+      const after = resolveImportPathJS(
+        fromFile,
+        'crate::helper',
+        dir,
+        null,
+        knownFilesForStaleTest,
+      );
+      expect(after).toBe('custom/location/helper.rs');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

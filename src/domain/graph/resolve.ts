@@ -571,23 +571,31 @@ function getCargoTargetOverrides(rootDir: string): Set<string> {
   return overrides;
 }
 
-/** Clear the Cargo target-override cache (for testing). */
+/**
+ * Clear the Cargo target-override cache, in both this (TypeScript) resolver
+ * and the native one if available — a long-lived process (`codegraph
+ * watch`, the MCP server) can outlive edits to Cargo.toml itself, so
+ * `rebuildFile` calls this once per rebuild to force a fresh manifest scan
+ * (issue #2217) — also exported directly for testing.
+ */
 export function clearCargoTargetOverridesCache(): void {
   _cargoTargetOverridesCache.clear();
+  loadNative()?.clearCargoTargetOverridesCache?.();
 }
 
 /**
- * True if `file` is a standalone Cargo target root — either by directory
- * convention (a `.rs` file directly inside `src/bin/`, `examples/`,
- * `tests/`, or `benches/`, not itself named main.rs/lib.rs) or by an
- * explicit Cargo.toml `path = "..."` override at a non-conventional
- * location (issue #2217).
+ * True if `file` is a standalone Cargo target root — either by an explicit
+ * Cargo.toml `path = "..."` override at a non-conventional location (issue
+ * #2217, checked first since an override is authoritative regardless of the
+ * target's basename) or by directory convention (a `.rs` file directly
+ * inside `src/bin/`, `examples/`, `tests/`, or `benches/`, not itself named
+ * main.rs/lib.rs).
  */
 function isRustCargoTargetRoot(file: string, rootDir: string): boolean {
+  if (getCargoTargetOverrides(rootDir).has(file)) return true;
   const base = path.basename(file, '.rs');
   if (base === 'main' || base === 'lib' || base === 'mod') return false;
-  if (CARGO_STANDALONE_TARGET_DIRS.has(path.basename(path.dirname(file)))) return true;
-  return getCargoTargetOverrides(rootDir).has(file);
+  return CARGO_STANDALONE_TARGET_DIRS.has(path.basename(path.dirname(file)));
 }
 
 /**

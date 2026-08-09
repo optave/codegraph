@@ -25,7 +25,11 @@ import type {
   SqliteStatement,
 } from '../../../types.js';
 import { parseFileIncremental } from '../../parser.js';
-import { computeConfidence, resolveImportPath } from '../resolve.js';
+import {
+  clearCargoTargetOverridesCache,
+  computeConfidence,
+  resolveImportPath,
+} from '../resolve.js';
 import {
   buildPointsToMapForFile,
   type PointsToMap,
@@ -2185,6 +2189,13 @@ export async function rebuildFile(
   // resolveImportPath call below — see getKnownFilesForIncremental's doc
   // comment for why a single-file incremental rebuild needs this at all.
   const knownFiles = getKnownFilesForIncremental(db, rootDir);
+  // #2217: codegraph watch doesn't react to Cargo.toml edits (.toml isn't a
+  // watched extension), so a long-running watch session could otherwise keep
+  // resolving crate:: paths against a stale Cargo target-override set for
+  // its whole lifetime. Clearing here — once per rebuild of any file, not
+  // just Rust ones — means the very next Rust file to change (a near-certain
+  // companion edit to any real Cargo.toml target change) re-scans fresh.
+  clearCargoTargetOverridesCache();
 
   let edgesAdded = rebuildEdgesForTargetFile(
     db,
