@@ -82,7 +82,7 @@ No config files, no Docker, no JVM, no API keys, no accounts. Point your agent a
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
 | GitHub stars | ![](https://img.shields.io/github/stars/optave/ops-codegraph-tool?style=flat-square&label=%E2%AD%90) | ![](https://img.shields.io/github/stars/tirth8205/code-review-graph?style=flat-square&label=%E2%AD%90) | ![](https://img.shields.io/github/stars/postrv/narsil-mcp?style=flat-square&label=%E2%AD%90) | ![](https://img.shields.io/github/stars/colbymchenry/codegraph?style=flat-square&label=%E2%AD%90) | ![](https://img.shields.io/github/stars/zilliztech/claude-context?style=flat-square&label=%E2%AD%90) | ![](https://img.shields.io/github/stars/abhigyanpatwari/GitNexus?style=flat-square&label=%E2%AD%90) |
 | Languages | **34** | 30+ | **32** | 20+ (34 named)² | 17³ | 14 |
-| CLI tool | **Yes** (41 commands) | **Yes** | Partial (config/serve only)⁴ | **Yes** | — (MCP + library only) | **Yes** |
+| CLI tool | **Yes** (44 commands) | **Yes** | Partial (config/serve only)⁴ | **Yes** | — (MCP + library only) | **Yes** |
 | API functionality (embeddable library) | **Yes** | — | — | **Yes** | **Yes** | Partial (HTTP API only)⁵ |
 | Dataflow + CFG + AST querying | **Yes** | Call graph only | **Yes** | — | — | PDG opt-in, TS/JS only |
 | Interprocedural dataflow (cross-function) | **Yes**⁶ | — | Partial (taint-only)⁷ | — | — | Partial (taint-only, opt-in)⁸ |
