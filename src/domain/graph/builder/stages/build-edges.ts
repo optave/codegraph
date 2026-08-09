@@ -384,7 +384,12 @@ interface NativeFileInput {
 /** Native FFI input shape for re-exports of a single file. */
 interface NativeReexportInput {
   file: string;
-  reexports: Array<{ source: string; names: string[]; wildcardReexport: boolean }>;
+  reexports: Array<{
+    source: string;
+    names: string[];
+    wildcardReexport: boolean;
+    renames: Array<{ local: string; imported: string }>;
+  }>;
 }
 
 /** Lazily-resolving cache of file-node rows for the native input arrays. */
@@ -479,11 +484,17 @@ function buildNativeReexports(
 
   for (const [file, entries] of ctx.reexportMap) {
     const reexports = (
-      entries as Array<{ source: string; names: string[]; wildcardReexport: boolean }>
+      entries as Array<{
+        source: string;
+        names: string[];
+        wildcardReexport: boolean;
+        renames?: Array<{ local: string; imported: string }>;
+      }>
     ).map((re) => ({
       source: re.source,
       names: re.names,
       wildcardReexport: !!re.wildcardReexport,
+      renames: re.renames ?? [],
     }));
     fileReexports.push({ file, reexports });
 
