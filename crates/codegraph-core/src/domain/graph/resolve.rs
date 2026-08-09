@@ -491,6 +491,23 @@ fn is_workspace_resolved(path: &str) -> bool {
         .contains(path)
 }
 
+/// Normalize each `known_files` entry to forward slashes.
+///
+/// Callers across the NAPI boundary (`resolve_import`/`resolve_imports` in
+/// `lib.rs`) may pass either the root-relative form (as stored in the
+/// `nodes` table) or the absolute form (as JS's `ctx.allFiles` /
+/// `getKnownFilesForIncremental` populate it) — and on Windows, an absolute
+/// path arrives with backslashes while `file_exists` always forward-slash
+/// normalizes the *candidate* paths it checks against this set before
+/// comparing. Without normalizing the set's own entries the same way, an
+/// absolute Windows candidate could never exact-match a set built from raw,
+/// backslash-separated JS strings — the in-process pipeline caller
+/// (`resolve_pipeline_imports`) doesn't need this because it builds
+/// `known_files` from `relative_path()`, which already normalizes.
+pub fn normalize_known_files(files: Vec<String>) -> HashSet<String> {
+    files.into_iter().map(|f| f.replace('\\', "/")).collect()
+}
+
 /// Resolve a single import path, mirroring `resolveImportPath()` in builder.js.
 ///
 /// `known_files` enables Rust `crate::`/`self::`/`super::` module-path
@@ -1644,6 +1661,30 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect()
+    }
+
+    #[test]
+    fn normalize_known_files_converts_backslashes_to_forward_slashes() {
+        // Regression test for #2216: on Windows, JS callers across the NAPI
+        // boundary (ctx.allFiles / getKnownFilesForIncremental) pass absolute
+        // paths with backslashes, while file_exists always forward-slash
+        // normalizes the candidate it checks against this set — without this
+        // normalization those two could never exact-match.
+        let input = vec![
+            "C:\\project\\main.rs".to_string(),
+            "C:\\project\\service\\nested.rs".to_string(),
+        ];
+        let normalized = normalize_known_files(input);
+        assert!(normalized.contains("C:/project/main.rs"));
+        assert!(normalized.contains("C:/project/service/nested.rs"));
+    }
+
+    #[test]
+    fn normalize_known_files_is_a_no_op_for_already_forward_slash_paths() {
+        let input = vec!["/project/main.rs".to_string(), "service.rs".to_string()];
+        let normalized = normalize_known_files(input);
+        assert!(normalized.contains("/project/main.rs"));
+        assert!(normalized.contains("service.rs"));
     }
 
     #[test]

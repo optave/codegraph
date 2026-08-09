@@ -93,8 +93,8 @@ pub fn parse_files_full(file_paths: Vec<String>, root_dir: String) -> Vec<FileSy
 /// *detection* of its own, only resolution against a supplied map; issue #1927).
 ///
 /// `known_files` enables Rust `crate::`/`self::`/`super::` module-path
-/// resolution (issue #2007); pass the project's known relative file paths
-/// when available.
+/// resolution (issue #2007); pass the project's known file paths (relative
+/// or absolute) when available.
 #[napi]
 pub fn resolve_import(
     from_file: String,
@@ -108,8 +108,7 @@ pub fn resolve_import(
         base_url: None,
         paths: vec![],
     });
-    let known_set =
-        known_files.map(|v| v.into_iter().collect::<std::collections::HashSet<String>>());
+    let known_set = known_files.map(domain::graph::resolve::normalize_known_files);
     let workspace_map = workspaces.map(|w| domain::graph::resolve::workspaces_from_packages(&w));
     domain::graph::resolve::resolve_import_path(
         &from_file,
@@ -145,8 +144,7 @@ pub fn resolve_imports(
         base_url: None,
         paths: vec![],
     });
-    let known_set =
-        known_files.map(|v| v.into_iter().collect::<std::collections::HashSet<String>>());
+    let known_set = known_files.map(domain::graph::resolve::normalize_known_files);
     let workspace_map = workspaces.map(|w| domain::graph::resolve::workspaces_from_packages(&w));
     domain::graph::resolve::reset_workspace_resolved_paths();
     domain::graph::resolve::clear_exports_cache();
