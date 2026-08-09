@@ -333,6 +333,12 @@ function rebuildReverseDepEdges(
   skipBarrel: boolean,
   // #2216: see getKnownFilesForIncremental's doc comment.
   knownFiles: readonly string[],
+  // #2242: real tsconfig/jsconfig aliases, loaded once per rebuildFile
+  // invocation and threaded through — a hardcoded empty PathAliases here
+  // silently dropped every edge kind for an alias-based import, not just
+  // reexports (contrast with persistReexportRenamesForFile's own narrower
+  // #1967 fix, just above).
+  aliases: PathAliases,
   // #2077: forwarded to buildCallEdges — see its own param doc.
   maxIterations?: number,
 ): number {
@@ -343,7 +349,6 @@ function rebuildReverseDepEdges(
   // it's itself a barrel — independent of the edges rebuilt below.
   persistReexportRenamesForFile(db, depRelPath, symbols, rootDir, knownFiles);
 
-  const aliases: PathAliases = { baseUrl: null, paths: {} };
   let edgesAdded = buildContainmentEdges(db, stmts, depRelPath, symbols);
   // Don't rebuild dir->file containment for reverse-deps (it was never deleted)
   edgesAdded += buildImportEdges(
@@ -1732,6 +1737,8 @@ function rebuildEdgesForTargetFile(
   // #2216: project-wide known-files list, needed for Rust crate::/self::/
   // super:: resolution (#2007) — see getKnownFilesForIncremental's doc comment.
   knownFiles: readonly string[],
+  // #2242: real tsconfig/jsconfig aliases — see rebuildReverseDepEdges' param doc.
+  aliases: PathAliases,
   // #2077: forwarded to buildCallEdges — see its own param doc.
   maxIterations?: number,
 ): number {
@@ -1739,7 +1746,6 @@ function rebuildEdgesForTargetFile(
   // itself a barrel — independent of the edges rebuilt below.
   persistReexportRenamesForFile(db, relPath, symbols, rootDir, knownFiles);
 
-  const aliases: PathAliases = { baseUrl: null, paths: {} };
   let edgesAdded = buildContainmentEdges(db, stmts, relPath, symbols);
   edgesAdded += rebuildDirContainment(db, stmts, relPath);
   edgesAdded += buildImportEdges(
@@ -1820,19 +1826,20 @@ function emitBarrelImportEdgesForReverseDeps(
   depSymbols: Map<string, ExtractorOutput>,
   rootDir: string,
   knownFiles: readonly string[],
+  // #2242: real tsconfig/jsconfig aliases — see rebuildReverseDepEdges' param doc.
+  aliases: PathAliases,
 ): number {
   let edgesAdded = 0;
   for (const [depRelPath, symbols_] of depSymbols) {
     const fileNodeRow_ = stmts.getNodeId.get(depRelPath, 'file', depRelPath, 0);
     if (!fileNodeRow_) continue;
-    const aliases_: PathAliases = { baseUrl: null, paths: {} };
     for (const imp of symbols_.imports) {
       if (imp.reexport) continue;
       const resolvedPath = resolveImportPath(
         path.join(rootDir, depRelPath),
         imp.source,
         rootDir,
-        aliases_,
+        aliases,
         knownFiles,
       );
       edgesAdded += resolveBarrelImportEdges(db, stmts, fileNodeRow_.id, resolvedPath, imp);
@@ -1859,6 +1866,8 @@ async function runReverseDepCascade(
   cache: unknown,
   // #2216: see getKnownFilesForIncremental's doc comment.
   knownFiles: readonly string[],
+  // #2242: real tsconfig/jsconfig aliases — see rebuildReverseDepEdges' param doc.
+  aliases: PathAliases,
 ): Promise<{
   edgesAdded: number;
   reverseDepsEdgesBefore: number;
@@ -1884,11 +1893,19 @@ async function runReverseDepCascade(
       stmts,
       true,
       knownFiles,
+      aliases,
       engineOpts.pointsToMaxIterations,
     );
   }
   // Pass 2: add barrel import edges (reexports edges now exist)
-  edgesAdded += emitBarrelImportEdgesForReverseDeps(db, stmts, depSymbols, rootDir, knownFiles);
+  edgesAdded += emitBarrelImportEdgesForReverseDeps(
+    db,
+    stmts,
+    depSymbols,
+    rootDir,
+    knownFiles,
+    aliases,
+  );
   return { edgesAdded, reverseDepsEdgesBefore, depSymbols };
 }
 
@@ -2257,6 +2274,11 @@ export async function rebuildFile(
   // just Rust ones — means the very next Rust file to change (a near-certain
   // companion edit to any real Cargo.toml target change) re-scans fresh.
   clearCargoTargetOverridesCache();
+  // #2242: real tsconfig/jsconfig aliases, loaded once per rebuild (mirrors
+  // knownFiles just above) and threaded through every edge-building call
+  // below — a hardcoded empty PathAliases previously dropped every edge
+  // kind (not just reexports) for any file whose imports use an alias.
+  const aliases = loadPathAliases(rootDir);
 
   let edgesAdded = rebuildEdgesForTargetFile(
     db,
@@ -2266,13 +2288,23 @@ export async function rebuildFile(
     fileNodeRow,
     rootDir,
     knownFiles,
+    aliases,
     engineOpts.pointsToMaxIterations,
   );
   const {
     edgesAdded: cascadeEdges,
     reverseDepsEdgesBefore,
     depSymbols,
-  } = await runReverseDepCascade(db, rootDir, reverseDeps, stmts, engineOpts, cache, knownFiles);
+  } = await runReverseDepCascade(
+    db,
+    rootDir,
+    reverseDeps,
+    stmts,
+    engineOpts,
+    cache,
+    knownFiles,
+    aliases,
+  );
   edgesAdded += cascadeEdges;
 
   // Phase 8.5 CHA + RTA dispatch expansion post-pass (#1852) — runs after all
