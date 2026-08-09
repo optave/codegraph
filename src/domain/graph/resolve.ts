@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { parse as parseToml } from 'smol-toml';
 import { debug } from '../../infrastructure/logger.js';
 import { loadNative } from '../../infrastructure/native.js';
-import { normalizePath } from '../../shared/constants.js';
+import { IGNORE_DIRS, normalizePath } from '../../shared/constants.js';
 import { toErrorMessage } from '../../shared/errors.js';
 import type {
   BareSpecifier,
@@ -474,11 +475,124 @@ function rustModuleDir(file: string): string {
 const CARGO_STANDALONE_TARGET_DIRS = new Set(['bin', 'examples', 'tests', 'benches']);
 
 /**
- * True if `file` is a standalone Cargo target root — a `.rs` file directly
- * inside `src/bin/`, `examples/`, `tests/`, or `benches/` (not itself named
- * main.rs/lib.rs, which the ordinary crate-root search already finds).
+ * Array-of-table keys in Cargo.toml whose entries may declare an explicit
+ * `path = "..."` override to a custom target file (issue #2217) — each such
+ * target compiles as its own independent crate, same as a conventional
+ * `src/bin/foo.rs`.
  */
-function isRustCargoTargetRoot(file: string): boolean {
+const CARGO_TARGET_ARRAY_KEYS = ['bin', 'example', 'test', 'bench'] as const;
+
+/**
+ * Cache: rootDir → set of absolute file paths that are independent Cargo
+ * targets declared via an explicit Cargo.toml path override (issue #2217).
+ * Populated lazily on first Rust crate-root lookup for a given rootDir —
+ * scanning every Cargo.toml in the project is wasted work for non-Rust
+ * projects and for repos with no path overrides at all.
+ */
+const _cargoTargetOverridesCache: Map<string, Set<string>> = new Map();
+
+/**
+ * Directories to skip while searching for Cargo.toml manifests — reuses the
+ * project-wide IGNORE_DIRS plus `target` (Cargo's own build-output
+ * directory, which isn't part of IGNORE_DIRS itself — see issue #2374 — but
+ * which this Cargo-specific walk must never descend into regardless).
+ */
+const CARGO_MANIFEST_IGNORE_DIRS = new Set([...IGNORE_DIRS, 'target']);
+
+/**
+ * Find every Cargo.toml under rootDir. A Cargo workspace can have one at
+ * the root plus one per member crate, and a target-path override always
+ * resolves relative to the manifest that declares it, not to rootDir.
+ */
+function findCargoManifests(rootDir: string): string[] {
+  const manifests: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      debug(`findCargoManifests: cannot read directory ${dir}: ${toErrorMessage(e)}`);
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (CARGO_MANIFEST_IGNORE_DIRS.has(entry.name)) continue;
+        walk(path.join(dir, entry.name));
+      } else if (entry.name === 'Cargo.toml') {
+        manifests.push(path.join(dir, entry.name));
+      }
+    }
+  };
+  walk(rootDir);
+  return manifests;
+}
+
+/**
+ * Parse a single Cargo.toml's `[[bin]]`/`[[example]]`/`[[test]]`/`[[bench]]`
+ * sections for an explicit `path = "..."` field, returning each resolved
+ * absolute file path. Malformed TOML or an unreadable file yields no
+ * overrides rather than failing the whole resolution — this is a best-
+ * effort enrichment, not a required input.
+ */
+function parseCargoTargetOverrides(manifestPath: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = parseToml(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (e) {
+    debug(`parseCargoTargetOverrides: failed to parse ${manifestPath}: ${toErrorMessage(e)}`);
+    return [];
+  }
+  if (typeof parsed !== 'object' || parsed === null) return [];
+  const manifestDir = path.dirname(manifestPath);
+  const overrides: string[] = [];
+  for (const key of CARGO_TARGET_ARRAY_KEYS) {
+    const entries = (parsed as Record<string, unknown>)[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const targetPath = (entry as Record<string, unknown> | null | undefined)?.path;
+      if (typeof targetPath === 'string' && targetPath.length > 0) {
+        overrides.push(path.join(manifestDir, ...targetPath.split('/')));
+      }
+    }
+  }
+  return overrides;
+}
+
+function getCargoTargetOverrides(rootDir: string): Set<string> {
+  const cached = _cargoTargetOverridesCache.get(rootDir);
+  if (cached) return cached;
+  const overrides = new Set<string>();
+  for (const manifest of findCargoManifests(rootDir)) {
+    for (const target of parseCargoTargetOverrides(manifest)) {
+      overrides.add(target);
+    }
+  }
+  _cargoTargetOverridesCache.set(rootDir, overrides);
+  return overrides;
+}
+
+/**
+ * Clear the Cargo target-override cache, in both this (TypeScript) resolver
+ * and the native one if available — a long-lived process (`codegraph
+ * watch`, the MCP server) can outlive edits to Cargo.toml itself, so
+ * `rebuildFile` calls this once per rebuild to force a fresh manifest scan
+ * (issue #2217) — also exported directly for testing.
+ */
+export function clearCargoTargetOverridesCache(): void {
+  _cargoTargetOverridesCache.clear();
+  loadNative()?.clearCargoTargetOverridesCache?.();
+}
+
+/**
+ * True if `file` is a standalone Cargo target root — either by an explicit
+ * Cargo.toml `path = "..."` override at a non-conventional location (issue
+ * #2217, checked first since an override is authoritative regardless of the
+ * target's basename) or by directory convention (a `.rs` file directly
+ * inside `src/bin/`, `examples/`, `tests/`, or `benches/`, not itself named
+ * main.rs/lib.rs).
+ */
+function isRustCargoTargetRoot(file: string, rootDir: string): boolean {
+  if (getCargoTargetOverrides(rootDir).has(file)) return true;
   const base = path.basename(file, '.rs');
   if (base === 'main' || base === 'lib' || base === 'mod') return false;
   return CARGO_STANDALONE_TARGET_DIRS.has(path.basename(path.dirname(file)));
@@ -517,7 +631,7 @@ function findRustCrateRoot(
   rootDir: string,
   knownFiles: Set<string>,
 ): string | null {
-  if (isRustCargoTargetRoot(fromFile)) return fromFile;
+  if (isRustCargoTargetRoot(fromFile, rootDir)) return fromFile;
   let dir = path.dirname(fromFile);
   for (;;) {
     for (const name of ['main.rs', 'lib.rs']) {
@@ -542,7 +656,7 @@ function rustParentModuleFile(
   knownFiles: Set<string>,
 ): string | null {
   const base = path.basename(file, '.rs');
-  if (base === 'main' || base === 'lib' || isRustCargoTargetRoot(file)) return null;
+  if (base === 'main' || base === 'lib' || isRustCargoTargetRoot(file, rootDir)) return null;
   const dir = path.dirname(file);
   const searchDir = base === 'mod' ? path.dirname(dir) : dir;
 
@@ -604,11 +718,12 @@ function walkRustModuleSegments(
  * the real file that declares its target module (or, for the trailing
  * item-name case, the module file that item is declared in), by walking the
  * project's directory tree per Rust's module-file conventions (issue
- * #2007). Returns null (falls through to the bare-specifier fallback) when
- * no match is found — e.g. `#[path]` attribute overrides, or a Cargo.toml
- * `[[bin]]`/`[[example]]`/`[[test]]`/`[[bench]]` section declaring a target
- * at a custom, non-conventional path (issue #2217), neither of which this
- * convention-based, known-files-only resolver models.
+ * #2007), including a Cargo.toml `[[bin]]`/`[[example]]`/`[[test]]`/
+ * `[[bench]]` section declaring a target at a custom, non-conventional path
+ * (issue #2217). Returns null (falls through to the bare-specifier
+ * fallback) when no match is found — e.g. a `#[path]` attribute override,
+ * which this convention-and-manifest-based, known-files-only resolver still
+ * doesn't model.
  */
 function resolveRustUsePath(
   fromFile: string,

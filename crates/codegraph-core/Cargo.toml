@@ -64,6 +64,7 @@ sha2 = "0.10"
 # between the two instances is handled safely at the OS level.
 rusqlite = { version = "0.32", features = ["bundled"] }
 send_wrapper = "0.6"
+toml = "1.1.4"
 
 [build-dependencies]
 napi-build = "2"
