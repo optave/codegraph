@@ -1765,6 +1765,31 @@ fn resolve_call_targets<'a>(
     attach_constructor_targets(ctx, targets, class_name)
 }
 
+/// True when `caller_name`'s class-name prefix is a real class/struct/
+/// interface/etc.-kind declaration in the same file — i.e. a `super` call
+/// inside it is syntactically guaranteed to have a real `extends` target
+/// `resolve_method_via_ancestors`' CHA ancestor walk can verify (issue
+/// #2244). False for an object-literal method using dynamic prototype
+/// linkage (`Object.setPrototypeOf`, `obj.__proto__ = ...`) — those have no
+/// static `extends` clause for CHA to check at all, so the bare/global
+/// fallback remains the only signal available and must still apply.
+/// Mirrors call-resolver.ts's callerHasRealClassAncestor.
+fn caller_has_real_class_ancestor(ctx: &EdgeContext, caller_name: &str, rel_path: &str) -> bool {
+    let Some(dot_idx) = caller_name.rfind('.') else {
+        return false;
+    };
+    if dot_idx == 0 {
+        return false;
+    }
+    let caller_class = &caller_name[..dot_idx];
+    ctx.nodes_by_name_and_file
+        .get(&(caller_class, rel_path))
+        .is_some_and(|v| {
+            v.iter()
+                .any(|n| ctx.receiver_kinds.contains(n.kind.as_str()))
+        })
+}
+
 /// Core multi-strategy call target resolution — see `resolve_call_targets` for
 /// the public entry point (which additionally applies constructor attribution).
 fn resolve_call_targets_core<'a>(
@@ -1915,11 +1940,23 @@ fn resolve_call_targets_core<'a>(
     // invocation, which legitimately targets a class-kind definition —
     // kind-filtering it would break constructor-call resolution (#1888).
     // Mirrors resolveCallTargets in call-resolver.ts.
-    let bare_matches = ctx
-        .nodes_by_name_and_file
-        .get(&(call.name.as_str(), rel_path))
-        .cloned()
-        .unwrap_or_default();
+    // `super` inside a REAL class is excluded from the bare same-file
+    // lookup entirely (issue #2244) — a coincidentally same-named same-file
+    // declaration has no static relationship to the caller's real ancestor
+    // and must never satisfy super/super.method(); only
+    // resolve_method_via_ancestors' CHA ancestor walk (run as a post-pass)
+    // can verify that relationship. See caller_has_real_class_ancestor for
+    // why this does NOT apply to a non-class caller.
+    let bare_matches = if call.receiver.as_deref() == Some("super")
+        && caller_has_real_class_ancestor(ctx, caller_name, rel_path)
+    {
+        Vec::new()
+    } else {
+        ctx.nodes_by_name_and_file
+            .get(&(call.name.as_str(), rel_path))
+            .cloned()
+            .unwrap_or_default()
+    };
     let bare_targets: Vec<&NodeInfo> = if call.receiver.is_some() {
         bare_matches
             .into_iter()
@@ -2194,11 +2231,21 @@ fn resolve_call_targets_core<'a>(
         return bare_targets;
     }
 
-    // 4. Scoped fallback (this/self/super or no receiver)
+    // 4. Scoped fallback (this/self, no receiver, or a super call whose
+    // caller isn't a real class). `super` inside a real class is excluded
+    // (issue #2244) — mirrors resolveByMethodOrGlobal's early return in
+    // call-resolver.ts: none of the tiers below (accessor this-dispatch,
+    // exact-name global match, class-scoped exact lookup) verify any
+    // relationship to the caller's real ancestor, so they must never
+    // resolve such a super call — only resolve_method_via_ancestors' CHA
+    // ancestor walk can. See caller_has_real_class_ancestor for why this
+    // does NOT apply to a non-class caller (object-literal dynamic
+    // prototype linkage).
     if call.receiver.is_none()
         || call.receiver.as_deref() == Some("this")
         || call.receiver.as_deref() == Some("self")
-        || call.receiver.as_deref() == Some("super")
+        || (call.receiver.as_deref() == Some("super")
+            && !caller_has_real_class_ancestor(ctx, caller_name, rel_path))
     {
         // Phase 8.3f: accessor this-dispatch via Object.defineProperty.
         // When a plain function (no class prefix in caller_name) is registered as a get/set

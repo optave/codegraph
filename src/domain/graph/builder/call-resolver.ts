@@ -359,6 +359,28 @@ export function findCaller(
  * (#1825). `resolveByGlobal` has no receiver-qualifier lookups, so it does
  * not need it.
  */
+/**
+ * True when `callerName`'s class-name prefix is a real class/struct/
+ * interface/etc.-kind declaration in the same file — i.e. a `super` call
+ * inside it is syntactically guaranteed to have a real `extends` target
+ * `resolveThisDispatch`'s CHA ancestor walk (cha.ts) can verify (issue
+ * #2244). False for an object-literal method using dynamic prototype
+ * linkage (`Object.setPrototypeOf`, `obj.__proto__ = ...`) — those have no
+ * static `extends` clause for CHA to check at all, so the bare/global
+ * fallback below remains the only signal available and must still apply.
+ */
+function callerHasRealClassAncestor(
+  callerName: string | null | undefined,
+  relPath: string,
+  lookup: CallNodeLookup,
+): boolean {
+  if (!callerName) return false;
+  const dotIdx = callerName.lastIndexOf('.');
+  if (dotIdx <= 0) return false;
+  const callerClass = callerName.slice(0, dotIdx);
+  return lookup.byNameAndFile(callerClass, relPath).some((n) => RECEIVER_KINDS.has(n.kind ?? ''));
+}
+
 export function resolveByMethodOrGlobal(
   lookup: CallNodeLookup,
   call: { name: string; receiver?: string | null },
@@ -367,6 +389,24 @@ export function resolveByMethodOrGlobal(
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
 ): ReadonlyArray<ResolvedCandidate> {
+  // `super`/`super.method()` inside a REAL class is never resolvable by a
+  // same-name/global lookup (resolveByGlobal): unlike `this`, where a
+  // same-file or best-confidence same-named declaration is often genuinely
+  // correct, `super` specifically means "the caller's real ancestor's
+  // method" — a coincidentally same-named declaration anywhere else has no
+  // static relationship to that ancestor and must never win. Only
+  // `resolveThisDispatch`'s CHA-aware ancestor walk (cha.ts, run as a
+  // post-pass) can verify that relationship, so super is deferred to it
+  // entirely rather than resolved (possibly wrongly) here (issue #2244).
+  //
+  // This does NOT apply when the caller isn't a real class at all (an
+  // object-literal method linked to its "ancestor" via
+  // `Object.setPrototypeOf`/`__proto__ =`, jelly-micro's super/super3
+  // fixtures) — CHA has no static `extends` clause to walk there, so the
+  // fallback below is the only heuristic available and must still run.
+  if (call.receiver === 'super' && callerHasRealClassAncestor(callerName, relPath, lookup)) {
+    return [];
+  }
   if (
     call.receiver &&
     call.receiver !== 'this' &&
@@ -500,7 +540,15 @@ export function resolveCallTargets(
     // ClassName()` constructor invocation, which legitimately targets a
     // class-kind definition — kind-filtering it would break constructor-call
     // resolution (#1888).
-    const bareMatches = lookup.byNameAndFile(call.name, relPath);
+    // `super` inside a REAL class is excluded from the bare same-file lookup
+    // entirely (issue #2244) — see resolveByMethodOrGlobal's matching
+    // comment for why a coincidentally same-named same-file declaration
+    // must never satisfy it there, and for why that exclusion does NOT
+    // apply to a non-class caller (object-literal dynamic prototype linkage).
+    const bareMatches =
+      call.receiver === 'super' && callerHasRealClassAncestor(callerName, relPath, lookup)
+        ? []
+        : lookup.byNameAndFile(call.name, relPath);
     const kindFilteredBare = call.receiver
       ? bareMatches.filter((n) => CALLABLE_SYMBOL_KINDS.has(n.kind ?? ''))
       : bareMatches;
