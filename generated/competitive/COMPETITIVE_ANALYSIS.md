@@ -171,9 +171,9 @@ Ranked by weighted score across 6 dimensions (each 1–5):
 | 34 | codegraph-cli | 5 | 3 | 3 | 2 | 3 | 2 |
 | 35 | xnuinside/codegraph | 3 | 2 | 5 | 1 | 3 | 4 |
 | 36 | java-all-call-graph | 4 | 4 | 3 | 1 | 3 | 3 |
-| 37 | pyan | 3 | 3 | 5 | 1 | 4 | 2 |
-| 38 | cloud-property-graph | 4 | 4 | 2 | 2 | 4 | 2 |
-| 39 | claude-context | 3 | 1 | 2 | 3 | 4 | 5 |
+| 36 | pyan | 3 | 3 | 5 | 1 | 4 | 2 |
+| 37 | cloud-property-graph | 4 | 4 | 2 | 2 | 4 | 2 |
+| 38 | claude-context | 3 | 1 | 2 | 3 | 4 | 5 |
 
 **Scoring criteria:**
 - **Features** (1-5): breadth of tools, MCP integration, search, visualization, export
