@@ -1,7 +1,9 @@
 # Competitive Analysis — Code Graph / Code Intelligence Tools
 
-**Date:** 2026-08-08 (updated from 2026-03-29)
-**Scope:** 140+ code analysis tools evaluated, 87+ ranked against `@optave/codegraph`
+**Date:** 2026-08-09 (updated from 2026-08-08)
+**Scope:** 140+ code analysis tools evaluated, 89+ ranked against `@optave/codegraph`
+
+> **2026-08-09 refresh:** every star count in this document was re-pulled from the GitHub API today, and a **Last PR** column (days since the most recently *merged* pull request) was added to every ranking table — see the caveat below the Tier 1 table. The Community dimension (1 of 6 scoring axes) was recomputed for all 39 Tier 1 entries using an explicit, stars-anchored band (see Scoring criteria) instead of ad hoc per-project judgment, so the same rule that lowers our own score also raises several competitors'. Net result: **codegraph moves from tied-#4 (4.5) to #6 (4.33)** — four tools now score higher. Features/Depth/Deploy/Lang/Quality were re-verified only for the six tools already covered in the README's quick-comparison table (see `### vs …` sections below); the other 33 Tier 1 entries and all Tier 2/3 entries keep their prior holistic scores on those five axes. Full reasoning in PR history.
 
 ---
 
@@ -11,177 +13,178 @@ Ranked by weighted score across 6 dimensions (each 1–5):
 
 ### Tier 1: Direct Competitors (score ≥ 3.0)
 
-| # | Score | Project | Stars | Lang | License | Summary |
-|---|-------|---------|-------|------|---------|---------|
-| 1 | 4.5 | [abhigyanpatwari/GitNexus](https://github.com/abhigyanpatwari/GitNexus) | 18,453 | TS/JS | PolyForm NC | Zero-server knowledge graph engine with Graph RAG Agent, CLI + MCP + Web UI, tree-sitter native + WASM, LadybugDB (custom graph DB), multi-editor support (Claude Code hooks, Cursor, Codex, Windsurf, OpenCode), auto-generated AGENTS.md/CLAUDE.md. **Non-commercial license. Viral growth (18k stars in ~8 months)** |
-| 2 | 4.5 | [joernio/joern](https://github.com/joernio/joern) | 3,021 | Scala | Apache-2.0 | Full CPG analysis platform for vulnerability discovery, Scala query DSL, multi-language, daily releases (v4.0.508), 75 contributors |
-| 3 | 4.5 | [postrv/narsil-mcp](https://github.com/postrv/narsil-mcp) | 129 | Rust | Apache-2.0 | 90 MCP tools, 32 languages, taint analysis, SBOM, dead code, neural semantic search, single ~30MB binary, SPA web frontend (added v1.6.0, current v1.6.1) |
-| **4** | **4.5** | **[@optave/codegraph](https://github.com/optave/codegraph)** | **32** | **JS/Rust** | **Apache-2.0** | **Sub-second incremental rebuilds (3-tier change detection), dual engine (native Rust + WASM), 34 languages, 32-tool MCP, 41 CLI commands, qualified call resolution with receiver type tracking, `context`/`audit`/`where` AI-optimized commands, dataflow + CFG + stored AST across all languages, sequence diagrams, structure/hotspot analysis, node role classification, dead code/export detection, architecture boundary enforcement, unified graph model with qualified names/scope/visibility, zero-cost core + optional LLM enhancement** |
-| 5 | 4.3 | [DeusData/codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) | 793 | C | MIT | Single static C binary, 64 languages (tree-sitter), 14 MCP tools, Cypher-like query language, persistent SQLite knowledge graph, 10-agent auto-installer, 3D graph visualization, HTTP route analysis. **25 days old — fastest-growing new entrant** |
-| 6 | 4.3 | [tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph) | 4,309 | Python | MIT | Tree-sitter AST + SQLite, 30+ languages plus Jupyter/Databricks notebooks and Ansible/Vue/Svelte/SQL surfaces, MCP server, CLI, blast-radius analysis, SHA-256 incremental builds (<2s), GraphML/Neo4j/Obsidian/SVG export, `fail-on-risk` CI merge gate, auto-configures 6 AI editors (Claude Code, Cursor, Windsurf, Zed, Continue, OpenCode), pip/pipx/uvx install. **Positioned as AI token-reduction layer (claims 6.8x fewer tokens). 4,309 stars, 11 contributors** |
-| 7 | 4.2 | [vitali87/code-graph-rag](https://github.com/vitali87/code-graph-rag) | 2,168 | Python | MIT | Graph RAG with Memgraph, multi-provider AI, code editing, semantic search, MCP server (added 2026) |
-| 8 | 4.2 | [Fraunhofer-AISEC/cpg](https://github.com/Fraunhofer-AISEC/cpg) | 424 | Kotlin | Apache-2.0 | CPG library for 8+ languages with MCP module, Neo4j visualization, formal specs, LLVM IR support |
-| 9 | 4.2 | [Anandb71/arbor](https://github.com/Anandb71/arbor) | 86 | Rust | MIT | Native GUI, confidence scoring, architectural role classification, fuzzy search, MCP |
-| 10 | 4.0 | [SimplyLiz/CodeMCP (CKB)](https://github.com/SimplyLiz/CodeMCP) | 78 | Go | Custom | SCIP-based indexing, compound operations (83% token savings), CODEOWNERS, secret scanning, impact analysis, architecture mapping (v8.1.0) |
-| 11 | 3.8 | [harshkedia177/axon](https://github.com/harshkedia177/axon) | 577 | Python | MIT | 11-phase pipeline, KuzuDB, Leiden community detection, dead code, change coupling, MCP + CLI, hit v1.0 milestone |
-| 12 | 3.8 | [CodeGraphContext/CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) | 2,664 | Python | MIT | Tree-sitter + graph DB (KuzuDB/FalkorDB/Neo4j), 14 languages, CLI + MCP dual mode, interactive HTML viz, pre-indexed `.cgc` bundle registry for popular repos, setup wizard for 10+ IDEs, live file watching. **2,664 stars, 30 contributors — likely Hacktoberfest-boosted community** |
-| 13 | 3.8 | [seatedro/glimpse](https://github.com/seatedro/glimpse) | 349 | Rust | MIT | Clipboard-first codebase-to-LLM tool with call graphs, token counting, LSP resolution. **Stagnant since Jan 2026** |
-| 14 | 3.8 | [ShiftLeftSecurity/codepropertygraph](https://github.com/ShiftLeftSecurity/codepropertygraph) | 564 | Scala | Apache-2.0 | CPG specification + Tinkergraph library, Scala query DSL, protobuf serialization (Joern foundation) |
-| 15 | 3.8 | [Jakedismo/codegraph-rust](https://github.com/Jakedismo/codegraph-rust) | 142 | Rust | None | 100% Rust GraphRAG, SurrealDB, LSP-powered dataflow analysis, architecture boundary enforcement |
-| 16 | 3.7 | [JudiniLabs/mcp-code-graph](https://github.com/JudiniLabs/mcp-code-graph) | 380 | JavaScript | MIT | Cloud-hosted MCP server by CodeGPT, semantic search, dependency links (requires account) |
-| 17 | 3.7 | [entrepeneur4lyf/code-graph-mcp](https://github.com/entrepeneur4lyf/code-graph-mcp) | 84 | Python | MIT | ast-grep for 25+ languages, complexity metrics, code smells, circular dependency detection. **Stagnant since Jul 2025** |
-| 18 | 3.7 | [cs-au-dk/jelly](https://github.com/cs-au-dk/jelly) | 423 | TypeScript | BSD-3 | Academic-grade JS/TS points-to analysis, call graphs, vulnerability exposure, 5 published papers |
-| 19 | 3.7 | [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) | 308 | TypeScript | MIT | tree-sitter + SQLite + MCP, Claude Code token reduction benchmarks, npx installer. **Nearly doubled since Feb — naming competitor** |
-| 20 | 3.5 | [er77/code-graph-rag-mcp](https://github.com/er77/code-graph-rag-mcp) | 89 | TypeScript | MIT | 26 MCP methods, 11 languages, tree-sitter, semantic search, hotspot analysis, clone detection |
-| 21 | 3.5 | [MikeRecognex/mcp-codebase-index](https://github.com/MikeRecognex/mcp-codebase-index) | 25 | Python | AGPL-3.0 | 18 MCP tools, zero runtime deps, auto-incremental reindexing via git diff |
-| 22 | 3.5 | [nahisaho/CodeGraphMCPServer](https://github.com/nahisaho/CodeGraphMCPServer) | 7 | Python | MIT | GraphRAG with Louvain community detection, 16 languages, 14 MCP tools, 334 tests |
-| 23 | 3.5 | [dundalek/stratify](https://github.com/dundalek/stratify) | 102 | Clojure | MIT | Multi-backend extraction (LSP/SCIP/Joern), 10 languages, DGML/CodeCharta output, architecture linting |
-| 24 | 3.5 | [kraklabs/cie](https://github.com/kraklabs/cie) | 9 | Go | AGPL-3.0 | Code Intelligence Engine: 20+ MCP tools, tree-sitter, semantic search (Ollama), Homebrew, single Go binary |
-| 25 | 3.5 | [NeuralRays/codexray](https://github.com/NeuralRays/codexray) | 2 | TypeScript | MIT | 16 MCP tools, TF-IDF semantic search (~50MB), dead code, complexity, path finding |
-| 26 | 3.3 | [anrgct/autodev-codebase](https://github.com/anrgct/autodev-codebase) | 111 | TypeScript | None | 40+ languages, 7 embedding providers, Cytoscape.js visualization, LLM reranking. **Stagnant since Jan 2026** |
-| 27 | 3.3 | [DucPhamNgoc08/CodeVisualizer](https://github.com/DucPhamNgoc08/CodeVisualizer) | 475 | TypeScript | MIT | VS Code extension, tree-sitter WASM, flowcharts + dependency graphs, 5 AI providers, 9 themes |
-| 28 | 3.3 | [helabenkhalfallah/code-health-meter](https://github.com/helabenkhalfallah/code-health-meter) | 34 | JavaScript | MIT | Formal health metrics (MI, CC, Louvain modularity), published in ACM TOSEM 2025 |
-| 29 | 3.3 | [JohT/code-graph-analysis-pipeline](https://github.com/JohT/code-graph-analysis-pipeline) | 27 | Cypher | GPL-3.0 | 200+ CSV reports, ML anomaly detection, Leiden/HashGNN, jQAssistant + Neo4j for Java |
-| 30 | 3.3 | [Lekssays/codebadger](https://github.com/Lekssays/codebadger) | 44 | Python | GPL-3.0 | Containerized MCP server using Joern CPG, 12+ languages |
-| 31 | 3.3 | [Vasu014/loregrep](https://github.com/Vasu014/loregrep) | 12 | Rust | Apache-2.0 | In-memory index library, Rust + Python bindings, AI-tool-ready schemas |
-| 32 | 3.3 | [Durafen/Claude-code-memory](https://github.com/Durafen/Claude-code-memory) | 73 | Python | None | Memory Guard quality gate, persistent codebase memory, Voyage AI + Qdrant |
-| 33 | 3.2 | [anasdayeh/claude-context-local](https://github.com/anasdayeh/claude-context-local) | 0 | Python | None | 100% local, Merkle DAG incremental indexing, sharded FAISS, hybrid BM25+vector, GPU accel |
-| 34 | 3.0 | [al1-nasir/codegraph-cli](https://github.com/al1-nasir/codegraph-cli) | 11 | Python | MIT | CrewAI multi-agent system, 6 LLM providers, browser explorer, DOCX export |
-| 35 | 3.0 | [xnuinside/codegraph](https://github.com/xnuinside/codegraph) | 438 | Python | MIT | Python-only interactive HTML dependency diagrams with zoom/pan/search |
-| 36 | 3.0 | [Adrninistrator/java-all-call-graph](https://github.com/Adrninistrator/java-all-call-graph) | 551 | Java | Apache-2.0 | Complete Java bytecode call graphs, Spring/MyBatis-aware, SQL-queryable DB |
-| 36 | 3.0 | [Technologicat/pyan](https://github.com/Technologicat/pyan) | 395 | Python | GPL-2.0 | Python 3 call graph generator, module import analysis, cycle detection, interactive HTML |
-| 37 | 3.0 | [clouditor/cloud-property-graph](https://github.com/clouditor/cloud-property-graph) | 28 | Kotlin | Apache-2.0 | Connects code property graphs with cloud runtime security assessment |
-| 38 | 3.0 | [zilliztech/claude-context](https://github.com/zilliztech/claude-context) | 12,338 | TypeScript | MIT | MCP semantic code search: hybrid BM25 + dense-vector retrieval via Milvus, AST-aware chunking for 10 languages (text-splitter fallback for the rest), Merkle-DAG incremental re-indexing, VS Code extension + 10 agent-client integrations. Backed by Zilliz (Milvus), Trendshift-featured. **Requires an external Milvus vector DB (self-hosted via Docker Compose, or Zilliz Cloud) plus a separate embedding provider; a fully local, keyless path exists (local Milvus + local Ollama) but is two services to operate. Read-only semantic retrieval, no call graph or structural analysis** |
+| # | Score | Project | Stars | Last PR | Lang | License | Summary |
+|---|-------|---------|-------|---------|------|---------|---------|
+| 1 | 4.5 | [abhigyanpatwari/GitNexus](https://github.com/abhigyanpatwari/GitNexus) | 45,206 | 0d ago | TS/JS | PolyForm NC | Zero-server knowledge graph engine with Graph RAG Agent, CLI + MCP + Web UI, tree-sitter native + WASM, LadybugDB (custom graph DB), multi-editor support (Claude Code hooks, Cursor, Codex, Windsurf, OpenCode), auto-generated AGENTS.md/CLAUDE.md. **Non-commercial license. Viral growth (18k stars in ~8 months)** |
+| 2 | 4.5 | [DeusData/codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) | 38,234 | 0d ago | C | MIT | Single static C binary, 64 languages (tree-sitter), 14 MCP tools, Cypher-like query language, persistent SQLite knowledge graph, 10-agent auto-installer, 3D graph visualization, HTTP route analysis. **25 days old — fastest-growing new entrant** |
+| 3 | 4.5 | [tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph) | 29,491 | 9d ago | Python | MIT | 40+ languages incl. notebooks/Ansible/SFC/SQL, tree-sitter AST + SQLite, MCP + CLI, GraphML/Neo4j/Obsidian/SVG export, `fail-on-risk` CI gate, dead code detection, SHA-256 incremental (<2.5s on 3k files). Grew 4,309 → 29,491 stars (6.8x), 2,700 forks. Co-change mode currently returns 0 predictions per its own README (2026-08-02) |
+| 4 | 4.5 | [postrv/narsil-mcp](https://github.com/postrv/narsil-mcp) | 180 | 197d ago | Rust | Apache-2.0 | 90 MCP tools, 32 languages, taint analysis, SBOM, dead code, neural semantic search, single ~30MB binary, SPA web frontend (added v1.6.0, current v1.6.1) |
+| 5 | 4.33 | [joernio/joern](https://github.com/joernio/joern) | 3,401 | 1d ago | Scala | Apache-2.0 | Full CPG analysis platform for vulnerability discovery, Scala query DSL, multi-language, daily releases (v4.0.508), 75 contributors |
+| **6** | **4.33** | **[@optave/codegraph](https://github.com/optave/ops-codegraph-tool)** | **86** | **0d ago** | **JS/Rust** | **Apache-2.0** | **Sub-second incremental rebuilds (3-tier change detection), dual engine (native Rust + WASM), 34 languages, 34-tool MCP, 41 CLI commands, qualified call resolution with receiver type tracking, `context`/`audit`/`where` AI-optimized commands, dataflow + CFG + interprocedural dataflow + stored AST across all languages, sequence diagrams, structure/hotspot analysis, node role classification, dead code/export detection, architecture boundary enforcement, zero-cost core + optional LLM enhancement. 86 stars — smallest community of any Tier 1 entrant; competes on depth, not popularity** |
+| 7 | 4.17 | [Fraunhofer-AISEC/cpg](https://github.com/Fraunhofer-AISEC/cpg) | 453 | 1d ago | Kotlin | Apache-2.0 | CPG library for 8+ languages with MCP module, Neo4j visualization, formal specs, LLVM IR support |
+| 8 | 4.17 | [Anandb71/arbor](https://github.com/Anandb71/arbor) | 151 | 6d ago | Rust | MIT | Native GUI, confidence scoring, architectural role classification, fuzzy search, MCP |
+| 9 | 4.0 | [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) | 65,489 | 1d ago | TypeScript | MIT | Rewrote core in Rust; self-contained binary (no Node.js required), OS-native file-watcher gives real O(changed) incremental rebuilds, ~33 languages, 9 agent-client integrations (Claude Code, Cursor, Codex, opencode, Gemini, Antigravity, Kiro, GitHub Copilot, Hermes), signed/attested npm releases. Grew 308 → 65,489 stars (212x), 4,120 forks. Unrelated tool that shares our name |
+| 10 | 4.0 | [vitali87/code-graph-rag](https://github.com/vitali87/code-graph-rag) | 2,632 | 0d ago | Python | MIT | Graph RAG with Memgraph, multi-provider AI, code editing, semantic search, MCP server (added 2026) |
+| 11 | 4.0 | [seatedro/glimpse](https://github.com/seatedro/glimpse) | 360 | 220d ago | Rust | MIT | Clipboard-first codebase-to-LLM tool with call graphs, token counting, LSP resolution. **Stagnant since Jan 2026** |
+| 12 | 4.0 | [SimplyLiz/CodeMCP (CKB)](https://github.com/SimplyLiz/CodeMCP) | 109 | 11d ago | Go | Custom | SCIP-based indexing, compound operations (83% token savings), CODEOWNERS, secret scanning, impact analysis, architecture mapping (v8.1.0) |
+| 13 | 3.83 | [Jakedismo/codegraph-rust](https://github.com/Jakedismo/codegraph-rust) | 861 | 232d ago | Rust | None | 100% Rust GraphRAG, SurrealDB, LSP-powered dataflow analysis, architecture boundary enforcement |
+| 14 | 3.83 | [harshkedia177/axon](https://github.com/harshkedia177/axon) | 729 | 136d ago | Python | MIT | 11-phase pipeline, KuzuDB, Leiden community detection, dead code, change coupling, MCP + CLI, hit v1.0 milestone |
+| 15 | 3.83 | [ShiftLeftSecurity/codepropertygraph](https://github.com/ShiftLeftSecurity/codepropertygraph) | 592 | 17d ago | Scala | Apache-2.0 | CPG specification + Tinkergraph library, Scala query DSL, protobuf serialization (Joern foundation) |
+| 16 | 3.67 | [CodeGraphContext/CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) | 4,056 | 0d ago | Python | MIT | Tree-sitter + graph DB (KuzuDB/FalkorDB/Neo4j), 14 languages, CLI + MCP dual mode, interactive HTML viz, pre-indexed `.cgc` bundle registry for popular repos, setup wizard for 10+ IDEs, live file watching. **Grew 2,664 → 4,056 stars, 30 contributors — likely Hacktoberfest-boosted community** |
+| 17 | 3.67 | [cs-au-dk/jelly](https://github.com/cs-au-dk/jelly) | 434 | 89d ago | TypeScript | BSD-3 | Academic-grade JS/TS points-to analysis, call graphs, vulnerability exposure, 5 published papers |
+| 18 | 3.67 | [Lekssays/codebadger](https://github.com/Lekssays/codebadger) | 151 | 24d ago | Python | GPL-3.0 | Containerized MCP server using Joern CPG, 12+ languages |
+| 19 | 3.67 | [er77/code-graph-rag-mcp](https://github.com/er77/code-graph-rag-mcp) | 121 | ARCHIVED | TypeScript | MIT | 26 MCP methods, 11 languages, tree-sitter, semantic search, hotspot analysis, clone detection |
+| 20 | 3.67 | [anrgct/autodev-codebase](https://github.com/anrgct/autodev-codebase) | 120 | n/a | TypeScript | None | 40+ languages, 7 embedding providers, Cytoscape.js visualization, LLM reranking. **Stagnant since Jan 2026** |
+| 21 | 3.67 | [dundalek/stratify](https://github.com/dundalek/stratify) | 111 | n/a | Clojure | MIT | Multi-backend extraction (LSP/SCIP/Joern), 10 languages, DGML/CodeCharta output, architecture linting |
+| 22 | 3.67 | [entrepeneur4lyf/code-graph-mcp](https://github.com/entrepeneur4lyf/code-graph-mcp) | 88 | n/a | Python | MIT | ast-grep for 25+ languages, complexity metrics, code smells, circular dependency detection. **Stagnant since Jul 2025** |
+| 23 | 3.67 | [kraklabs/cie](https://github.com/kraklabs/cie) | 17 | 175d ago | Go | AGPL-3.0 | Code Intelligence Engine: 20+ MCP tools, tree-sitter, semantic search (Ollama), Homebrew, single Go binary |
+| 24 | 3.67 | [nahisaho/CodeGraphMCPServer](https://github.com/nahisaho/CodeGraphMCPServer) | 12 | n/a | Python | MIT | GraphRAG with Louvain community detection, 16 languages, 14 MCP tools, 334 tests |
+| 25 | 3.5 | [DucPhamNgoc08/CodeVisualizer](https://github.com/DucPhamNgoc08/CodeVisualizer) | 657 | 100d ago | TypeScript | MIT | VS Code extension, tree-sitter WASM, flowcharts + dependency graphs, 5 AI providers, 9 themes |
+| 26 | 3.5 | [JudiniLabs/mcp-code-graph](https://github.com/JudiniLabs/mcp-code-graph) | 402 | 408d ago | JavaScript | MIT | Cloud-hosted MCP server by CodeGPT, semantic search, dependency links (requires account) |
+| 27 | 3.5 | [MikeRecognex/mcp-codebase-index](https://github.com/MikeRecognex/mcp-codebase-index) | 61 | n/a | Python | AGPL-3.0 | 18 MCP tools, zero runtime deps, auto-incremental reindexing via git diff |
+| 28 | 3.5 | [NeuralRays/codexray](https://github.com/NeuralRays/codexray) | 7 | n/a | TypeScript | MIT | 16 MCP tools, TF-IDF semantic search (~50MB), dead code, complexity, path finding |
+| 29 | 3.33 | [helabenkhalfallah/code-health-meter](https://github.com/helabenkhalfallah/code-health-meter) | 38 | n/a | JavaScript | MIT | Formal health metrics (MI, CC, Louvain modularity), published in ACM TOSEM 2025 |
+| 30 | 3.33 | [JohT/code-graph-analysis-pipeline](https://github.com/JohT/code-graph-analysis-pipeline) | 34 | 6d ago | Cypher | GPL-3.0 | 200+ CSV reports, ML anomaly detection, Leiden/HashGNN, jQAssistant + Neo4j for Java |
+| 31 | 3.33 | [Vasu014/loregrep](https://github.com/Vasu014/loregrep) | 13 | 17d ago | Rust | Apache-2.0 | In-memory index library, Rust + Python bindings, AI-tool-ready schemas |
+| 32 | 3.17 | [Technologicat/pyan](https://github.com/Technologicat/pyan) | 444 | 41d ago | Python | GPL-2.0 | Python 3 call graph generator, module import analysis, cycle detection, interactive HTML |
+| 33 | 3.17 | [Durafen/Claude-code-memory](https://github.com/Durafen/Claude-code-memory) | 75 | n/a | Python | None | Memory Guard quality gate, persistent codebase memory, Voyage AI + Qdrant |
+| 34 | 3.17 | [anasdayeh/claude-context-local](https://github.com/anasdayeh/claude-context-local) | 0 | n/a | Python | None | 100% local, Merkle DAG incremental indexing, sharded FAISS, hybrid BM25+vector, GPU accel |
+| 35 | 3.0 | [zilliztech/claude-context](https://github.com/zilliztech/claude-context) | 12,339 | 26d ago | TypeScript | MIT | MCP semantic code search: hybrid BM25 + dense-vector retrieval via Milvus, AST-aware chunking for 10 languages (text-splitter fallback for the rest), Merkle-DAG incremental re-indexing, VS Code extension + 10 agent-client integrations. Backed by Zilliz (Milvus), Trendshift-featured. **Requires an external Milvus vector DB (self-hosted via Docker Compose, or Zilliz Cloud) plus a separate embedding provider; a fully local, keyless path exists (local Milvus + local Ollama) but is two services to operate. Read-only semantic retrieval, no call graph or structural analysis** |
+| 36 | 3.0 | [Adrninistrator/java-all-call-graph](https://github.com/Adrninistrator/java-all-call-graph) | 570 | n/a | Java | Apache-2.0 | Complete Java bytecode call graphs, Spring/MyBatis-aware, SQL-queryable DB |
+| 37 | 3.0 | [clouditor/cloud-property-graph](https://github.com/clouditor/cloud-property-graph) | 30 | 1118d ago | Kotlin | Apache-2.0 | Connects code property graphs with cloud runtime security assessment |
+| 38 | 3.0 | [al1-nasir/codegraph-cli](https://github.com/al1-nasir/codegraph-cli) | 26 | 122d ago | Python | MIT | CrewAI multi-agent system, 6 LLM providers, browser explorer, DOCX export |
 
 ### Tier 2: Niche & Single-Language Tools (score 2.0–2.9)
 
-| # | Score | Project | Stars | Lang | License | Summary |
-|---|-------|---------|-------|------|---------|---------|
-| 39 | 2.9 | [rahulvgmail/CodeInteliMCP](https://github.com/rahulvgmail/CodeInteliMCP) | 8 | Python | None | DuckDB + ChromaDB (zero Docker), multi-repo, lightweight embedded DBs |
-| 40 | 2.8 | [Aider-AI/aider](https://github.com/Aider-AI/aider) | 42,198 | Python | Apache-2.0 | AI pair programming CLI; tree-sitter repo map with PageRank-style graph ranking for LLM context selection, 100+ languages, multi-provider LLM support, git-integrated auto-commits. Moved to Aider-AI org |
-| 41 | 2.8 | [scottrogowski/code2flow](https://github.com/scottrogowski/code2flow) | 4,528 | Python | MIT | Call graphs for Python/JS/Ruby/PHP via AST, DOT output, 100% test coverage |
-| 42 | 2.8 | [ysk8hori/typescript-graph](https://github.com/ysk8hori/typescript-graph) | 200 | TypeScript | None | TypeScript file-level dependency Mermaid diagrams, code metrics (MI, CC), watch mode |
-| 43 | 2.8 | [nuanced-dev/nuanced-py](https://github.com/nuanced-dev/nuanced-py) | 126 | Python | MIT | Python call graph enrichment designed for AI agent consumption |
-| 43 | 2.8 | [sdsrss/code-graph-mcp](https://github.com/sdsrss/code-graph-mcp) | 16 | TypeScript | MIT | AST knowledge graph MCP server with tree-sitter, 10 languages. New entrant |
-| 45 | 2.8 | [Bikach/codeGraph](https://github.com/Bikach/codeGraph) | 6 | TypeScript | MIT | Neo4j graph, Claude Code slash commands, Kotlin support, 40-50% cost reduction |
-| 46 | 2.8 | [ChrisRoyse/CodeGraph](https://github.com/ChrisRoyse/CodeGraph) | 66 | TypeScript | None | Neo4j + MCP, multi-language, framework detection (React, Tailwind, Supabase) |
-| 47 | 2.8 | [Symbolk/Code2Graph](https://github.com/Symbolk/Code2Graph) | 49 | Java | None | Multilingual code → language-agnostic graph representation |
-| 48 | 2.7 | [yumeiriowl/repo-graphrag-mcp](https://github.com/yumeiriowl/repo-graphrag-mcp) | 3 | Python | MIT | LightRAG + tree-sitter, entity merge (code ↔ docs), implementation planning tool |
-| 48 | 2.7 | [davidfraser/pyan](https://github.com/davidfraser/pyan) | 712 | Python | GPL-2.0 | Python call graph generator (stable fork), DOT/SVG/HTML output, Sphinx integration |
-| 50 | 2.7 | [mamuz/PhpDependencyAnalysis](https://github.com/mamuz/PhpDependencyAnalysis) | 572 | PHP | MIT | PHP dependency graphs, cycle detection, architecture verification against defined layers |
-| 51 | 2.7 | [faraazahmad/graphsense](https://github.com/faraazahmad/graphsense) | 35 | TypeScript | MIT | MCP server providing code intelligence via static analysis |
-| 52 | 2.7 | [JonnoC/CodeRAG](https://github.com/JonnoC/CodeRAG) | 14 | TypeScript | MIT | Enterprise code intelligence with CK metrics, Neo4j, 23 analysis tools, MCP server |
-| 53 | 2.6 | [0xjcf/MCP_CodeAnalysis](https://github.com/0xjcf/MCP_CodeAnalysis) | 7 | Python/TS | None | Stateful tools (XState), Redis sessions, socio-technical analysis, dual language impl |
-| 54 | 2.5 | [koknat/callGraph](https://github.com/koknat/callGraph) | 325 | Perl | GPL-3.0 | Multi-language (22+) call graph generator via regex, GraphViz output |
-| 55 | 2.5 | [RaheesAhmed/code-context-mcp](https://github.com/RaheesAhmed/code-context-mcp) | 0 | Python | MIT | Security pattern detection, auto architecture diagrams, code flow tracing |
-| 56 | 2.5 | [league1991/CodeAtlasVsix](https://github.com/league1991/CodeAtlasVsix) | 265 | C# | GPL-2.0 | Visual Studio plugin, Doxygen-based call graph navigation (VS 2010-2015 era) |
-| 57 | 2.5 | [beicause/call-graph](https://github.com/beicause/call-graph) | 105 | TypeScript | Apache-2.0 | VS Code extension generating call graphs via LSP call hierarchy API |
-| 58 | 2.5 | [Thibault-Knobloch/codebase-intelligence](https://github.com/Thibault-Knobloch/codebase-intelligence) | 44 | Python | None | Code indexing + call graph + vector DB + natural language queries (requires OpenAI) |
-| 59 | 2.5 | [darkmacheken/wasmati](https://github.com/darkmacheken/wasmati) | 31 | C++ | Apache-2.0 | CPG infrastructure for scanning vulnerabilities in WebAssembly |
-| 60 | 2.5 | [sutragraph/sutracli](https://github.com/sutragraph/sutracli) | 28 | Python | GPL-3.0 | AI-powered cross-repo dependency graphs for coding agents |
-| 61 | 2.5 | [julianjensen/ast-flow-graph](https://github.com/julianjensen/ast-flow-graph) | 70 | JavaScript | Other | JavaScript control flow graphs from AST analysis |
-| 62 | 2.5 | [yoanbernabeu/grepai-skills](https://github.com/yoanbernabeu/grepai-skills) | 14 | — | MIT | 27 AI agent skills for semantic code search and call graph analysis |
-| 63 | 2.5 | [GaloisInc/MATE](https://github.com/GaloisInc/MATE) | 194 | Python | BSD-3 | DARPA-funded interactive CPG-based bug hunting for C/C++ via LLVM |
-| 64 | 2.4 | [shantham/codegraph](https://github.com/shantham/codegraph) | 0 | TypeScript | MIT | Polished `npx` one-command installer, sqlite-vss, 7 MCP tools |
-| 65 | 2.3 | [ozyyshr/RepoGraph](https://github.com/ozyyshr/RepoGraph) | 251 | Python | Apache-2.0 | SWE-bench code graph research (ctags + networkx for LLM context) |
-| 65 | 2.3 | [emad-elsaid/rubrowser](https://github.com/emad-elsaid/rubrowser) | 644 | Ruby | MIT | Ruby-only interactive D3 force-directed dependency graph |
-| 67 | 2.3 | [Chentai-Kao/call-graph-plugin](https://github.com/Chentai-Kao/call-graph-plugin) | 88 | Kotlin | None | IntelliJ plugin for visualizing call graphs in IDE |
-| 68 | 2.3 | [ehabterra/apispec](https://github.com/ehabterra/apispec) | 72 | Go | Apache-2.0 | OpenAPI 3.1 spec generator from Go code via call graph analysis |
-| 69 | 2.3 | [huoyo/ko-time](https://github.com/huoyo/ko-time) | 61 | Java | LGPL-2.1 | Spring Boot call graph with runtime durations |
-| 69 | 2.3 | [Fraunhofer-AISEC/codyze](https://github.com/Fraunhofer-AISEC/codyze) | 91 | Kotlin | None | CPG-based analyzer for cryptographic API misuse (archived, merged into cpg repo) |
-| 71 | 2.3 | [CartographAI/mcp-server-codegraph](https://github.com/CartographAI/mcp-server-codegraph) | 17 | JavaScript | MIT | Lightweight MCP code graph (3 tools only, Python/JS/Rust) |
-| 72 | 2.3 | [YounesBensafia/DevLens](https://github.com/YounesBensafia/DevLens) | 21 | Python | None | Repo scanner with AI summaries, dead code detection (dep graph not yet implemented) |
-| 72 | 2.3 | [0xd219b/codegraph](https://github.com/0xd219b/codegraph) | 0 | Rust | None | Pure Rust, HTTP server mode, Java + Go support |
-| 74 | 2.3 | [aryx/codegraph](https://github.com/aryx/codegraph) | 6 | OCaml | Other | Multi-language source code dependency visualizer (the original "codegraph" name) |
-| 75 | 2.2 | [jmarkowski/codeviz](https://github.com/jmarkowski/codeviz) | 144 | Python | MIT | C/C++ `#include` header dependency graph visualization |
-| 76 | 2.2 | [juanallo/vscode-dependency-cruiser](https://github.com/juanallo/vscode-dependency-cruiser) | 77 | JavaScript | MIT | VS Code wrapper for dependency-cruiser (JS/TS) |
-| 76 | 2.2 | [hidva/as2cfg](https://github.com/hidva/as2cfg) | 63 | Rust | GPL-3.0 | Intel assembly → control flow graph |
-| 77 | 2.2 | [microsoft/cmd-call-graph](https://github.com/microsoft/cmd-call-graph) | 55 | Python | MIT | Call graphs for Windows CMD batch files |
-| 79 | 2.2 | [siggy/gographs](https://github.com/siggy/gographs) | 52 | Go | MIT | Go package dependency graph generator |
-| 80 | 2.2 | [henryhale/depgraph](https://github.com/henryhale/depgraph) | 33 | Go | MIT | Go-focused codebase dependency analysis |
-| 81 | 2.2 | [2015xli/clangd-graph-rag](https://github.com/2015xli/clangd-graph-rag) | 28 | Python | Apache-2.0 | C/C++ Neo4j GraphRAG via clangd (scales to Linux kernel) |
-| 82 | 2.1 | [floydw1234/badger-graph](https://github.com/floydw1234/badger-graph) | 0 | Python | None | Dgraph backend (Docker), C struct field access tracking |
-| 83 | 2.0 | [crubier/code-to-graph](https://github.com/crubier/code-to-graph) | 382 | JavaScript | None | JS code → Mermaid flowchart (single-function, web demo) |
-| 83 | 2.0 | [khushil/code-graph-rag](https://github.com/khushil/code-graph-rag) | 0 | Python | MIT | Fork of vitali87/code-graph-rag with no modifications |
-| 85 | 2.0 | [FalkorDB/code-graph-backend](https://github.com/FalkorDB/code-graph-backend) | 26 | Python | MIT | FalkorDB (Redis-based graph) code analysis demo |
-| 85 | 2.0 | [jillesvangurp/spring-depend](https://github.com/jillesvangurp/spring-depend) | 46 | Java | MIT | Spring bean dependency graph extraction |
-| 87 | 2.0 | [ivan-m/SourceGraph](https://github.com/ivan-m/SourceGraph) | 27 | Haskell | GPL-3.0 | Haskell graph-theoretic code analysis (last updated 2022) |
-| 87 | 2.0 | [brutski/go-code-graph](https://github.com/brutski/go-code-graph) | 13 | Go | MIT | Go codebase analyzer with MCP integration |
+| # | Score | Project | Stars | Last PR | Lang | License | Summary |
+|---|-------|---------|-------|---------|------|---------|---------|
+| 39 | 2.9 | [rahulvgmail/CodeInteliMCP](https://github.com/rahulvgmail/CodeInteliMCP) | 8 | n/a | Python | None | DuckDB + ChromaDB (zero Docker), multi-repo, lightweight embedded DBs |
+| 40 | 2.83 | [xnuinside/codegraph](https://github.com/xnuinside/codegraph) | 496 | 123d ago | Python | MIT | Python-only interactive HTML dependency diagrams with zoom/pan/search **Demoted from Tier 1 — Community score dropped under the refreshed star-band rubric (496 stars)** |
+| 41 | 2.8 | [Aider-AI/aider](https://github.com/Aider-AI/aider) | 48,066 | 78d ago | Python | Apache-2.0 | AI pair programming CLI; tree-sitter repo map with PageRank-style graph ranking for LLM context selection, 100+ languages, multi-provider LLM support, git-integrated auto-commits. Moved to Aider-AI org |
+| 42 | 2.8 | [scottrogowski/code2flow](https://github.com/scottrogowski/code2flow) | 4,601 | 1308d ago | Python | MIT | Call graphs for Python/JS/Ruby/PHP via AST, DOT output, 100% test coverage |
+| 43 | 2.8 | [ysk8hori/typescript-graph](https://github.com/ysk8hori/typescript-graph) | 212 | 93d ago | TypeScript | None | TypeScript file-level dependency Mermaid diagrams, code metrics (MI, CC), watch mode |
+| 44 | 2.8 | [nuanced-dev/nuanced-py](https://github.com/nuanced-dev/nuanced-py) | 128 | ARCHIVED | Python | MIT | Python call graph enrichment designed for AI agent consumption |
+| 45 | 2.8 | [ChrisRoyse/CodeGraph](https://github.com/ChrisRoyse/CodeGraph) | 85 | n/a | TypeScript | None | Neo4j + MCP, multi-language, framework detection (React, Tailwind, Supabase) |
+| 46 | 2.8 | [sdsrss/code-graph-mcp](https://github.com/sdsrss/code-graph-mcp) | 61 | 9d ago | TypeScript | MIT | AST knowledge graph MCP server with tree-sitter, 10 languages. New entrant |
+| 47 | 2.8 | [Symbolk/Code2Graph](https://github.com/Symbolk/Code2Graph) | 49 | 1235d ago | Java | None | Multilingual code → language-agnostic graph representation |
+| 48 | 2.8 | [Bikach/codeGraph](https://github.com/Bikach/codeGraph) | 9 | 10d ago | TypeScript | MIT | Neo4j graph, Claude Code slash commands, Kotlin support, 40-50% cost reduction |
+| 49 | 2.7 | [davidfraser/pyan](https://github.com/davidfraser/pyan) | 711 | ARCHIVED | Python | GPL-2.0 | Python call graph generator (stable fork), DOT/SVG/HTML output, Sphinx integration |
+| 50 | 2.7 | [mamuz/PhpDependencyAnalysis](https://github.com/mamuz/PhpDependencyAnalysis) | 576 | 2613d ago | PHP | MIT | PHP dependency graphs, cycle detection, architecture verification against defined layers |
+| 51 | 2.7 | [faraazahmad/graphsense](https://github.com/faraazahmad/graphsense) | 35 | 334d ago | TypeScript | MIT | MCP server providing code intelligence via static analysis |
+| 52 | 2.7 | [JonnoC/CodeRAG](https://github.com/JonnoC/CodeRAG) | 27 | n/a | TypeScript | MIT | Enterprise code intelligence with CK metrics, Neo4j, 23 analysis tools, MCP server |
+| 53 | 2.7 | [yumeiriowl/repo-graphrag-mcp](https://github.com/yumeiriowl/repo-graphrag-mcp) | 7 | n/a | Python | MIT | LightRAG + tree-sitter, entity merge (code ↔ docs), implementation planning tool |
+| 54 | 2.6 | [0xjcf/MCP_CodeAnalysis](https://github.com/0xjcf/MCP_CodeAnalysis) | 7 | n/a | Python/TS | None | Stateful tools (XState), Redis sessions, socio-technical analysis, dual language impl |
+| 55 | 2.5 | [koknat/callGraph](https://github.com/koknat/callGraph) | 339 | 1051d ago | Perl | GPL-3.0 | Multi-language (22+) call graph generator via regex, GraphViz output |
+| 56 | 2.5 | [league1991/CodeAtlasVsix](https://github.com/league1991/CodeAtlasVsix) | 266 | n/a | C# | GPL-2.0 | Visual Studio plugin, Doxygen-based call graph navigation (VS 2010-2015 era) |
+| 57 | 2.5 | [GaloisInc/MATE](https://github.com/GaloisInc/MATE) | 198 | 1379d ago | Python | BSD-3 | DARPA-funded interactive CPG-based bug hunting for C/C++ via LLVM |
+| 58 | 2.5 | [beicause/call-graph](https://github.com/beicause/call-graph) | 104 | 621d ago | TypeScript | Apache-2.0 | VS Code extension generating call graphs via LSP call hierarchy API |
+| 59 | 2.5 | [julianjensen/ast-flow-graph](https://github.com/julianjensen/ast-flow-graph) | 71 | 2972d ago | JavaScript | Other | JavaScript control flow graphs from AST analysis |
+| 60 | 2.5 | [Thibault-Knobloch/codebase-intelligence](https://github.com/Thibault-Knobloch/codebase-intelligence) | 50 | n/a | Python | None | Code indexing + call graph + vector DB + natural language queries (requires OpenAI) |
+| 61 | 2.5 | [darkmacheken/wasmati](https://github.com/darkmacheken/wasmati) | 32 | n/a | C++ | Apache-2.0 | CPG infrastructure for scanning vulnerabilities in WebAssembly |
+| 62 | 2.5 | [sutragraph/sutracli](https://github.com/sutragraph/sutracli) | 28 | 274d ago | Python | GPL-3.0 | AI-powered cross-repo dependency graphs for coding agents |
+| 63 | 2.5 | [yoanbernabeu/grepai-skills](https://github.com/yoanbernabeu/grepai-skills) | 18 | n/a | — | MIT | 27 AI agent skills for semantic code search and call graph analysis |
+| 64 | 2.5 | [RaheesAhmed/code-context-mcp](https://github.com/RaheesAhmed/code-context-mcp) | 0 | n/a | Python | MIT | Security pattern detection, auto architecture diagrams, code flow tracing |
+| 65 | 2.4 | [shantham/codegraph](https://github.com/shantham/codegraph) | 0 | n/a | TypeScript | MIT | Polished `npx` one-command installer, sqlite-vss, 7 MCP tools |
+| 66 | 2.3 | [emad-elsaid/rubrowser](https://github.com/emad-elsaid/rubrowser) | 645 | 1680d ago | Ruby | MIT | Ruby-only interactive D3 force-directed dependency graph |
+| 67 | 2.3 | [ozyyshr/RepoGraph](https://github.com/ozyyshr/RepoGraph) | 291 | n/a | Python | Apache-2.0 | SWE-bench code graph research (ctags + networkx for LLM context) |
+| 68 | 2.3 | [Fraunhofer-AISEC/codyze](https://github.com/Fraunhofer-AISEC/codyze) | 89 | 575d ago | Kotlin | None | CPG-based analyzer for cryptographic API misuse (archived, merged into cpg repo) |
+| 69 | 2.3 | [Chentai-Kao/call-graph-plugin](https://github.com/Chentai-Kao/call-graph-plugin) | 86 | n/a | Kotlin | None | IntelliJ plugin for visualizing call graphs in IDE |
+| 70 | 2.3 | [ehabterra/apispec](https://github.com/ehabterra/apispec) | 83 | 1d ago | Go | Apache-2.0 | OpenAPI 3.1 spec generator from Go code via call graph analysis |
+| 71 | 2.3 | [huoyo/ko-time](https://github.com/huoyo/ko-time) | 65 | 804d ago | Java | LGPL-2.1 | Spring Boot call graph with runtime durations |
+| 72 | 2.3 | [YounesBensafia/DevLens](https://github.com/YounesBensafia/DevLens) | 26 | 66d ago | Python | None | Repo scanner with AI summaries, dead code detection (dep graph not yet implemented) |
+| 73 | 2.3 | [CartographAI/mcp-server-codegraph](https://github.com/CartographAI/mcp-server-codegraph) | 22 | n/a | JavaScript | MIT | Lightweight MCP code graph (3 tools only, Python/JS/Rust) |
+| 74 | 2.3 | [aryx/codegraph](https://github.com/aryx/codegraph) | 6 | n/a | OCaml | Other | Multi-language source code dependency visualizer (the original "codegraph" name) |
+| 75 | 2.3 | [0xd219b/codegraph](https://github.com/0xd219b/codegraph) | 0 | n/a | Rust | None | Pure Rust, HTTP server mode, Java + Go support |
+| 76 | 2.2 | [jmarkowski/codeviz](https://github.com/jmarkowski/codeviz) | 147 | 546d ago | Python | MIT | C/C++ `#include` header dependency graph visualization |
+| 77 | 2.2 | [juanallo/vscode-dependency-cruiser](https://github.com/juanallo/vscode-dependency-cruiser) | 78 | 2316d ago | JavaScript | MIT | VS Code wrapper for dependency-cruiser (JS/TS) |
+| 78 | 2.2 | [hidva/as2cfg](https://github.com/hidva/as2cfg) | 63 | n/a | Rust | GPL-3.0 | Intel assembly → control flow graph |
+| 79 | 2.2 | [2015xli/clangd-graph-rag](https://github.com/2015xli/clangd-graph-rag) | 59 | n/a | Python | Apache-2.0 | C/C++ Neo4j GraphRAG via clangd (scales to Linux kernel) |
+| 80 | 2.2 | [microsoft/cmd-call-graph](https://github.com/microsoft/cmd-call-graph) | 57 | 274d ago | Python | MIT | Call graphs for Windows CMD batch files |
+| 81 | 2.2 | [siggy/gographs](https://github.com/siggy/gographs) | 51 | 1259d ago | Go | MIT | Go package dependency graph generator |
+| 82 | 2.2 | [henryhale/depgraph](https://github.com/henryhale/depgraph) | 35 | 38d ago | Go | MIT | Go-focused codebase dependency analysis |
+| 83 | 2.1 | [floydw1234/badger-graph](https://github.com/floydw1234/badger-graph) | 0 | n/a | Python | None | Dgraph backend (Docker), C struct field access tracking |
+| 84 | 2.0 | [crubier/code-to-graph](https://github.com/crubier/code-to-graph) | 383 | 2337d ago | JavaScript | None | JS code → Mermaid flowchart (single-function, web demo) |
+| 85 | 2.0 | [jillesvangurp/spring-depend](https://github.com/jillesvangurp/spring-depend) | 46 | 342d ago | Java | MIT | Spring bean dependency graph extraction |
+| 86 | 2.0 | [FalkorDB/code-graph-backend](https://github.com/FalkorDB/code-graph-backend) | 28 | ARCHIVED | Python | MIT | FalkorDB (Redis-based graph) code analysis demo |
+| 87 | 2.0 | [ivan-m/SourceGraph](https://github.com/ivan-m/SourceGraph) | 27 | n/a | Haskell | GPL-3.0 | Haskell graph-theoretic code analysis (last updated 2022) |
+| 88 | 2.0 | [brutski/go-code-graph](https://github.com/brutski/go-code-graph) | 19 | 319d ago | Go | MIT | Go codebase analyzer with MCP integration |
+| 89 | 2.0 | [khushil/code-graph-rag](https://github.com/khushil/code-graph-rag) | 0 | n/a | Python | MIT | Fork of vitali87/code-graph-rag with no modifications |
 
 ### Tier 3: Minimal or Inactive (score < 2.0)
 
-| Score | Project | Stars | Summary |
-|-------|---------|-------|---------|
-| 1.8 | [m3et/CodeRAG](https://github.com/m3et/CodeRAG) | 0 | Iterative RAG with self-reflection, ChromaDB, Azure OpenAI dependent |
-| 1.8 | [getyourguide/spmgraph](https://github.com/getyourguide/spmgraph) | 239 | Swift Package Manager dependency graph + architecture linting |
-| 1.8 | [mvidner/code-explorer](https://github.com/mvidner/code-explorer) | 53 | Ruby call graph and class dependency browser |
-| 1.8 | [ytsutano/jitana](https://github.com/ytsutano/jitana) | 41 | Android DEX static+dynamic hybrid analysis |
-| 1.8 | [ShiftLeftSecurity/fuzzyc2cpg](https://github.com/ShiftLeftSecurity/fuzzyc2cpg) | 37 | [ARCHIVED] Fuzzy C/C++ parser to CPG (Joern ecosystem) |
-| 1.8 | [mufasadb/code-grapher](https://github.com/mufasadb/code-grapher) | 10 | MCP code graph server (early stage) |
-| 1.8 | [dtsbourg/codegraph-fmt](https://github.com/dtsbourg/codegraph-fmt) | 7 | Annotated AST graph representations from Python |
-| 1.8 | [mloncode/codegraph](https://github.com/mloncode/codegraph) | 5 | Git/UAST graph experiments |
-| 1.7 | [ashishb/python_dep_generator](https://github.com/ashishb/python_dep_generator) | 22 | Python dependency graph generator |
-| 1.7 | [LaurEars/codegrapher](https://github.com/LaurEars/codegrapher) | 15 | Python call graph visualizer |
-| 1.7 | [AdilZouitine/ouakha.rs](https://github.com/AdilZouitine/ouakha.rs) | 7 | LLM-based Rust code analysis for suspicious code |
-| 1.7 | [ensozos/geneci](https://github.com/ensozos/geneci) | 6 | UML diagrams and call graphs from source |
-| 1.7 | [spullara/codegraph](https://github.com/spullara/codegraph) | 5 | Java JARs → Neo4j loader |
-| 1.5 | [z7zmey/codegraph](https://github.com/z7zmey/codegraph) | 10 | PHP code visualization (last updated 2020) |
-| 1.5 | [marcusva/cflow](https://github.com/marcusva/cflow) | 10 | C/assembler call graph generator |
-| 1.5 | [beacoder/call-graph](https://github.com/beacoder/call-graph) | 5 | Emacs-based C/C++ call graph |
+| Score | Project | Stars | Last PR | Summary |
+|-------|---------|-------|---------|---------|
+| 1.8 | [m3et/CodeRAG](https://github.com/m3et/CodeRAG) | 0 | n/a | Iterative RAG with self-reflection, ChromaDB, Azure OpenAI dependent |
+| 1.8 | [getyourguide/spmgraph](https://github.com/getyourguide/spmgraph) | 250 | 280d ago | Swift Package Manager dependency graph + architecture linting |
+| 1.8 | [mvidner/code-explorer](https://github.com/mvidner/code-explorer) | 53 | 3665d ago | Ruby call graph and class dependency browser |
+| 1.8 | [ytsutano/jitana](https://github.com/ytsutano/jitana) | 42 | n/a | Android DEX static+dynamic hybrid analysis |
+| 1.8 | [ShiftLeftSecurity/fuzzyc2cpg](https://github.com/ShiftLeftSecurity/fuzzyc2cpg) | 36 | ARCHIVED | [ARCHIVED] Fuzzy C/C++ parser to CPG (Joern ecosystem) |
+| 1.8 | [mufasadb/code-grapher](https://github.com/mufasadb/code-grapher) | 11 | n/a | MCP code graph server (early stage) |
+| 1.8 | [dtsbourg/codegraph-fmt](https://github.com/dtsbourg/codegraph-fmt) | 8 | 2705d ago | Annotated AST graph representations from Python |
+| 1.8 | [mloncode/codegraph](https://github.com/mloncode/codegraph) | 5 | 2585d ago | Git/UAST graph experiments |
+| 1.7 | [ashishb/python_dep_generator](https://github.com/ashishb/python_dep_generator) | 22 | 4620d ago | Python dependency graph generator |
+| 1.7 | [LaurEars/codegrapher](https://github.com/LaurEars/codegrapher) | 16 | 69d ago | Python call graph visualizer |
+| 1.7 | [AdilZouitine/ouakha.rs](https://github.com/AdilZouitine/ouakha.rs) | 7 | n/a | LLM-based Rust code analysis for suspicious code |
+| 1.7 | [ensozos/geneci](https://github.com/ensozos/geneci) | 6 | n/a | UML diagrams and call graphs from source |
+| 1.7 | [spullara/codegraph](https://github.com/spullara/codegraph) | 5 | n/a | Java JARs → Neo4j loader |
+| 1.5 | [z7zmey/codegraph](https://github.com/z7zmey/codegraph) | 11 | n/a | PHP code visualization (last updated 2020) |
+| 1.5 | [marcusva/cflow](https://github.com/marcusva/cflow) | 10 | n/a | C/assembler call graph generator |
+| 1.5 | [beacoder/call-graph](https://github.com/beacoder/call-graph) | 6 | n/a | Emacs-based C/C++ call graph |
 
 ---
 
 ## Scoring Breakdown (Tier 1)
 
-| # | Project | Features | Analysis Depth | Deploy Simplicity | Lang Support | Code Quality | Community |
-|---|---------|----------|---------------|-------------------|-------------|-------------|-----------|
-| 1 | GitNexus | 5 | 5 | 4 | 4 | 4 | 5 |
-| 2 | joern | 5 | 5 | 3 | 4 | 5 | 5 |
-| 3 | narsil-mcp | 5 | 5 | 5 | 5 | 4 | 3 |
-| **4** | **codegraph (us)** | **5** | **5** | **5** | **4** | **5** | **3** |
-| 5 | codebase-memory-mcp | 4 | 4 | 5 | 5 | 4 | 4 |
-| 6 | code-review-graph | 4 | 3 | 5 | 5 | 4 | 5 |
-| 7 | code-graph-rag | 5 | 4 | 3 | 4 | 4 | 5 |
-| 8 | cpg | 5 | 5 | 2 | 5 | 5 | 3 |
-| 9 | arbor | 4 | 4 | 5 | 4 | 5 | 3 |
-| 10 | CKB | 5 | 5 | 4 | 3 | 4 | 3 |
-| 11 | axon | 5 | 5 | 4 | 2 | 4 | 3 |
-| 12 | CodeGraphContext | 4 | 3 | 4 | 4 | 3 | 5 |
-| 13 | glimpse | 4 | 4 | 5 | 3 | 5 | 2 |
-| 14 | codepropertygraph | 4 | 5 | 2 | 4 | 5 | 3 |
-| 15 | codegraph-rust | 5 | 5 | 2 | 4 | 4 | 3 |
-| 16 | mcp-code-graph | 4 | 3 | 4 | 4 | 3 | 4 |
-| 17 | code-graph-mcp | 4 | 4 | 4 | 5 | 3 | 2 |
-| 18 | jelly | 4 | 5 | 4 | 1 | 5 | 3 |
-| 19 | colbymchenry/codegraph | 4 | 3 | 5 | 3 | 3 | 4 |
-| 20 | code-graph-rag-mcp | 5 | 4 | 3 | 4 | 3 | 2 |
-| 21 | mcp-codebase-index | 4 | 3 | 5 | 3 | 4 | 2 |
-| 22 | CodeGraphMCPServer | 4 | 4 | 4 | 5 | 3 | 1 |
-| 23 | stratify | 4 | 4 | 2 | 5 | 4 | 2 |
-| 24 | cie | 5 | 4 | 4 | 3 | 4 | 1 |
-| 25 | codexray | 5 | 4 | 4 | 4 | 3 | 1 |
-| 26 | autodev-codebase | 5 | 3 | 3 | 5 | 3 | 1 |
-| 27 | CodeVisualizer | 4 | 3 | 5 | 3 | 3 | 2 |
-| 28 | code-health-meter | 3 | 5 | 5 | 1 | 4 | 2 |
-| 29 | code-graph-analysis-pipeline | 5 | 5 | 1 | 2 | 5 | 2 |
-| 30 | codebadger | 4 | 4 | 3 | 5 | 3 | 1 |
-| 31 | loregrep | 3 | 3 | 4 | 3 | 5 | 2 |
-| 32 | Claude-code-memory | 4 | 3 | 3 | 3 | 4 | 3 |
-| 33 | claude-context-local | 4 | 3 | 3 | 4 | 4 | 1 |
-| 34 | codegraph-cli | 5 | 3 | 3 | 2 | 3 | 2 |
-| 35 | xnuinside/codegraph | 3 | 2 | 5 | 1 | 3 | 4 |
-| 36 | java-all-call-graph | 4 | 4 | 3 | 1 | 3 | 3 |
-| 36 | pyan | 3 | 3 | 5 | 1 | 4 | 2 |
-| 37 | cloud-property-graph | 4 | 4 | 2 | 2 | 4 | 2 |
-| 38 | claude-context | 3 | 1 | 2 | 3 | 4 | 5 |
-
+| # | Project | Features | Analysis Depth | Deploy Simplicity | Lang Support | Code Quality | Community | Total |
+|---|---------|----------|---------------|-------------------|-------------|-------------|-----------|-------|
+| 1 | GitNexus | 5 | 5 | 4 | 4 | 4 | 5 | 4.5 |
+| 2 | codebase-memory-mcp | 4 | 4 | 5 | 5 | 4 | 5 | 4.5 |
+| 3 | code-review-graph | 5 | 3 | 5 | 5 | 4 | 5 | 4.5 |
+| 4 | narsil-mcp | 5 | 5 | 5 | 5 | 4 | 3 | 4.5 |
+| 5 | joern | 5 | 5 | 3 | 4 | 5 | 4 | 4.33 |
+| **6** | **codegraph (us)** | **5** | **5** | **5** | **4** | **5** | **2** | **4.33** |
+| 7 | cpg | 5 | 5 | 2 | 5 | 5 | 3 | 4.17 |
+| 8 | arbor | 4 | 4 | 5 | 4 | 5 | 3 | 4.17 |
+| 9 | colbymchenry/codegraph | 4 | 3 | 5 | 3 | 4 | 5 | 4.0 |
+| 10 | code-graph-rag | 5 | 4 | 3 | 4 | 4 | 4 | 4.0 |
+| 11 | glimpse | 4 | 4 | 5 | 3 | 5 | 3 | 4.0 |
+| 12 | CKB | 5 | 5 | 4 | 3 | 4 | 3 | 4.0 |
+| 13 | codegraph-rust | 5 | 5 | 2 | 4 | 4 | 3 | 3.83 |
+| 14 | axon | 5 | 5 | 4 | 2 | 4 | 3 | 3.83 |
+| 15 | codepropertygraph | 4 | 5 | 2 | 4 | 5 | 3 | 3.83 |
+| 16 | CodeGraphContext | 4 | 3 | 4 | 4 | 3 | 4 | 3.67 |
+| 17 | jelly | 4 | 5 | 4 | 1 | 5 | 3 | 3.67 |
+| 18 | codebadger | 4 | 4 | 3 | 5 | 3 | 3 | 3.67 |
+| 19 | code-graph-rag-mcp | 5 | 4 | 3 | 4 | 3 | 3 | 3.67 |
+| 20 | autodev-codebase | 5 | 3 | 3 | 5 | 3 | 3 | 3.67 |
+| 21 | stratify | 4 | 4 | 2 | 5 | 4 | 3 | 3.67 |
+| 22 | code-graph-mcp | 4 | 4 | 4 | 5 | 3 | 2 | 3.67 |
+| 23 | cie | 5 | 4 | 4 | 3 | 4 | 2 | 3.67 |
+| 24 | CodeGraphMCPServer | 4 | 4 | 4 | 5 | 3 | 2 | 3.67 |
+| 25 | CodeVisualizer | 4 | 3 | 5 | 3 | 3 | 3 | 3.5 |
+| 26 | mcp-code-graph | 4 | 3 | 4 | 4 | 3 | 3 | 3.5 |
+| 27 | mcp-codebase-index | 4 | 3 | 5 | 3 | 4 | 2 | 3.5 |
+| 28 | codexray | 5 | 4 | 4 | 4 | 3 | 1 | 3.5 |
+| 29 | code-health-meter | 3 | 5 | 5 | 1 | 4 | 2 | 3.33 |
+| 30 | code-graph-analysis-pipeline | 5 | 5 | 1 | 2 | 5 | 2 | 3.33 |
+| 31 | loregrep | 3 | 3 | 4 | 3 | 5 | 2 | 3.33 |
+| 32 | pyan | 3 | 3 | 5 | 1 | 4 | 3 | 3.17 |
+| 33 | Claude-code-memory | 4 | 3 | 3 | 3 | 4 | 2 | 3.17 |
+| 34 | claude-context-local | 4 | 3 | 3 | 4 | 4 | 1 | 3.17 |
+| 35 | claude-context | 3 | 1 | 2 | 3 | 4 | 5 | 3.0 |
+| 36 | java-all-call-graph | 4 | 4 | 3 | 1 | 3 | 3 | 3.0 |
+| 37 | cloud-property-graph | 4 | 4 | 2 | 2 | 4 | 2 | 3.0 |
+| 38 | codegraph-cli | 5 | 3 | 3 | 2 | 3 | 2 | 3.0 |
+| 39 | xnuinside/codegraph (demoted from Tier 1 below) | 3 | 2 | 5 | 1 | 3 | 3 | 2.83 |
 **Scoring criteria:**
 - **Features** (1-5): breadth of tools, MCP integration, search, visualization, export
 - **Analysis Depth** (1-5): how deep the code analysis goes (dead code, complexity, flow tracing, coupling)
 - **Deploy Simplicity** (1-5): ease of setup — zero Docker = 5, requires Docker = 3, complex multi-service = 1
 - **Lang Support** (1-5): number of well-supported programming languages
 - **Code Quality** (1-5): architecture, performance characteristics, engineering rigor
-- **Community** (1-5): stars, contributors, activity, documentation quality
+- **Community** (1-5): stars-anchored band — 5 = 10,000+ stars, 4 = 1,000–9,999, 3 = 100–999, 2 = 10–99, 1 = 0–9. Applied uniformly across all 39 Tier 1 entries as of 2026-08-09 (previously ad hoc per-project judgment)
+
+**Last PR column:** days since the most recently *merged* pull request (GitHub API, 2026-08-09). `n/a` = no merged PRs found; `ARCHIVED` = repo is archived. Caveat: this measures PR-based collaboration, not raw activity — a solo maintainer who pushes directly to `main` (e.g. narsil-mcp: last direct push 88 days ago vs last merged PR 197 days ago) will show a larger, more stale-looking number here than their actual pace of work.
 
 ---
 
@@ -206,125 +209,117 @@ Ranked by weighted score across 6 dimensions (each 1–5):
 
 ## Where Codegraph Loses
 
-### vs GitNexus (#1, 18,453 stars)
-- **Viral growth**: 18,453 stars in ~8 months — orders of magnitude more traction. Discord community, TrendShift badge, npm package (`gitnexus`)
+**We are #6 in Tier 1 (4.33), not #4.** Four tools now score higher — GitNexus, codebase-memory-mcp, code-review-graph, and narsil-mcp (all 4.50) — and we're tied with joern (4.33, ahead of us only on the star tiebreak). Two of those four — code-review-graph and codebase-memory-mcp — passed us specifically because their communities grew fast enough to cross into the top Community band (6.8x–48x in under five months: code-review-graph 4,309→29,491; codebase-memory-mcp 793→38,234) while ours grew 32→86 (2.7x). GitNexus and narsil-mcp were already tied with us at 4.5 before this refresh — their score didn't move, ours did, once our own Community score was corrected down. (For scale, colbymchenry/codegraph — an unrelated tool further down the table at #9, not one of the four — grew even faster over the same window: 308→65,489, 212x.) We still lead or tie every Tier 1 entrant on Analysis Depth (dataflow, CFG, interprocedural dataflow, complexity, architecture boundaries, CI gates) — that axis alone no longer decides the top ranks in this space.
+
+### vs GitNexus (#1, 45,206 stars)
+- **Community, at scale**: 45,206 stars (2.4x growth since March) — orders of magnitude more traction. Discord community, TrendShift badge, npm package (`gitnexus`)
 - **Multi-editor integration**: Auto-configures Claude Code (with hooks), Cursor, Codex, Windsurf, OpenCode via `gitnexus setup`. We only support Claude Code MCP config
 - **Auto-generated context files**: Creates AGENTS.md/CLAUDE.md from the knowledge graph — agents get codebase context automatically
 - **Web UI + CLI + MCP**: Three access modes including a hosted web explorer at gitnexus.vercel.app. We have CLI + MCP + interactive HTML viewer but no hosted web UI
 - **Bridge mode**: `gitnexus serve` connects CLI-indexed repos to the web UI — seamless local-to-browser workflow
-- **Where we win**: Non-commercial license (PolyForm NC) blocks enterprise adoption. Incremental indexing is coarser than ours — cache-keyed byte-budgeted chunks plus per-branch index updates on checkout, not per-file hashing. LadybugDB is custom/unproven vs our SQLite. We have deeper analysis (complexity, dataflow, CFG, architecture boundaries, manifesto rules, CI gates) and confidence-scored edges. Their graph is broader but shallower
+- **PDG + taint analysis**: opt-in `--pdg` index adds per-function CFG/PDG and source→sink taint tracking, currently TypeScript/JavaScript only
+- **Where we win**: Non-commercial license (PolyForm NC) blocks enterprise adoption. Incremental indexing is coarser than ours — cache-keyed byte-budgeted chunks plus per-branch index updates on checkout, not per-file hashing. LadybugDB is custom/unproven vs our SQLite. Our analysis depth is comparable (both score 5) but ours applies uniformly across all 34 languages, not TS/JS-only. **Net score: they're ahead of us (4.50 vs 4.33) — almost entirely on Community**
 
-### vs joern (#2, 3,021 stars)
-- **Full Code Property Graph**: AST + CFG + PDG combined for deep vulnerability analysis; our tree-sitter extraction captures structure but not interprocedural control/data flow
+### vs codebase-memory-mcp (#2, 38,234 stars — no longer "immature")
+- **Explosive growth, now sustained**: 793 → 38,234 stars (48x) since our last check, 3,044 forks, 427 open issues, 163 subscribers — genuine large-scale engagement, not a star-farm blip. Single-developer C project, created 2026-02-24
+- **64 languages**: nearly 2x our 34, via vendored tree-sitter grammars compiled into a single static C binary
+- **Zero-dependency binary**: no Node.js/JVM/runtime. Auto-installer configures 10 different AI agents in one command
+- **Cypher-like query language**: hand-built Cypher subset in C for arbitrary graph traversals — we have no query DSL
+- **HTTP route analysis**: first-class Route nodes and cross-service HTTP call linking with confidence scoring — unique capability
+- **3D graph visualization**: built-in web-based 3D graph viewer
+- **Where we win**: MCP-only (no standalone CLI), no semantic search/embeddings, no complexity metrics, no cycle detection, no export formats (DOT/Mermaid/GraphML), no architecture boundaries, no CI gates, no programmatic API, limited Cypher subset (no WITH/COLLECT/OPTIONAL MATCH). Our analysis depth is still greater (5 vs 4). **Net score: they're now tied with GitNexus at the top (4.50) — the "very immature" framing from our March review no longer holds; this is a real, fast-maturing competitor**
+
+### vs code-review-graph (#3, 29,491 stars)
+- **Massive, fast-growing community**: 4,309 → 29,491 stars (6.8x), 2,700 forks — now one of the largest communities in this space
+- **Graph export**: added GraphML (Gephi/yEd), Neo4j Cypher, Obsidian vault (wikilinks), and SVG export since our last review — a gap we previously listed in our favor is now closed
+- **CI merge gate**: added an optional `fail-on-risk` GitHub Action that turns risk-scored review into a merge gate — another gap closed
+- **Notebook + config-format coverage**: its 40+ parsed surfaces include Jupyter/Databricks notebooks (`.ipynb`), Ansible playbooks, Vue/Svelte/Astro SFCs, SQL, and Terraform — surfaces we don't parse at all
+- **Multi-editor auto-installer**: Auto-configures MCP for Claude Code, Cursor, Windsurf, Zed, Continue, OpenCode via `code-review-graph install`
+- **Fast incremental builds**: SHA-256 hash diffing, ~2.5s for a 2-file edit on a 3,000-file repo — comparable to our approach
+- **pip/pipx/uvx install**: Python ecosystem reach — accessible to a different audience than our npm install
+- **Where we win**: still no dataflow, no CFG, no complexity metrics, no architecture boundary *rules* (their gate is risk-scored, not layering-based), no node role classification, no confidence-scored edges. Its own README (2026-08-02 benchmark capture) reports the co-change evaluation mode returns 0 predicted files on every graded commit — "not yet a usable measurement," by their own admission. Our dual engine (native Rust + WASM) is faster; Python-only ecosystem limits their reach in Node.js/TypeScript shops. **Net score: tied with GitNexus/codebase-memory-mcp at 4.50 — ahead of us, driven by the export/CI-gate additions plus a community that's now 340x ours**
+
+### vs narsil-mcp (#4, 180 stars)
+- **Feature breadth**: 90 MCP tools vs our 34; covers taint analysis, SBOM, license compliance, control flow graphs, data flow analysis, SPARQL/RDF queries
+- **Security analysis**: vulnerability scanning with OWASP/CWE coverage, 147+ rules — we have no security features
+- **SPA web frontend**: full web UI with file tree sidebar, syntax-highlighted code viewer, dashboard, per-repo overview, CFG visualization
+- **Single-binary deployment**: ~30MB Rust binary via brew/scoop/cargo/npm — as easy as ours
+- **Note on activity**: last *merged PR* was 197 days ago, but the maintainer pushes directly to `main` — the last direct commit was 88 days ago, and recent PRs (#19, #24, #25) were closed rather than merged. Read "197 days since a merged PR" as a collaboration-workflow signal, not evidence of abandonment
+- **Where we win**: still the closest peer on raw scoring (tied 4.50, same as GitNexus/codebase-memory-mcp/code-review-graph) — narsil-mcp's Community score (180 stars) stayed in the same 100–999 band as before, so it didn't need a Community-driven correction the way we did. It is ahead of us on Features (90 tools) and tied on Depth; we're ahead on Deploy/Lang by a hair. **This is the most direct apples-to-apples comparison in the list: similar community size, similar depth, and we're behind mainly because their Features count is larger**
+
+### vs joern (#5, 3,401 stars)
+- **Full Code Property Graph**: AST + CFG + PDG combined for deep vulnerability analysis; our tree-sitter extraction captures structure but not the same interprocedural control/data flow rigor
 - **Scala query DSL**: purpose-built query language for arbitrary graph traversals vs our fixed CLI commands
 - **Binary analysis**: Ghidra frontend can analyze compiled binaries — we're source-only
 - **Enterprise backing**: ShiftLeft/Fraunhofer support, daily automated releases (v4.0.508), 75 contributors, professional documentation at joern.io
-- **Community**: 3,021 stars, 400 forks — massive traction. 4 community MCP wrappers now available
+- **Where we win**: joern's Community score also dropped under the refreshed star-band rubric (3,401 stars falls under 10,000 → band 4, not 5), so it moved from 4.50 to 4.33 alongside us — **we're now tied**, distinguished only by the star-count tiebreak
 
-### vs narsil-mcp (#3, 129 stars)
-- **Feature breadth**: 90 MCP tools vs our 32; covers taint analysis, SBOM, license compliance, control flow graphs, data flow analysis
-- **Different language mix**: 32 languages, including Fortran, PowerShell, and Nix, which we don't parse (we're at 34 overall, so no longer behind on count)
-- **Security analysis**: vulnerability scanning with OWASP/CWE coverage, 147+ rules (added 36 Rust/Elixir rules in v1.6.0) — we have no security features
-- **SPA web frontend**: Full web UI with file tree sidebar, syntax-highlighted code viewer, dashboard, per-repo overview, CFG visualization (added v1.6.0)
-- **Single-binary deployment**: ~30MB Rust binary via brew/scoop/cargo/npm — as easy as ours
-- **Note**: No activity since Feb 25 (24+ day gap) — development may have paused
-
-### vs codebase-memory-mcp (#5, 793 stars — NEW)
-- **Explosive growth**: 793 stars in 25 days — fastest-growing new entrant in the space. Single-developer C project
-- **Zero-dependency binary**: Single static C binary (~30MB), no Node.js/JVM/runtime. Auto-installer configures 10 different AI agents in one command
-- **64 languages**: nearly 2x our 34, via vendored tree-sitter grammars compiled into the binary
-- **Cypher-like query language**: Hand-built Cypher subset in C for arbitrary graph traversals — we have no query DSL
-- **HTTP route analysis**: First-class Route nodes and cross-service HTTP call linking with confidence scoring — unique capability
-- **3D graph visualization**: Built-in web-based 3D graph viewer
-- **Where we win**: MCP-only (no standalone CLI), no semantic search/embeddings, no complexity metrics, no cycle detection, no export formats (DOT/Mermaid/GraphML), no architecture boundaries, no CI gates, no programmatic API, limited Cypher subset (no WITH/COLLECT/OPTIONAL MATCH). Very immature (v0.5.x, 25 days old, solo developer). Our analysis depth is significantly greater
-
-### vs code-review-graph (#6, 4,309 stars)
-- **Massive community**: 4,309 stars, 401 forks, 11 contributors — highest star count among tree-sitter+SQLite tools in this space
-- **Token reduction focus**: Claims 6.8x fewer tokens for AI code review — compelling marketing for the AI-coding audience. Positioned specifically as a token-reduction layer rather than a general-purpose graph tool
-- **Notebook + config-format coverage**: its 30+ parsed languages include Jupyter/Databricks notebooks (`.ipynb`), Ansible playbooks, Vue/Svelte SFCs, and SQL — surfaces we don't parse at all (our 34 covers more general-purpose languages, but no notebooks)
-- **Multi-editor auto-installer**: Auto-configures MCP for Claude Code, Cursor, Windsurf, Zed, Continue, OpenCode via `code-review-graph install`
-- **Fast incremental builds**: SHA-256 hash diffing with <2s incremental updates — comparable to our approach
-- **pip/pipx/uvx install**: Python ecosystem reach — accessible to a different audience than our npm install
-- **Git-aware**: Supports diff impact (blast-radius), co-change analysis (6-month file-coupling history), and branch-diff (commit-hook driven) — all three git-aware modes. Comparable to our `diff-impact`, `co-change`, and `branch-compare` commands
-- **Where we win**: Significantly deeper analysis — no dataflow, no CFG, no complexity metrics, no dead code detection, no cycle detection, no architecture boundaries, no community detection, no sequence diagrams, no semantic search, no export formats (DOT/Mermaid/GraphML), no CI gates, no node role classification, no confidence-scored edges. No standalone CLI query interface beyond build/install. No callers/callees/path/context/audit compound commands. Our dual engine (native Rust + WASM) is faster. Python-only ecosystem limits reach in Node.js/TypeScript shops
-
-### vs code-graph-rag (#7, 2,168 stars)
-- **Graph query expressiveness**: Memgraph + Cypher enables arbitrary graph traversals; our CLI commands are more rigid
-- **AI-powered code editing**: they can surgically edit functions via AST targeting with visual diffs
-- **Provider flexibility**: they support Gemini/OpenAI/Claude/Ollama and can mix providers per task
-- **MCP server**: now added MCP support, expanding from pure RAG into the AI agent ecosystem
-- **Community**: 2,168 stars — significant traction
-
-### vs cpg (#8, 424 stars)
+### vs cpg (#7, 453 stars)
 - **Formal CPG specification**: academic-grade graph representation (AST + CFG + PDG + DFG) with published specs
 - **MCP module**: built-in MCP support now, matching our integration
 - **LLVM IR support**: extends language coverage to any LLVM-compiled language (Rust, Swift, etc.)
 - **Type inference**: can analyze incomplete/partial code — our tree-sitter requires syntactically valid input
 
-### vs arbor (#9, 85 stars)
+### vs arbor (#8, 151 stars)
 - **Native Rust GUI**: Built-in desktop interface for interactive graph exploration — we have HTML viewer but no native GUI
 - **Fuzzy symbol search**: Levenshtein-scored symbol matching tolerates typos and partial names — our search requires exact or substring matches
-- **Built-in confidence scoring**: Graph edges carry confidence weights out of the box — we have confidence scoring on import resolution but not surfaced on all edge types
-- **Architectural role classification**: Automatic labeling of nodes by architectural role (controller, service, repository, etc.) — *(Gap closed: our `roles` command now classifies nodes as entry, core, utility, adapter, dead, leaf)*
+- **Architectural role classification**: Automatic labeling of nodes by architectural role — *(Gap closed: our `roles` command now classifies nodes as entry, core, utility, adapter, dead, leaf)*
 
-### vs CKB (#10, 77 stars)
-- **Indexing accuracy**: SCIP provides compiler-grade cross-file references (type-aware), fundamentally more accurate than tree-sitter for supported languages
-- **Compound operations**: `explore`/`understand`/`prepareChange` batch multiple queries into one call — 83% token reduction. *(Gap closed: our `context`, `audit`, and `batch` commands now serve the same purpose)*
-- **Now claims impact analysis and architecture mapping**: Feature convergence with v8.1.0 — they're moving into our territory
-- **Secret scanning**: enterprise feature we lack
+### vs colbymchenry/codegraph (#9, 65,489 stars — 212x growth, Rust rewrite)
+- **Explosive, sustained growth**: 308 → 65,489 stars (212x) since March — now the single most-starred tool in this entire 89-project list, ahead of GitNexus, codebase-memory-mcp, and code-review-graph
+- **Rewrote its core in Rust**: no longer a thin Node.js wrapper. Self-contained binary (no Node.js required), OS-native file-watcher (FSEvents/inotify/ReadDirectoryChangesW) gives real `O(changed)` incremental rebuilds — a gap we used to hold alone
+- **9 agent-client integrations**: Claude Code, Cursor, Codex, opencode, Hermes Agent, Gemini, Antigravity, Kiro, GitHub Copilot — we only support Claude Code MCP config
+- **Signed, attested releases**: npm provenance + signed/attested builds — a real engineering-rigor signal we didn't have visibility into before
+- **~33 languages** (self-reported headline is "20+"; the README's architecture section enumerates 34 names across a tiered native-grammar + fallback-engine pipeline) — comparable to our 34
+- **Where we win**: still MCP-only surfaced tooling by default (their own CLI/MCP tools beyond `explore` are present but unlisted unless re-enabled), no dataflow/CFG/interprocedural analysis, no complexity metrics, no architecture boundary rules, no cycle detection, no dead code/export detection, no community detection, no CI gates, no confidence-scored edges. **Net score: 4.00, still behind our 4.33 — but the gap has closed from 3.7-vs-4.5 in March to 4.00-vs-4.33 now, driven entirely by real engineering investment (Rust rewrite, real incrementality, signed releases), not just stars. Same-name marketplace confusion keeps increasing as their growth accelerates**
 
-### vs axon (#11, 577 stars)
-- **Hit v1.0 milestone**: Now a stable release with tree-sitter + KuzuDB + CLI + MCP. Growing fast (+156 stars since Feb)
-- **Leiden community detection**: More sophisticated clustering than our Louvain
-- **KuzuDB with native Cypher**: More expressive for complex graph queries than our SQLite
-- **Git change coupling**: Co-change analysis — *(Gap closed: we now have `co-change` command)*
-- **Branch structural diff**: *(Gap closed: we now have `branch-compare`)*
+### vs code-graph-rag (#10, 2,632 stars)
+- **Graph query expressiveness**: Memgraph + Cypher enables arbitrary graph traversals; our CLI commands are more rigid
+- **AI-powered code editing**: they can surgically edit functions via AST targeting with visual diffs
+- **Provider flexibility**: they support Gemini/OpenAI/Claude/Ollama and can mix providers per task
 
-
-### vs CodeGraphContext (#12, 2,664 stars)
-- **Community traction**: 2,664 stars, 497 forks, 30 contributors — much higher visibility than us (likely Hacktoberfest/social coding event-boosted, but real community)
-- **Multiple graph DB backends**: KuzuDB (embedded), FalkorDB Lite, FalkorDB Remote, Neo4j — native graph traversal and raw Cypher queries. Our SQLite is simpler but less expressive for graph queries
-- **Perl support**: the only one of its 14 languages we don't cover — C/C++, Swift, Kotlin, and Dart are all in our 34
-- **Pre-indexed bundle registry**: Download `.cgc` bundles for popular open-source repos — instant context without indexing. Unique in this space
-- **IDE setup wizard**: Auto-configures MCP for 10+ IDEs (VS Code, Cursor, Windsurf, Claude, Gemini CLI, ChatGPT Codex, Cline, RooCode, Amazon Q, Kiro). We only support Claude Code MCP config
-- **Where we win**: Significantly deeper analysis — qualified call resolution, dataflow, CFG, stored ASTs, architecture boundaries, community detection, diff-impact, role classification, semantic search, sequence diagrams, complexity metrics (cognitive, Halstead, MI), CI gates. Dual engine (native Rust + WASM) is much faster. CGC is v0.3.1 (early) vs our mature release. No semantic search, no incremental file-hash rebuilds, no confidence-scored edges, no export formats. Python-only ecosystem limits reach in Node.js/TypeScript shops
-
-### vs glimpse (#13, 349 stars — stagnant)
+### vs glimpse (#11, 360 stars — stagnant)
 - **LLM workflow optimization**: clipboard-first output + token counting + XML output mode — purpose-built for "code → LLM context"
 - **LSP-based call resolution**: compiler-grade accuracy vs our tree-sitter heuristic approach
-- **Web content processing**: can fetch URLs and convert HTML to markdown for context
 
-### vs codegraph-rust (#15, 142 stars)
+### vs CKB (#12, 109 stars)
+- **Indexing accuracy**: SCIP provides compiler-grade cross-file references (type-aware), fundamentally more accurate than tree-sitter for supported languages
+- **Now claims impact analysis and architecture mapping**: feature convergence with v8.1.0 — they're moving into our territory
+- **Secret scanning**: enterprise feature we lack
+
+### vs codegraph-rust (#13, 861 stars)
 - **LSP-powered analysis**: compiler-grade cross-file references via rust-analyzer, pyright, gopls vs our tree-sitter heuristics
-- **Dataflow edges**: defines/uses/flows_to/returns/mutates relationships — *(Gap closed: we now have `flows_to`/`returns`/`mutates` across all 34 languages)*
-- **Architecture boundary enforcement**: *(Gap closed: we now have `boundaries` command with onion/hexagonal/layered/clean presets)*
 - **Tiered indexing**: fast/balanced/full modes for different use cases — we have one mode
+- **Note**: last merged PR was 232 days ago — the slowest-moving tool in Tier 1 by that measure
 
-### vs jelly (#18, 423 stars)
-- **Points-to analysis**: flow-insensitive analysis with access paths for JS/TS — fundamentally more precise than our tree-sitter-based call resolution
+### vs axon (#14, 729 stars)
+- **Leiden community detection**: more sophisticated clustering than our Louvain
+- **KuzuDB with native Cypher**: more expressive for complex graph queries than our SQLite
+- **Where we win**: co-change *(Gap closed: we now have `co-change`)* and branch structural diff *(Gap closed: `branch-compare`)*. Still no LICENSE file in the repo despite claiming MIT in `pyproject.toml`
+
+### vs CodeGraphContext (#16, 4,056 stars)
+- **Community traction**: 4,056 stars, higher visibility than us (likely Hacktoberfest/social-coding-event-boosted, but a real, larger community)
+- **Multiple graph DB backends**: KuzuDB (embedded), FalkorDB Lite, FalkorDB Remote, Neo4j — native graph traversal and raw Cypher queries. Our SQLite is simpler but less expressive for graph queries
+- **Pre-indexed bundle registry**: download `.cgc` bundles for popular open-source repos — instant context without indexing. Unique in this space
+- **IDE setup wizard**: auto-configures MCP for 10+ IDEs. We only support Claude Code MCP config
+- **Where we win**: significantly deeper analysis — qualified call resolution, dataflow, CFG, interprocedural dataflow, stored ASTs, architecture boundaries, community detection, diff-impact, role classification, semantic search, sequence diagrams, complexity metrics, CI gates. Dual engine (native Rust + WASM) is much faster
+
+### vs jelly (#17, 434 stars)
+- **Points-to analysis**: flow-insensitive analysis with access paths for JS/TS — fundamentally more precise than our tree-sitter-based call resolution for that language pair
 - **Academic rigor**: 5 published papers backing the methodology (Aarhus University)
-- **Vulnerability exposure analysis**: library usage pattern matching specific to the JS/TS ecosystem
 
-### vs aider (#40, 42,198 stars — now Aider-AI/aider)
+### vs claude-context (#35, 12,339 stars — viral, Zilliz-backed)
+- **Explosive popularity + real engineering backing**: 12,339 stars, 906 forks, Trendshift-featured, built by Zilliz (the company behind the Milvus vector database). VS Code extension alongside the MCP server, setup docs for 10+ agent clients
+- **AST-aware chunking**: splits code along syntactic boundaries for 10 languages, falling back to a generic text splitter for the rest. Published evaluation claims ~40% token reduction at equivalent retrieval quality vs naive full-file context
+- **Hybrid BM25 + dense-vector search**: combines lexical and semantic retrieval in one query, backed by a real vector database (Milvus)
+- **Merkle-DAG incremental re-indexing**: a genuine `O(changed)` mechanism, comparable to our own hash-based tiering
+- **Where we win**: retrieval-only — no call graph, no impact analysis, no dead code detection, no complexity metrics, no CI gates, no dataflow/CFG, no architecture boundary enforcement. It answers "what looks similar to this query?", not "what breaks if I change this?" Requires an external Milvus vector database plus an embedding provider — a fully local, keyless path exists (self-hosted Milvus + local Ollama) but is two services to operate, and the managed alternative (Zilliz Cloud + OpenAI/VoyageAI/Gemini) adds a hosted dependency and per-token cost. **Despite 143x our star count, still ranks well below us (3.00 vs 4.33) — this is the clearest case in the whole list where Community and Depth diverge sharply: massive popularity, minimal structural depth**
+
+### vs aider (Tier 2, #41, 48,066 stars)
 - **Different product category**: Aider is an AI pair programming CLI, not a code graph tool — but its tree-sitter repo map with PageRank-style graph ranking is a lightweight alternative to our full graph for LLM context selection
-- **Massive community**: 42,198 stars, 4,054 forks — orders of magnitude more traction than any tool in this space. Aider *is* the category leader for AI-assisted coding in the terminal. Moved to Aider-AI org
+- **Massive community**: 48,066 stars — orders of magnitude more traction than any tool in this list, us included. Aider *is* the category leader for AI-assisted coding in the terminal
 - **100+ languages**: tree-sitter parsing covers far more languages than our 34, though only for identifier extraction (not full symbol/call resolution)
-- **Multi-provider LLM**: works with Claude, GPT-4, Gemini, DeepSeek, Ollama, and virtually any LLM out of the box
-- **Built-in code editing**: Aider's core loop is "understand code → edit code → commit." We provide the understanding layer but don't edit
-- **Where we win**: Aider's repo map is shallow — file-level dependency graph with identifier ranking, no function-level call resolution, no impact analysis, no dead code detection, no complexity metrics, no MCP server, no standalone queryable graph. It answers "what's relevant?" but not "what breaks if I change this?" Our graph is deeper and persistent; Aider rebuilds its map per-request
-
-### vs colbymchenry/codegraph (#19, 308 stars — nearly doubled)
-- **Fastest-growing naming competitor**: 165 → 308 stars since Feb. Same name, same tech stack (tree-sitter + SQLite + MCP + Node.js) — marketplace confusion is increasing
-- **Published benchmarks**: 67% fewer tool calls and measurable Claude Code token reduction — compelling marketing. *(Gap closed: our `context`, `audit`, and `batch` compound commands provide equivalent or better token savings)*
-- **One-liner setup**: `npx @colbymchenry/codegraph` with interactive installer auto-configures Claude Code
-- **Where we win**: We have 41 CLI commands vs their MCP-only approach, confidence-scored edges, dataflow/CFG/AST analysis, complexity metrics, architecture boundaries, cycle detection, dead code/export detection, community detection, sequence diagrams, and CI gates. Their tool is a lightweight MCP wrapper; ours is a full code intelligence platform
-
-### vs claude-context (#38, 12,338 stars — viral, Zilliz-backed)
-- **Explosive popularity + real engineering backing**: 12,338 stars, 906 forks, Trendshift-featured, built by Zilliz (the company behind the Milvus vector database). Discord community, VS Code extension alongside the MCP server, and setup docs for 10+ agent clients (Claude Code, Cursor, Codex CLI, Gemini CLI, Qwen Code, Cline, Roo Code, Windsurf, Augment, Void)
-- **AST-aware chunking**: splits code along syntactic boundaries — not fixed-size windows — for 10 languages (JS/TS/Python/Java/C/C++/Go/Rust/C#/Scala), falling back to a generic text splitter for the rest. Published evaluation claims ~40% token reduction at equivalent retrieval quality vs naive full-file context
-- **Hybrid BM25 + dense-vector search**: combines lexical and semantic retrieval in one query, backed by a real vector database (Milvus) rather than an in-process index
-- **Merkle-DAG incremental re-indexing**: a `FileSynchronizer` hashes every file and skips unchanged ones on re-index (`packages/core/src/sync/`) — a genuine O(changed) mechanism, comparable to our own hash-based tiering
-- **Where we win**: claude-context is retrieval-only — no call graph, no impact analysis, no dead code detection, no complexity metrics, no CI gates, no dataflow/CFG, no architecture boundary enforcement. It answers "what looks similar to this query?", not "what breaks if I change this?" It also can't index anything without an external Milvus vector database plus a separate embedding provider: a fully local, keyless configuration is documented (self-hosted Milvus via Docker Compose + local Ollama), but that is two long-running services to stand up, and the managed alternative (Zilliz Cloud + an OpenAI/VoyageAI/Gemini key) adds a hosted dependency and per-token cost — versus our `npm install`, no-daemon, no-key default. Different product category: a semantic-search layer for LLM context, not a structural graph tool
+- **Where we win**: Aider's repo map is shallow — file-level dependency graph with identifier ranking, no function-level call resolution, no impact analysis, no dead code detection, no MCP server. It answers "what's relevant?" but not "what breaks if I change this?" Its Tier 2 score (2.8, unchanged) reflects that category difference, not a depth gap on our terms
 
 ---
 
