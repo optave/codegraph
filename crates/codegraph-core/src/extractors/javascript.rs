@@ -4885,26 +4885,67 @@ fn block_contains_identifier_excluding(
         }
     }
     // A classic `for (var fn = …; cond; update) body` head likewise kills the
-    // value before `cond`/`update`/`body` ever run, so only the declaration's
-    // own initializer can still hold a genuine read (`for (var fn = fn; …)`).
-    // The `let`/`const` form never reaches here — `introduces_shadowed_binding`
-    // prunes the whole loop for it (Greptile review, PR #2432).
+    // value before `cond`/`update`/`body` ever run. The `let`/`const` form never
+    // reaches here — `introduces_shadowed_binding` prunes the whole loop for it
+    // (Greptile review, PR #2432).
+    //
+    // Only an INITIALIZER actually overwrites the value, and only the
+    // declarators up to and including it can still be reading the old one
+    // (Greptile review, PR #2440):
+    //
+    // - `for (var fn; cond; update) body` — a bare redeclaration assigns
+    //   nothing, so it is NOT a kill and the whole loop still has to be scanned;
+    // - `for (var a = fn(), fn = 0; …)` — `a`'s initializer runs BEFORE the
+    //   kill, so its read is genuine;
+    // - `for (var fn = fn; …)` — the killing declarator's own initializer reads
+    //   the pre-loop value;
+    // - `for (var fn = 0, a = fn(); …)` — `a`'s initializer runs AFTER the kill,
+    //   so it reads the new value and must not count.
     if node.kind() == "for_statement" {
         for i in 0..node.child_count() {
-            let Some(child) = node.child(i) else {
+            let Some(decl) = node.child(i) else {
                 continue;
             };
-            if child.kind() == "variable_declaration"
-                && declaration_declares_name(&child, name, source)
-            {
-                return block_contains_identifier_excluding(
-                    &child,
-                    name,
-                    exclude_id,
-                    source,
-                    depth + 1,
-                );
+            if decl.kind() != "variable_declaration" {
+                continue;
             }
+            let mut kill_index: Option<usize> = None;
+            for j in 0..decl.child_count() {
+                let Some(declarator) = decl.child(j) else {
+                    continue;
+                };
+                if declarator.kind() != "variable_declarator" {
+                    continue;
+                }
+                let Some(decl_name) = declarator.child_by_field_name("name") else {
+                    continue;
+                };
+                if pattern_binds_name(&decl_name, name, source, 0)
+                    && declarator.child_by_field_name("value").is_some()
+                {
+                    kill_index = Some(j);
+                    break;
+                }
+            }
+            // No initialized declarator for `name` — nothing is overwritten
+            // here, so fall through to the ordinary whole-loop scan below.
+            let Some(kill_index) = kill_index else {
+                continue;
+            };
+            for j in 0..=kill_index {
+                if let Some(child) = decl.child(j) {
+                    if block_contains_identifier_excluding(
+                        &child,
+                        name,
+                        exclude_id,
+                        source,
+                        depth + 1,
+                    ) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
     }
     for i in 0..node.child_count() {
@@ -8333,6 +8374,65 @@ mod tests {
              }",
         );
         assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2440: only an INITIALIZER overwrites the value. A
+    // bare `var fn;` redeclaration in the loop head assigns nothing, so it is
+    // not a kill and the body's read is genuine.
+    #[test]
+    fn credits_liveness_from_a_for_loop_body_read_when_the_head_does_not_initialize() {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               for (var fn; cond; update) { fn(); }\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // A sibling declarator BEFORE the killing one runs before the overwrite, so
+    // its read is genuine.
+    #[test]
+    fn credits_liveness_from_a_for_head_sibling_initializer_before_the_kill() {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               for (var a = fn(), fn = 0; fn < 3; fn++) {}\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // …but a sibling declarator AFTER the killing one reads the NEW value.
+    #[test]
+    fn does_not_credit_liveness_from_a_for_head_sibling_initializer_after_the_kill() {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               for (var fn = 0, a = fn(); fn < 3; fn++) {}\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // The killing declarator's own initializer still reads the pre-loop value.
+    #[test]
+    fn credits_liveness_from_a_for_head_initializer_that_reads_what_it_overwrites() {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               for (var fn = fn; cond; update) {}\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
     }

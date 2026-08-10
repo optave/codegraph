@@ -4750,16 +4750,50 @@ function blockContainsIdentifierExcluding(
     }
   }
   // A classic `for (var fn = …; cond; update) body` head likewise kills the
-  // value before `cond`/`update`/`body` ever run, so only the declaration's
-  // own initializer can still hold a genuine read (`for (var fn = fn; …)`).
-  // The `let`/`const` form never reaches here — `introducesShadowedBinding`
-  // prunes the whole loop for it (Greptile review, PR #2432).
+  // value before `cond`/`update`/`body` ever run. The `let`/`const` form never
+  // reaches here — `introducesShadowedBinding` prunes the whole loop for it
+  // (Greptile review, PR #2432).
+  //
+  // Only an INITIALIZER actually overwrites the value, and only the
+  // declarators up to and including it can still be reading the old one
+  // (Greptile review, PR #2440):
+  //
+  // - `for (var fn; cond; update) body` — a bare redeclaration assigns
+  //   nothing, so it is NOT a kill and the whole loop still has to be scanned;
+  // - `for (var a = fn(), fn = 0; …)` — `a`'s initializer runs BEFORE the
+  //   kill, so its read is genuine;
+  // - `for (var fn = fn; …)` — the killing declarator's own initializer reads
+  //   the pre-loop value;
+  // - `for (var fn = 0, a = fn(); …)` — `a`'s initializer runs AFTER the kill,
+  //   so it reads the new value and must not count.
   if (node.type === 'for_statement') {
     for (let i = 0; i < node.childCount; i++) {
-      const child = node.child(i);
-      if (child?.type === 'variable_declaration' && declarationDeclaresName(child, name)) {
-        return blockContainsIdentifierExcluding(child, name, excludeId, depth + 1);
+      const decl = node.child(i);
+      if (decl?.type !== 'variable_declaration') continue;
+      let killIndex = -1;
+      for (let j = 0; j < decl.childCount; j++) {
+        const declarator = decl.child(j);
+        if (declarator?.type !== 'variable_declarator') continue;
+        const declName = declarator.childForFieldName('name');
+        if (
+          declName &&
+          patternBindsName(declName, name) &&
+          declarator.childForFieldName('value')
+        ) {
+          killIndex = j;
+          break;
+        }
       }
+      // No initialized declarator for `name` — nothing is overwritten here, so
+      // fall through to the ordinary whole-loop scan below.
+      if (killIndex === -1) continue;
+      for (let j = 0; j <= killIndex; j++) {
+        const child = decl.child(j);
+        if (child && blockContainsIdentifierExcluding(child, name, excludeId, depth + 1)) {
+          return true;
+        }
+      }
+      return false;
     }
   }
   for (let i = 0; i < node.childCount; i++) {

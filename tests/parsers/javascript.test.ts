@@ -2464,6 +2464,61 @@ function runDemo(reporter: Reporter, users: string[]): void {
       ).toBe(false);
     });
 
+    // Greptile review, PR #2440: only an INITIALIZER overwrites the value. A
+    // bare `var fn;` redeclaration in the loop head assigns nothing, so it is
+    // not a kill and the body's read is genuine.
+    it('credits liveness from a for-loop body read when the head redeclares the name without initializing it', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          for (var fn; cond; update) { fn(); }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // A sibling declarator BEFORE the killing one runs before the overwrite,
+    // so its read is genuine.
+    it('credits liveness from a for-head sibling initializer that runs before the kill', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          for (var a = fn(), fn = 0; fn < 3; fn++) {}
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // …but a sibling declarator AFTER the killing one reads the NEW value.
+    it('does not credit liveness from a for-head sibling initializer that runs after the kill', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          for (var fn = 0, a = fn(); fn < 3; fn++) {}
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // The killing declarator's own initializer still reads the pre-loop value.
+    it('credits liveness from a for-head initializer that reads the value it overwrites', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          for (var fn = fn; cond; update) {}
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
     // …and the guard for that last sentence: a loop counter with a DIFFERENT
     // name must not suppress a real read in the loop body.
     it('credits liveness from a loop body read when the loop counter is a different name', () => {
