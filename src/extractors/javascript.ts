@@ -4288,13 +4288,13 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
       if (!params) return false;
       for (let i = 0; i < params.childCount; i++) {
         const param = params.child(i);
-        if (param && parameterBindsName(param, name)) return true;
+        if (param && patternBindsName(param, name)) return true;
       }
       return false;
     }
     case 'catch_clause': {
       const param = node.childForFieldName('parameter');
-      return param ? parameterBindsName(param, name) : false;
+      return param ? patternBindsName(param, name) : false;
     }
     case 'for_statement':
     case 'for_in_statement': {
@@ -4351,32 +4351,40 @@ function declarationDeclaresName(declarationNode: TreeSitterNode, name: string):
 }
 
 /**
- * True when `paramNode` (one child of a function/method's `parameters` list,
- * or a `catch` clause's exception binding) BINDS `name` as a parameter —
- * i.e. `name` is the pattern being declared, not a reference appearing
- * inside a default-value expression. `function helper(x = fetchFn) {}`
- * does NOT bind `fetchFn` — `fetchFn` there is a REFERENCE (a real use of
- * the outer variable), and `introducesShadowedBinding`'s old blanket
- * "does the whole parameters subtree contain this text anywhere" check
- * wrongly treated that reference as a binding, incorrectly pruning the
- * function body from the liveness scan and losing a real edge (Greptile
- * review, PR #2432). Only the BOUND side of an `assignment_pattern`/
- * `object_assignment_pattern` (`left`) is checked — the default-value side
- * (`right`) is deliberately left for the ordinary reference scan to find.
+ * True when `paramNode` BINDS `name` — i.e. `name` is the pattern being
+ * declared/written to, not a reference appearing inside a nested
+ * expression. Two callers reuse this same pattern-shape logic:
+ *
+ * - A function/method's `parameters` list, or a `catch` clause's exception
+ *   binding: `function helper(x = fetchFn) {}` does NOT bind `fetchFn` —
+ *   `fetchFn` there is a REFERENCE (a real use of the outer variable), and
+ *   `introducesShadowedBinding`'s old blanket "does the whole parameters
+ *   subtree contain this text anywhere" check wrongly treated that
+ *   reference as a binding, incorrectly pruning the function body from the
+ *   liveness scan and losing a real edge (Greptile review, PR #2432).
+ * - An assignment expression's `left` side, INCLUDING destructuring targets
+ *   (`({ fn } = replacement)`, `[fn] = replacement`) — those are WRITES, not
+ *   reads, the same as a plain `fn = replacement` (Greptile review, PR
+ *   #2432): overwriting a fallback variable through destructuring doesn't
+ *   consume its previous value either.
+ *
+ * Only the BOUND side of an `assignment_pattern`/`object_assignment_pattern`
+ * (`left`) is checked — the default-value side (`right`) is deliberately
+ * left for the ordinary reference scan to find.
  */
-function parameterBindsName(paramNode: TreeSitterNode, name: string): boolean {
+function patternBindsName(paramNode: TreeSitterNode, name: string): boolean {
   switch (paramNode.type) {
     case 'identifier':
       return paramNode.text === name;
     case 'assignment_pattern':
     case 'object_assignment_pattern': {
       const left = paramNode.childForFieldName('left');
-      return left ? parameterBindsName(left, name) : false;
+      return left ? patternBindsName(left, name) : false;
     }
     case 'rest_pattern': {
       for (let i = 0; i < paramNode.childCount; i++) {
         const child = paramNode.child(i);
-        if (child && child.type !== '...' && parameterBindsName(child, name)) return true;
+        if (child && child.type !== '...' && patternBindsName(child, name)) return true;
       }
       return false;
     }
@@ -4388,9 +4396,9 @@ function parameterBindsName(paramNode: TreeSitterNode, name: string): boolean {
           if (child.text === name) return true;
         } else if (child.type === 'pair_pattern') {
           const value = child.childForFieldName('value');
-          if (value && parameterBindsName(value, name)) return true;
+          if (value && patternBindsName(value, name)) return true;
         } else if (child.type === 'rest_pattern' || child.type === 'object_assignment_pattern') {
-          if (parameterBindsName(child, name)) return true;
+          if (patternBindsName(child, name)) return true;
         }
       }
       return false;
@@ -4398,7 +4406,7 @@ function parameterBindsName(paramNode: TreeSitterNode, name: string): boolean {
     case 'array_pattern': {
       for (let i = 0; i < paramNode.childCount; i++) {
         const child = paramNode.child(i);
-        if (child && parameterBindsName(child, name)) return true;
+        if (child && patternBindsName(child, name)) return true;
       }
       return false;
     }
@@ -4406,7 +4414,7 @@ function parameterBindsName(paramNode: TreeSitterNode, name: string): boolean {
     case 'required_parameter':
     case 'optional_parameter': {
       const pattern = paramNode.childForFieldName('pattern') ?? paramNode.childForFieldName('name');
-      return pattern ? parameterBindsName(pattern, name) : false;
+      return pattern ? patternBindsName(pattern, name) : false;
     }
     default:
       return false;
@@ -4440,14 +4448,16 @@ function blockContainsIdentifier(node: TreeSitterNode, name: string, depth = 0):
  * rebinding (`var fn = a || b, fn = c;`) must not be mistaken for a use of
  * `fn` (Greptile review, PR #2432), so only its `value` field is scanned.
  *
- * Similarly, a plain `=` assignment's left-hand identifier
- * (`assignment_expression`, distinct from the tree-sitter grammar's
- * `augmented_assignment_expression` for `+=`/`||=`/etc.) is a WRITE, not a
- * read: `fn = replacement;` overwrites `fn` without ever consuming its
- * current value, so it must not count as evidence the fallback assigned to
- * `fn` is used (Greptile review, PR #2432). A compound assignment DOES read
- * the current value before writing, so it's deliberately left to the
- * generic scan below (its `left` is scanned like any other reference).
+ * Similarly, a plain `=` assignment's left side (`assignment_expression`,
+ * distinct from the tree-sitter grammar's `augmented_assignment_expression`
+ * for `+=`/`||=`/etc.) — whether a bare identifier or a destructuring
+ * pattern (`({ fn } = replacement)`, `[fn] = replacement`) — is a WRITE, not
+ * a read: it overwrites `fn` without ever consuming its current value, so
+ * it must not count as evidence the fallback assigned to `fn` is used
+ * (Greptile review, PR #2432; `patternBindsName` covers both shapes). A
+ * compound assignment DOES read the current value before writing, so it's
+ * deliberately left to the generic scan below (its `left` is scanned like
+ * any other reference).
  */
 function blockContainsIdentifierExcluding(
   node: TreeSitterNode,
@@ -4466,7 +4476,7 @@ function blockContainsIdentifierExcluding(
   if (node.type === 'assignment_expression') {
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
-    if (left?.type === 'identifier' && left.text === name) {
+    if (left && patternBindsName(left, name)) {
       return right ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1) : false;
     }
   }

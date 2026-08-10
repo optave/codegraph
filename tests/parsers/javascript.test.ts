@@ -2180,6 +2180,30 @@ function runDemo(reporter: Reporter, users: string[]): void {
         symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
       ).toBe(true);
     });
+
+    // Greptile review, PR #2432: overwriting a fallback variable through
+    // OBJECT destructuring is still a WRITE, not a read — the same as a
+    // plain `fn = replacement`.
+    it('does not credit liveness from a write-only object destructuring reassignment', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        ({ fn } = replacement);
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Same as above, for ARRAY destructuring.
+    it('does not credit liveness from a write-only array destructuring reassignment', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        [fn] = replacement;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {

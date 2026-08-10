@@ -4280,7 +4280,7 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
                 Some(params) => {
                     for i in 0..params.child_count() {
                         if let Some(param) = params.child(i) {
-                            if parameter_binds_name(&param, name, source) {
+                            if pattern_binds_name(&param, name, source) {
                                 return true;
                             }
                         }
@@ -4291,7 +4291,7 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
             }
         }
         "catch_clause" => match node.child_by_field_name("parameter") {
-            Some(param) => parameter_binds_name(&param, name, source),
+            Some(param) => pattern_binds_name(&param, name, source),
             None => false,
         },
         "for_statement" | "for_in_statement" => {
@@ -4356,33 +4356,41 @@ fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8])
     false
 }
 
-/// True when `param_node` (one child of a function/method's `parameters`
-/// list, or a `catch` clause's exception binding) BINDS `name` as a
-/// parameter — i.e. `name` is the pattern being declared, not a reference
-/// appearing inside a default-value expression. `function helper(x =
-/// fetchFn) {}` does NOT bind `fetchFn` — `fetchFn` there is a REFERENCE (a
-/// real use of the outer variable), and the old blanket "does the whole
-/// parameters subtree contain this text anywhere" check wrongly treated
-/// that reference as a binding, incorrectly pruning the function body from
-/// the liveness scan and losing a real edge (Greptile review, PR #2432).
+/// True when `param_node` BINDS `name` — i.e. `name` is the pattern being
+/// declared/written to, not a reference appearing inside a nested
+/// expression. Two callers reuse this same pattern-shape logic:
+///
+/// - A function/method's `parameters` list, or a `catch` clause's exception
+///   binding: `function helper(x = fetchFn) {}` does NOT bind `fetchFn` —
+///   `fetchFn` there is a REFERENCE (a real use of the outer variable), and
+///   the old blanket "does the whole parameters subtree contain this text
+///   anywhere" check wrongly treated that reference as a binding,
+///   incorrectly pruning the function body from the liveness scan and
+///   losing a real edge (Greptile review, PR #2432).
+/// - An assignment expression's `left` side, INCLUDING destructuring
+///   targets (`({ fn } = replacement)`, `[fn] = replacement`) — those are
+///   WRITES, not reads, the same as a plain `fn = replacement` (Greptile
+///   review, PR #2432): overwriting a fallback variable through
+///   destructuring doesn't consume its previous value either.
+///
 /// Only the BOUND side of an `assignment_pattern`/`object_assignment_pattern`
 /// (`left`) is checked — the default-value side (`right`) is deliberately
 /// left for the ordinary reference scan to find.
 ///
-/// Mirrors `parameterBindsName` in `src/extractors/javascript.ts`.
-fn parameter_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
+/// Mirrors `patternBindsName` in `src/extractors/javascript.ts`.
+fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
     match param_node.kind() {
         "identifier" => node_text(param_node, source) == name,
         "assignment_pattern" | "object_assignment_pattern" => {
             match param_node.child_by_field_name("left") {
-                Some(left) => parameter_binds_name(&left, name, source),
+                Some(left) => pattern_binds_name(&left, name, source),
                 None => false,
             }
         }
         "rest_pattern" => {
             for i in 0..param_node.child_count() {
                 if let Some(child) = param_node.child(i) {
-                    if child.kind() != "..." && parameter_binds_name(&child, name, source) {
+                    if child.kind() != "..." && pattern_binds_name(&child, name, source) {
                         return true;
                     }
                 }
@@ -4402,13 +4410,13 @@ fn parameter_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
                     }
                     "pair_pattern" => {
                         if let Some(value) = child.child_by_field_name("value") {
-                            if parameter_binds_name(&value, name, source) {
+                            if pattern_binds_name(&value, name, source) {
                                 return true;
                             }
                         }
                     }
                     "rest_pattern" | "object_assignment_pattern" => {
-                        if parameter_binds_name(&child, name, source) {
+                        if pattern_binds_name(&child, name, source) {
                             return true;
                         }
                     }
@@ -4420,7 +4428,7 @@ fn parameter_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
         "array_pattern" => {
             for i in 0..param_node.child_count() {
                 if let Some(child) = param_node.child(i) {
-                    if parameter_binds_name(&child, name, source) {
+                    if pattern_binds_name(&child, name, source) {
                         return true;
                     }
                 }
@@ -4433,7 +4441,7 @@ fn parameter_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
                 .child_by_field_name("pattern")
                 .or_else(|| param_node.child_by_field_name("name"));
             match pattern {
-                Some(p) => parameter_binds_name(&p, name, source),
+                Some(p) => pattern_binds_name(&p, name, source),
                 None => false,
             }
         }
@@ -4477,14 +4485,16 @@ fn block_contains_identifier(node: &Node, name: &str, source: &[u8], depth: usiz
 /// use of `fn` (Greptile review, PR #2432), so only its `value` field is
 /// scanned.
 ///
-/// Similarly, a plain `=` assignment's left-hand identifier
-/// (`assignment_expression`, distinct from the tree-sitter grammar's
-/// `augmented_assignment_expression` for `+=`/`||=`/etc.) is a WRITE, not a
-/// read: `fn = replacement;` overwrites `fn` without ever consuming its
-/// current value, so it must not count as evidence the fallback assigned to
-/// `fn` is used (Greptile review, PR #2432). A compound assignment DOES read
-/// the current value before writing, so it's deliberately left to the
-/// generic scan below (its `left` is scanned like any other reference).
+/// Similarly, a plain `=` assignment's left side (`assignment_expression`,
+/// distinct from the tree-sitter grammar's `augmented_assignment_expression`
+/// for `+=`/`||=`/etc.) — whether a bare identifier or a destructuring
+/// pattern (`({ fn } = replacement)`, `[fn] = replacement`) — is a WRITE,
+/// not a read: it overwrites `fn` without ever consuming its current
+/// value, so it must not count as evidence the fallback assigned to `fn` is
+/// used (Greptile review, PR #2432; `pattern_binds_name` covers both
+/// shapes). A compound assignment DOES read the current value before
+/// writing, so it's deliberately left to the generic scan below (its
+/// `left` is scanned like any other reference).
 ///
 /// Mirrors `blockContainsIdentifierExcluding` in `src/extractors/javascript.ts`.
 fn block_contains_identifier_excluding(
@@ -4516,7 +4526,7 @@ fn block_contains_identifier_excluding(
     }
     if node.kind() == "assignment_expression" {
         if let Some(left) = node.child_by_field_name("left") {
-            if left.kind() == "identifier" && node_text(&left, source) == name {
+            if pattern_binds_name(&left, name, source) {
                 return match node.child_by_field_name("right") {
                     Some(right) => block_contains_identifier_excluding(
                         &right,
@@ -7716,6 +7726,26 @@ mod tests {
     fn credits_liveness_from_a_compound_assignment_reference() {
         let s = parse_js("let fn = options.custom || fetchLatestVersion;\nfn += 1;");
         assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: overwriting a fallback variable through
+    // OBJECT destructuring is still a WRITE, not a read — the same as a
+    // plain `fn = replacement`.
+    #[test]
+    fn does_not_credit_liveness_from_a_write_only_object_destructuring_reassignment() {
+        let s = parse_js("let fn = options.custom || fetchLatestVersion;\n({ fn } = replacement);");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Same as above, for ARRAY destructuring.
+    #[test]
+    fn does_not_credit_liveness_from_a_write_only_array_destructuring_reassignment() {
+        let s = parse_js("let fn = options.custom || fetchLatestVersion;\n[fn] = replacement;");
+        assert!(!s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
     }
