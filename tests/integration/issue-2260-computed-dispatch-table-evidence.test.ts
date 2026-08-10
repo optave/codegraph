@@ -16,6 +16,16 @@
  * credits the WHOLE table with computed-invocation evidence — a computed key
  * can't name one specific property statically the way a dot access can, so
  * evidence is credited per-table rather than per-key.
+ *
+ * The "credit the whole table" aggregation (both engines) was originally
+ * keyed on the table's bare variable name across the whole build pass, not
+ * scoped per-file — so a second, unrelated file declaring its own same-named
+ * table with no computed-access evidence of its own would wrongly inherit
+ * the first file's evidence (Greptile review, PR #2445). `unrelated.js`
+ * below regression-tests that: it declares its own `GROOVY_NODE_HANDLERS`
+ * with a handler that is never independently invoked and whose table is
+ * never accessed computedly — that handler must stay dead even once
+ * `dispatch.js`'s same-named table earns evidence.
  */
 
 import fs from 'node:fs';
@@ -49,6 +59,15 @@ function collectGroovyParentInterfaces(node) {
 export function start(node, ctx) {
   walkGroovyNode(node, ctx);
 }
+`,
+  'unrelated.js': `
+function unrelatedHandler(node) {
+  return node;
+}
+
+const GROOVY_NODE_HANDLERS = {
+  some_other_kind: unrelatedHandler,
+};
 `,
 };
 
@@ -100,6 +119,14 @@ function runShared(getDbPath: () => string) {
     expect(callee, 'collectGroovyParentInterfaces node not found').toBeDefined();
     expect(DEAD_ROLES.has(handler!.role ?? '')).toBe(false);
     expect(DEAD_ROLES.has(callee!.role ?? '')).toBe(false);
+  });
+
+  it("does not credit an unrelated file's same-named table with borrowed evidence (Greptile review, PR #2445)", () => {
+    // unrelated.js declares its own `GROOVY_NODE_HANDLERS` — same bare name
+    // as dispatch.js's table, but never accessed computedly and never
+    // independently invoked. Its own handler must get no calls edge even
+    // though dispatch.js's same-named table has confirmed evidence.
+    expect(countCallEdges(getDbPath(), 'GROOVY_NODE_HANDLERS', 'unrelatedHandler')).toBe(0);
   });
 }
 

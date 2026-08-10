@@ -1342,6 +1342,19 @@ function persistReturnTypes(ctx: PipelineContext): void {
 
 // ── Call edges (JS fallback) ────────────────────────────────────────────
 
+/**
+ * Scope key for #2260's computed-dispatch-table evidence set:
+ * `${file}::${tableName}`. A bare table name would let two unrelated files
+ * that each declare a same-named table (e.g. `HANDLERS`) share liveness —
+ * one file's confirmed computed-invocation evidence would wrongly credit
+ * the other file's same-named-but-unrelated table (Greptile review, PR
+ * #2445) — so every lookup/insert into that set must go through this key,
+ * mirroring the `callee::restName` scoping convention (#1358).
+ */
+function computedDispatchTableEvidenceKey(relPath: string, tableName: string): string {
+  return `${relPath}::${tableName}`;
+}
+
 function buildCallEdgesJS(
   ctx: PipelineContext,
   getNodeIdStmt: NodeIdStmt,
@@ -1378,10 +1391,17 @@ function buildCallEdgesJS(
   // cross-file case missed on a scoped rebuild recovers on the next full
   // build, matching this codebase's other documented incremental scoping
   // trade-offs (see collectInvokedPropertyNames's own doc comment).
+  //
+  // Keyed on `${file}::${tableName}`, not the bare table name — mirrors the
+  // `callee::restName` scoping convention (#1358) for the same reason: two
+  // unrelated files can each declare a same-named table (e.g. `HANDLERS`),
+  // and a bare-name Set would let one file's computed-invocation evidence
+  // credit the other file's same-named-but-unrelated table (Greptile review,
+  // PR #2445).
   const computedDispatchTableEvidence = new Set<string>();
-  for (const symbols of fileSymbols.values()) {
+  for (const [relPath, symbols] of fileSymbols) {
     for (const name of symbols.computedDispatchTableEvidence ?? []) {
-      computedDispatchTableEvidence.add(name);
+      computedDispatchTableEvidence.add(computedDispatchTableEvidenceKey(relPath, name));
     }
   }
 
@@ -1799,7 +1819,10 @@ function resolveFallbackTargets(
     if (
       call.keyExpr &&
       !invokedPropertyNames.has(call.keyExpr) &&
-      !(call.receiver && computedDispatchTableEvidence.has(call.receiver))
+      !(
+        call.receiver &&
+        computedDispatchTableEvidence.has(computedDispatchTableEvidenceKey(relPath, call.receiver))
+      )
     ) {
       targets = [];
     }

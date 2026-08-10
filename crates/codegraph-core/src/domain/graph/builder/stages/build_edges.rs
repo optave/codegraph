@@ -672,6 +672,20 @@ fn collect_invoked_property_names(files: &[FileEdgeInput], extra: &[String]) -> 
 }
 
 /// Aggregate table names (issue #2260) with confirmed LOCAL computed-
+/// Scope key for #2260's computed-dispatch-table evidence set:
+/// `${file}::${tableName}`. A bare table name would let two unrelated files
+/// that each declare a same-named table (e.g. `HANDLERS`) share liveness —
+/// one file's confirmed computed-invocation evidence would wrongly credit
+/// the other file's same-named-but-unrelated table (Greptile review, PR
+/// #2445) — so every lookup/insert into that set must go through this key,
+/// mirroring this same struct's `cha_implementors_by_file`/
+/// `cha_parents_by_file` cross-file disambiguation convention (#2237) and
+/// the TypeScript-side `computedDispatchTableEvidenceKey` in
+/// `stages/build-edges.ts`.
+fn computed_dispatch_table_evidence_key(file: &str, table_name: &str) -> String {
+    format!("{file}::{table_name}")
+}
+
 /// invocation evidence across every file in this build pass — mirrors
 /// `computedDispatchTableEvidence`'s aggregation in
 /// `src/domain/graph/builder/stages/build-edges.ts`. Each file's own list
@@ -688,7 +702,7 @@ fn collect_computed_dispatch_table_evidence(files: &[FileEdgeInput]) -> HashSet<
     for file in files {
         if let Some(evidence) = &file.computed_dispatch_table_evidence {
             for name in evidence {
-                names.insert(name.clone());
+                names.insert(computed_dispatch_table_evidence_key(&file.file, name));
             }
         }
     }
@@ -1463,10 +1477,10 @@ fn process_file<'a>(
             // can't name this specific property statically, so that
             // evidence is credited to the whole table rather than per-key.
             if let Some(key_expr) = call.key_expr.as_deref() {
-                let has_computed_evidence = call
-                    .receiver
-                    .as_deref()
-                    .is_some_and(|r| ctx.computed_dispatch_table_evidence.contains(r));
+                let has_computed_evidence = call.receiver.as_deref().is_some_and(|r| {
+                    ctx.computed_dispatch_table_evidence
+                        .contains(&computed_dispatch_table_evidence_key(fc.rel_path, r))
+                });
                 if !ctx.invoked_property_names.contains(key_expr) && !has_computed_evidence {
                     targets.clear();
                 }
