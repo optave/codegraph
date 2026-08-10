@@ -17,6 +17,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CallNodeLookup } from '../../src/domain/graph/builder/call-resolver.js';
 import {
+  findCaller,
   resolveByMethodOrGlobal,
   resolveCallTargets,
   resolveDefinePropertyAccessorTarget,
@@ -1249,5 +1250,53 @@ describe('resolveCallTargets — accessor-read de-aliasing and import scoping (#
       null,
     );
     expect(targets).toEqual([]);
+  });
+});
+
+describe('findCaller — real callable preferred over synthetic framework-entry placeholder (#2259)', () => {
+  function makeCallerLookup(): CallNodeLookup {
+    return {
+      byName() {
+        return [];
+      },
+      byNameAndFile() {
+        return [];
+      },
+      isBarrel() {
+        return false;
+      },
+      resolveBarrel() {
+        return null;
+      },
+      nodeId(name) {
+        return name === 'WasmWorkerPool.ensureWorker' ? { id: 1 } : { id: 2 };
+      },
+      hasEnclosingCallable() {
+        return false;
+      },
+    };
+  }
+
+  it('attributes a call to the enclosing method, not the narrower synthetic event: placeholder covering the same line', () => {
+    const lookup = makeCallerLookup();
+    // `event:message`'s span (a one-line callback body) is narrower than
+    // `ensureWorker`'s (its whole method body) — before the fix, the
+    // narrowest-span rule alone would have picked `event:message`, which
+    // has no class context and can never resolve a `this.onMessage()` call.
+    const definitions = [
+      { name: 'WasmWorkerPool.ensureWorker', kind: 'method', line: 5, endLine: 9 },
+      { name: 'event:message', kind: 'function', line: 8, endLine: 8 },
+    ];
+    const result = findCaller(lookup, { line: 8 }, definitions, 'pool.ts', { id: 99 });
+    expect(result.callerName).toBe('WasmWorkerPool.ensureWorker');
+  });
+
+  it('still attributes a call to the synthetic placeholder when no real callable also encloses it', () => {
+    // The common case: a route/event/command registered directly at module
+    // scope, with no enclosing real method to prefer.
+    const lookup = makeCallerLookup();
+    const definitions = [{ name: 'event:message', kind: 'function', line: 3, endLine: 3 }];
+    const result = findCaller(lookup, { line: 3 }, definitions, 'pool.ts', { id: 99 });
+    expect(result.callerName).toBe('event:message');
   });
 });

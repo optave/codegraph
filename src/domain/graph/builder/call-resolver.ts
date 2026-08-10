@@ -9,6 +9,7 @@
  * `resolveByMethodOrGlobal` delegates its two branches to strategy helpers
  * in `../resolver/strategy.ts` to keep per-strategy complexity manageable.
  */
+import { FRAMEWORK_ENTRY_PREFIXES } from '../../../graph/classifiers/roles.js';
 import { CALLABLE_SYMBOL_KINDS } from '../../../shared/kinds.js';
 import { computeConfidence, isSameLanguageFamily } from '../resolve.js';
 import {
@@ -258,9 +259,30 @@ const TOP_LEVEL_BINDING_KINDS = new Set(['variable', 'constant']);
 type Def = { name: string; kind: string; line: number; endLine?: number | null };
 type CallerMatch = { id: number; name: string } | null;
 
+/** True when `name` is a synthetic framework-dispatch placeholder (`route:`/`event:`/`command:`-prefixed). */
+function isFrameworkEntryName(name: string): boolean {
+  return FRAMEWORK_ENTRY_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
 /**
  * Find the narrowest enclosing function/method definition for `callLine`.
  * Returns the DB node and name, or null if none encloses the call.
+ *
+ * Two passes: real (non-synthetic) callables first, then synthetic
+ * framework-dispatch placeholders (`route:`/`event:`/`command:`-prefixed,
+ * e.g. `extractCallbackDefinition`'s `event:${eventName}` for an
+ * EventEmitter `.on('event', callback)` registration) only as a fallback.
+ * A synthetic placeholder has no class/`this` context of its own — a
+ * `this.method()` call inside its callback body can never resolve if
+ * attributed to it (issue #2259) — whereas a REAL enclosing method's own
+ * name already carries that context. Without this preference, a one-line
+ * callback body (`(msg) => this.onMessage(msg)`) registered inside a class
+ * method would win caller attribution purely by having the narrower span
+ * (its own single line vs. the enclosing method's full body), even though
+ * the enclosing method is *also* a valid, strictly more useful candidate.
+ * A synthetic placeholder is still picked when it's the ONLY candidate
+ * (the common case: a route/event/command registered directly at module
+ * scope, with no enclosing real method to prefer).
  */
 function findEnclosingCallable(
   lookup: CallNodeLookup,
@@ -268,10 +290,23 @@ function findEnclosingCallable(
   definitions: ReadonlyArray<Def>,
   relPath: string,
 ): CallerMatch {
+  const real = findNarrowestEnclosingCallable(lookup, callLine, definitions, relPath, false);
+  if (real) return real;
+  return findNarrowestEnclosingCallable(lookup, callLine, definitions, relPath, true);
+}
+
+function findNarrowestEnclosingCallable(
+  lookup: CallNodeLookup,
+  callLine: number,
+  definitions: ReadonlyArray<Def>,
+  relPath: string,
+  onlyFrameworkEntry: boolean,
+): CallerMatch {
   let best: CallerMatch = null;
   let bestSpan = Infinity;
   for (const def of definitions) {
     if (!CALLABLE_SYMBOL_KINDS.has(def.kind)) continue;
+    if (isFrameworkEntryName(def.name) !== onlyFrameworkEntry) continue;
     if (def.line > callLine) continue;
     const end = def.endLine ?? Infinity;
     if (callLine > end) continue;

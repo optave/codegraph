@@ -5,6 +5,7 @@ use napi_derive::napi;
 use crate::domain::graph::builder::barrel_resolution::{self, BarrelContext, ReexportRef};
 use crate::domain::graph::builder::stages::import_edges::{import_name_pairs, ImportNameSource};
 use crate::domain::graph::resolve;
+use crate::graph::classifiers::roles::FRAMEWORK_ENTRY_PREFIXES;
 use crate::types::{
     ArrayCallbackBinding, ArrayElemBinding, FnRefBinding, ForOfBinding, ObjectPropBinding,
     ObjectRestParamBinding, ParamBinding, RenamedImport, SpreadArgBinding, ThisCallBinding,
@@ -1528,6 +1529,13 @@ fn is_top_level_binding_kind(kind: &str) -> bool {
     kind == "variable" || kind == "constant"
 }
 
+/// True when `name` is a synthetic framework-dispatch placeholder
+/// (`route:`/`event:`/`command:`-prefixed). Mirrors `isFrameworkEntryName`
+/// in call-resolver.ts.
+fn is_framework_entry_name(name: &str) -> bool {
+    FRAMEWORK_ENTRY_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
 /// Find the narrowest enclosing definition for a call at the given line.
 ///
 /// Two-pass strategy (mirrors `findCaller` in call-resolver.ts):
@@ -1537,17 +1545,34 @@ fn is_top_level_binding_kind(kind: &str) -> bool {
 ///             fallback when no function/method encloses the call (e.g. Haskell
 ///             top-level `main = do …` is a `bind` node with kind `variable`).
 ///
-/// Tie-breaking in Pass 1: when two callable definitions have the same span,
-/// prefer the bare (unqualified) name over the dot-containing qualified name.
-/// Object-literal methods are extracted twice by the Rust extractor — once as
-/// `o1.f(function)` from `extract_object_literal_functions` (called eagerly
-/// inside `handle_var_decl`) and once as `f(method)` from `handle_method_def`
-/// (called later during the child walk). The WASM extractor emits `f(method)`
-/// first (query captures run before the walk-phase `extractObjectLiteralFunctions`),
-/// so WASM's strict-less-than tie-break naturally picks the bare name.
-/// Applying the same preference here aligns native attribution with WASM and with
-/// the jelly-micro ground-truth expected-edges (which use bare `f`/`g` names).
-/// Names with angle brackets (e.g. `B.<static:36:2>`) are synthetic static-block
+/// Within Pass 1, real (non-synthetic) callables are tried before synthetic
+/// framework-dispatch placeholders (`route:`/`event:`/`command:`-prefixed,
+/// e.g. `event:${eventName}` for an EventEmitter `.on('event', callback)`
+/// registration) — a synthetic placeholder has no class/`this` context of
+/// its own, so a `this.method()` call inside its callback body can never
+/// resolve if attributed to it (issue #2259), whereas a REAL enclosing
+/// method's own name already carries that context. Without this
+/// preference, a one-line callback body (`(msg) => this.onMessage(msg)`)
+/// registered inside a class method would win caller attribution purely by
+/// having the narrower span (its own single line vs. the enclosing
+/// method's full body), even though the enclosing method is *also* a
+/// valid, strictly more useful candidate. A synthetic placeholder is still
+/// picked when it's the ONLY candidate (the common case: a route/event/
+/// command registered directly at module scope, with no enclosing real
+/// method to prefer).
+///
+/// Tie-breaking within each tier: when two callable definitions have the
+/// same span, prefer the bare (unqualified) name over the dot-containing
+/// qualified name. Object-literal methods are extracted twice by the Rust
+/// extractor — once as `o1.f(function)` from `extract_object_literal_functions`
+/// (called eagerly inside `handle_var_decl`) and once as `f(method)` from
+/// `handle_method_def` (called later during the child walk). The WASM
+/// extractor emits `f(method)` first (query captures run before the
+/// walk-phase `extractObjectLiteralFunctions`), so WASM's strict-less-than
+/// tie-break naturally picks the bare name. Applying the same preference
+/// here aligns native attribution with WASM and with the jelly-micro
+/// ground-truth expected-edges (which use bare `f`/`g` names). Names with
+/// angle brackets (e.g. `B.<static:36:2>`) are synthetic static-block
 /// nodes excluded from the bare-preference rule.
 ///
 /// Returns `(caller_id, caller_name)` — `caller_name` is `""` when the call
@@ -1557,9 +1582,12 @@ fn find_enclosing_caller<'a>(
     call_line: u32,
     file_node_id: u32,
 ) -> (u32, &'a str) {
-    let mut fn_caller_id: Option<u32> = None;
-    let mut fn_caller_name = "";
-    let mut fn_caller_span = u32::MAX;
+    if let Some((id, name)) = find_narrowest_enclosing_callable(defs, call_line, false) {
+        return (id, name);
+    }
+    if let Some((id, name)) = find_narrowest_enclosing_callable(defs, call_line, true) {
+        return (id, name);
+    }
 
     // For variable/constant bindings we pick the WIDEST span (outermost binding),
     // not the narrowest, so that nested `let` bindings inside `main`'s do-block
@@ -1573,47 +1601,66 @@ fn find_enclosing_caller<'a>(
     let mut var_caller_span: i64 = -1;
 
     for def in defs {
-        if def.line <= call_line && call_line <= def.end_line {
+        if def.line <= call_line && call_line <= def.end_line && is_top_level_binding_kind(def.kind)
+        {
             let span = def.end_line.saturating_sub(def.line);
-            if is_callable_kind(def.kind) {
-                // On a strict span improvement always take the new candidate.
-                // On a tie, prefer bare names over qualified names so native matches WASM:
-                // both pick `f(method)` over `o1.f(function)` when an object-literal method
-                // is extracted under both names at the same line. Synthetic angle-bracket
-                // nodes (e.g. `B.<static:36:2>`) are excluded on both sides of the comparison.
-                let is_improvement = span < fn_caller_span;
-                let is_tie_prefer_bare = span == fn_caller_span
-                    && !def.name.contains('.')
-                    && !def.name.contains('<')
-                    && fn_caller_name.contains('.')
-                    && !fn_caller_name.contains('<');
-                if is_improvement || is_tie_prefer_bare {
-                    if let Some(id) = def.node_id {
-                        fn_caller_id = Some(id);
-                        fn_caller_name = def.name;
-                        fn_caller_span = span;
-                    }
-                }
-            } else if is_top_level_binding_kind(def.kind) {
-                if (span as i64) > var_caller_span {
-                    if let Some(id) = def.node_id {
-                        var_caller_id = Some(id);
-                        var_caller_name = def.name;
-                        var_caller_span = span as i64;
-                    }
+            if (span as i64) > var_caller_span {
+                if let Some(id) = def.node_id {
+                    var_caller_id = Some(id);
+                    var_caller_name = def.name;
+                    var_caller_span = span as i64;
                 }
             }
         }
     }
 
-    // Prefer function/method over variable/constant binding.
-    if let Some(id) = fn_caller_id {
-        return (id, fn_caller_name);
-    }
     if let Some(id) = var_caller_id {
         return (id, var_caller_name);
     }
     (file_node_id, "")
+}
+
+fn find_narrowest_enclosing_callable<'a>(
+    defs: &[DefWithId<'a>],
+    call_line: u32,
+    only_framework_entry: bool,
+) -> Option<(u32, &'a str)> {
+    let mut fn_caller_id: Option<u32> = None;
+    let mut fn_caller_name = "";
+    let mut fn_caller_span = u32::MAX;
+
+    for def in defs {
+        if !(def.line <= call_line && call_line <= def.end_line) {
+            continue;
+        }
+        if !is_callable_kind(def.kind) {
+            continue;
+        }
+        if is_framework_entry_name(def.name) != only_framework_entry {
+            continue;
+        }
+        let span = def.end_line.saturating_sub(def.line);
+        // On a strict span improvement always take the new candidate.
+        // On a tie, prefer bare names over qualified names so native matches WASM:
+        // both pick `f(method)` over `o1.f(function)` when an object-literal method
+        // is extracted under both names at the same line. Synthetic angle-bracket
+        // nodes (e.g. `B.<static:36:2>`) are excluded on both sides of the comparison.
+        let is_improvement = span < fn_caller_span;
+        let is_tie_prefer_bare = span == fn_caller_span
+            && !def.name.contains('.')
+            && !def.name.contains('<')
+            && fn_caller_name.contains('.')
+            && !fn_caller_name.contains('<');
+        if is_improvement || is_tie_prefer_bare {
+            if let Some(id) = def.node_id {
+                fn_caller_id = Some(id);
+                fn_caller_name = def.name;
+                fn_caller_span = span;
+            }
+        }
+    }
+
+    fn_caller_id.map(|id| (id, fn_caller_name))
 }
 
 /// Step 2 of the scoped (this/self/super or no-receiver) fallback: exact global
