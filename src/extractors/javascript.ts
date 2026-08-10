@@ -4272,9 +4272,14 @@ const SCOPE_NODE_TYPES: ReadonlySet<string> = new Set([
  * True when `node` (one of `SCOPE_NODE_TYPES`) declares its OWN binding
  * named `name` at this scope's own level — a function/method parameter or
  * own name, a catch clause's exception binding, a for-loop's own loop
- * variable, or a `let`/`const`/`var` declared directly inside this block
- * (not a deeper nested block, which gets its own independent shadow check
- * when the recursive scan reaches it).
+ * variable, or a `let`/`const` declared directly inside this block (not a
+ * deeper nested block, which gets its own independent shadow check when the
+ * recursive scan reaches it). Deliberately NOT `var` (Greptile review, PR
+ * #2432): `var` is function-scoped, so a `var` anywhere below this node is
+ * always the SAME binding as an outer `var` of the same name, never a
+ * distinct shadow — treating it as one would wrongly prune a genuine read
+ * elsewhere in this subtree for a redeclaration that isn't actually a
+ * different variable.
  */
 function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean {
   switch (node.type) {
@@ -4299,13 +4304,35 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
     }
     case 'for_statement':
     case 'for_in_statement': {
+      // A C-style for-loop's init clause (`for (let/const x = ...; ...)`)
+      // wraps its declaration in a `lexical_declaration` child node. `var`,
+      // deliberately EXCLUDED (Greptile review, PR #2432): it's
+      // function-scoped, not scoped to this loop, so a `var` init here is
+      // the SAME binding as the outer variable, never a distinct shadow —
+      // treating it as one would wrongly prune a genuine read anywhere in
+      // this loop's body (matches the same reasoning already applied to
+      // `switch_body`, below, and to the `statement_block` case).
       for (let i = 0; i < node.childCount; i++) {
         const child = node.child(i);
-        if (
-          child &&
-          (child.type === 'lexical_declaration' || child.type === 'variable_declaration') &&
-          declarationDeclaresName(child, name)
-        ) {
+        if (child && child.type === 'lexical_declaration' && declarationDeclaresName(child, name)) {
+          return true;
+        }
+      }
+      // A for-in/for-of loop's DECLARING form (`for (let/const x of/in
+      // y)`), by contrast, does NOT wrap its loop variable in a
+      // `lexical_declaration` node at all — `kind` (the let/const/var
+      // keyword) and `left` (the bare identifier/pattern) are separate
+      // direct fields instead (discovered while verifying the `var`
+      // exclusion above — Greptile review, PR #2432 — this specific check
+      // had never actually matched a for-in/for-of declaring form's real
+      // AST shape). A `let`/`const` loop variable genuinely IS a new
+      // binding scoped to just this loop (unlike `var`, whose bare `left`
+      // here is the SAME function-scoped binding as an outer `var` and is
+      // therefore excluded, matching the var-never-shadows principle above).
+      if (node.type === 'for_in_statement') {
+        const kind = node.childForFieldName('kind')?.text;
+        const left = node.childForFieldName('left');
+        if ((kind === 'let' || kind === 'const') && left && patternBindsName(left, name)) {
           return true;
         }
       }
@@ -4315,10 +4342,13 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
       for (let i = 0; i < node.childCount; i++) {
         const child = node.child(i);
         if (!child) continue;
-        if (
-          (child.type === 'lexical_declaration' || child.type === 'variable_declaration') &&
-          declarationDeclaresName(child, name)
-        ) {
+        // `var`, deliberately EXCLUDED (Greptile review, PR #2432): it's
+        // function-scoped, not block-scoped, so a `var` declared directly
+        // in this block is the SAME binding as the outer variable, never a
+        // distinct shadow — treating it as one would wrongly prune a
+        // genuine read anywhere in this block (e.g. a read before the `var`
+        // redeclaration, in the same block).
+        if (child.type === 'lexical_declaration' && declarationDeclaresName(child, name)) {
           return true;
         }
         // A block-local function/class declaration also introduces its own

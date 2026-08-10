@@ -2361,6 +2361,57 @@ function runDemo(reporter: Reporter, users: string[]): void {
         symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
       ).toBe(false);
     });
+
+    // Greptile review, PR #2432: `var` is function-scoped, so a `var`
+    // redeclaration anywhere in a nested block is the SAME binding as an
+    // outer `var` of the same name — it must not prune a genuine read
+    // elsewhere in that same block (here, one that textually precedes the
+    // redeclaration).
+    it('still credits liveness from a read in a nested block that also redeclares the name via var', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          {
+            fn();
+            var fn = something;
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Same principle for a C-style for-loop: a `var` in the loop's own init
+    // clause is the SAME function-scoped binding, so a read in the loop's
+    // test/update clause must still count.
+    it('still credits liveness from a for-loop read when the loop redeclares the name via var', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          for (var fn = 0; fn < 10; fn++) {}
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // A `let`/`const` declaring for-in loop variable IS a genuinely distinct
+    // block-scoped binding (unlike `var`) — it must still shadow correctly.
+    it('does not credit liveness from a let-declared for-in loop variable', () => {
+      const symbols = parseJS(`
+        function outer() {
+          const fn = options.custom || fetchLatestVersion;
+          for (let fn in obj) {
+            doSomething(fn);
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {
