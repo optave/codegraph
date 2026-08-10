@@ -61,14 +61,6 @@ const ENTRY_PATH_PATTERNS: &[&str] = &[
 /// Mirrors `COMMANDER_DISPATCH_NAMES` in `graph/classifiers/roles.ts`.
 const COMMANDER_DISPATCH_NAMES: &[&str] = &["execute", "validate"];
 
-const TEST_FILE_PATTERNS: &[&str] = &[
-    "%.test.%",
-    "%.spec.%",
-    "%__test__%",
-    "%__tests__%",
-    "%.stories.%",
-];
-
 // ── Output types ─────────────────────────────────────────────────────
 
 #[napi(object)]
@@ -701,13 +693,10 @@ fn test_file_filter() -> String {
     test_file_filter_col("caller.file")
 }
 
-/// Build the test-file exclusion filter for an arbitrary column name.
+/// Build the test-file exclusion filter for an arbitrary column name. Delegates to the
+/// shared `infrastructure::test_filter` module (single source of truth, #2256).
 fn test_file_filter_col(column: &str) -> String {
-    TEST_FILE_PATTERNS
-        .iter()
-        .map(|p| format!("AND {} NOT LIKE '{}'", column, p))
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::infrastructure::test_filter::test_file_filter_col(column)
 }
 
 /// Compute two active-files sets from callable rows.

@@ -15,13 +15,50 @@ import {
 // ─── testFilterSQL ───────────────────────────────────────────────────
 
 describe('testFilterSQL', () => {
-  it('returns 5 NOT LIKE conditions with default column', () => {
-    const sql = testFilterSQL();
-    expect(sql).toContain("n.file NOT LIKE '%.test.%'");
-    expect(sql).toContain("n.file NOT LIKE '%.spec.%'");
-    expect(sql).toContain("n.file NOT LIKE '%__test__%'");
-    expect(sql).toContain("n.file NOT LIKE '%__tests__%'");
-    expect(sql).toContain("n.file NOT LIKE '%.stories.%'");
+  /** Runs the generated NOT LIKE clauses against a real SQLite connection. */
+  function isExcluded(file: string): boolean {
+    const db = new Database(':memory:');
+    try {
+      const sql = testFilterSQL('f');
+      const row = db.prepare(`SELECT (1 ${sql}) AS included FROM (SELECT ? AS f)`).get(file) as {
+        included: number;
+      };
+      return row.included === 0;
+    } finally {
+      db.close();
+    }
+  }
+
+  it('excludes filename-marker test files (#2256)', () => {
+    expect(isExcluded('src/foo.test.ts')).toBe(true);
+    expect(isExcluded('src/foo.spec.ts')).toBe(true);
+    expect(isExcluded('src/__tests__/foo.ts')).toBe(true);
+    expect(isExcluded('src/__test__/foo.ts')).toBe(true);
+    expect(isExcluded('src/foo.stories.tsx')).toBe(true);
+  });
+
+  it('excludes test/fixture directory segments (#2256)', () => {
+    expect(isExcluded('tests/foo.ts')).toBe(true);
+    expect(isExcluded('src/tests/foo.ts')).toBe(true);
+    expect(isExcluded('test/foo.go')).toBe(true);
+    expect(isExcluded('src/test/foo.java')).toBe(true);
+    expect(isExcluded('fixtures/foo.json')).toBe(true);
+    expect(isExcluded('src/__fixtures__/foo.json')).toBe(true);
+  });
+
+  it('excludes Go/Python filename-suffix conventions (#2256 follow-up)', () => {
+    expect(isExcluded('pkg/foo_test.go')).toBe(true);
+    expect(isExcluded('test_foo.py')).toBe(true);
+    expect(isExcluded('src/test_foo.py')).toBe(true);
+    expect(isExcluded('foo_test.py')).toBe(true);
+  });
+
+  it('does not exclude a directory or filename that merely contains "test" as a substring (#2256)', () => {
+    expect(isExcluded('src/contests/foo.ts')).toBe(false);
+    expect(isExcluded('src/latest/foo.ts')).toBe(false);
+    expect(isExcluded('src/test-utils/foo.ts')).toBe(false);
+    expect(isExcluded('src/protest.py')).toBe(false);
+    expect(isExcluded('src/latest.py')).toBe(false);
   });
 
   it('uses custom column', () => {
