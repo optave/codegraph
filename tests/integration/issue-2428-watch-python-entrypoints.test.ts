@@ -170,6 +170,45 @@ describe.each(ENGINES)(
       }
     });
 
+    it('does not let a failed rebuild make attribution drift on the next unrelated one', async () => {
+      // `nodes.entrypoint` is a projection of `entrypoint_calls`, and every
+      // path that mutates the evidence must re-project — including the ones
+      // that bail out. Otherwise a rebuild that purges the guard's evidence
+      // and then fails leaves the two disagreeing, and the flag silently
+      // changes later when some unrelated file happens to be rebuilt.
+      //
+      // Asserts stability rather than a specific value on purpose: the
+      // failed rebuild currently leaves the guard file purged from the graph
+      // entirely (#2435, pre-existing and wider than entrypoints), so the
+      // consistent answer today is "cleared". When #2435 makes the purge
+      // recoverable the consistent answer becomes "still flagged" — and this
+      // test should keep passing either way. What must never happen is the
+      // value differing between the two reads.
+      await withFixture(engine, 'failed-rebuild', true, async (dir) => {
+        expect(readSymbol(dir, 'shared_main')?.entrypoint).toBe(1);
+        fs.writeFileSync(path.join(dir, 'other.py'), 'def other():\n    return 9\n');
+        await watchRebuild(dir, 'other.py', engine);
+
+        // Replace the guard file with a directory at the same path: it still
+        // "exists", so the rebuild gets past the deletion branch and then
+        // fails in readFileSafe with EISDIR. Portable, unlike chmod.
+        const guardPath = path.join(dir, 'run.py');
+        fs.rmSync(guardPath);
+        fs.mkdirSync(guardPath);
+        await watchRebuild(dir, 'run.py', engine);
+        const afterFailure = readSymbol(dir, 'shared_main');
+
+        fs.rmSync(guardPath, { recursive: true });
+        fs.writeFileSync(guardPath, GUARD_SOURCE);
+        fs.writeFileSync(path.join(dir, 'other.py'), 'def other():\n    return 10\n');
+        await watchRebuild(dir, 'other.py', engine);
+
+        const afterUnrelated = readSymbol(dir, 'shared_main');
+        expect(afterUnrelated?.entrypoint).toBe(afterFailure?.entrypoint);
+        expect(afterUnrelated?.entrypointSourceFile).toBe(afterFailure?.entrypointSourceFile);
+      });
+    });
+
     it('keeps attribution when the target’s own file is rebuilt', async () => {
       // The target's node row is purged and re-inserted with a fresh id by its
       // own rebuild, taking the flag with it — while the guard's file, which

@@ -2324,11 +2324,22 @@ export async function rebuildFile(
     code = readFileSafe(filePath);
   } catch (err) {
     warn(`Cannot read ${relPath}: ${(err as Error).message}`);
+    // #2428: the purge above already dropped this file's evidence, so
+    // re-project before bailing out — `nodes.entrypoint` must never be left
+    // disagreeing with `entrypoint_calls`, or the next rebuild of some
+    // unrelated file silently corrects it and the flag appears to change for
+    // no reason. (The purge itself surviving a failed rebuild is the wider
+    // pre-existing bug #2435; once that is fixed there is nothing to
+    // re-project here and this call becomes a no-op.)
+    refreshEntrypointAttribution(db, relPath, null);
     return null;
   }
 
   const symbols = await parseFileIncremental(cache, filePath, code, engineOpts);
-  if (!symbols) return null;
+  if (!symbols) {
+    refreshEntrypointAttribution(db, relPath, null);
+    return null;
+  }
 
   insertFileNodes(stmts, relPath, symbols);
 
@@ -2336,7 +2347,10 @@ export async function rebuildFile(
   const newSymbols: unknown[] = diffSymbols ? stmts.listSymbols.all(relPath) : [];
 
   const fileNodeRow = stmts.getNodeId.get(relPath, 'file', relPath, 0);
-  if (!fileNodeRow)
+  if (!fileNodeRow) {
+    // Same invariant, but the parse succeeded — so this file's fresh evidence
+    // is known and worth writing, even though no edges get built below.
+    refreshEntrypointAttribution(db, relPath, symbols);
     return {
       file: relPath,
       nodesAdded: newNodes,
@@ -2344,6 +2358,7 @@ export async function rebuildFile(
       edgesAdded: 0,
       edgesBefore,
     };
+  }
 
   // #2216: computed once per rebuild (this file's own node row is already
   // inserted above, so it's included) and threaded through every
