@@ -9,6 +9,7 @@
  * `resolveByMethodOrGlobal` delegates its two branches to strategy helpers
  * in `../resolver/strategy.ts` to keep per-strategy complexity manageable.
  */
+import { FRAMEWORK_ENTRY_PREFIXES } from '../../../graph/classifiers/roles.js';
 import { CALLABLE_SYMBOL_KINDS } from '../../../shared/kinds.js';
 import { computeConfidence, isSameLanguageFamily } from '../resolve.js';
 import {
@@ -78,14 +79,22 @@ export { isModuleScopedLanguage };
  * fan-in/out is a separate case, deliberately kept as a whole-graph
  * statistic even on the incremental path, for classification-threshold
  * consistency).
+ *
+ * Excludes `dynamicKind: 'value-ref'` calls (issue #2260): those carry a
+ * `receiver` of their own now (the dispatch-table's name, set by
+ * `collectObjectLiteralValueRefCall` — used for the computed-access liveness
+ * pathway, see `computedDispatchTableEvidence`), but a value-ref Call is
+ * itself a bare VALUE reference, never a real invocation — crediting its
+ * `name` (the referenced function's own identifier) here would pollute this
+ * set with a name that was never actually invoked via member-call syntax.
  */
 export function collectInvokedPropertyNames(
-  callsList: Iterable<Iterable<{ name: string; receiver?: string }>>,
+  callsList: Iterable<Iterable<{ name: string; receiver?: string; dynamicKind?: string | null }>>,
 ): Set<string> {
   const names = new Set<string>();
   for (const calls of callsList) {
     for (const call of calls) {
-      if (call.receiver) names.add(call.name);
+      if (call.receiver && call.dynamicKind !== 'value-ref') names.add(call.name);
     }
   }
   return names;
@@ -258,6 +267,11 @@ const TOP_LEVEL_BINDING_KINDS = new Set(['variable', 'constant']);
 type Def = { name: string; kind: string; line: number; endLine?: number | null };
 type CallerMatch = { id: number; name: string } | null;
 
+/** True when `name` is a synthetic framework-dispatch placeholder (`route:`/`event:`/`command:`-prefixed). */
+function isFrameworkEntryName(name: string): boolean {
+  return FRAMEWORK_ENTRY_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
 /**
  * Find the narrowest enclosing function/method definition for `callLine`.
  * Returns the DB node and name, or null if none encloses the call.
@@ -282,6 +296,49 @@ function findEnclosingCallable(
         best = { ...row, name: def.name };
         bestSpan = span;
       }
+    }
+  }
+  return best;
+}
+
+/**
+ * Find the class context of the nearest enclosing REAL (non-synthetic)
+ * method for `callLine`, for use ONLY as a `this`/`self`/`super` resolution
+ * fallback when the call's ATTRIBUTED caller (from `findEnclosingCallable`)
+ * is itself a synthetic framework-dispatch placeholder (`route:`/`event:`/
+ * `command:`-prefixed — e.g. `extractCallbackDefinition`'s
+ * `event:${eventName}` for an EventEmitter `.on('event', callback)`
+ * registration) and therefore carries no class/`this` context of its own
+ * (issue #2259 — `w.on('message', (msg) => this.onMessage(msg))` inside a
+ * class method: `this.onMessage` can never resolve if the only context
+ * available is `event:message`'s own classless name).
+ *
+ * Deliberately does NOT change which node the call's edge is SOURCED
+ * from — `findEnclosingCallable` still attributes the call to the
+ * synthetic placeholder unchanged, so flow/sequence traversal starting
+ * from that entry point keeps seeing the callback's own calls (Greptile
+ * review, PR #2444). This function only supplies an ADDITIONAL class name
+ * for `resolveViaSameClassSibling` to try when the caller's own name has
+ * no dot to derive a class from.
+ *
+ * Picks the NARROWEST enclosing real method (like `findEnclosingCallable`
+ * itself), so a callback nested inside nested classes/methods resolves
+ * against the innermost one — the correct `this` binding at that point.
+ */
+function findEnclosingClassHint(callLine: number, definitions: ReadonlyArray<Def>): string | null {
+  let best: string | null = null;
+  let bestSpan = Infinity;
+  for (const def of definitions) {
+    if (def.kind !== 'method' || isFrameworkEntryName(def.name)) continue;
+    if (def.line > callLine) continue;
+    const end = def.endLine ?? Infinity;
+    if (callLine > end) continue;
+    const dotIdx = def.name.lastIndexOf('.');
+    if (dotIdx <= 0) continue;
+    const span = end === Infinity ? Infinity : end - def.line;
+    if (span < bestSpan) {
+      best = def.name.slice(0, dotIdx);
+      bestSpan = span;
     }
   }
   return best;
@@ -324,7 +381,7 @@ export function findCaller(
   definitions: ReadonlyArray<Def>,
   relPath: string,
   fileNodeRow: { id: number },
-): { id: number; callerName: string | null } {
+): { id: number; callerName: string | null; enclosingClassHint?: string | null } {
   // Pass 1: find the narrowest enclosing function/method.
   const fnCaller = findEnclosingCallable(lookup, call.line, definitions, relPath);
 
@@ -333,7 +390,14 @@ export function findCaller(
   // top-level scope (no enclosing function/method found), which handles
   // languages like Haskell where `main` is a top-level `bind` node.
   if (fnCaller) {
-    return { id: fnCaller.id, callerName: fnCaller.name };
+    // A synthetic framework-dispatch placeholder (issue #2259) has no
+    // class/`this` context of its own — supply the nearest REAL enclosing
+    // method's class as a fallback for `this`/`self`/`super` resolution,
+    // without changing the edge's source (see findEnclosingClassHint).
+    const enclosingClassHint = isFrameworkEntryName(fnCaller.name)
+      ? findEnclosingClassHint(call.line, definitions)
+      : null;
+    return { id: fnCaller.id, callerName: fnCaller.name, enclosingClassHint };
   }
 
   // Pass 2: find the widest (outermost) enclosing variable/constant binding.
@@ -388,6 +452,7 @@ export function resolveByMethodOrGlobal(
   typeMap: Map<string, unknown>,
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
+  enclosingClassHint?: string | null,
 ): ReadonlyArray<ResolvedCandidate> {
   // `super`/`super.method()` inside a REAL class is never resolvable by a
   // same-name/global lookup (resolveByGlobal): unlike `this`, where a
@@ -428,7 +493,7 @@ export function resolveByMethodOrGlobal(
     call.receiver === 'self' ||
     call.receiver === 'super'
   ) {
-    return resolveByGlobal(lookup, call, relPath, typeMap, callerName);
+    return resolveByGlobal(lookup, call, relPath, typeMap, callerName, enclosingClassHint);
   }
   return [];
 }
@@ -442,6 +507,7 @@ export function resolveCallTargets(
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
   namespaceImports?: ReadonlyMap<string, string>,
+  enclosingClassHint?: string | null,
 ): {
   targets: Array<ResolvedCandidate>;
   importedFrom: string | undefined;
@@ -595,6 +661,7 @@ export function resolveCallTargets(
         typeMap,
         callerName,
         importedOriginalNames,
+        enclosingClassHint,
       );
       if (targets.length === 0) {
         targets = viaReceiverOrGlobal;

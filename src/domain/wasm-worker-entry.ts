@@ -725,6 +725,9 @@ function serializeExtractorOutput(
     ...(symbols.cjsRequireBindings?.length
       ? { cjsRequireBindings: symbols.cjsRequireBindings }
       : {}),
+    ...(symbols.computedDispatchTableEvidence?.length
+      ? { computedDispatchTableEvidence: symbols.computedDispatchTableEvidence }
+      : {}),
   };
 }
 

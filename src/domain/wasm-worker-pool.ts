@@ -127,6 +127,8 @@ function deserializeBindingFields(ser: SerializedExtractorOutput, out: Extractor
   if (ser.newExpressions?.length) out.newExpressions = ser.newExpressions;
   if (ser.callAssignments?.length) out.callAssignments = ser.callAssignments;
   if (ser.cjsRequireBindings?.length) out.cjsRequireBindings = ser.cjsRequireBindings;
+  if (ser.computedDispatchTableEvidence?.length)
+    out.computedDispatchTableEvidence = ser.computedDispatchTableEvidence;
 }
 
 /** Deserialize the Map-typed fields that require entry-by-entry reconstruction. */

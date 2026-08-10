@@ -210,12 +210,25 @@ function indexNativeByLine<T extends { line: number; name: string }>(
   return byLine;
 }
 
-function matchNativeResult<T extends { name: string }>(
+/**
+ * See `matchResultToDef`'s (apply-results.ts) doc comment for the full
+ * rationale — this is the structurally-identical fix applied to the
+ * separate native-standalone-analysis matching copy (issue #2265): `name`
+ * never disambiguates a var/const-assigned anonymous function, so an exact
+ * column match (when both the native result and the Definition carry one)
+ * is checked first.
+ */
+function matchNativeResult<T extends { name: string; column?: number | null }>(
   candidates: T[] | undefined,
   defName: string,
+  defColumn?: number,
 ): T | undefined {
   if (!candidates) return undefined;
   if (candidates.length === 1) return candidates[0];
+  if (defColumn != null) {
+    const byColumn = candidates.find((r) => r.column === defColumn);
+    if (byColumn) return byColumn;
+  }
   return candidates.find((r) => r.name === defName) ?? candidates[0];
 }
 
@@ -228,7 +241,7 @@ function storeNativeComplexityResults(
 
   for (const def of defs) {
     if ((def.kind === 'function' || def.kind === 'method') && def.line && !def.complexity) {
-      const match = matchNativeResult(byLine.get(def.line), def.name);
+      const match = matchNativeResult(byLine.get(def.line), def.name, def.column);
       if (!match) continue;
       const { complexity: c } = match;
       def.complexity = {
@@ -281,7 +294,7 @@ function storeNativeCfgResults(results: NativeFunctionCfgResult[], defs: Definit
       def.cfg !== null &&
       !def.cfg?.blocks?.length
     ) {
-      const match = matchNativeResult(byLine.get(def.line), def.name);
+      const match = matchNativeResult(byLine.get(def.line), def.name, def.column);
       if (!match) continue;
       def.cfg = match.cfg;
     }

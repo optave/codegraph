@@ -1526,6 +1526,12 @@ function buildCallEdges(
     relPath,
     ownInvokedPropertyNames,
   );
+  // #2260: same-file-only scope (unlike invokedPropertyNames above, which
+  // additionally reads a persisted table) — the table+consumer for this
+  // idiom are typically same-file (an internal AST-dispatch table, not an
+  // exported API); a cross-file case missed on a scoped rebuild recovers on
+  // the next full build. See the fuller trade-off note in stages/build-edges.ts.
+  const computedDispatchTableEvidence = new Set(symbols.computedDispatchTableEvidence ?? []);
   let edgesAdded = 0;
 
   for (const call of symbols.calls) {
@@ -1548,6 +1554,7 @@ function buildCallEdges(
             caller.callerName,
             importedOriginalNames,
             namespaceImports,
+            caller.enclosingClassHint,
           );
 
     let targets = applyCallFallbacks(
@@ -1571,7 +1578,14 @@ function buildCallEdges(
       // #1895: object-literal-property value-refs additionally require
       // independent evidence the property is actually invoked somewhere —
       // mirrors the same check in resolveFallbackTargets (stages/build-edges.ts).
-      if (call.keyExpr && !invokedPropertyNames.has(call.keyExpr)) {
+      // #2260: OR the property's own dispatch table has confirmed computed-
+      // access invocation evidence — see resolveFallbackTargets's fuller
+      // comment on this alternate pathway.
+      if (
+        call.keyExpr &&
+        !invokedPropertyNames.has(call.keyExpr) &&
+        !(call.receiver && computedDispatchTableEvidence.has(call.receiver))
+      ) {
         targets = [];
       }
     }
