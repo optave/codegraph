@@ -79,14 +79,22 @@ export { isModuleScopedLanguage };
  * fan-in/out is a separate case, deliberately kept as a whole-graph
  * statistic even on the incremental path, for classification-threshold
  * consistency).
+ *
+ * Excludes `dynamicKind: 'value-ref'` calls (issue #2260): those carry a
+ * `receiver` of their own now (the dispatch-table's name, set by
+ * `collectObjectLiteralValueRefCall` — used for the computed-access liveness
+ * pathway, see `computedDispatchTableEvidence`), but a value-ref Call is
+ * itself a bare VALUE reference, never a real invocation — crediting its
+ * `name` (the referenced function's own identifier) here would pollute this
+ * set with a name that was never actually invoked via member-call syntax.
  */
 export function collectInvokedPropertyNames(
-  callsList: Iterable<Iterable<{ name: string; receiver?: string }>>,
+  callsList: Iterable<Iterable<{ name: string; receiver?: string; dynamicKind?: string | null }>>,
 ): Set<string> {
   const names = new Set<string>();
   for (const calls of callsList) {
     for (const call of calls) {
-      if (call.receiver) names.add(call.name);
+      if (call.receiver && call.dynamicKind !== 'value-ref') names.add(call.name);
     }
   }
   return names;

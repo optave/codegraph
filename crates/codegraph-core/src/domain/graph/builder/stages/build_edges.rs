@@ -150,6 +150,12 @@ pub struct FileEdgeInput {
     /// Phase 8.3f: object-property bindings.
     #[napi(js_name = "objectPropBindings")]
     pub object_prop_bindings: Option<Vec<ObjectPropBinding>>,
+    /// Table names (issue #2260) with confirmed LOCAL computed-invocation
+    /// evidence: `const handler = TABLE[computedExpr]; ...; handler(...)`.
+    /// Mirrors `ExtractorOutput.computedDispatchTableEvidence` in
+    /// `src/types.ts` — see its doc comment for the full rationale.
+    #[napi(js_name = "computedDispatchTableEvidence")]
+    pub computed_dispatch_table_evidence: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -194,6 +200,14 @@ struct EdgeContext<'a> {
     /// liveness rationale. Owned (not borrowed) since the extra evidence
     /// comes from outside `files`' own lifetime.
     invoked_property_names: HashSet<String>,
+    /// Table names (issue #2260) with confirmed LOCAL computed-invocation
+    /// evidence across every file in this build pass — the alternate
+    /// liveness pathway for a computed/bracket-access dispatch table
+    /// (`const handler = TABLE[computedExpr]; ...; handler(...)`), where a
+    /// computed key can't name a specific property statically the way
+    /// `TABLE.key(...)` can, so evidence is credited to the whole table
+    /// rather than per-key. See `collect_computed_dispatch_table_evidence`.
+    computed_dispatch_table_evidence: HashSet<String>,
     /// CHA + RTA typed-dispatch context (#1949): interface/class name →
     /// concrete classes that implement or extend it, built once per build
     /// pass from every file's `classes` (`extends`/`implements`). Used by
@@ -261,6 +275,7 @@ impl<'a> EdgeContext<'a> {
                 files,
                 extra_invoked_property_names,
             ),
+            computed_dispatch_table_evidence: collect_computed_dispatch_table_evidence(files),
             cha_implementors: cha.implementors,
             cha_implementors_by_file: cha.implementors_by_file,
             cha_parents: cha.parents,
@@ -632,17 +647,50 @@ fn emit_cha_dispatch_edges(
 /// statistic even on the incremental path, for classification-threshold
 /// consistency). Mirrors `collectInvokedPropertyNames` in
 /// `src/domain/graph/builder/call-resolver.ts`.
+///
+/// Excludes `dynamic_kind: "value-ref"` calls (issue #2260): those carry a
+/// `receiver` of their own now (the dispatch-table's name, set by
+/// `handle_object_literal_pair_value_ref` — used for the computed-access
+/// liveness pathway, see `computed_dispatch_table_evidence`), but a
+/// value-ref call is itself a bare VALUE reference, never a real
+/// invocation — crediting its `name` (the referenced function's own
+/// identifier) here would pollute this set with a name that was never
+/// actually invoked via member-call syntax.
 fn collect_invoked_property_names(files: &[FileEdgeInput], extra: &[String]) -> HashSet<String> {
     let mut names = HashSet::new();
     for file in files {
         for call in &file.calls {
-            if call.receiver.is_some() {
+            if call.receiver.is_some() && call.dynamic_kind.as_deref() != Some("value-ref") {
                 names.insert(call.name.clone());
             }
         }
     }
     for name in extra {
         names.insert(name.clone());
+    }
+    names
+}
+
+/// Aggregate table names (issue #2260) with confirmed LOCAL computed-
+/// invocation evidence across every file in this build pass — mirrors
+/// `computedDispatchTableEvidence`'s aggregation in
+/// `src/domain/graph/builder/stages/build-edges.ts`. Each file's own list
+/// is populated by `handle_computed_dispatch_table_evidence` in
+/// `extractors/javascript.rs` (native-parsed) or by
+/// `collectComputedDispatchTableEvidence` in `extractors/javascript.ts`
+/// (WASM-parsed, threaded through `FileEdgeInput` via NAPI). No persisted-
+/// table union (unlike `collect_invoked_property_names`'s `extra` param) —
+/// the table+consumer for this idiom are typically same-file, so this
+/// narrower, in-memory-only scope is accepted for now; a cross-file case
+/// missed on a scoped incremental build recovers on the next full build.
+fn collect_computed_dispatch_table_evidence(files: &[FileEdgeInput]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for file in files {
+        if let Some(evidence) = &file.computed_dispatch_table_evidence {
+            for name in evidence {
+                names.insert(name.clone());
+            }
+        }
     }
     names
 }
@@ -1406,8 +1454,20 @@ fn process_file<'a>(
             // actually invoked somewhere (`x.key_expr(...)`) — merely being
             // wired into an object literal is not liveness. instanceof/Lua
             // value-refs never set key_expr, so they are unaffected.
+            //
+            // #2260: OR, the property's own dispatch table (`call.receiver`
+            // — the table's variable name, set by
+            // handle_object_literal_pair_value_ref) has confirmed COMPUTED-
+            // access invocation evidence (`const handler =
+            // TABLE[computedExpr]; ...; handler(...)`) — a computed key
+            // can't name this specific property statically, so that
+            // evidence is credited to the whole table rather than per-key.
             if let Some(key_expr) = call.key_expr.as_deref() {
-                if !ctx.invoked_property_names.contains(key_expr) {
+                let has_computed_evidence = call
+                    .receiver
+                    .as_deref()
+                    .is_some_and(|r| ctx.computed_dispatch_table_evidence.contains(r));
+                if !ctx.invoked_property_names.contains(key_expr) && !has_computed_evidence {
                     targets.clear();
                 }
             }
@@ -4507,6 +4567,7 @@ mod call_edge_tests {
             array_callback_bindings: None,
             object_rest_param_bindings: None,
             object_prop_bindings: None,
+            computed_dispatch_table_evidence: None,
         }
     }
 

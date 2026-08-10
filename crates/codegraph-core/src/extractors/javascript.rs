@@ -2497,6 +2497,13 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         // #2257: logical-or/nullish-coalescing/ternary default assigned to a
         // named variable, e.g. `const fetchFn = options._fetchLatest || fetchLatestVersion`.
         handle_logical_or_ternary_value_ref(&declarator, source, &mut symbols.calls);
+        // #2260: computed dispatch-table access assigned to a named variable,
+        // e.g. `const handler = TABLE[node.type]; ...; handler(...)`.
+        handle_computed_dispatch_table_evidence(
+            &declarator,
+            source,
+            &mut symbols.computed_dispatch_table_evidence,
+        );
 
         let name_n = declarator.child_by_field_name("name");
         let value_n = declarator.child_by_field_name("value");
@@ -4138,7 +4145,52 @@ fn extract_callback_reference_calls(
 /// the key, since that's the name a dispatch consumer would actually call
 /// (`table.resolve(...)`), not the function's own declared name.
 ///
+/// Node kinds `find_enclosing_table_name` passes through on its way up to a
+/// `variable_declarator`. Mirrors `TABLE_NAME_PASSTHROUGH_TYPES` in
+/// `src/extractors/javascript.ts`.
+const TABLE_NAME_PASSTHROUGH_KINDS: &[&str] = &[
+    "object",
+    "parenthesized_expression",
+    "as_expression",
+    "satisfies_expression",
+    "non_null_expression",
+];
+
+/// Walk up from a dispatch-table object-literal's `pair`/shorthand-property
+/// node to find the name of the variable it's assigned to (e.g.
+/// `GROOVY_NODE_HANDLERS` for `const GROOVY_NODE_HANDLERS = { ... }`) — used
+/// to key the computed-access liveness pathway (issue #2260) on the TABLE's
+/// own name, set as the value-ref Call's `receiver`. Bounded to a small
+/// number of hops through common TS wrapper shapes so a deeply-nested or
+/// non-declarator-assigned object literal simply yields no table name.
+/// Mirrors `findEnclosingTableName` in `src/extractors/javascript.ts`.
+fn find_enclosing_table_name(node: &Node, source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    let mut hops = 0;
+    while let Some(cur) = current {
+        if hops >= 6 {
+            return None;
+        }
+        if cur.kind() == "variable_declarator" {
+            let name_n = cur.child_by_field_name("name")?;
+            return if name_n.kind() == "identifier" {
+                Some(node_text(&name_n, source).to_string())
+            } else {
+                None
+            };
+        }
+        if !TABLE_NAME_PASSTHROUGH_KINDS.contains(&cur.kind()) {
+            return None;
+        }
+        current = cur.parent();
+        hops += 1;
+    }
+    None
+}
+
 /// Mirrors `collectObjectLiteralValueRefCall` in `src/extractors/javascript.ts`.
+/// `receiver` (issue #2260) carries the TABLE's own variable name, when
+/// resolvable — see `find_enclosing_table_name`.
 fn handle_object_literal_pair_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>) {
     let Some(value_n) = node.child_by_field_name("value") else {
         return;
@@ -4159,6 +4211,7 @@ fn handle_object_literal_pair_value_ref(node: &Node, source: &[u8], calls: &mut 
         dynamic: Some(true),
         dynamic_kind: Some("value-ref".to_string()),
         key_expr,
+        receiver: find_enclosing_table_name(node, source),
         ..Default::default()
     });
 }
@@ -4186,6 +4239,7 @@ fn handle_object_literal_shorthand_value_ref(node: &Node, source: &[u8], calls: 
         dynamic: Some(true),
         dynamic_kind: Some("value-ref".to_string()),
         key_expr: Some(text.to_string()),
+        receiver: find_enclosing_table_name(node, source),
         ..Default::default()
     });
 }
@@ -4580,6 +4634,7 @@ fn scan_pattern_defaults_for_reference(
     exclude_id: usize,
     source: &[u8],
     depth: usize,
+    require_call_site: bool,
 ) -> bool {
     if depth >= MAX_WALK_DEPTH {
         return false;
@@ -4588,9 +4643,14 @@ fn scan_pattern_defaults_for_reference(
         "identifier" => false,
         "assignment_pattern" | "object_assignment_pattern" => {
             match pattern_node.child_by_field_name("right") {
-                Some(right) => {
-                    block_contains_identifier_excluding(&right, name, exclude_id, source, depth + 1)
-                }
+                Some(right) => block_contains_identifier_excluding(
+                    &right,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                    require_call_site,
+                ),
                 None => false,
             }
         }
@@ -4604,6 +4664,7 @@ fn scan_pattern_defaults_for_reference(
                             exclude_id,
                             source,
                             depth + 1,
+                            require_call_site,
                         )
                     {
                         return true;
@@ -4626,6 +4687,7 @@ fn scan_pattern_defaults_for_reference(
                                 exclude_id,
                                 source,
                                 depth + 1,
+                                require_call_site,
                             ) {
                                 return true;
                             }
@@ -4638,6 +4700,7 @@ fn scan_pattern_defaults_for_reference(
                             exclude_id,
                             source,
                             depth + 1,
+                            require_call_site,
                         ) {
                             return true;
                         }
@@ -4656,6 +4719,7 @@ fn scan_pattern_defaults_for_reference(
                         exclude_id,
                         source,
                         depth + 1,
+                        require_call_site,
                     ) {
                         return true;
                     }
@@ -4702,6 +4766,23 @@ fn scan_pattern_defaults_for_reference(
 /// writing, so it's deliberately left to the generic scan below (its
 /// `left` is scanned like any other reference).
 ///
+/// True when `node` is the `function` field of its parent `call_expression`
+/// — i.e. `node` names the callee being CALLED, not merely referenced.
+/// Used by `block_contains_identifier_excluding`'s `require_call_site` mode
+/// (issue #2260) to require call-shape evidence specifically, matching
+/// #1895's own "invoked... via member-call syntax" precision (a bare
+/// reference — e.g. `console.log(handler)` — is not invocation evidence).
+/// Mirrors `isCallCallee` in `src/extractors/javascript.ts`.
+fn is_call_callee(node: &Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    parent.kind() == "call_expression"
+        && parent
+            .child_by_field_name("function")
+            .is_some_and(|f| f.id() == node.id())
+}
+
 /// Mirrors `blockContainsIdentifierExcluding` in `src/extractors/javascript.ts`.
 fn block_contains_identifier_excluding(
     node: &Node,
@@ -4709,6 +4790,7 @@ fn block_contains_identifier_excluding(
     exclude_id: usize,
     source: &[u8],
     depth: usize,
+    require_call_site: bool,
 ) -> bool {
     if depth >= MAX_WALK_DEPTH {
         return false;
@@ -4717,7 +4799,9 @@ fn block_contains_identifier_excluding(
         return false;
     }
     if node.kind() == "identifier" && node_text(node, source) == name {
-        return true;
+        if !require_call_site || is_call_callee(node) {
+            return true;
+        }
     }
     if SCOPE_NODE_TYPES.contains(&node.kind()) && introduces_shadowed_binding(node, name, source) {
         return false;
@@ -4755,8 +4839,14 @@ fn block_contains_identifier_excluding(
                         continue;
                     }
                 }
-                if block_contains_identifier_excluding(&child, name, exclude_id, source, depth + 1)
-                {
+                if block_contains_identifier_excluding(
+                    &child,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                    require_call_site,
+                ) {
                     return true;
                 }
             }
@@ -4767,21 +4857,40 @@ fn block_contains_identifier_excluding(
         let decl_name = node.child_by_field_name("name");
         let value = node.child_by_field_name("value");
         if let Some(decl_name) = &decl_name {
-            if scan_pattern_defaults_for_reference(decl_name, name, exclude_id, source, depth + 1) {
+            if scan_pattern_defaults_for_reference(
+                decl_name,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ) {
                 return true;
             }
         }
         return match value {
-            Some(value) => {
-                block_contains_identifier_excluding(&value, name, exclude_id, source, depth + 1)
-            }
+            Some(value) => block_contains_identifier_excluding(
+                &value,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ),
             None => false,
         };
     }
     if node.kind() == "assignment_expression" {
         if let Some(left) = node.child_by_field_name("left") {
             if pattern_binds_name(&left, name, source, 0) {
-                if scan_pattern_defaults_for_reference(&left, name, exclude_id, source, depth + 1) {
+                if scan_pattern_defaults_for_reference(
+                    &left,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                    require_call_site,
+                ) {
                     return true;
                 }
                 return match node.child_by_field_name("right") {
@@ -4791,6 +4900,7 @@ fn block_contains_identifier_excluding(
                         exclude_id,
                         source,
                         depth + 1,
+                        require_call_site,
                     ),
                     None => false,
                 };
@@ -4811,7 +4921,14 @@ fn block_contains_identifier_excluding(
     if node.kind() == "for_in_statement" {
         if let Some(left) = node.child_by_field_name("left") {
             if pattern_binds_name(&left, name, source, 0) {
-                if scan_pattern_defaults_for_reference(&left, name, exclude_id, source, depth + 1) {
+                if scan_pattern_defaults_for_reference(
+                    &left,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                    require_call_site,
+                ) {
                     return true;
                 }
                 if let Some(right) = node.child_by_field_name("right") {
@@ -4821,6 +4938,7 @@ fn block_contains_identifier_excluding(
                         exclude_id,
                         source,
                         depth + 1,
+                        require_call_site,
                     ) {
                         return true;
                     }
@@ -4832,6 +4950,7 @@ fn block_contains_identifier_excluding(
                         exclude_id,
                         source,
                         depth + 1,
+                        require_call_site,
                     ),
                     None => false,
                 };
@@ -4840,7 +4959,14 @@ fn block_contains_identifier_excluding(
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            if block_contains_identifier_excluding(&child, name, exclude_id, source, depth + 1) {
+            if block_contains_identifier_excluding(
+                &child,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ) {
                 return true;
             }
         }
@@ -4868,11 +4994,19 @@ fn block_contains_identifier_excluding(
 /// same-named binding declared inside a nested function/block never gets
 /// mistaken for a use of the outer variable.
 ///
+/// `require_call_site` (issue #2260): when true, a matching identifier
+/// only counts if it's the callee of a `call_expression` (see
+/// `is_call_callee`) — used by `handle_computed_dispatch_table_evidence`
+/// to require genuine invocation evidence (`handler(...)`), not just any
+/// reference (`console.log(handler)`), matching #1895's own "invoked...
+/// via member-call syntax" precision.
+///
 /// Mirrors `hasLaterReferenceInEnclosingBlock` in `src/extractors/javascript.ts`.
 fn has_later_reference_in_enclosing_block(
     declarator_node: &Node,
     name: &str,
     source: &[u8],
+    require_call_site: bool,
 ) -> bool {
     let mut block = declarator_node.parent();
     while let Some(n) = block {
@@ -4913,7 +5047,14 @@ fn has_later_reference_in_enclosing_block(
                     continue;
                 }
             }
-            if block_contains_identifier_excluding(&child, name, declarator_node.id(), source, 0) {
+            if block_contains_identifier_excluding(
+                &child,
+                name,
+                declarator_node.id(),
+                source,
+                0,
+                require_call_site,
+            ) {
                 return true;
             }
         }
@@ -4983,7 +5124,7 @@ fn handle_logical_or_ternary_value_ref(declarator: &Node, source: &[u8], calls: 
         return;
     }
     let name_text = node_text(&name_n, source);
-    if !has_later_reference_in_enclosing_block(declarator, name_text, source) {
+    if !has_later_reference_in_enclosing_block(declarator, name_text, source, false) {
         return;
     }
 
@@ -4996,6 +5137,71 @@ fn handle_logical_or_ternary_value_ref(declarator: &Node, source: &[u8], calls: 
             ..Default::default()
         });
     }
+}
+
+/// Collect computed/bracket-access dispatch-table invocation evidence (issue
+/// #2260) — extends the #1771/#1895 dot-property value-ref mechanism to the
+/// `const handler = TABLE[computedExpr]; ...; handler(...)` idiom (a
+/// `node.type`-keyed AST-dispatch table is the canonical example:
+/// `src/extractors/groovy.ts`'s `GROOVY_NODE_HANDLERS`). A computed key
+/// can't name a specific property statically the way `TABLE.key(...)` can,
+/// so — unlike #1895, which checks each property's own key individually —
+/// this credits invocation evidence for the WHOLE table once any computed
+/// access into it is confirmed to be genuinely invoked.
+///
+/// Fires only when:
+///  - the declarator's value is DIRECTLY a `subscript_expression` (matching
+///    this file's "restrict to the simplest syntactic shape" precedent,
+///    #1771/#1784 — a wrapped/parenthesized form is left unresolved);
+///  - its `object` is a bare identifier (the table's own name) — a
+///    computed/dynamic object expression has no static name to credit;
+///  - its `index` is NOT a string/template-string literal — a literal key
+///    (`TABLE['resolve']`) already resolves through the existing
+///    computed-literal call-extraction path and needs no new mechanism;
+///  - the declared name is a plain identifier (no destructuring) that is
+///    later found as the CALLEE of a call expression in its own enclosing
+///    block (`has_later_reference_in_enclosing_block` with
+///    `require_call_site`) — the same local, position-scoped liveness
+///    check #2257 established, reused here for the intermediate variable
+///    specifically because a generic local name (`handler`) collides
+///    across unrelated files/functions far more often than a
+///    dispatch-table's own constant name does.
+///
+/// Mirrors `collectComputedDispatchTableEvidence` in `src/extractors/javascript.ts`.
+fn handle_computed_dispatch_table_evidence(
+    declarator: &Node,
+    source: &[u8],
+    evidence: &mut Vec<String>,
+) {
+    let Some(name_n) = declarator.child_by_field_name("name") else {
+        return;
+    };
+    if name_n.kind() != "identifier" {
+        return;
+    }
+    let Some(value_n) = declarator.child_by_field_name("value") else {
+        return;
+    };
+    if value_n.kind() != "subscript_expression" {
+        return;
+    }
+    let Some(object_n) = value_n.child_by_field_name("object") else {
+        return;
+    };
+    if object_n.kind() != "identifier" || JS_BUILTIN_GLOBALS.contains(&node_text(&object_n, source))
+    {
+        return;
+    }
+    if let Some(index_n) = value_n.child_by_field_name("index") {
+        if index_n.kind() == "string" || index_n.kind() == "template_string" {
+            return;
+        }
+    }
+    let name_text = node_text(&name_n, source);
+    if !has_later_reference_in_enclosing_block(declarator, name_text, source, true) {
+        return;
+    }
+    evidence.push(node_text(&object_n, source).to_string());
 }
 
 /// Extract definitions from destructured object bindings: `const { handleToken,
@@ -8276,6 +8482,112 @@ mod tests {
         assert!(!s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
+    }
+
+    // This mechanism's Call extraction is UNCONDITIONAL (like #1771/#1895 —
+    // every bare-identifier object-literal property value always produces a
+    // value-ref Call, regardless of liveness); only the RESOLVER (build_edges.rs)
+    // later gates whether that Call becomes a real edge, consulting
+    // invoked_property_names/computed_dispatch_table_evidence at that point —
+    // NOT here. So the correct thing to assert at the extractor level is
+    // computed_dispatch_table_evidence's own contents, not the calls array.
+
+    // The confirmed real-world case: an AST-node-type-keyed dispatch table
+    // (src/extractors/groovy.rs's GROOVY_NODE_HANDLERS), consumed via a
+    // computed lookup stored in an intermediate variable, then called.
+    #[test]
+    fn records_the_table_name_when_the_intermediate_variable_is_later_called() {
+        let s = parse_js(
+            "const NODE_HANDLERS = {\n\
+               interface_definition: handleInterfaceDecl,\n\
+             };\n\
+             function walkNode(node, ctx) {\n\
+               const handler = NODE_HANDLERS[node.type];\n\
+               if (handler) handler(node, ctx);\n\
+             }",
+        );
+        assert_eq!(s.computed_dispatch_table_evidence, vec!["NODE_HANDLERS"]);
+    }
+
+    #[test]
+    fn does_not_record_the_table_name_when_the_intermediate_variable_is_only_referenced_never_called(
+    ) {
+        let s = parse_js(
+            "const NODE_HANDLERS = {\n\
+               interface_definition: handleInterfaceDecl,\n\
+             };\n\
+             function walkNode(node, ctx) {\n\
+               const handler = NODE_HANDLERS[node.type];\n\
+               console.log(handler);\n\
+             }",
+        );
+        assert!(s.computed_dispatch_table_evidence.is_empty());
+    }
+
+    #[test]
+    fn does_not_fire_for_a_string_literal_key() {
+        let s = parse_js(
+            "const NODE_HANDLERS = {\n\
+               interface_definition: handleInterfaceDecl,\n\
+             };\n\
+             function walkNode() {\n\
+               const handler = NODE_HANDLERS['interface_definition'];\n\
+               handler();\n\
+             }",
+        );
+        assert!(s.computed_dispatch_table_evidence.is_empty());
+    }
+
+    #[test]
+    fn does_not_record_the_table_name_when_the_call_is_inside_a_shadowing_nested_scope() {
+        let s = parse_js(
+            "const NODE_HANDLERS = {\n\
+               interface_definition: handleInterfaceDecl,\n\
+             };\n\
+             function walkNode(node, ctx) {\n\
+               const handler = NODE_HANDLERS[node.type];\n\
+               {\n\
+                 let handler = unrelatedFn;\n\
+                 handler();\n\
+               }\n\
+             }",
+        );
+        assert!(s.computed_dispatch_table_evidence.is_empty());
+    }
+
+    #[test]
+    fn only_records_the_specific_table_that_has_its_own_computed_invocation_evidence() {
+        let s = parse_js(
+            "const HANDLERS_A = {\n\
+               interface_definition: handleA,\n\
+             };\n\
+             const HANDLERS_B = {\n\
+               interface_definition: handleB,\n\
+             };\n\
+             function walkNode(node, ctx) {\n\
+               const handler = HANDLERS_A[node.type];\n\
+               handler();\n\
+             }",
+        );
+        assert_eq!(s.computed_dispatch_table_evidence, vec!["HANDLERS_A"]);
+    }
+
+    #[test]
+    fn does_not_overflow_the_stack_on_a_pathologically_deep_enclosing_block_2260() {
+        let depth = 300;
+        let nested = format!(
+            "{}handler();\n{}",
+            "if (true) {\n".repeat(depth),
+            "}\n".repeat(depth)
+        );
+        let source = format!(
+            "const NODE_HANDLERS = {{ interface_definition: handleInterfaceDecl }};\n\
+             function walkNode(node) {{\n\
+               const handler = NODE_HANDLERS[node.type];\n\
+               {nested}\n\
+             }}"
+        );
+        let _ = parse_js(&source);
     }
 
     // #1895: key_expr capture — the property key, distinct from the

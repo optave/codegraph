@@ -508,6 +508,7 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
   // walk below so bare property reads can be recognized regardless of
   // whether the accessing code appears before or after the class declaration.
   const localAccessors = collectLocalAccessors(tree.rootNode);
+  const computedDispatchTableEvidence: string[] = [];
   runCollectorWalk(tree.rootNode, {
     definitions,
     typeMap,
@@ -517,6 +518,7 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
     newExpressions,
     definePropertyReceivers,
     valueRefCalls: calls,
+    computedDispatchTableEvidence,
     localAccessors,
     imports,
     calls,
@@ -558,6 +560,7 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
     newExpressions,
     ...(definePropertyReceivers.size > 0 ? { definePropertyReceivers } : {}),
     ...(cjsRequireBindings.length > 0 ? { cjsRequireBindings } : {}),
+    ...(computedDispatchTableEvidence.length > 0 ? { computedDispatchTableEvidence } : {}),
   };
 }
 
@@ -1412,6 +1415,7 @@ function extractSymbolsWalk(tree: TreeSitterTree): ExtractorOutput {
   // #1893: same-file get/set accessor registry — see the query-path call site
   // of collectLocalAccessors for why this must be computed up front.
   const localAccessors = collectLocalAccessors(tree.rootNode);
+  const computedDispatchTableEvidence: string[] = [];
   runCollectorWalk(tree.rootNode, {
     definitions: ctx.definitions,
     typeMap: ctx.typeMap!,
@@ -1421,11 +1425,15 @@ function extractSymbolsWalk(tree: TreeSitterTree): ExtractorOutput {
     newExpressions,
     definePropertyReceivers,
     valueRefCalls: ctx.calls,
+    computedDispatchTableEvidence,
     localAccessors,
     funcPropDefs: ctx.definitions,
   });
   ctx.newExpressions = newExpressions;
   if (definePropertyReceivers.size > 0) ctx.definePropertyReceivers = definePropertyReceivers;
+  if (computedDispatchTableEvidence.length > 0) {
+    ctx.computedDispatchTableEvidence = computedDispatchTableEvidence;
+  }
   return ctx;
 }
 
@@ -4181,6 +4189,43 @@ function collectObjectPropBindings(node: TreeSitterNode, bindings: ObjectPropBin
   }
 }
 
+/** Node types `findEnclosingTableName` passes through on its way up to a `variable_declarator`. */
+const TABLE_NAME_PASSTHROUGH_TYPES: ReadonlySet<string> = new Set([
+  'object',
+  'parenthesized_expression',
+  'as_expression',
+  'satisfies_expression',
+  'non_null_expression',
+]);
+
+/**
+ * Walk up from a dispatch-table object-literal's `pair`/shorthand-property
+ * node to find the name of the variable it's assigned to (e.g.
+ * `GROOVY_NODE_HANDLERS` for `const GROOVY_NODE_HANDLERS = { ... }`) — used
+ * to key the computed-access liveness pathway (issue #2260) on the TABLE's
+ * own name, set as the value-ref Call's `receiver`. Bounded to a small
+ * number of hops through common TS wrapper shapes (`as`/`satisfies`
+ * expressions, parenthesization, non-null assertion) so a deeply-nested or
+ * non-declarator-assigned object literal (e.g. passed directly as a call
+ * argument) simply yields no table name — the computed-access pathway then
+ * requires the dot/#1895 evidence instead, matching this file's "prefer no
+ * edge over a wrong one" precedent.
+ */
+function findEnclosingTableName(node: TreeSitterNode): string | undefined {
+  let current: TreeSitterNode | null = node.parent;
+  let hops = 0;
+  while (current && hops < 6) {
+    if (current.type === 'variable_declarator') {
+      const nameNode = current.childForFieldName('name');
+      return nameNode?.type === 'identifier' ? nameNode.text : undefined;
+    }
+    if (!TABLE_NAME_PASSTHROUGH_TYPES.has(current.type)) return undefined;
+    current = current.parent;
+    hops++;
+  }
+  return undefined;
+}
+
 /**
  * Collect a dynamic value-ref `Call` for an object-literal `pair` node whose
  * value is a bare identifier — e.g. `{ resolve: someFunction }`, the
@@ -4201,6 +4246,12 @@ function collectObjectPropBindings(node: TreeSitterNode, bindings: ObjectPropBin
  * downstream "is this property ever invoked" liveness check (#1895) needs the
  * key, since that's the name a dispatch consumer would actually call
  * (`table.resolve(...)`), not the function's own declared name.
+ *
+ * `receiver` (issue #2260) carries the TABLE's own variable name, when
+ * resolvable — the computed-access liveness pathway
+ * (`computedDispatchTableEvidence`) is keyed on this, since a computed key
+ * (`TABLE[node.type]`) can't name a specific property statically the way a
+ * dot access can.
  */
 function collectObjectLiteralValueRefCall(pairNode: TreeSitterNode, calls: Call[]): void {
   const valueNode = pairNode.childForFieldName('value');
@@ -4213,6 +4264,7 @@ function collectObjectLiteralValueRefCall(pairNode: TreeSitterNode, calls: Call[
     dynamic: true,
     dynamicKind: 'value-ref',
     keyExpr,
+    receiver: findEnclosingTableName(pairNode),
   });
 }
 
@@ -4527,6 +4579,7 @@ function scanPatternDefaultsForReference(
   name: string,
   excludeId: number,
   depth: number,
+  requireCallSite = false,
 ): boolean {
   if (depth >= MAX_WALK_DEPTH) return false;
   switch (patternNode.type) {
@@ -4535,7 +4588,9 @@ function scanPatternDefaultsForReference(
     case 'assignment_pattern':
     case 'object_assignment_pattern': {
       const right = patternNode.childForFieldName('right');
-      return right ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1) : false;
+      return right
+        ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1, requireCallSite)
+        : false;
     }
     case 'rest_pattern': {
       for (let i = 0; i < patternNode.childCount; i++) {
@@ -4543,7 +4598,7 @@ function scanPatternDefaultsForReference(
         if (
           child &&
           child.type !== '...' &&
-          scanPatternDefaultsForReference(child, name, excludeId, depth + 1)
+          scanPatternDefaultsForReference(child, name, excludeId, depth + 1, requireCallSite)
         ) {
           return true;
         }
@@ -4556,11 +4611,16 @@ function scanPatternDefaultsForReference(
         if (!child) continue;
         if (child.type === 'pair_pattern') {
           const value = child.childForFieldName('value');
-          if (value && scanPatternDefaultsForReference(value, name, excludeId, depth + 1)) {
+          if (
+            value &&
+            scanPatternDefaultsForReference(value, name, excludeId, depth + 1, requireCallSite)
+          ) {
             return true;
           }
         } else if (child.type === 'rest_pattern' || child.type === 'object_assignment_pattern') {
-          if (scanPatternDefaultsForReference(child, name, excludeId, depth + 1)) return true;
+          if (scanPatternDefaultsForReference(child, name, excludeId, depth + 1, requireCallSite)) {
+            return true;
+          }
         }
         // shorthand_property_identifier_pattern has no default to scan.
       }
@@ -4569,7 +4629,10 @@ function scanPatternDefaultsForReference(
     case 'array_pattern': {
       for (let i = 0; i < patternNode.childCount; i++) {
         const child = patternNode.child(i);
-        if (child && scanPatternDefaultsForReference(child, name, excludeId, depth + 1)) {
+        if (
+          child &&
+          scanPatternDefaultsForReference(child, name, excludeId, depth + 1, requireCallSite)
+        ) {
           return true;
         }
       }
@@ -4615,15 +4678,35 @@ function scanPatternDefaultsForReference(
  * deliberately left to the generic scan below (its `left` is scanned like
  * any other reference).
  */
+/**
+ * True when `node` is the `function` field of its parent `call_expression`
+ * — i.e. `node` names the callee being CALLED, not merely referenced.
+ * Used by `blockContainsIdentifierExcluding`'s `requireCallSite` mode
+ * (issue #2260) to require call-shape evidence specifically, matching
+ * #1895's own "invoked... via member-call syntax" precision (a bare
+ * reference — e.g. `console.log(handler)` — is not invocation evidence).
+ */
+function isCallCallee(node: TreeSitterNode): boolean {
+  const parent = node.parent;
+  return (
+    !!parent &&
+    parent.type === 'call_expression' &&
+    parent.childForFieldName('function')?.id === node.id
+  );
+}
+
 function blockContainsIdentifierExcluding(
   node: TreeSitterNode,
   name: string,
   excludeId: number,
   depth = 0,
+  requireCallSite = false,
 ): boolean {
   if (depth >= MAX_WALK_DEPTH) return false;
   if (node.id === excludeId) return false;
-  if (node.type === 'identifier' && node.text === name) return true;
+  if (node.type === 'identifier' && node.text === name) {
+    if (!requireCallSite || isCallCallee(node)) return true;
+  }
   if (SCOPE_NODE_TYPES.has(node.type) && introducesShadowedBinding(node, name)) return false;
   // A declaration statement with MULTIPLE sibling declarators
   // (`var result = fn(), fn = custom || fallback;`) — if the excluded
@@ -4655,7 +4738,9 @@ function blockContainsIdentifierExcluding(
             continue;
           }
         }
-        if (blockContainsIdentifierExcluding(child, name, excludeId, depth + 1)) return true;
+        if (blockContainsIdentifierExcluding(child, name, excludeId, depth + 1, requireCallSite)) {
+          return true;
+        }
       }
       return false;
     }
@@ -4663,17 +4748,26 @@ function blockContainsIdentifierExcluding(
   if (node.type === 'variable_declarator') {
     const declName = node.childForFieldName('name');
     const value = node.childForFieldName('value');
-    if (declName && scanPatternDefaultsForReference(declName, name, excludeId, depth + 1)) {
+    if (
+      declName &&
+      scanPatternDefaultsForReference(declName, name, excludeId, depth + 1, requireCallSite)
+    ) {
       return true;
     }
-    return value ? blockContainsIdentifierExcluding(value, name, excludeId, depth + 1) : false;
+    return value
+      ? blockContainsIdentifierExcluding(value, name, excludeId, depth + 1, requireCallSite)
+      : false;
   }
   if (node.type === 'assignment_expression') {
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
     if (left && patternBindsName(left, name)) {
-      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1)) return true;
-      return right ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1) : false;
+      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1, requireCallSite)) {
+        return true;
+      }
+      return right
+        ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1, requireCallSite)
+        : false;
     }
   }
   // A `for (fn of values) {}` / `for (fn in obj) {}` loop with NO
@@ -4689,16 +4783,30 @@ function blockContainsIdentifierExcluding(
   if (node.type === 'for_in_statement') {
     const left = node.childForFieldName('left');
     if (left && patternBindsName(left, name)) {
-      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1)) return true;
+      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1, requireCallSite)) {
+        return true;
+      }
       const right = node.childForFieldName('right');
       const body = node.childForFieldName('body');
-      if (right && blockContainsIdentifierExcluding(right, name, excludeId, depth + 1)) return true;
-      return body ? blockContainsIdentifierExcluding(body, name, excludeId, depth + 1) : false;
+      if (
+        right &&
+        blockContainsIdentifierExcluding(right, name, excludeId, depth + 1, requireCallSite)
+      ) {
+        return true;
+      }
+      return body
+        ? blockContainsIdentifierExcluding(body, name, excludeId, depth + 1, requireCallSite)
+        : false;
     }
   }
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    if (child && blockContainsIdentifierExcluding(child, name, excludeId, depth + 1)) return true;
+    if (
+      child &&
+      blockContainsIdentifierExcluding(child, name, excludeId, depth + 1, requireCallSite)
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -4734,8 +4842,19 @@ function blockContainsIdentifierExcluding(
  * since a sibling declarator earlier in the same statement legitimately reads
  * a later one (`const a = x(), b = y || fallback;` — `a`'s initializer runs
  * first but that's a same-statement forward reference, not a hoisting hazard).
+ *
+ * `requireCallSite` (issue #2260): when true, a matching identifier only
+ * counts if it's the callee of a `call_expression` (see `isCallCallee`) —
+ * used by `collectComputedDispatchTableEvidence` to require genuine
+ * invocation evidence (`handler(...)`), not just any reference
+ * (`console.log(handler)`), matching #1895's own "invoked... via
+ * member-call syntax" precision.
  */
-function hasLaterReferenceInEnclosingBlock(declaratorNode: TreeSitterNode, name: string): boolean {
+function hasLaterReferenceInEnclosingBlock(
+  declaratorNode: TreeSitterNode,
+  name: string,
+  requireCallSite = false,
+): boolean {
   let block: TreeSitterNode | null = declaratorNode.parent;
   while (block && block.type !== 'statement_block' && block.type !== 'program') {
     block = block.parent;
@@ -4765,7 +4884,9 @@ function hasLaterReferenceInEnclosingBlock(declaratorNode: TreeSitterNode, name:
         continue;
       }
     }
-    if (blockContainsIdentifierExcluding(child, name, declaratorNode.id)) return true;
+    if (blockContainsIdentifierExcluding(child, name, declaratorNode.id, 0, requireCallSite)) {
+      return true;
+    }
   }
   return false;
 }
@@ -4823,6 +4944,52 @@ function collectLogicalOrTernaryValueRefCall(declaratorNode: TreeSitterNode, cal
       dynamicKind: 'value-ref',
     });
   }
+}
+
+/**
+ * Collect computed/bracket-access dispatch-table invocation evidence (issue
+ * #2260) — extends the #1771/#1895 dot-property value-ref mechanism to the
+ * `const handler = TABLE[computedExpr]; ...; handler(...)` idiom (a
+ * `node.type`-keyed AST-dispatch table is the canonical example:
+ * `src/extractors/groovy.ts`'s `GROOVY_NODE_HANDLERS`). A computed key
+ * can't name a specific property statically the way `TABLE.key(...)` can,
+ * so — unlike #1895, which checks each property's own key individually —
+ * this credits invocation evidence for the WHOLE table once any computed
+ * access into it is confirmed to be genuinely invoked.
+ *
+ * Fires only when:
+ *  - the declarator's value is DIRECTLY a `subscript_expression` (matching
+ *    this file's "restrict to the simplest syntactic shape" precedent,
+ *    #1771/#1784 — a wrapped/parenthesized form is left unresolved);
+ *  - its `object` is a bare identifier (the table's own name) — a
+ *    computed/dynamic object expression has no static name to credit;
+ *  - its `index` is NOT a string/template-string literal — a literal key
+ *    (`TABLE['resolve']`) already resolves through the existing
+ *    computed-literal call-extraction path and needs no new mechanism;
+ *  - the declared name is a plain identifier (no destructuring) that is
+ *    later found as the CALLEE of a call expression in its own enclosing
+ *    block (`hasLaterReferenceInEnclosingBlock` with `requireCallSite`) —
+ *    the same local, position-scoped liveness check #2257 established,
+ *    reused here for the intermediate variable specifically because a
+ *    generic local name (`handler`) collides across unrelated
+ *    files/functions far more often than a dispatch-table's own constant
+ *    name does (see `computedDispatchTableEvidence`'s doc comment in
+ *    types.ts for why the table name itself is safe to credit graph-wide).
+ */
+function collectComputedDispatchTableEvidence(
+  declaratorNode: TreeSitterNode,
+  evidence: string[],
+): void {
+  const nameNode = declaratorNode.childForFieldName('name');
+  if (nameNode?.type !== 'identifier') return;
+  const valueNode = declaratorNode.childForFieldName('value');
+  if (valueNode?.type !== 'subscript_expression') return;
+  const objectNode = valueNode.childForFieldName('object');
+  if (objectNode?.type !== 'identifier' || BUILTIN_GLOBALS.has(objectNode.text)) return;
+  const indexNode = valueNode.childForFieldName('index');
+  if (indexNode?.type === 'string' || indexNode?.type === 'template_string') return;
+  if (!hasLaterReferenceInEnclosingBlock(declaratorNode, nameNode.text, true)) return;
+  evidence.push(objectNode.text);
 }
 
 function extractReceiverName(objNode: TreeSitterNode | null): string | undefined {
@@ -5711,6 +5878,8 @@ interface CollectorWalkTargets {
   newExpressions: string[];
   definePropertyReceivers: Map<string, string>;
   valueRefCalls: Call[];
+  /** #2260: table names with confirmed computed-access invocation evidence. */
+  computedDispatchTableEvidence: string[];
   /** #1893: same-file `ClassName.propName` → declared get/set accessor kinds. */
   localAccessors: LocalAccessorRegistry;
   imports?: Import[];
@@ -5765,6 +5934,9 @@ function runCollectorWalk(rootNode: TreeSitterNode, targets: CollectorWalkTarget
         // #2257: logical-or/nullish-coalescing/ternary default assigned to a
         // named variable, e.g. `const fetchFn = options._fetchLatest || fetchLatestVersion`.
         collectLogicalOrTernaryValueRefCall(node, targets.valueRefCalls);
+        // #2260: computed dispatch-table access assigned to a named variable,
+        // e.g. `const handler = TABLE[node.type]; ...; handler(...)`.
+        collectComputedDispatchTableEvidence(node, targets.computedDispatchTableEvidence);
         break;
       case 'expression_statement': {
         const expr = node.child(0);
@@ -5810,6 +5982,7 @@ function runCollectorWalk(rootNode: TreeSitterNode, targets: CollectorWalkTarget
             dynamic: true,
             dynamicKind: 'value-ref',
             keyExpr: node.text,
+            receiver: findEnclosingTableName(node),
           });
         }
         break;

@@ -134,6 +134,8 @@ interface NativeFileEntry {
   arrayCallbackBindings?: ArrayCallbackBinding[];
   objectRestParamBindings?: ObjectRestParamBinding[];
   objectPropBindings?: ObjectPropBinding[];
+  /** Issue #2260: table names with confirmed computed-access invocation evidence. */
+  computedDispatchTableEvidence?: string[];
 }
 
 /** Shape returned by native buildCallEdges. */
@@ -846,6 +848,9 @@ function buildNativeFileEntry(
       ? symbols.objectRestParamBindings
       : undefined,
     objectPropBindings: symbols.objectPropBindings?.length ? symbols.objectPropBindings : undefined,
+    computedDispatchTableEvidence: symbols.computedDispatchTableEvidence?.length
+      ? [...symbols.computedDispatchTableEvidence]
+      : undefined,
   };
 }
 
@@ -1363,6 +1368,23 @@ function buildCallEdgesJS(
     invokedPropertyNames.add(row.name);
   }
 
+  // #2260: table names with confirmed computed-access invocation evidence
+  // (`const handler = TABLE[computedExpr]; ...; handler(...)`) — an
+  // in-memory-only aggregation across this build's files, unlike
+  // invokedPropertyNames above, which additionally reads a persisted table
+  // to stay correct on a scoped incremental build. The table+consumer here
+  // are typically same-file (an internal AST-dispatch table, not an
+  // exported API), so this narrower scope is accepted for now; a
+  // cross-file case missed on a scoped rebuild recovers on the next full
+  // build, matching this codebase's other documented incremental scoping
+  // trade-offs (see collectInvokedPropertyNames's own doc comment).
+  const computedDispatchTableEvidence = new Set<string>();
+  for (const symbols of fileSymbols.values()) {
+    for (const name of symbols.computedDispatchTableEvidence ?? []) {
+      computedDispatchTableEvidence.add(name);
+    }
+  }
+
   for (const [relPath, symbols] of fileSymbols) {
     if (barrelOnlyFiles.has(relPath)) continue;
     const fileNodeRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
@@ -1432,6 +1454,7 @@ function buildCallEdgesJS(
       allEdgeRows,
       typeMap,
       invokedPropertyNames,
+      computedDispatchTableEvidence,
       ptsMap,
       chaCtx,
       importArtifactNames,
@@ -1680,6 +1703,7 @@ function resolveFallbackTargets(
   typeMap: Map<string, TypeMapEntry | string>,
   definePropertyReceivers: Map<string, string> | undefined,
   invokedPropertyNames: ReadonlySet<string>,
+  computedDispatchTableEvidence: ReadonlySet<string>,
   importedOriginalNames?: ReadonlyMap<string, string>,
   namespaceImports?: ReadonlyMap<string, string>,
 ): {
@@ -1765,7 +1789,18 @@ function resolveFallbackTargets(
     // somewhere (`x.keyExpr(...)`) — merely being wired into an object
     // literal is not liveness. instanceof/Lua value-refs never set keyExpr,
     // so they are unaffected by this stricter check.
-    if (call.keyExpr && !invokedPropertyNames.has(call.keyExpr)) {
+    //
+    // #2260: OR, the property's own dispatch table (`call.receiver` — the
+    // table's variable name, set by collectObjectLiteralValueRefCall)
+    // has confirmed COMPUTED-access invocation evidence
+    // (`const handler = TABLE[computedExpr]; ...; handler(...)`) — a
+    // computed key can't name this specific property statically, so that
+    // evidence is credited to the whole table rather than per-key.
+    if (
+      call.keyExpr &&
+      !invokedPropertyNames.has(call.keyExpr) &&
+      !(call.receiver && computedDispatchTableEvidence.has(call.receiver))
+    ) {
       targets = [];
     }
   }
@@ -2146,6 +2181,7 @@ function buildFileCallEdges(
   allEdgeRows: EdgeRowTuple[],
   typeMap: Map<string, TypeMapEntry | string>,
   invokedPropertyNames: ReadonlySet<string>,
+  computedDispatchTableEvidence: ReadonlySet<string>,
   ptsMap?: PointsToMap | null,
   chaCtx?: ChaContext,
   importArtifactNames?: ReadonlyMap<string, BarrelExportResolution>,
@@ -2189,6 +2225,7 @@ function buildFileCallEdges(
       typeMap,
       symbols.definePropertyReceivers,
       invokedPropertyNames,
+      computedDispatchTableEvidence,
       importedOriginalNames,
       namespaceImports,
     );

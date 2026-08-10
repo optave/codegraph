@@ -570,6 +570,12 @@ pub struct FileSymbols {
     /// Phase 8.3f: object-property bindings from `const obj = { fn }`.
     #[napi(js_name = "objectPropBindings")]
     pub object_prop_bindings: Vec<ObjectPropBinding>,
+    /// Table names (issue #2260) with confirmed LOCAL computed-invocation
+    /// evidence: `const handler = TABLE[computedExpr]; ...; handler(...)`.
+    /// Mirrors `ExtractorOutput.computedDispatchTableEvidence` in
+    /// `src/types.ts`.
+    #[napi(js_name = "computedDispatchTableEvidence")]
+    pub computed_dispatch_table_evidence: Vec<String>,
 }
 
 impl FileSymbols {
@@ -596,6 +602,7 @@ impl FileSymbols {
             array_callback_bindings: Vec::new(),
             object_rest_param_bindings: Vec::new(),
             object_prop_bindings: Vec::new(),
+            computed_dispatch_table_evidence: Vec::new(),
         }
     }
 }

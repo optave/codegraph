@@ -2414,6 +2414,119 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('computed/bracket-access dispatch-table invocation evidence (#2260)', () => {
+    // This mechanism's Call extraction is UNCONDITIONAL (like #1771/#1895 —
+    // every bare-identifier object-literal property value always produces a
+    // value-ref Call, regardless of liveness); only the RESOLVER (build-edges.ts
+    // / incremental.ts) later gates whether that Call becomes a real edge,
+    // consulting invokedPropertyNames/computedDispatchTableEvidence at that
+    // point — NOT here. So the correct thing to assert at the extractor level
+    // is computedDispatchTableEvidence's own contents (what THIS mechanism
+    // actually decides), not the calls array (which is always populated
+    // either way) — the full end-to-end edge-creation behavior is covered by
+    // the dual-engine integration test instead.
+
+    // The confirmed real-world case: an AST-node-type-keyed dispatch table
+    // (src/extractors/groovy.ts's GROOVY_NODE_HANDLERS), consumed via a
+    // computed lookup stored in an intermediate variable, then called.
+    it('records the table name when the intermediate variable is later called', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = {
+          interface_definition: handleInterfaceDecl,
+        };
+        function walkNode(node, ctx) {
+          const handler = NODE_HANDLERS[node.type];
+          if (handler) handler(node, ctx);
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toEqual(['NODE_HANDLERS']);
+    });
+
+    it('does not record the table name when the intermediate variable is only referenced, never called', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = {
+          interface_definition: handleInterfaceDecl,
+        };
+        function walkNode(node, ctx) {
+          const handler = NODE_HANDLERS[node.type];
+          console.log(handler);
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toBeUndefined();
+    });
+
+    it('does not fire for a string-literal key — already handled by the existing computed-literal path', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = {
+          interface_definition: handleInterfaceDecl,
+        };
+        function walkNode() {
+          const handler = NODE_HANDLERS['interface_definition'];
+          handler();
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toBeUndefined();
+    });
+
+    it('does not record the table name when the call is inside a nested scope that shadows the intermediate variable', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = {
+          interface_definition: handleInterfaceDecl,
+        };
+        function walkNode(node, ctx) {
+          const handler = NODE_HANDLERS[node.type];
+          {
+            let handler = unrelatedFn;
+            handler();
+          }
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toBeUndefined();
+    });
+
+    it('resolves the table name through a parenthesized/as-const wrapper', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = ({
+          interface_definition: handleInterfaceDecl,
+        } as const);
+        function walkNode(node, ctx) {
+          const handler = NODE_HANDLERS[node.type];
+          handler();
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toEqual(['NODE_HANDLERS']);
+    });
+
+    it('only records the specific table that has its own computed-invocation evidence', () => {
+      const symbols = parseJS(`
+        const HANDLERS_A = {
+          interface_definition: handleA,
+        };
+        const HANDLERS_B = {
+          interface_definition: handleB,
+        };
+        function walkNode(node, ctx) {
+          const handler = HANDLERS_A[node.type];
+          handler();
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toEqual(['HANDLERS_A']);
+    });
+
+    it('does not overflow the stack on a pathologically deep enclosing block', () => {
+      const depth = 300;
+      const nested = `${'if (true) {\n'.repeat(depth)}handler();\n${'}\n'.repeat(depth)}`;
+      const source = `
+        const NODE_HANDLERS = { interface_definition: handleInterfaceDecl };
+        function walkNode(node) {
+          const handler = NODE_HANDLERS[node.type];
+          ${nested}
+        }
+      `;
+      expect(() => parseJS(source)).not.toThrow();
+    });
+  });
+
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {
     // Mirrors the Rust `dispatch_table_emits_dt_call_and_array_elem_bindings`
     // / `dispatch_table_parenthesized_object_also_works` unit tests in
