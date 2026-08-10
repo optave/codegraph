@@ -100,8 +100,8 @@ fi
 # token, not a longer flag that merely starts with "--" (#2280) —
 # otherwise this also denied legitimate flags sharing the same
 # "checkout --" prefix, like --detach, --track, --orphan, --no-track,
-# --guess, --ours, --theirs, none of which revert working-tree changes
-# the way a bare "--" pathspec separator does.
+# --guess, none of which revert working-tree changes the way a bare
+# "--" pathspec separator does.
 #
 # Deliberately NOT anchored on literal whitespace-or-end-of-line after
 # "--" (i.e. NOT `--([[:space:]]|$)`): every one of those legitimate
@@ -114,7 +114,17 @@ fi
 # whitespace at actual execution time — Git still receives the exact
 # dangerous `checkout -- file.txt` (Greptile review, PR #2450). `$` is
 # not a letter, so the negated-letter-class form below still denies it.
-if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--([^A-Za-z]|$)'; then
+#
+# --ours/--theirs are explicitly re-included in the denial (NOT covered
+# by "starts with a letter, so it's safe"): despite also sharing the
+# "checkout --" prefix, on an unmerged path they check the selected
+# merge-conflict stage into the WORKING TREE, overwriting that file's
+# on-disk content -- the same destructive-to-uncommitted-work class
+# this whole check exists to catch, just from a different source (a
+# merge stage instead of HEAD/the index). #2280's own suggested
+# exclusion list named these as safe; that premise was wrong (Greptile
+# review, PR #2450, round 2).
+if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--([^A-Za-z]|$|ours([[:space:]]|$)|theirs([[:space:]]|$))'; then
   deny "BLOCKED: 'git checkout -- <file>' reverts working tree changes and may destroy other sessions' edits. If you need to discard your own changes, be explicit about which files."
 fi
 

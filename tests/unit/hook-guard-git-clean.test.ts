@@ -264,9 +264,15 @@ describe('guard-git.sh checkout -- boundary requires a bare "--" token (#2280)',
     expect(isDenied('git checkout --guess')).toBe(false);
   });
 
-  it('allows --ours/--theirs (merge-conflict side selection, not a working-tree revert)', () => {
-    expect(isDenied('git checkout --ours file.txt')).toBe(false);
-    expect(isDenied('git checkout --theirs file.txt')).toBe(false);
+  it('still blocks --ours/--theirs (Greptile review, PR #2450, round 2): on an unmerged path these overwrite the working-tree file from a merge-conflict stage, the same destructive class this check exists to catch', () => {
+    expect(isDenied('git checkout --ours file.txt')).toBe(true);
+    expect(isDenied('git checkout --theirs file.txt')).toBe(true);
+    expect(isDenied('git checkout --ours')).toBe(true);
+    expect(isDenied('git checkout --theirs')).toBe(true);
+  });
+
+  it('does not over-match a hypothetical flag that merely starts with "ours"/"theirs"', () => {
+    expect(isDenied('git checkout --oursight')).toBe(false);
   });
 
   it('still blocks a real revert chained after an allowed --detach invocation', () => {
