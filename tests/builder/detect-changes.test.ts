@@ -12,6 +12,7 @@ import {
   detectNoChanges,
 } from '../../src/domain/graph/builder/stages/detect-changes.js';
 import { writeJournalHeader } from '../../src/domain/graph/journal.js';
+import { DbError } from '../../src/shared/errors.js';
 
 let tmpDir: string;
 
@@ -53,6 +54,54 @@ describe('detectChanges stage', () => {
     expect(ctx.earlyExit).toBe(false);
     expect(ctx.parseChanges.length).toBe(1);
     closeDb(db);
+  });
+
+  it('throws instead of wiping the graph when file_hashes exists but is unreadable', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-stage-unreadable-'));
+    const dbDir = path.join(dir, '.codegraph');
+    fs.mkdirSync(dbDir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a.js'), 'export const a = 1;');
+
+    const db = openDb(path.join(dbDir, 'graph.db'));
+    initSchema(db);
+
+    // Real prior build state that a from-scratch build would destroy.
+    db.prepare('INSERT INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)').run(
+      'a.js',
+      'deadbeef',
+      1,
+      1,
+    );
+
+    // Drop `size` so the loader's SELECT fails while the table itself still
+    // exists. `initSchema` always runs migrations, so a genuinely old DB gets
+    // this column backfilled rather than reaching here — this is a
+    // deterministic stand-in for the corruption, lock and I/O failures that hit
+    // the same catch and cannot be provoked reliably in a test. What matters is
+    // the shape: table present, read fails. It must not be read as "no prior
+    // build".
+    db.exec('ALTER TABLE file_hashes DROP COLUMN size');
+
+    const ctx = new PipelineContext();
+    ctx.rootDir = dir;
+    ctx.db = db;
+    ctx.allFiles = [path.join(dir, 'a.js')];
+    ctx.opts = {};
+    ctx.incremental = true;
+    ctx.forceFullRebuild = false;
+    ctx.config = {};
+
+    await expect(detectChanges(ctx)).rejects.toThrow(DbError);
+
+    // The decisive assertion: `handleFullBuild` never ran, so the stored state
+    // survives. Returning null here instead would have DELETEd every graph
+    // table — nodes, edges, file_hashes, embeddings — over a transient fault.
+    const remaining = db.prepare('SELECT COUNT(*) AS c FROM file_hashes').get() as { c: number };
+    expect(remaining.c).toBe(1);
+    expect(ctx.isFullBuild).not.toBe(true);
+
+    closeDb(db);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('detects early exit when no changes after initial build', async () => {

@@ -15,7 +15,7 @@ import {
 } from '../../../../db/index.js';
 import { debug, info } from '../../../../infrastructure/logger.js';
 import { normalizePath } from '../../../../shared/constants.js';
-import { toErrorMessage } from '../../../../shared/errors.js';
+import { DbError, toErrorMessage } from '../../../../shared/errors.js';
 import type { BetterSqlite3Database, ExtractorOutput, NativeDatabase } from '../../../../types.js';
 import { parseFilesAuto } from '../../../parser.js';
 import { readJournal, writeJournalHeader } from '../../journal.js';
@@ -690,6 +690,28 @@ function makeFastSkipLogger(fastSkipDiag: boolean): (reason: string) => void {
 }
 
 /**
+ * True when the `file_hashes` table exists in the schema.
+ *
+ * Read from `sqlite_master` rather than inferred from a failed `SELECT`, so a
+ * genuinely-absent table stays distinguishable from one that exists but cannot
+ * be read (corruption, schema drift, a held lock, I/O failure). Conflating the
+ * two is what `loadFileHashes` must never do — see its doc comment.
+ *
+ * Mirrors the `sqlite_master` probe in the native `load_file_hashes`, and the
+ * `hasTable` helper in `db/migrations.ts`.
+ *
+ * Deliberately not wrapped in try/catch: if `sqlite_master` itself is
+ * unreadable the database is unusable, and that must surface rather than be
+ * silently reinterpreted as "no prior build".
+ */
+function fileHashesTableExists(db: BetterSqlite3Database): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes'")
+    .get();
+  return !!row;
+}
+
+/**
  * Load the `file_hashes` table into a `relPath -> row` map.
  *
  * Returns `null` when there is no prior build state to diff against — the
@@ -697,12 +719,28 @@ function makeFastSkipLogger(fastSkipDiag: boolean): (reason: string) => void {
  * present but empty. Both mean "nothing has ever been indexed here", which is
  * a from-scratch build, and both callers must treat them identically.
  *
+ * A read that *fails* is not one of those cases and is never reported as one.
+ * "No prior state" is the answer that makes `getChangedFiles` return
+ * `isFullBuild: true`, and `handleFullBuild` acts on it by `DELETE`-ing every
+ * graph table — `nodes`, `edges`, `file_hashes`, and `embeddings` among them.
+ * Inferring that answer from an exception means a transient `SQLITE_BUSY` from
+ * a concurrent build or MCP server, or a schema mismatch, would silently
+ * discard a healthy graph (and its expensive embeddings) instead of retrying.
+ * So an unreadable table throws `DbError` and lets the operator decide;
+ * `--no-incremental` remains the explicit way to ask for a wipe-and-rebuild.
+ * A destructive action should be requested, never inferred from a failure.
+ *
  * The empty case is not hypothetical: `initSchema` creates `file_hashes` via
  * `CREATE TABLE IF NOT EXISTS` on every DB open, so a brand-new project always
- * reaches change detection with the table present and holding zero rows. A
- * table-existence probe therefore reports "prior state exists" for every first
- * build, which is what made `getChangedFiles` label a project's first-ever
- * build incremental (#2261). That label routes role classification through
+ * reaches change detection with the table present and holding zero rows.
+ * Testing existence *alone* therefore answers "prior state exists" for every
+ * first build, which is what made `getChangedFiles` label a project's
+ * first-ever build incremental (#2261) — existence is necessary but not
+ * sufficient, and the row count is what actually settles it. (That is why the
+ * `fileHashesTableExists` probe above only classifies a read failure and never
+ * decides from-scratch-ness by itself.)
+ *
+ * That label routes role classification through
  * `classifyNodeRolesIncremental`, which deliberately omits the whole-graph
  * reachability downgrade (#2032) — so the first build reported dead code the
  * way it did before #2032, and disagreed with the native engine on the same
@@ -720,13 +758,23 @@ function loadFileHashes(
   db: BetterSqlite3Database,
   log?: (reason: string) => void,
 ): Map<string, FileHashRow> | null {
+  if (!fileHashesTableExists(db)) {
+    log?.('false: file_hashes table missing');
+    debug('file_hashes table does not exist, treating as a from-scratch build');
+    return null;
+  }
+
   let rows: FileHashRow[];
   try {
     rows = db.prepare('SELECT file, hash, mtime, size FROM file_hashes').all() as FileHashRow[];
   } catch (e) {
-    log?.('false: file_hashes table missing');
-    debug(`file_hashes read failed, assuming no prior build: ${toErrorMessage(e)}`);
-    return null;
+    throw new DbError(
+      `Could not read the file_hashes table: ${toErrorMessage(e)}. The table exists, so this ` +
+        'is a database failure rather than a first build. Refusing to fall back to a ' +
+        'from-scratch build, which would delete the existing graph and its embeddings. ' +
+        'Retry once the database is readable, or pass --no-incremental to rebuild deliberately.',
+      { cause: e instanceof Error ? e : undefined },
+    );
   }
   if (rows.length === 0) {
     log?.('false: file_hashes table empty');
