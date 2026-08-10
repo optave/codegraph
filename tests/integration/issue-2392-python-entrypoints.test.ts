@@ -65,9 +65,13 @@ def side_effect():
 
 side_effect()
 `,
-  // Review finding on #2411: a guard nested inside a function or class is
-  // only run if and when that def is called, never automatically by the
-  // runtime, so it must not be treated as module level.
+  // Review finding on #2411: a guard nested inside a function is only run if
+  // and when that function is called, never automatically by the runtime, so
+  // it must not be treated as module level. A class body is different — it
+  // executes immediately while the `class` statement is evaluated, so a
+  // guard directly inside a *module-level* class body runs exactly when the
+  // module does, but one inside a class defined inside a function does not
+  // (the class itself is only defined once that function runs).
   'nested_guards.py': `
 def maybe_run():
     if __name__ == "__main__":
@@ -78,10 +82,19 @@ def guard_in_function():
 
 class Config:
     if __name__ == "__main__":
-        guard_in_class()
+        guard_in_module_level_class()
 
-def guard_in_class():
+def guard_in_module_level_class():
     return 5
+
+def factory():
+    class Nested:
+        if __name__ == "__main__":
+            guard_in_class_inside_a_function()
+    return Nested
+
+def guard_in_class_inside_a_function():
+    return 6
 `,
 };
 
@@ -174,9 +187,19 @@ describe.each(ENGINES)('Python entrypoint classification (#2392) — engine: %s'
     expect(byName('guard_in_function').role).not.toBe('entry');
   });
 
-  it('does not mark a guard nested inside a class as module level', () => {
-    expect(byName('guard_in_class').entrypoint).toBe(0);
-    expect(byName('guard_in_class').role).not.toBe('entry');
+  it('marks a guard nested inside a module-level class as an entrypoint', () => {
+    // A class body executes immediately while the `class` statement runs, so
+    // a guard directly inside a module-level class body is invoked exactly
+    // when the module is — same as a guard directly at module level.
+    expect(byName('guard_in_module_level_class').entrypoint).toBe(1);
+    expect(byName('guard_in_module_level_class').role).toBe('entry');
+  });
+
+  it('does not mark a guard nested inside a class defined inside a function', () => {
+    // The class itself is only defined once `factory()` runs, so its body —
+    // and any guard inside it — never executes automatically at module load.
+    expect(byName('guard_in_class_inside_a_function').entrypoint).toBe(0);
+    expect(byName('guard_in_class_inside_a_function').role).not.toBe('entry');
   });
 });
 
@@ -207,6 +230,43 @@ describe.each(ENGINES)(
         // clear step for this build even runs — the exact scenario the
         // review finding on #2411 flagged as unable to clear.
         fs.writeFileSync(guardFile, 'from lib import shared_main\n');
+        await buildGraph(dir, { incremental: true, skipRegistry: true, engine });
+        const after = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db')).find(
+          (n) => n.name === 'shared_main',
+        );
+        expect(after?.entrypoint).toBe(0);
+        expect(after?.role).not.toBe('entry');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('clears a cross-file entrypoint target when its guard source file is deleted outright', async () => {
+      // Greptile finding on this PR's own fix (#2425): deleting the guard's
+      // *file* is a different code path than editing it — the removed file
+      // is never a member of fileSymbols (the reparsed-files set
+      // markEntrypointTargets iterates), so only the detect-changes stage's
+      // pre-purge capture (clearEntrypointAttributionForRemovedFiles /
+      // clear_entrypoint_attribution_for_removed_files) can catch this.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2425-stale-${engine}-`));
+      try {
+        const guardFile = path.join(dir, 'run.py');
+        const libFile = path.join(dir, 'lib.py');
+        fs.writeFileSync(libFile, 'def shared_main():\n    return 1\n');
+        fs.writeFileSync(
+          guardFile,
+          'from lib import shared_main\n\nif __name__ == "__main__":\n    shared_main()\n',
+        );
+
+        await buildGraph(dir, { incremental: false, skipRegistry: true, engine });
+        const before = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db')).find(
+          (n) => n.name === 'shared_main',
+        );
+        expect(before?.entrypoint).toBe(1);
+        expect(before?.role).toBe('entry');
+
+        // Delete run.py entirely, rather than editing it.
+        fs.rmSync(guardFile);
         await buildGraph(dir, { incremental: true, skipRegistry: true, engine });
         const after = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db')).find(
           (n) => n.name === 'shared_main',
