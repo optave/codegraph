@@ -528,6 +528,33 @@ const MIGRATIONS: &[Migration] = &[
       CREATE INDEX IF NOT EXISTS idx_return_types_file ON return_types(file);
     "#,
     },
+    Migration {
+        // #2428: durable, per-file record of every call the Python extractor
+        // flagged as a program entrypoint — the `if __name__ == "__main__":`
+        // guard and `__main__.py` module level (#2392).
+        //
+        // This is the *evidence*; `nodes.entrypoint` is a projection of it
+        // (see domain/graph/builder/entrypoints.rs). The two have different
+        // lifecycles: the evidence belongs to the guard's file, while the
+        // flag sits on the target's node row, which is purged and
+        // re-inserted whenever the *target's* file is rebuilt. #2411 wrote
+        // the flag straight from the reparsed files' symbols, so a build
+        // that reparsed only the target had nothing to re-mark it from and
+        // silently dropped it.
+        //
+        // Deleted and re-inserted per file via the same purge path as
+        // invoked_property_names / return_types, which is what makes an
+        // edited-away or deleted guard clear its target without a dedicated
+        // pre-purge step. Mirrors src/db/migrations.ts v31.
+        version: 31,
+        up: r#"
+      CREATE TABLE IF NOT EXISTS entrypoint_calls (
+        file TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (file, name)
+      );
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────

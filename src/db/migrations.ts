@@ -576,6 +576,36 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_return_types_file ON return_types(file);
     `,
   },
+  {
+    // #2428: durable, per-file record of every call flagged as a program
+    // entrypoint by the Python extractor — the `if __name__ == "__main__":`
+    // guard and `__main__.py` module level (#2392).
+    //
+    // This is the *evidence*; `nodes.entrypoint` is a projection of it (see
+    // `projectEntrypointAttribution`). Storing the evidence separately is
+    // what makes the projection survivable, because the two have different
+    // lifecycles: the evidence belongs to the guard's file, while the flag
+    // sits on the target's node row, which is purged and re-inserted whenever
+    // the *target's* file is rebuilt. #2411 wrote the flag directly from the
+    // reparsed files' symbols, so any rebuild that touched only the target
+    // (`codegraph build --incremental` after editing the callee, or
+    // `codegraph watch` doing the same) silently dropped it — the guard's
+    // file was not reparsed, so nothing re-marked it, even though the
+    // guard's `calls` edge was still right there in the graph.
+    //
+    // Deletes and re-inserts per file (via the same purge path as
+    // `invoked_property_names` / `return_types`) so a file whose guard was
+    // edited away, or removed from disk entirely, leaves no stale evidence —
+    // which is also what retires #2411's separate pre-purge clear step.
+    version: 31,
+    up: `
+      CREATE TABLE IF NOT EXISTS entrypoint_calls (
+        file TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (file, name)
+      );
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {

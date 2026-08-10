@@ -59,6 +59,7 @@ import {
 import type { ChaContext } from '../cha.js';
 import { buildChaContext, resolveChaTargets, resolveThisDispatch } from '../cha.js';
 import type { PipelineContext } from '../context.js';
+import { persistEntrypointCallsForFile, projectEntrypointAttribution } from '../entrypoints.js';
 import {
   BUILTIN_RECEIVERS,
   batchInsertEdges,
@@ -1164,116 +1165,28 @@ function buildImportedNamesForNative(
 }
 
 /**
- * Set `nodes.entrypoint` on whatever the extractor's entrypoint-flagged calls
- * resolved to (#2392) — Python's `if __name__ == "__main__":` guard and
- * `__main__.py` module level.
+ * Persist this build's Python entrypoint-call evidence (#2392) and re-project
+ * it onto `nodes.entrypoint` (#2428).
  *
- * Runs after the edges for this pass are inserted, and reads them back rather
- * than re-resolving: an entrypoint call is module-level by construction (see
- * `handlePyCall`), so its `calls` edge is always sourced from the file node,
- * and matching that edge's target by the called name is enough to identify it.
- * Doing it here rather than inside either resolver keeps the two engines on
- * one implementation — the native path and the JS path both arrive with their
- * edges already written.
+ * Writing evidence is scoped to `.py` files: `call.entrypoint` is only ever
+ * set by the Python extractor, so a non-Python file's evidence set is empty
+ * in this build and was empty in every earlier one. The projection then runs
+ * over the whole graph — it is driven by `entrypoint_calls`, which is tiny
+ * and short-circuits to two O(1) probes when empty, so "whole graph" costs
+ * nothing on a tree with no Python entrypoints.
  *
- * Cleared per file first via `entrypoint_source_file` — the file whose call
- * site last attributed the flag — rather than by re-querying the file's
- * current outgoing `calls` edges: when a guard's target is declared in a
- * *different* file and the guard is later deleted or renamed, the old edge is
- * already purged (as part of reprocessing the changed file) by the time this
- * runs, so a query keyed on live edges can never find it again to clear it
- * (review finding on #2411). The attribution column has no such lifecycle
- * dependency — it is set directly on the target and only ever read back for
- * the exact file that set it.
- *
- * Scoped to `.py` files: `call.entrypoint` is only ever set by the Python
- * extractor, so a non-Python file can never have contributed an entrypoint
- * attribution in this build or any earlier one — running the clear/mark
- * statements for it is always a guaranteed no-op. Skipping them is what keeps
- * this stage O(python files) instead of O(all files); running an
- * UPDATE-with-JOIN per file unconditionally showed up as a 66% full-build
- * regression on a 954-file, effectively-Python-free tree (#2411 CI).
- *
- * Note: attribution is single-owner (one `entrypoint_source_file` per
- * target). If two different files both legitimately call the same target as
- * their entrypoint, whichever marks it last wins the attribution, and the
- * other file's later removal won't clear it (harmless — the target simply
- * stays correctly flagged) but its own removal will. Tracked as a follow-up
- * (#2419) rather than solved here with a many-to-many table, since it needs a
- * second target to legitimately share an entrypoint call name, which is
- * unusual enough not to hold up this fix.
- *
- * Also appends every touched target's file onto `ctx.entrypointTouchedFiles`
- * (the detect-changes stage may have already added to it earlier this
- * build, for files removed outright — see `clearEntrypointAttributionFor
- * RemovedFiles` in detect-changes.ts, #2425), so `classifyRoles`
- * (buildStructure stage) can seed incremental role reclassification for it:
- * the target's file is frequently not the file being rebuilt (the cross-file
- * case above), and `classifyNodeRolesIncremental`'s own neighbour-expansion
- * join can't discover it either, for the same live-edge-only reason the
- * clear query above can't — the connecting edge may have just been deleted.
- * Without this, `nodes.entrypoint` clears correctly but the cached
- * `nodes.role` for the same row is left stale at `"entry"`.
+ * Files whose flag actually changed land on `ctx.entrypointTouchedFiles`, so
+ * `classifyRoles` (buildStructure stage) can seed incremental role
+ * reclassification for them — see `projectEntrypointAttribution` for why that
+ * seed can't be derived from the graph at that point.
  */
-function markEntrypointTargets(ctx: PipelineContext): void {
+function applyEntrypointAttribution(ctx: PipelineContext): void {
   const { db, fileSymbols } = ctx;
-  const pyFiles = [...fileSymbols.keys()].filter((f) => f.endsWith('.py'));
-  if (pyFiles.length === 0) return;
-
-  const findStaleStmt = db.prepare(`SELECT file FROM nodes WHERE entrypoint_source_file = @file`);
-  const clearStmt = db.prepare(
-    `UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL
-     WHERE entrypoint_source_file = @file`,
-  );
-  const findTargetsStmt = db.prepare(
-    `SELECT tgt.file AS file FROM edges e
-     JOIN nodes src ON e.source_id = src.id
-     JOIN nodes tgt ON e.target_id = tgt.id
-     WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = @file
-       AND (tgt.name = @name OR tgt.name LIKE @suffix)`,
-  );
-  const markStmt = db.prepare(
-    `UPDATE nodes SET entrypoint = 1, entrypoint_source_file = @file
-     WHERE id IN (
-       SELECT e.target_id FROM edges e
-       JOIN nodes src ON e.source_id = src.id
-       JOIN nodes tgt ON e.target_id = tgt.id
-       WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = @file
-         AND (tgt.name = @name OR tgt.name LIKE @suffix)
-     )`,
-  );
-
-  const touchedFiles = new Set<string>();
-  const tx = db.transaction(() => {
-    for (const relPath of pyFiles) {
-      const symbols = fileSymbols.get(relPath);
-      if (!symbols) continue;
-      const entrypointNames = new Set(symbols.calls.filter((c) => c.entrypoint).map((c) => c.name));
-
-      for (const row of findStaleStmt.all({ file: relPath }) as Array<{ file: string }>) {
-        touchedFiles.add(row.file);
-      }
-      clearStmt.run({ file: relPath });
-      for (const name of entrypointNames) {
-        // A method entrypoint (`Runner().start()`) is declared as
-        // `Owner.start`, so match the bare name or any `*.name` qualification.
-        const suffix = `%.${name}`;
-        for (const row of findTargetsStmt.all({ file: relPath, name, suffix }) as Array<{
-          file: string;
-        }>) {
-          touchedFiles.add(row.file);
-        }
-        markStmt.run({ file: relPath, name, suffix });
-      }
-    }
-  });
-  tx();
-  // Appends rather than overwrites: the detect-changes stage may already
-  // have recorded touched files here for entrypoint attribution owned by
-  // files removed outright this build (#2425) — see
-  // `clearEntrypointAttributionForRemovedFiles` in detect-changes.ts, which
-  // runs earlier in the pipeline than this stage does.
-  ctx.entrypointTouchedFiles.push(...touchedFiles);
+  for (const [relPath, symbols] of fileSymbols) {
+    if (!relPath.endsWith('.py')) continue;
+    persistEntrypointCallsForFile(db, relPath, symbols.calls);
+  }
+  ctx.entrypointTouchedFiles.push(...projectEntrypointAttribution(db));
 }
 
 /**
@@ -3063,9 +2976,10 @@ export async function buildEdges(ctx: PipelineContext): Promise<void> {
   runChaPostPass(ctx.db);
 
   // Phase 5: flag program entrypoints (#2392). Must follow every edge-insert
-  // path above — it identifies its targets from the committed `calls` edges —
-  // and must precede role classification, which reads the column it sets.
-  markEntrypointTargets(ctx);
+  // path above — it identifies its targets from the committed `calls` edges,
+  // including the reverse-dep edges Phase 3 just reconnected — and must
+  // precede role classification, which reads the column it sets.
+  applyEntrypointAttribution(ctx);
 
   ctx.timing.edgesMs = performance.now() - t0;
 }

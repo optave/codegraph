@@ -118,8 +118,8 @@ async function classifyRoles(
   try {
     let roleSummary: Record<string, number> | null = null;
 
-    // Fold in files `markEntrypointTargets` touched this build (#2392, review
-    // fix on #2411): a touched target's file is frequently not one of the
+    // Fold in files whose entrypoint flag changed this build (#2392, #2428):
+    // a touched target's file is frequently not one of the
     // reparsed `changedFileList` files (the cross-file case), and the
     // neighbour-expansion join inside classifyRolesIncremental/
     // classifyNodeRolesIncremental can't discover it either — the `calls`

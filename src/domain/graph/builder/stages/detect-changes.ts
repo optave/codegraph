@@ -410,47 +410,6 @@ function captureRemovedFileNeighbors(db: BetterSqlite3Database, removedFiles: st
 }
 
 /**
- * Clears `nodes.entrypoint`/`entrypoint_source_file` attribution owned by
- * files about to be removed, BEFORE `purgeFilesFromGraph`/`purgeFilesData`
- * deletes the `nodes` rows those files own — and returns the *targets'*
- * files, so the caller can fold them into incremental role reclassification
- * the same way `removedFileNeighbors` already is.
- *
- * `markEntrypointTargets` (build-edges.ts) only iterates `fileSymbols` — the
- * files actually reparsed this build — to clear a stale entrypoint flag when
- * its attributing call is edited or removed from an existing file. A file
- * that is deleted outright is never a member of `fileSymbols` in any build,
- * so that clear never runs for it: a cross-file target attributed to a
- * deleted guard file would keep `entrypoint = 1` and `role = "entry"`
- * indefinitely (review finding on #2411, tracked as #2425 before Greptile
- * flagged it independently in the same review round). Reading and clearing
- * here, one step earlier in the pipeline — mirroring
- * `captureRemovedFileNeighbors` immediately above — closes that gap the same
- * way it closes the analogous one for directory metrics. Mirrors
- * `clear_entrypoint_attribution_for_removed_files` in
- * crates/codegraph-core/.../detect_changes.rs.
- */
-function clearEntrypointAttributionForRemovedFiles(
-  db: BetterSqlite3Database,
-  removedFiles: string[],
-): string[] {
-  if (removedFiles.length === 0) return [];
-  const touchedFiles = new Set<string>();
-  const findStmt = db.prepare(`SELECT file FROM nodes WHERE entrypoint_source_file = ?`);
-  const clearStmt = db.prepare(
-    `UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL
-     WHERE entrypoint_source_file = ?`,
-  );
-  for (const relPath of removedFiles) {
-    for (const row of findStmt.all(relPath) as Array<{ file: string }>) {
-      touchedFiles.add(row.file);
-    }
-    clearStmt.run(relPath);
-  }
-  return [...touchedFiles];
-}
-
-/**
  * Computes the sorted line list for every (name, kind) sibling group within
  * `file`, keyed by `name|kind`.
  *
@@ -651,11 +610,12 @@ function handleScopedBuild(ctx: PipelineContext): void {
     reverseDeps = findReverseDependencies(db, changedRelPaths, rootDir, ctx.nativeDb);
   }
   ctx.removedFileNeighbors = captureRemovedFileNeighbors(db, ctx.removed);
-  // Same "capture before purge" reasoning as the neighbor set just above,
-  // for entrypoint attribution instead of directory metrics (#2425). Appends
-  // rather than overwrites: `markEntrypointTargets` (build-edges.ts) writes
-  // its own contribution to this same field later in the pipeline.
-  ctx.entrypointTouchedFiles.push(...clearEntrypointAttributionForRemovedFiles(db, ctx.removed));
+  // No entrypoint-specific capture is needed before the purge below (#2428):
+  // purging a removed file drops its `entrypoint_calls` evidence with it, so
+  // `projectEntrypointAttribution` (build-edges.ts) simply finds nothing to
+  // re-mark its targets from and clears them. #2411's pre-purge clear step
+  // existed only because the flag was written straight onto the target,
+  // leaving nothing that a later stage could re-derive it from.
   // A file about to be (re)inserted can no longer be "deleted" — clear any
   // stale advisory left over from a prior removal at this same path before
   // capturing this build's actual removals (#1938).
@@ -672,7 +632,7 @@ function handleFullBuild(ctx: PipelineContext): void {
   const hasEmbeddings = detectHasEmbeddings(db, ctx.nativeDb);
   ctx.hasEmbeddings = hasEmbeddings;
   const deletions =
-    'PRAGMA foreign_keys = OFF; DELETE FROM cfg_edges; DELETE FROM cfg_blocks; DELETE FROM node_metrics; DELETE FROM edges; DELETE FROM function_complexity; DELETE FROM dataflow; DELETE FROM ast_nodes; DELETE FROM reexport_renames; DELETE FROM invoked_property_names; DELETE FROM return_types; DELETE FROM nodes; DELETE FROM file_hashes; PRAGMA foreign_keys = ON;';
+    'PRAGMA foreign_keys = OFF; DELETE FROM cfg_edges; DELETE FROM cfg_blocks; DELETE FROM node_metrics; DELETE FROM edges; DELETE FROM function_complexity; DELETE FROM dataflow; DELETE FROM ast_nodes; DELETE FROM reexport_renames; DELETE FROM invoked_property_names; DELETE FROM return_types; DELETE FROM entrypoint_calls; DELETE FROM nodes; DELETE FROM file_hashes; PRAGMA foreign_keys = ON;';
   db.exec(
     hasEmbeddings
       ? `${deletions.replace('PRAGMA foreign_keys = ON;', '')} DELETE FROM embeddings; PRAGMA foreign_keys = ON;`
@@ -715,11 +675,12 @@ function handleIncrementalBuild(ctx: PipelineContext): void {
     (item) => item.relPath || normalizePath(path.relative(rootDir, item.file)),
   );
   ctx.removedFileNeighbors = captureRemovedFileNeighbors(db, ctx.removed);
-  // Same "capture before purge" reasoning as the neighbor set just above,
-  // for entrypoint attribution instead of directory metrics (#2425). Appends
-  // rather than overwrites: `markEntrypointTargets` (build-edges.ts) writes
-  // its own contribution to this same field later in the pipeline.
-  ctx.entrypointTouchedFiles.push(...clearEntrypointAttributionForRemovedFiles(db, ctx.removed));
+  // No entrypoint-specific capture is needed before the purge below (#2428):
+  // purging a removed file drops its `entrypoint_calls` evidence with it, so
+  // `projectEntrypointAttribution` (build-edges.ts) simply finds nothing to
+  // re-mark its targets from and clears them. #2411's pre-purge clear step
+  // existed only because the flag was written straight onto the target,
+  // leaving nothing that a later stage could re-derive it from.
   // A file about to be (re)inserted can no longer be "deleted" — clear any
   // stale advisory left over from a prior removal at this same path before
   // capturing this build's actual removals (#1938).
