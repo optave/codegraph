@@ -67,24 +67,17 @@ function getChangedFiles(
 ): ChangeResult {
   // NativeDatabase is not open during change detection (deferred to after
   // early-exit check). All queries use better-sqlite3 here.
-  let hasTable = false;
-  try {
-    db.prepare('SELECT 1 FROM file_hashes LIMIT 1').get();
-    hasTable = true;
-  } catch (e) {
-    debug(`file_hashes table probe failed, assuming table doesn't exist: ${toErrorMessage(e)}`);
-  }
+  const existing = loadFileHashes(db);
 
-  if (!hasTable) {
+  // No prior build state to diff against — this is a from-scratch build, not
+  // an incremental one. See `loadFileHashes` for why an *empty* table counts.
+  if (!existing) {
     return {
       changed: allFiles.map((f) => ({ file: f })),
       removed: [],
       isFullBuild: true,
     };
   }
-
-  const rows = db.prepare('SELECT file, hash, mtime, size FROM file_hashes').all() as FileHashRow[];
-  const existing = new Map<string, FileHashRow>(rows.map((r) => [r.file, r]));
 
   const removed = detectRemovedFiles(existing, allFiles, rootDir);
   const journalResult = tryJournalTier(db, existing, rootDir, removed);
@@ -697,22 +690,46 @@ function makeFastSkipLogger(fastSkipDiag: boolean): (reason: string) => void {
 }
 
 /**
- * Load the `file_hashes` table for the no-change pre-flight.  Returns null
- * if the table is missing or empty (both → caller must fall through).
+ * Load the `file_hashes` table into a `relPath -> row` map.
+ *
+ * Returns `null` when there is no prior build state to diff against — the
+ * table is either missing (a DB predating the `file_hashes` migration) or
+ * present but empty. Both mean "nothing has ever been indexed here", which is
+ * a from-scratch build, and both callers must treat them identically.
+ *
+ * The empty case is not hypothetical: `initSchema` creates `file_hashes` via
+ * `CREATE TABLE IF NOT EXISTS` on every DB open, so a brand-new project always
+ * reaches change detection with the table present and holding zero rows. A
+ * table-existence probe therefore reports "prior state exists" for every first
+ * build, which is what made `getChangedFiles` label a project's first-ever
+ * build incremental (#2261). That label routes role classification through
+ * `classifyNodeRolesIncremental`, which deliberately omits the whole-graph
+ * reachability downgrade (#2032) — so the first build reported dead code the
+ * way it did before #2032, and disagreed with the native engine on the same
+ * source (#2407), which has always collapsed both cases here.
+ *
+ * Mirrors the native `load_file_hashes` in
+ * `crates/codegraph-core/src/domain/graph/builder/stages/detect_changes.rs`.
+ *
+ * `log` is the fast-skip diagnostic sink (`makeFastSkipLogger`); its messages
+ * are phrased as `detectNoChanges` return reasons, so only that caller passes
+ * one. `getChangedFiles` omits it and reports the missing-table case via
+ * `debug` instead.
  */
-function loadFileHashesForPreflight(
+function loadFileHashes(
   db: BetterSqlite3Database,
-  log: (reason: string) => void,
+  log?: (reason: string) => void,
 ): Map<string, FileHashRow> | null {
+  let rows: FileHashRow[];
   try {
-    db.prepare('SELECT 1 FROM file_hashes LIMIT 1').get();
-  } catch {
-    log('false: file_hashes table missing');
+    rows = db.prepare('SELECT file, hash, mtime, size FROM file_hashes').all() as FileHashRow[];
+  } catch (e) {
+    log?.('false: file_hashes table missing');
+    debug(`file_hashes read failed, assuming no prior build: ${toErrorMessage(e)}`);
     return null;
   }
-  const rows = db.prepare('SELECT file, hash, mtime, size FROM file_hashes').all() as FileHashRow[];
   if (rows.length === 0) {
-    log('false: file_hashes table empty');
+    log?.('false: file_hashes table empty');
     return null;
   }
   return new Map<string, FileHashRow>(rows.map((r) => [r.file, r]));
@@ -821,7 +838,7 @@ export function detectNoChanges(
   fastSkipDiag = false,
 ): boolean {
   const log = makeFastSkipLogger(fastSkipDiag);
-  const existing = loadFileHashesForPreflight(db, log);
+  const existing = loadFileHashes(db, log);
   if (!existing) return false;
 
   if (!allFilesMatchStoredStat(existing, allFiles, rootDir, log)) return false;

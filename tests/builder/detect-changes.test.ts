@@ -25,7 +25,7 @@ afterAll(() => {
 });
 
 describe('detectChanges stage', () => {
-  it('treats all files as changed when file_hashes is empty', async () => {
+  it('treats an empty file_hashes table as a full build (#2261)', async () => {
     const dbDir = path.join(tmpDir, '.codegraph');
     fs.mkdirSync(dbDir, { recursive: true });
     const db = openDb(path.join(dbDir, 'graph.db'));
@@ -42,8 +42,14 @@ describe('detectChanges stage', () => {
 
     await detectChanges(ctx);
 
-    // Empty file_hashes = all files are new (incremental, not full build)
-    expect(ctx.isFullBuild).toBe(false);
+    // `initSchema` always creates `file_hashes`, so a first-ever build reaches
+    // here with the table present and empty. That is zero prior state to diff
+    // against — a from-scratch build, not an incremental one. Labelling it
+    // incremental routed role classification through the incremental
+    // classifier, which skips #2032's whole-graph reachability downgrade, so
+    // a project's first build disagreed with both a later `--no-incremental`
+    // rebuild and the native engine (#2407) about which symbols are dead.
+    expect(ctx.isFullBuild).toBe(true);
     expect(ctx.earlyExit).toBe(false);
     expect(ctx.parseChanges.length).toBe(1);
     closeDb(db);
