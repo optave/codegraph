@@ -183,6 +183,18 @@ pub struct Import {
     /// (#1813).
     #[napi(js_name = "typeOnlyNames")]
     pub type_only_names: Option<Vec<String>>,
+    /// Local binding names (subset of `names`) bound to the imported *module*
+    /// itself rather than to a symbol inside it — Python's `import lib as L`
+    /// and JavaScript's `import * as ns from 'lib'`.
+    ///
+    /// Call resolution needs the distinction: for a namespace binding, a call
+    /// written `L.strip_block()` means "the symbol `strip_block` declared in
+    /// the module `L` refers to", whereas for an ordinary symbol binding the
+    /// same shape means "a member of the value `L`". Sparsely populated,
+    /// mirroring `renamed_imports`/`type_only_names`. Mirrors TS
+    /// `Import.namespaceBindings` (#2387).
+    #[napi(js_name = "namespaceBindings")]
+    pub namespace_bindings: Option<Vec<String>>,
     // Language-specific flags
     #[napi(js_name = "pythonImport")]
     pub python_import: Option<bool>,
@@ -228,6 +240,7 @@ impl Import {
             wildcard_reexport: None,
             renamed_imports: None,
             type_only_names: None,
+            namespace_bindings: None,
             python_import: None,
             go_import: None,
             rust_use: None,

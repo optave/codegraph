@@ -768,6 +768,265 @@ function resolveRustUsePath(
   return resolved ? normalizePath(path.relative(rootDir, resolved)) : null;
 }
 
+// ── Python module-path resolution (#2387) ───────────────────────────────
+
+/**
+ * True if `file` is Python source. Both engines resolve Python imports by
+ * module path rather than by filesystem path, so this gates the whole
+ * Python branch of `resolveImportPathJS`.
+ */
+function isPythonFile(file: string): boolean {
+  return file.endsWith('.py') || file.endsWith('.pyi');
+}
+
+/**
+ * File-existence probe with the same semantics as the native resolver's
+ * `file_exists`: consult `knownFiles` when the caller supplied one (accepting
+ * either the absolute or the root-relative convention), and fall back to a
+ * real filesystem check when it did not. Keeping the two engines on identical
+ * semantics matters here — a probe that answered differently would make the
+ * native and WASM graphs disagree about which imports resolve.
+ */
+function pythonCandidateExists(
+  candidate: string,
+  knownFiles: Set<string> | null,
+  rootDir: string,
+): boolean {
+  if (knownFiles) return knownFilesHasFile(knownFiles, candidate, rootDir);
+  return fs.existsSync(candidate);
+}
+
+/**
+ * Extra import roots declared by `pyproject.toml`, as absolute directories.
+ *
+ * Layout conventions cover most projects (see `pythonPackageRoot`), but a
+ * root that is neither the repo root nor derivable from `__init__.py`
+ * placement can only be known from configuration — `pythonpath = ["src",
+ * "scripts"]` being the case observed on `data-analytics-pipeline-svc`
+ * (#2387), where `scripts/` is importable but contains no package marker.
+ *
+ * Best-effort: unreadable or malformed TOML contributes no roots rather than
+ * failing resolution, matching `parseCargoTargetOverrides`'s precedent.
+ */
+function parsePyprojectImportRoots(rootDir: string): string[] {
+  const manifest = path.join(rootDir, 'pyproject.toml');
+  let parsed: unknown;
+  try {
+    parsed = parseToml(fs.readFileSync(manifest, 'utf8'));
+  } catch (e) {
+    debug(`parsePyprojectImportRoots: cannot read ${manifest}: ${toErrorMessage(e)}`);
+    return [];
+  }
+  if (typeof parsed !== 'object' || parsed === null) return [];
+  const tool = (parsed as Record<string, any>).tool;
+  if (typeof tool !== 'object' || tool === null) return [];
+
+  const roots: string[] = [];
+  const addRoot = (value: unknown): void => {
+    // `package-dir` maps an import prefix to a directory; only the directory
+    // half is an import root. An empty-string value means "the repo root",
+    // which is already probed unconditionally.
+    if (typeof value === 'string' && value.length > 0) roots.push(path.join(rootDir, value));
+  };
+
+  // [tool.pytest.ini_options] pythonpath = ["src", "scripts"]
+  const pythonpath = tool.pytest?.ini_options?.pythonpath;
+  if (Array.isArray(pythonpath)) for (const entry of pythonpath) addRoot(entry);
+
+  // [tool.setuptools] package-dir = { "" = "src" }
+  const packageDir = tool.setuptools?.['package-dir'];
+  if (typeof packageDir === 'object' && packageDir !== null) {
+    for (const value of Object.values(packageDir)) addRoot(value);
+  }
+
+  // [tool.setuptools.packages.find] where = ["src"]
+  const where = tool.setuptools?.packages?.find?.where;
+  if (Array.isArray(where)) for (const entry of where) addRoot(entry);
+
+  // [tool.poetry] packages = [{ include = "pipeline", from = "src" }]
+  const poetryPackages = tool.poetry?.packages;
+  if (Array.isArray(poetryPackages)) {
+    for (const entry of poetryPackages) addRoot((entry as Record<string, unknown> | null)?.from);
+  }
+
+  return roots;
+}
+
+/**
+ * Cache: rootDir → configured import roots. Populated lazily on the first
+ * Python import resolved for a given rootDir, so non-Python projects never
+ * pay for the manifest read.
+ */
+const _pythonConfiguredRootsCache: Map<string, string[]> = new Map();
+
+function getPythonConfiguredRoots(rootDir: string): string[] {
+  let roots = _pythonConfiguredRootsCache.get(rootDir);
+  if (!roots) {
+    roots = parsePyprojectImportRoots(rootDir);
+    _pythonConfiguredRootsCache.set(rootDir, roots);
+  }
+  return roots;
+}
+
+/**
+ * Clear the pyproject import-root cache, in both this (TypeScript) resolver
+ * and the native one — a long-lived process (`codegraph watch`, the MCP
+ * server) can outlive edits to pyproject.toml itself. Mirrors
+ * `clearCargoTargetOverridesCache`; also exported directly for testing.
+ */
+export function clearPythonImportRootsCache(): void {
+  _pythonConfiguredRootsCache.clear();
+  _pythonPackageRootCache.clear();
+  loadNative()?.clearPythonImportRootsCache?.();
+}
+
+/** Cache: file directory → its derived package root. */
+const _pythonPackageRootCache: Map<string, string> = new Map();
+
+/**
+ * The directory an absolute Python import from `fromFile` resolves against,
+ * derived from package layout: walk up from the file's own directory for as
+ * long as each level is a package (contains `__init__.py`), and stop at the
+ * first ancestor that is not.
+ *
+ * That ancestor is the directory that would be on `sys.path` at runtime, so
+ * this handles the PyPA-endorsed "src layout" (`src/pipeline/…`, imported as
+ * `from pipeline…`) and a flat layout with the same rule and no
+ * configuration — the src-layout case being precisely what made
+ * `data-analytics-pipeline-svc` resolve zero imports (#2387).
+ *
+ * Never walks above `rootDir`: a stray `__init__.py` at the repo root must
+ * not send resolution outside the project.
+ */
+function pythonPackageRoot(
+  fromFile: string,
+  rootDir: string,
+  knownFiles: Set<string> | null,
+): string {
+  const startDir = path.dirname(fromFile);
+  const cached = _pythonPackageRootCache.get(startDir);
+  if (cached !== undefined) return cached;
+
+  let dir = startDir;
+  for (;;) {
+    if (dir === rootDir) break;
+    if (!pythonCandidateExists(path.join(dir, '__init__.py'), knownFiles, rootDir)) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  _pythonPackageRootCache.set(startDir, dir);
+  return dir;
+}
+
+/**
+ * Candidate import roots for `fromFile`, most specific first: the layout-derived
+ * package root, then the conventional `src/` directory, then the repo root,
+ * then anything `pyproject.toml` declares.
+ */
+function pythonImportRoots(
+  fromFile: string,
+  rootDir: string,
+  knownFiles: Set<string> | null,
+): string[] {
+  const roots = [pythonPackageRoot(fromFile, rootDir, knownFiles), path.join(rootDir, 'src')];
+  roots.push(rootDir, ...getPythonConfiguredRoots(rootDir));
+  return roots;
+}
+
+/**
+ * Resolve dotted module `segments` beneath `baseDir` to the file that declares
+ * that module: `a/b/c.py`, then the package form `a/b/c/__init__.py`, then the
+ * stub `a/b/c.pyi`. Empty `segments` means the package itself (`from . import
+ * x`), which only ever resolves to its `__init__.py`.
+ *
+ * Returns a root-relative path, or null when nothing matches — including when
+ * a candidate would land outside `rootDir`, which a relative import with more
+ * leading dots than there are package levels can otherwise do.
+ */
+function resolvePythonModuleUnder(
+  baseDir: string,
+  segments: string[],
+  rootDir: string,
+  knownFiles: Set<string> | null,
+): string | null {
+  const target = segments.length > 0 ? path.join(baseDir, ...segments) : baseDir;
+  const candidates =
+    segments.length > 0
+      ? [`${target}.py`, path.join(target, '__init__.py'), `${target}.pyi`]
+      : [path.join(target, '__init__.py')];
+  for (const candidate of candidates) {
+    if (!pythonCandidateExists(candidate, knownFiles, rootDir)) continue;
+    const rel = normalizePath(path.relative(rootDir, candidate));
+    if (rel.startsWith('..')) continue;
+    return rel;
+  }
+  return null;
+}
+
+/**
+ * Resolve a Python `import a.b.c` / `from a.b import c` / `from .. import c`
+ * module path to the file that declares it (#2387).
+ *
+ * Returns null for anything not found under a project import root — standard
+ * library and third-party modules included — so the caller falls through to
+ * the bare-specifier behaviour that treats them as external.
+ */
+function resolvePythonImportPath(
+  fromFile: string,
+  importSource: string,
+  rootDir: string,
+  knownFiles: Set<string> | null,
+): string | null {
+  let dots = 0;
+  while (dots < importSource.length && importSource[dots] === '.') dots++;
+
+  if (dots > 0) {
+    // Relative import: one dot is the current package, each extra dot climbs
+    // one level further up before the remaining segments are walked down.
+    const rest = importSource.slice(dots);
+    let dir = path.dirname(fromFile);
+    for (let i = 1; i < dots; i++) {
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
+    }
+    const segments = rest.length > 0 ? rest.split('.') : [];
+    return resolvePythonModuleUnder(dir, segments, rootDir, knownFiles);
+  }
+
+  const segments = importSource.split('.');
+  if (segments.some((s) => s.length === 0)) return null;
+  for (const root of pythonImportRoots(fromFile, rootDir, knownFiles)) {
+    const resolved = resolvePythonModuleUnder(root, segments, rootDir, knownFiles);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+/**
+ * Resolve `from <source> import <name>` where `name` is itself a submodule
+ * rather than a symbol (`from pipeline.stages import extract`) — Python's two
+ * readings of that statement are indistinguishable without knowing which
+ * files exist, so this is decided here rather than in the extractor.
+ *
+ * Returns the submodule's root-relative path, or null when `name` is an
+ * ordinary symbol declared inside the source module.
+ */
+export function resolvePythonSubmodule(
+  fromFile: string,
+  importSource: string,
+  name: string,
+  rootDir: string,
+  knownFiles?: readonly string[] | null,
+): string | null {
+  if (!isPythonFile(fromFile) || name === '*') return null;
+  const combined = importSource.endsWith('.')
+    ? `${importSource}${name}`
+    : `${importSource}.${name}`;
+  return resolvePythonImportPath(fromFile, combined, rootDir, toKnownFilesSet(knownFiles));
+}
+
 /** Cache: knownFiles array identity → Set, so repeated resolutions against
  * the same project file list (e.g. every Rust `use` statement in a build)
  * don't each rebuild the Set from scratch. */
@@ -790,6 +1049,20 @@ function resolveImportPathJS(
   aliases: PathAliases | null,
   knownFiles?: readonly string[] | null,
 ): string {
+  // Python resolves by module path, not filesystem path, in both the absolute
+  // (`import a.b.c`) and relative (`from ..pkg import x`) forms — the latter
+  // shares JS's leading-dot spelling but means "climb the package tree", not
+  // "a path relative to this directory", so this must run before the generic
+  // relative branch below ever sees it (#2387).
+  if (isPythonFile(fromFile)) {
+    const pyResolved = resolvePythonImportPath(
+      fromFile,
+      importSource,
+      rootDir,
+      toKnownFilesSet(knownFiles),
+    );
+    if (pyResolved) return pyResolved;
+  }
   if (!importSource.startsWith('.') && aliases) {
     const aliasResolved = resolveViaAlias(importSource, aliases, rootDir);
     if (aliasResolved) return normalizePath(path.relative(rootDir, aliasResolved));

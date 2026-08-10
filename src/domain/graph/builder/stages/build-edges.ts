@@ -38,7 +38,7 @@ import type {
   ThisCallBinding,
   TypeMapEntry,
 } from '../../../../types.js';
-import { computeConfidence } from '../../resolve.js';
+import { computeConfidence, resolvePythonSubmodule } from '../../resolve.js';
 import type { PointsToMap } from '../../resolver/points-to.js';
 import { buildPointsToMapForFile, resolveViaPointsTo } from '../../resolver/points-to.js';
 import type { ResolvedCandidate } from '../../resolver/strategy.js';
@@ -121,7 +121,7 @@ interface NativeFileEntry {
     params?: string[];
   }>;
   calls: Call[];
-  importedNames: Array<{ name: string; file: string; imported?: string }>;
+  importedNames: Array<{ name: string; file: string; imported?: string; namespace?: boolean }>;
   classes: ClassRelation[];
   typeMap: Array<{ name: string; typeName: string; confidence: number }>;
   /** Phase 8.3: function-reference bindings for pts analysis. */
@@ -271,6 +271,25 @@ function emitEdgesForImport(
   allEdgeRows: EdgeRowTuple[],
 ): void {
   const resolvedPath = getResolved(ctx, path.join(ctx.rootDir, relPath), imp.source);
+
+  // `from pkg import submod` depends on `pkg/submod.py`, not merely on
+  // `pkg/__init__.py` — emitting only the latter would report the package
+  // barrel as the dependency and leave the module that actually changed
+  // invisible to `deps`/`impact` (#2387).
+  for (const { original } of importNamePairs(imp)) {
+    const submodule = resolvePythonSubmodule(
+      path.join(ctx.rootDir, relPath),
+      imp.source,
+      original,
+      ctx.rootDir,
+      ctx.allFiles,
+    );
+    if (!submodule) continue;
+    const submoduleRow = getNodeIdStmt.get(submodule, 'file', submodule, 0);
+    if (submoduleRow)
+      allEdgeRows.push([fileNodeId, submoduleRow.id, 'imports', 1.0, 0, null, null]);
+  }
+
   const targetRow = getNodeIdStmt.get(resolvedPath, 'file', resolvedPath, 0);
   if (!targetRow) return;
 
@@ -1082,14 +1101,37 @@ function buildImportedNamesForNative(
   relPath: string,
   symbols: ExtractorOutput,
   rootDir: string,
-): Array<{ name: string; file: string; imported?: string }> {
-  const importedNames: Array<{ name: string; file: string; imported?: string }> = [];
+): Array<{ name: string; file: string; imported?: string; namespace?: boolean }> {
+  const importedNames: Array<{
+    name: string;
+    file: string;
+    imported?: string;
+    namespace?: boolean;
+  }> = [];
   // Process dynamic imports first (lower priority), then static imports
   // (higher priority). Rust HashMap::collect keeps the last entry per key,
   // so static imports win when both contribute the same name.
   const addImports = (imp: (typeof symbols.imports)[number]) => {
     const resolvedPath = getResolved(ctx, path.join(rootDir, relPath), imp.source);
+    const namespaceLocals = new Set(imp.namespaceBindings ?? []);
     for (const { local, original } of importNamePairs(imp)) {
+      // Module bindings target the module file itself and have no declared
+      // symbol to trace through a barrel — mirrors buildImportedNamesMap.
+      if (namespaceLocals.has(local)) {
+        importedNames.push({ name: local, file: resolvedPath, namespace: true });
+        continue;
+      }
+      const submodule = resolvePythonSubmodule(
+        path.join(rootDir, relPath),
+        imp.source,
+        original,
+        rootDir,
+        ctx.allFiles,
+      );
+      if (submodule) {
+        importedNames.push({ name: local, file: submodule, namespace: true });
+        continue;
+      }
       let targetFile = resolvedPath;
       let targetName = original;
       if (isBarrelFile(ctx, resolvedPath)) {
@@ -1213,7 +1255,7 @@ function buildCallEdgesJS(
     const fileNodeRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
     if (!fileNodeRow) continue;
 
-    const { importedNames, importedOriginalNames } = buildImportedNamesMap(
+    const { importedNames, importedOriginalNames, namespaceImports } = buildImportedNamesMap(
       ctx,
       relPath,
       symbols,
@@ -1281,6 +1323,7 @@ function buildCallEdgesJS(
       chaCtx,
       importArtifactNames,
       importedOriginalNames,
+      namespaceImports,
     );
     buildClassHierarchyEdges(
       lookup,
@@ -1304,25 +1347,57 @@ function buildCallEdgesJS(
  * Barrel tracing and downstream target-file symbol lookups must search using
  * that declared name — neither the renamed local alias nor the barrel's
  * external rename exists in the file being imported from.
+ *
+ * Also reports the subset of those bindings that name a whole module rather
+ * than a symbol (`namespaceImports`, e.g. Python's `import lib as L`), which
+ * call resolution needs in order to read `L.strip_block()` as "strip_block, in
+ * the module L refers to" (#2387).
  */
 function buildImportedNamesMap(
   ctx: PipelineContext,
   relPath: string,
   symbols: ExtractorOutput,
   rootDir: string,
-): { importedNames: Map<string, string>; importedOriginalNames: Map<string, string> } {
+): {
+  importedNames: Map<string, string>;
+  importedOriginalNames: Map<string, string>;
+  namespaceImports: Map<string, string>;
+} {
   const importedNames = new Map<string, string>();
   const importedOriginalNames = new Map<string, string>();
+  const namespaceImports = new Map<string, string>();
   // Phase 8.4: trace through barrel files so that symbol names map to their
   // actual definition file, not the re-exporting barrel. Mirrors the tracing
   // already done in buildImportedNamesForNative (the native path), and
   // shares its implementation with buildImportArtifactNames's CJS require
   // path via traceBarrelTarget (#2071).
   const addImportNames = (imp: (typeof symbols.imports)[number], resolvedPath: string) => {
+    const namespaceLocals = new Set(imp.namespaceBindings ?? []);
     for (const { local, original } of importNamePairs(imp)) {
+      // A namespace binding names the module itself, so it has no declared
+      // symbol to trace through a barrel — the module file *is* the target.
+      if (namespaceLocals.has(local)) {
+        importedNames.set(local, resolvedPath);
+        namespaceImports.set(local, resolvedPath);
+        continue;
+      }
       const { file, name } = traceBarrelTarget(ctx, resolvedPath, original);
       importedNames.set(local, file);
       if (name !== local) importedOriginalNames.set(local, name);
+      // `from pkg import submod` binds a module too, but which reading applies
+      // depends on whether `pkg/submod.py` exists — a question only the
+      // resolver can answer (#2387).
+      const submodule = resolvePythonSubmodule(
+        path.join(rootDir, relPath),
+        imp.source,
+        original,
+        rootDir,
+        ctx.allFiles,
+      );
+      if (submodule) {
+        importedNames.set(local, submodule);
+        namespaceImports.set(local, submodule);
+      }
     }
   };
   // Process dynamic imports first (lower priority), then static imports
@@ -1339,7 +1414,7 @@ function buildImportedNamesMap(
     const resolvedPath = getResolved(ctx, path.join(rootDir, relPath), imp.source);
     addImportNames(imp, resolvedPath);
   }
-  return { importedNames, importedOriginalNames };
+  return { importedNames, importedOriginalNames, namespaceImports };
 }
 
 /**
@@ -1493,6 +1568,7 @@ function resolveFallbackTargets(
   definePropertyReceivers: Map<string, string> | undefined,
   invokedPropertyNames: ReadonlySet<string>,
   importedOriginalNames?: ReadonlyMap<string, string>,
+  namespaceImports?: ReadonlyMap<string, string>,
 ): {
   targets: ReadonlyArray<ResolvedCandidate>;
   importedFrom: string | null | undefined;
@@ -1513,6 +1589,7 @@ function resolveFallbackTargets(
           typeMap as Map<string, unknown>,
           caller.callerName,
           importedOriginalNames,
+          namespaceImports,
         );
 
   // Fallback strategies, applied in order until one yields a match. Each
@@ -1959,6 +2036,7 @@ function buildFileCallEdges(
   chaCtx?: ChaContext,
   importArtifactNames?: ReadonlyMap<string, BarrelExportResolution>,
   importedOriginalNames?: ReadonlyMap<string, string>,
+  namespaceImports?: ReadonlyMap<string, string>,
 ): void {
   // Tracks edges that were inserted by the pts fallback (edgeKey → allEdgeRows index).
   // Kept separate from seenCallEdges so that a subsequent direct-call edge for the same
@@ -1998,6 +2076,7 @@ function buildFileCallEdges(
       symbols.definePropertyReceivers,
       invokedPropertyNames,
       importedOriginalNames,
+      namespaceImports,
     );
 
     // Step 2: Emit direct-call edges (upgrades any pending pts edge in-place).

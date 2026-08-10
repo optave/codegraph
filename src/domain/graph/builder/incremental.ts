@@ -27,8 +27,10 @@ import type {
 import { parseFileIncremental } from '../../parser.js';
 import {
   clearCargoTargetOverridesCache,
+  clearPythonImportRootsCache,
   computeConfidence,
   resolveImportPath,
+  resolvePythonSubmodule,
 } from '../resolve.js';
 import {
   buildPointsToMapForFile,
@@ -362,7 +364,7 @@ function rebuildReverseDepEdges(
     skipBarrel ? null : db,
     knownFiles,
   );
-  const { importedNames, importedOriginalNames } = buildImportedNamesMap(
+  const { importedNames, importedOriginalNames, namespaceImports } = buildImportedNamesMap(
     symbols,
     rootDir,
     depRelPath,
@@ -379,6 +381,7 @@ function rebuildReverseDepEdges(
     importedNames,
     importedOriginalNames,
     maxIterations,
+    namespaceImports,
   );
   edgesAdded += buildClassHierarchyEdges(
     db,
@@ -901,9 +904,14 @@ function buildImportedNamesMap(
   aliases: PathAliases,
   db: BetterSqlite3Database,
   knownFiles: readonly string[],
-): { importedNames: Map<string, string>; importedOriginalNames: Map<string, string> } {
+): {
+  importedNames: Map<string, string>;
+  importedOriginalNames: Map<string, string>;
+  namespaceImports: Map<string, string>;
+} {
   const importedNames = new Map<string, string>();
   const importedOriginalNames = new Map<string, string>();
+  const namespaceImports = new Map<string, string>();
   for (const imp of symbols.imports) {
     const resolvedPath = resolveImportPath(
       path.join(rootDir, relPath),
@@ -912,7 +920,27 @@ function buildImportedNamesMap(
       aliases,
       knownFiles,
     );
+    const namespaceLocals = new Set(imp.namespaceBindings ?? []);
     for (const { local, original } of importNamePairs(imp)) {
+      // Module bindings target the module file itself — mirrors the full-build
+      // path in stages/build-edges.ts (#2387).
+      if (namespaceLocals.has(local)) {
+        importedNames.set(local, resolvedPath);
+        namespaceImports.set(local, resolvedPath);
+        continue;
+      }
+      const submodule = resolvePythonSubmodule(
+        path.join(rootDir, relPath),
+        imp.source,
+        original,
+        rootDir,
+        knownFiles,
+      );
+      if (submodule) {
+        importedNames.set(local, submodule);
+        namespaceImports.set(local, submodule);
+        continue;
+      }
       // Mirror full-build's `buildImportedNamesMap`: follow barrel re-exports so
       // `importedNames` maps to the *defining* file, not the barrel. This ensures
       // `computeConfidence` gets `importedFrom === targetFile` and returns 1.0
@@ -930,7 +958,7 @@ function buildImportedNamesMap(
       if (targetName !== local) importedOriginalNames.set(local, targetName);
     }
   }
-  return { importedNames, importedOriginalNames };
+  return { importedNames, importedOriginalNames, namespaceImports };
 }
 
 // ── Class hierarchy edges ───────────────────────────────────────────────
@@ -1472,6 +1500,9 @@ function buildCallEdges(
   // override applies to watch-mode rebuilds, not just full builds.
   // Undefined falls back to buildPointsToMapForFile's own default parameter.
   maxIterations?: number,
+  // #2387: local bindings that name a whole module (Python's `import x as y`),
+  // so `y.f()` resolves f inside that module rather than resolving to nothing.
+  namespaceImports?: ReadonlyMap<string, string>,
 ): number {
   const typeMap = buildIncrementalTypeMap(symbols);
   const seenCallEdges = new Set<string>();
@@ -1516,6 +1547,7 @@ function buildCallEdges(
             typeMap,
             caller.callerName,
             importedOriginalNames,
+            namespaceImports,
           );
 
     let targets = applyCallFallbacks(
@@ -1758,7 +1790,7 @@ function rebuildEdgesForTargetFile(
     db,
     knownFiles,
   );
-  const { importedNames, importedOriginalNames } = buildImportedNamesMap(
+  const { importedNames, importedOriginalNames, namespaceImports } = buildImportedNamesMap(
     symbols,
     rootDir,
     relPath,
@@ -1775,6 +1807,7 @@ function rebuildEdgesForTargetFile(
     importedNames,
     importedOriginalNames,
     maxIterations,
+    namespaceImports,
   );
   edgesAdded += buildClassHierarchyEdges(
     db,
@@ -2274,6 +2307,11 @@ export async function rebuildFile(
   // just Rust ones — means the very next Rust file to change (a near-certain
   // companion edit to any real Cargo.toml target change) re-scans fresh.
   clearCargoTargetOverridesCache();
+  // Same reasoning for Python (#2387): pyproject.toml isn't watched either,
+  // and the layout-derived package roots this also clears go stale as soon as
+  // an `__init__.py` is added or removed — which changes where every absolute
+  // import in that package tree resolves.
+  clearPythonImportRootsCache();
   // #2242: real tsconfig/jsconfig + codegraph-configured aliases, loaded
   // once per rebuild (mirrors knownFiles just above) and threaded through
   // every edge-building call below — a hardcoded empty PathAliases
