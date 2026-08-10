@@ -10,8 +10,10 @@ import { PipelineContext } from '../../src/domain/graph/builder/context.js';
 import {
   detectChanges,
   detectNoChanges,
+  isUnreadableBuildStateError,
 } from '../../src/domain/graph/builder/stages/detect-changes.js';
 import { writeJournalHeader } from '../../src/domain/graph/journal.js';
+import { DbError } from '../../src/shared/errors.js';
 
 let tmpDir: string;
 
@@ -25,7 +27,7 @@ afterAll(() => {
 });
 
 describe('detectChanges stage', () => {
-  it('treats all files as changed when file_hashes is empty', async () => {
+  it('treats an empty file_hashes table as a full build (#2261)', async () => {
     const dbDir = path.join(tmpDir, '.codegraph');
     fs.mkdirSync(dbDir, { recursive: true });
     const db = openDb(path.join(dbDir, 'graph.db'));
@@ -42,11 +44,65 @@ describe('detectChanges stage', () => {
 
     await detectChanges(ctx);
 
-    // Empty file_hashes = all files are new (incremental, not full build)
-    expect(ctx.isFullBuild).toBe(false);
+    // `initSchema` always creates `file_hashes`, so a first-ever build reaches
+    // here with the table present and empty. That is zero prior state to diff
+    // against — a from-scratch build, not an incremental one. Labelling it
+    // incremental routed role classification through the incremental
+    // classifier, which skips #2032's whole-graph reachability downgrade, so
+    // a project's first build disagreed with both a later `--no-incremental`
+    // rebuild and the native engine (#2407) about which symbols are dead.
+    expect(ctx.isFullBuild).toBe(true);
     expect(ctx.earlyExit).toBe(false);
     expect(ctx.parseChanges.length).toBe(1);
     closeDb(db);
+  });
+
+  it('throws instead of wiping the graph when file_hashes exists but is unreadable', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-stage-unreadable-'));
+    const dbDir = path.join(dir, '.codegraph');
+    fs.mkdirSync(dbDir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a.js'), 'export const a = 1;');
+
+    const db = openDb(path.join(dbDir, 'graph.db'));
+    initSchema(db);
+
+    // Real prior build state that a from-scratch build would destroy.
+    db.prepare('INSERT INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)').run(
+      'a.js',
+      'deadbeef',
+      1,
+      1,
+    );
+
+    // Drop `size` so the loader's SELECT fails while the table itself still
+    // exists. `initSchema` always runs migrations, so a genuinely old DB gets
+    // this column backfilled rather than reaching here — this is a
+    // deterministic stand-in for the corruption, lock and I/O failures that hit
+    // the same catch and cannot be provoked reliably in a test. What matters is
+    // the shape: table present, read fails. It must not be read as "no prior
+    // build".
+    db.exec('ALTER TABLE file_hashes DROP COLUMN size');
+
+    const ctx = new PipelineContext();
+    ctx.rootDir = dir;
+    ctx.db = db;
+    ctx.allFiles = [path.join(dir, 'a.js')];
+    ctx.opts = {};
+    ctx.incremental = true;
+    ctx.forceFullRebuild = false;
+    ctx.config = {};
+
+    await expect(detectChanges(ctx)).rejects.toThrow(DbError);
+
+    // The decisive assertion: `handleFullBuild` never ran, so the stored state
+    // survives. Returning null here instead would have DELETEd every graph
+    // table — nodes, edges, file_hashes, embeddings — over a transient fault.
+    const remaining = db.prepare('SELECT COUNT(*) AS c FROM file_hashes').get() as { c: number };
+    expect(remaining.c).toBe(1);
+    expect(ctx.isFullBuild).not.toBe(true);
+
+    closeDb(db);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('detects early exit when no changes after initial build', async () => {
@@ -168,6 +224,71 @@ describe('detectNoChanges fast-skip', () => {
     );
     return { mtime, size: stat.size };
   }
+
+  it('throws rather than falling through when file_hashes is unreadable', () => {
+    // This pre-flight must not answer "false" (fall through) for an unreadable
+    // table. pipeline.ts treats pre-flight failures as best-effort, so falling
+    // through hands the build to the Rust orchestrator, whose loader still
+    // reads a failed row query as "no prior state" and rebuilds from scratch —
+    // the exact wipe this guards against on the JS path.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-noChange-unreadable-'));
+    const dbDir = path.join(dir, '.codegraph');
+    fs.mkdirSync(dbDir, { recursive: true });
+    const db = openDb(path.join(dbDir, 'graph.db'));
+    initSchema(db);
+    const file = seedFile(dir, 'a.js', 'export const a = 1;');
+    seedHashRow(db, 'a.js', file);
+    db.exec('ALTER TABLE file_hashes DROP COLUMN size');
+
+    let thrown: unknown;
+    try {
+      detectNoChanges(db, [file], dir);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(DbError);
+    // The code is what pipeline.ts keys on to re-throw instead of falling through.
+    expect(isUnreadableBuildStateError(thrown)).toBe(true);
+
+    closeDb(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('tags a failure of the table-existence probe itself as unreadable state', () => {
+    // The `sqlite_master` probe can fail too (lock, corruption, I/O). If that
+    // error escapes untagged, pipeline.ts does not recognise it, treats the
+    // pre-flight as best-effort, and falls through to the native loader — which
+    // reads it as absent state and wipes. Being unable to determine whether
+    // prior state exists is not evidence that it doesn't.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-noChange-probe-'));
+    const dbDir = path.join(dir, '.codegraph');
+    fs.mkdirSync(dbDir, { recursive: true });
+    const db = openDb(path.join(dbDir, 'graph.db'));
+    initSchema(db);
+    const file = seedFile(dir, 'a.js', 'export const a = 1;');
+    seedHashRow(db, 'a.js', file);
+
+    // Force the existence probe to fail while leaving the handle usable enough
+    // to reach it, by stubbing `prepare` for the sqlite_master query only.
+    const realPrepare = db.prepare.bind(db);
+    (db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (sql.includes('sqlite_master')) throw new Error('database disk image is malformed');
+      return realPrepare(sql);
+    };
+
+    let thrown: unknown;
+    try {
+      detectNoChanges(db, [file], dir);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(isUnreadableBuildStateError(thrown)).toBe(true);
+    expect((thrown as Error).message).toContain('database disk image is malformed');
+
+    (db as unknown as { prepare: unknown }).prepare = realPrepare;
+    closeDb(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 
   it('returns false when file_hashes is empty (first build)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-noChange-empty-'));

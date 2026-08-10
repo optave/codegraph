@@ -627,7 +627,7 @@ function isInterfaceDispatchMethodRoot(
  * check gets wrong. Nodes that are themselves confirmed-live roots are never
  * downgraded (a root is always in its own reachable set).
  */
-function applyReachabilityDowngrade(
+export function applyReachabilityDowngrade(
   nodes: RoleClassificationNode[],
   result: Map<string, Role>,
   callEdges: ReadonlyArray<readonly [string, string]>,

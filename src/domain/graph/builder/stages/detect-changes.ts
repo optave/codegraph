@@ -15,7 +15,7 @@ import {
 } from '../../../../db/index.js';
 import { debug, info } from '../../../../infrastructure/logger.js';
 import { normalizePath } from '../../../../shared/constants.js';
-import { toErrorMessage } from '../../../../shared/errors.js';
+import { DbError, toErrorMessage } from '../../../../shared/errors.js';
 import type { BetterSqlite3Database, ExtractorOutput, NativeDatabase } from '../../../../types.js';
 import { parseFilesAuto } from '../../../parser.js';
 import { readJournal, writeJournalHeader } from '../../journal.js';
@@ -67,24 +67,17 @@ function getChangedFiles(
 ): ChangeResult {
   // NativeDatabase is not open during change detection (deferred to after
   // early-exit check). All queries use better-sqlite3 here.
-  let hasTable = false;
-  try {
-    db.prepare('SELECT 1 FROM file_hashes LIMIT 1').get();
-    hasTable = true;
-  } catch (e) {
-    debug(`file_hashes table probe failed, assuming table doesn't exist: ${toErrorMessage(e)}`);
-  }
+  const existing = loadFileHashes(db);
 
-  if (!hasTable) {
+  // No prior build state to diff against — this is a from-scratch build, not
+  // an incremental one. See `loadFileHashes` for why an *empty* table counts.
+  if (!existing) {
     return {
       changed: allFiles.map((f) => ({ file: f })),
       removed: [],
       isFullBuild: true,
     };
   }
-
-  const rows = db.prepare('SELECT file, hash, mtime, size FROM file_hashes').all() as FileHashRow[];
-  const existing = new Map<string, FileHashRow>(rows.map((r) => [r.file, r]));
 
   const removed = detectRemovedFiles(existing, allFiles, rootDir);
   const journalResult = tryJournalTier(db, existing, rootDir, removed);
@@ -697,22 +690,134 @@ function makeFastSkipLogger(fastSkipDiag: boolean): (reason: string) => void {
 }
 
 /**
- * Load the `file_hashes` table for the no-change pre-flight.  Returns null
- * if the table is missing or empty (both → caller must fall through).
+ * Error code for "prior build state exists but could not be read".
+ *
+ * Distinct from a generic `DB_ERROR` because callers must be able to single
+ * this case out: the native fast-skip pre-flight in `pipeline.ts` treats its
+ * own failures as best-effort and falls through to the Rust orchestrator, and
+ * falling through here would hand the decision to a loader that still answers
+ * "no prior state" — wiping the graph this error exists to protect.
  */
-function loadFileHashesForPreflight(
-  db: BetterSqlite3Database,
-  log: (reason: string) => void,
-): Map<string, FileHashRow> | null {
+export const UNREADABLE_BUILD_STATE = 'DB_STATE_UNREADABLE';
+
+/** True for the error `loadFileHashes` raises when prior state exists but is unreadable. */
+export function isUnreadableBuildStateError(e: unknown): boolean {
+  return e instanceof DbError && e.code === UNREADABLE_BUILD_STATE;
+}
+
+/**
+ * Build the tagged error for "prior state may exist but could not be read".
+ *
+ * Every SQLite failure on the way to an answer must go through here. An
+ * untagged error is not merely less descriptive — `pipeline.ts` keys on the
+ * code to decide whether to re-throw or fall through to the Rust orchestrator,
+ * so an untagged escape is silently treated as best-effort and produces the
+ * very wipe this error prevents.
+ */
+function unreadableBuildState(detail: string, cause: unknown): DbError {
+  return new DbError(
+    `${detail} Refusing to fall back to a from-scratch build, which would delete the ` +
+      'existing graph and its embeddings. Retry once the database is readable, or pass ' +
+      '--no-incremental to rebuild deliberately.',
+    { code: UNREADABLE_BUILD_STATE, cause: cause instanceof Error ? cause : undefined },
+  );
+}
+
+/**
+ * True when the `file_hashes` table exists in the schema.
+ *
+ * Read from `sqlite_master` rather than inferred from a failed `SELECT`, so a
+ * genuinely-absent table stays distinguishable from one that exists but cannot
+ * be read (corruption, schema drift, a held lock, I/O failure). Conflating the
+ * two is what `loadFileHashes` must never do — see its doc comment.
+ *
+ * Mirrors the `sqlite_master` probe in the native `load_file_hashes`, and the
+ * `hasTable` helper in `db/migrations.ts`.
+ *
+ * A failure here is itself an unreadable-state error, not an absent table:
+ * being unable to determine whether prior state exists is not evidence that it
+ * doesn't, and answering `false` would license a full rebuild on nothing more
+ * than a lock or an I/O fault.
+ */
+function fileHashesTableExists(db: BetterSqlite3Database): boolean {
   try {
-    db.prepare('SELECT 1 FROM file_hashes LIMIT 1').get();
-  } catch {
-    log('false: file_hashes table missing');
+    const row = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes'")
+      .get();
+    return !!row;
+  } catch (e) {
+    throw unreadableBuildState(
+      `Could not determine whether the file_hashes table exists: ${toErrorMessage(e)}.`,
+      e,
+    );
+  }
+}
+
+/**
+ * Load the `file_hashes` table into a `relPath -> row` map.
+ *
+ * Returns `null` when there is no prior build state to diff against — the
+ * table is either missing (a DB predating the `file_hashes` migration) or
+ * present but empty. Both mean "nothing has ever been indexed here", which is
+ * a from-scratch build, and both callers must treat them identically.
+ *
+ * A read that *fails* is not one of those cases and is never reported as one.
+ * "No prior state" is the answer that makes `getChangedFiles` return
+ * `isFullBuild: true`, and `handleFullBuild` acts on it by `DELETE`-ing every
+ * graph table — `nodes`, `edges`, `file_hashes`, and `embeddings` among them.
+ * Inferring that answer from an exception means a transient `SQLITE_BUSY` from
+ * a concurrent build or MCP server, or a schema mismatch, would silently
+ * discard a healthy graph (and its expensive embeddings) instead of retrying.
+ * So an unreadable table throws `DbError` and lets the operator decide;
+ * `--no-incremental` remains the explicit way to ask for a wipe-and-rebuild.
+ * A destructive action should be requested, never inferred from a failure.
+ *
+ * The empty case is not hypothetical: `initSchema` creates `file_hashes` via
+ * `CREATE TABLE IF NOT EXISTS` on every DB open, so a brand-new project always
+ * reaches change detection with the table present and holding zero rows.
+ * Testing existence *alone* therefore answers "prior state exists" for every
+ * first build, which is what made `getChangedFiles` label a project's
+ * first-ever build incremental (#2261) — existence is necessary but not
+ * sufficient, and the row count is what actually settles it. (That is why the
+ * `fileHashesTableExists` probe above only classifies a read failure and never
+ * decides from-scratch-ness by itself.)
+ *
+ * That label routes role classification through
+ * `classifyNodeRolesIncremental`, which deliberately omits the whole-graph
+ * reachability downgrade (#2032) — so the first build reported dead code the
+ * way it did before #2032, and disagreed with the native engine on the same
+ * source (#2407), which has always collapsed both cases here.
+ *
+ * Mirrors the native `load_file_hashes` in
+ * `crates/codegraph-core/src/domain/graph/builder/stages/detect_changes.rs`.
+ *
+ * `log` is the fast-skip diagnostic sink (`makeFastSkipLogger`); its messages
+ * are phrased as `detectNoChanges` return reasons, so only that caller passes
+ * one. `getChangedFiles` omits it and reports the missing-table case via
+ * `debug` instead.
+ */
+function loadFileHashes(
+  db: BetterSqlite3Database,
+  log?: (reason: string) => void,
+): Map<string, FileHashRow> | null {
+  if (!fileHashesTableExists(db)) {
+    log?.('false: file_hashes table missing');
+    debug('file_hashes table does not exist, treating as a from-scratch build');
     return null;
   }
-  const rows = db.prepare('SELECT file, hash, mtime, size FROM file_hashes').all() as FileHashRow[];
+
+  let rows: FileHashRow[];
+  try {
+    rows = db.prepare('SELECT file, hash, mtime, size FROM file_hashes').all() as FileHashRow[];
+  } catch (e) {
+    throw unreadableBuildState(
+      `Could not read the file_hashes table: ${toErrorMessage(e)}. The table exists, so this ` +
+        'is a database failure rather than a first build.',
+      e,
+    );
+  }
   if (rows.length === 0) {
-    log('false: file_hashes table empty');
+    log?.('false: file_hashes table empty');
     return null;
   }
   return new Map<string, FileHashRow>(rows.map((r) => [r.file, r]));
@@ -821,7 +926,7 @@ export function detectNoChanges(
   fastSkipDiag = false,
 ): boolean {
   const log = makeFastSkipLogger(fastSkipDiag);
-  const existing = loadFileHashesForPreflight(db, log);
+  const existing = loadFileHashes(db, log);
   if (!existing) return false;
 
   if (!allFilesMatchStoredStat(existing, allFiles, rootDir, log)) return false;
