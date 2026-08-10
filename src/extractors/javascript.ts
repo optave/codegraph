@@ -4371,20 +4371,25 @@ function declarationDeclaresName(declarationNode: TreeSitterNode, name: string):
  * Only the BOUND side of an `assignment_pattern`/`object_assignment_pattern`
  * (`left`) is checked — the default-value side (`right`) is deliberately
  * left for the ordinary reference scan to find.
+ *
+ * Depth-bounded like every other recursive walk in this file
+ * (`MAX_WALK_DEPTH`) — stops a pathologically deep destructuring/parameter
+ * pattern from overflowing the stack (Greptile review, PR #2432).
  */
-function patternBindsName(paramNode: TreeSitterNode, name: string): boolean {
+function patternBindsName(paramNode: TreeSitterNode, name: string, depth = 0): boolean {
+  if (depth >= MAX_WALK_DEPTH) return false;
   switch (paramNode.type) {
     case 'identifier':
       return paramNode.text === name;
     case 'assignment_pattern':
     case 'object_assignment_pattern': {
       const left = paramNode.childForFieldName('left');
-      return left ? patternBindsName(left, name) : false;
+      return left ? patternBindsName(left, name, depth + 1) : false;
     }
     case 'rest_pattern': {
       for (let i = 0; i < paramNode.childCount; i++) {
         const child = paramNode.child(i);
-        if (child && child.type !== '...' && patternBindsName(child, name)) return true;
+        if (child && child.type !== '...' && patternBindsName(child, name, depth + 1)) return true;
       }
       return false;
     }
@@ -4396,9 +4401,9 @@ function patternBindsName(paramNode: TreeSitterNode, name: string): boolean {
           if (child.text === name) return true;
         } else if (child.type === 'pair_pattern') {
           const value = child.childForFieldName('value');
-          if (value && patternBindsName(value, name)) return true;
+          if (value && patternBindsName(value, name, depth + 1)) return true;
         } else if (child.type === 'rest_pattern' || child.type === 'object_assignment_pattern') {
-          if (patternBindsName(child, name)) return true;
+          if (patternBindsName(child, name, depth + 1)) return true;
         }
       }
       return false;
@@ -4406,7 +4411,7 @@ function patternBindsName(paramNode: TreeSitterNode, name: string): boolean {
     case 'array_pattern': {
       for (let i = 0; i < paramNode.childCount; i++) {
         const child = paramNode.child(i);
-        if (child && patternBindsName(child, name)) return true;
+        if (child && patternBindsName(child, name, depth + 1)) return true;
       }
       return false;
     }
@@ -4414,7 +4419,7 @@ function patternBindsName(paramNode: TreeSitterNode, name: string): boolean {
     case 'required_parameter':
     case 'optional_parameter': {
       const pattern = paramNode.childForFieldName('pattern') ?? paramNode.childForFieldName('name');
-      return pattern ? patternBindsName(pattern, name) : false;
+      return pattern ? patternBindsName(pattern, name, depth + 1) : false;
     }
     default:
       return false;

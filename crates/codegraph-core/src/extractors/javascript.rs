@@ -4280,7 +4280,7 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
                 Some(params) => {
                     for i in 0..params.child_count() {
                         if let Some(param) = params.child(i) {
-                            if pattern_binds_name(&param, name, source) {
+                            if pattern_binds_name(&param, name, source, 0) {
                                 return true;
                             }
                         }
@@ -4291,7 +4291,7 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
             }
         }
         "catch_clause" => match node.child_by_field_name("parameter") {
-            Some(param) => pattern_binds_name(&param, name, source),
+            Some(param) => pattern_binds_name(&param, name, source, 0),
             None => false,
         },
         "for_statement" | "for_in_statement" => {
@@ -4377,20 +4377,28 @@ fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8])
 /// (`left`) is checked — the default-value side (`right`) is deliberately
 /// left for the ordinary reference scan to find.
 ///
+/// Depth-bounded like every other recursive walk in this file
+/// (`MAX_WALK_DEPTH`) — stops a pathologically deep destructuring/parameter
+/// pattern from overflowing the stack (Greptile review, PR #2432).
+///
 /// Mirrors `patternBindsName` in `src/extractors/javascript.ts`.
-fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
+fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8], depth: usize) -> bool {
+    if depth >= MAX_WALK_DEPTH {
+        return false;
+    }
     match param_node.kind() {
         "identifier" => node_text(param_node, source) == name,
         "assignment_pattern" | "object_assignment_pattern" => {
             match param_node.child_by_field_name("left") {
-                Some(left) => pattern_binds_name(&left, name, source),
+                Some(left) => pattern_binds_name(&left, name, source, depth + 1),
                 None => false,
             }
         }
         "rest_pattern" => {
             for i in 0..param_node.child_count() {
                 if let Some(child) = param_node.child(i) {
-                    if child.kind() != "..." && pattern_binds_name(&child, name, source) {
+                    if child.kind() != "..." && pattern_binds_name(&child, name, source, depth + 1)
+                    {
                         return true;
                     }
                 }
@@ -4410,13 +4418,13 @@ fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
                     }
                     "pair_pattern" => {
                         if let Some(value) = child.child_by_field_name("value") {
-                            if pattern_binds_name(&value, name, source) {
+                            if pattern_binds_name(&value, name, source, depth + 1) {
                                 return true;
                             }
                         }
                     }
                     "rest_pattern" | "object_assignment_pattern" => {
-                        if pattern_binds_name(&child, name, source) {
+                        if pattern_binds_name(&child, name, source, depth + 1) {
                             return true;
                         }
                     }
@@ -4428,7 +4436,7 @@ fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
         "array_pattern" => {
             for i in 0..param_node.child_count() {
                 if let Some(child) = param_node.child(i) {
-                    if pattern_binds_name(&child, name, source) {
+                    if pattern_binds_name(&child, name, source, depth + 1) {
                         return true;
                     }
                 }
@@ -4441,7 +4449,7 @@ fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
                 .child_by_field_name("pattern")
                 .or_else(|| param_node.child_by_field_name("name"));
             match pattern {
-                Some(p) => pattern_binds_name(&p, name, source),
+                Some(p) => pattern_binds_name(&p, name, source, depth + 1),
                 None => false,
             }
         }
@@ -4526,7 +4534,7 @@ fn block_contains_identifier_excluding(
     }
     if node.kind() == "assignment_expression" {
         if let Some(left) = node.child_by_field_name("left") {
-            if pattern_binds_name(&left, name, source) {
+            if pattern_binds_name(&left, name, source, 0) {
                 return match node.child_by_field_name("right") {
                     Some(right) => block_contains_identifier_excluding(
                         &right,
@@ -7748,6 +7756,19 @@ mod tests {
         assert!(!s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
+    }
+
+    // Greptile review, PR #2432: `pattern_binds_name`'s own recursive descent
+    // through nested destructuring patterns must be depth-bounded too, like
+    // every other recursive walk in this file (MAX_WALK_DEPTH) — a
+    // pathologically deep array/object pattern must not overflow the stack.
+    #[test]
+    fn does_not_overflow_the_stack_on_a_pathologically_deep_destructuring_pattern() {
+        let depth = 300;
+        let pattern = format!("{}fn{}", "[".repeat(depth), "]".repeat(depth));
+        let source =
+            format!("let fn = options.custom || fetchLatestVersion;\n{pattern} = replacement;");
+        let _ = parse_js(&source);
     }
 
     // #1895: key_expr capture — the property key, distinct from the

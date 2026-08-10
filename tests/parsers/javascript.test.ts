@@ -2204,6 +2204,17 @@ function runDemo(reporter: Reporter, users: string[]): void {
         symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
       ).toBe(false);
     });
+
+    // Greptile review, PR #2432: patternBindsName's own recursive descent
+    // through nested destructuring patterns must be depth-bounded too, like
+    // every other recursive walk in this file (MAX_WALK_DEPTH) — a
+    // pathologically deep array/object pattern must not overflow the stack.
+    it('does not overflow the stack on a pathologically deep destructuring pattern', () => {
+      const depth = 300;
+      const pattern = `${'['.repeat(depth)}fn${']'.repeat(depth)}`;
+      const source = `let fn = options.custom || fetchLatestVersion;\n${pattern} = replacement;`;
+      expect(() => parseJS(source)).not.toThrow();
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {
