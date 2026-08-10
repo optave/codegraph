@@ -1218,6 +1218,7 @@ function runIncrementalReachabilityDowngrade(
   const outsideRows = db
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file, n.exported,
+        COALESCE(n.entrypoint, 0) AS entrypoint,
         COALESCE(fi.cnt, 0) AS fan_in,
         COALESCE(fo.cnt, 0) AS fan_out
       FROM nodes n
@@ -1236,6 +1237,7 @@ function runIncrementalReachabilityDowngrade(
     kind: string;
     file: string;
     exported: number;
+    entrypoint: number;
     fan_in: number;
     fan_out: number;
   }>;
@@ -1249,6 +1251,7 @@ function runIncrementalReachabilityDowngrade(
     fanOut: r.fan_out,
     isExported: r.exported === 1,
     isPublicSurface: r.exported === 1,
+    isEntrypoint: r.entrypoint === 1,
     hasActiveFileSiblings: true,
   }));
 
