@@ -77,7 +77,7 @@ function renderViolations(violations: ManifestoViolationRow[]): void {
 export function manifesto(customDbPath: string | undefined, opts: ManifestoOpts = {}): void {
   const data = manifestoData(customDbPath, opts as any) as any;
 
-  if (outputResult(data, 'violations', opts)) {
+  if (outputResult(data, 'violations', opts, customDbPath)) {
     if (!data.passed) process.exitCode = 1;
     return;
   }

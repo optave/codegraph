@@ -14,7 +14,11 @@ import { debug } from '../../../../infrastructure/logger.js';
 import { loadNative } from '../../../../infrastructure/native.js';
 import { getOrCreatePerDbChunkStmt } from '../../../../shared/chunked-stmt-cache.js';
 import { TS_NATIVE_CONFIDENCE_FLOOR } from '../../../../shared/constants.js';
-import { FLAG_ONLY_DYNAMIC_KINDS, isTypeErasedImportTarget } from '../../../../shared/kinds.js';
+import {
+  CALLABLE_SYMBOL_KINDS,
+  FLAG_ONLY_DYNAMIC_KINDS,
+  isTypeErasedImportTarget,
+} from '../../../../shared/kinds.js';
 import type {
   ArrayCallbackBinding,
   ArrayElemBinding,
@@ -101,6 +105,8 @@ interface QueryNodeRow {
   line: number;
   /** `get`/`set` for an ES6 accessor node, `null` otherwise (issue #2030). */
   accessorKind?: string | null;
+  /** Only fetched to build `ctx.callablesByFile` — absent from ResolvedCandidate. */
+  endLine?: number | null;
 }
 
 /** Shape fed to the native buildCallEdges FFI. */
@@ -162,10 +168,17 @@ function setupNodeLookups(ctx: PipelineContext, allNodes: QueryNodeRow[]): void 
     ctx.nodesByName.get(node.name)!.push(node as unknown as NodeRow);
   }
   ctx.nodesByNameAndFile = new Map();
+  ctx.callablesByFile = new Map();
   for (const node of allNodes) {
     const key = `${node.name}|${node.file}`;
     if (!ctx.nodesByNameAndFile.has(key)) ctx.nodesByNameAndFile.set(key, []);
     ctx.nodesByNameAndFile.get(key)!.push(node as unknown as NodeRow);
+    if (CALLABLE_SYMBOL_KINDS.has(node.kind)) {
+      if (!ctx.callablesByFile.has(node.file)) ctx.callablesByFile.set(node.file, []);
+      ctx.callablesByFile
+        .get(node.file)!
+        .push({ id: node.id, line: node.line, endLine: node.endLine ?? null });
+    }
   }
 }
 
@@ -371,7 +384,12 @@ interface NativeFileInput {
 /** Native FFI input shape for re-exports of a single file. */
 interface NativeReexportInput {
   file: string;
-  reexports: Array<{ source: string; names: string[]; wildcardReexport: boolean }>;
+  reexports: Array<{
+    source: string;
+    names: string[];
+    wildcardReexport: boolean;
+    renames: Array<{ local: string; imported: string }>;
+  }>;
 }
 
 /** Lazily-resolving cache of file-node rows for the native input arrays. */
@@ -466,11 +484,17 @@ function buildNativeReexports(
 
   for (const [file, entries] of ctx.reexportMap) {
     const reexports = (
-      entries as Array<{ source: string; names: string[]; wildcardReexport: boolean }>
+      entries as Array<{
+        source: string;
+        names: string[];
+        wildcardReexport: boolean;
+        renames?: Array<{ local: string; imported: string }>;
+      }>
     ).map((re) => ({
       source: re.source,
       names: re.names,
       wildcardReexport: !!re.wildcardReexport,
+      renames: re.renames ?? [],
     }));
     fileReexports.push({ file, reexports });
 
@@ -1006,14 +1030,18 @@ function buildChaPostPass(
           relPath,
         );
       } else {
-        const typeEntry = typeMap.get(call.receiver);
+        // Function-scoped key checked before the bare key (#2235 follow-up)
+        // — see emitChaCallEdgesForCall's identical comment.
+        const typeEntry = caller.callerName
+          ? (typeMap.get(`${caller.callerName}::${call.receiver}`) ?? typeMap.get(call.receiver))
+          : typeMap.get(call.receiver);
         const typeName = typeEntry
           ? typeof typeEntry === 'string'
             ? typeEntry
             : (typeEntry as { type?: string }).type
           : null;
         if (typeName) {
-          chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup);
+          chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup, relPath);
           isTypedReceiverDispatch = true;
         }
       }
@@ -1357,6 +1385,10 @@ function makeContextLookup(ctx: PipelineContext, getNodeIdStmt: NodeIdStmt): Cal
     resolveBarrel: (barrelFile, symbolName) =>
       resolveBarrelExportCached(ctx, barrelFile, symbolName),
     nodeId: (name, kind, file, line) => getNodeIdStmt.get(name, kind, file, line),
+    hasEnclosingCallable: (file, line, excludeId) =>
+      (ctx.callablesByFile.get(file) ?? []).some(
+        (c) => c.id !== excludeId && c.line <= line && (c.endLine == null || c.endLine >= line),
+      ),
   };
 }
 
@@ -1851,14 +1883,20 @@ function emitChaCallEdgesForCall(
       relPath,
     );
   } else if (!BUILTIN_RECEIVERS.has(call.receiver!)) {
-    const typeEntry = typeMap.get(call.receiver!);
+    // Function-scoped key checked before the bare key, mirroring
+    // resolveReceiverEdge/resolveReceiverTypeName — otherwise a same-named
+    // local/parameter in a DIFFERENT function can still leak its (wrong)
+    // hierarchy into this call's additive CHA expansion (#2235 follow-up).
+    const typeEntry = caller.callerName
+      ? (typeMap.get(`${caller.callerName}::${call.receiver}`) ?? typeMap.get(call.receiver!))
+      : typeMap.get(call.receiver!);
     const typeName = typeEntry
       ? typeof typeEntry === 'string'
         ? typeEntry
         : (typeEntry as { type?: string }).type
       : null;
     if (typeName) {
-      chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup);
+      chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup, relPath);
       isTypedReceiverDispatch = true;
     }
   }
@@ -2540,7 +2578,7 @@ function loadNodes(ctx: PipelineContext): { rows: QueryNodeRow[]; scoped: boolea
       const placeholders = [...relevantFiles].map(() => '?').join(',');
       const rows = db
         .prepare(
-          `SELECT id, name, kind, file, line, accessor_kind AS accessorKind FROM nodes WHERE ${nodeKindFilter} AND file IN (${placeholders})`,
+          `SELECT id, name, kind, file, line, end_line AS endLine, accessor_kind AS accessorKind FROM nodes WHERE ${nodeKindFilter} AND file IN (${placeholders})`,
         )
         .all(...relevantFiles) as QueryNodeRow[];
       return { rows, scoped: true };
@@ -2549,7 +2587,7 @@ function loadNodes(ctx: PipelineContext): { rows: QueryNodeRow[]; scoped: boolea
 
   const rows = db
     .prepare(
-      `SELECT id, name, kind, file, line, accessor_kind AS accessorKind FROM nodes WHERE ${nodeKindFilter}`,
+      `SELECT id, name, kind, file, line, end_line AS endLine, accessor_kind AS accessorKind FROM nodes WHERE ${nodeKindFilter}`,
     )
     .all() as QueryNodeRow[];
   return { rows, scoped: false };

@@ -17,7 +17,7 @@ export interface CliContext {
   resolveNoTests: (opts: CommandOpts) => boolean;
   resolveQueryOpts: (opts: CommandOpts) => CommandOpts;
   formatSize: (bytes: number) => string;
-  outputResult: (data: unknown, key: string, opts: CommandOpts) => boolean;
+  outputResult: (data: unknown, key: string, opts: CommandOpts, customDbPath?: string) => boolean;
   program: Command;
 }
 

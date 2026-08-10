@@ -25,7 +25,7 @@ interface BriefResult {
 
 export function brief(file: string, customDbPath: string | undefined, opts: BriefOpts = {}): void {
   const data = briefData(file, customDbPath as string, opts);
-  if (outputResult(data, 'results', opts)) return;
+  if (outputResult(data, 'results', opts, customDbPath)) return;
 
   if (data.results.length === 0) {
     console.log(`No file matching "${file}" in graph`);

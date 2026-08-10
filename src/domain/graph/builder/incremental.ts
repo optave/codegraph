@@ -62,6 +62,7 @@ import {
   fileHash,
   fileStat,
   loadPathAliases,
+  mergeConfigAliases,
   readFileSafe,
 } from './helpers.js';
 import { importNamePairs } from './import-utils.js';
@@ -77,6 +78,13 @@ export interface IncrementalStmts {
   listSymbols: { all: (...params: unknown[]) => unknown[] };
   findNodeInFile: { all: (...params: unknown[]) => unknown[] };
   findNodeByName: { all: (...params: unknown[]) => unknown[] };
+  /**
+   * True when `file` has a function/method-kind node other than `excludeId`
+   * whose span encloses `line` — backs `CallNodeLookup.hasEnclosingCallable`
+   * for the watch-mode path (issue #2238 follow-up, Greptile finding on PR
+   * #2400). Params: `(file, excludeId, line, line)`.
+   */
+  hasEnclosingCallable: { get: (...params: unknown[]) => unknown };
   /**
    * Upsert a `file_hashes` row: `(relPath, hash, mtime, size)`. Called only
    * after a file's edges have been fully rebuilt (#1731) — see the call site
@@ -326,6 +334,12 @@ function rebuildReverseDepEdges(
   skipBarrel: boolean,
   // #2216: see getKnownFilesForIncremental's doc comment.
   knownFiles: readonly string[],
+  // #2242: real tsconfig/jsconfig + codegraph-configured aliases, loaded
+  // once per rebuildFile invocation and threaded through — a hardcoded
+  // empty PathAliases here silently dropped every edge kind for an
+  // alias-based import, not just renamed reexports (#1967's narrower fix,
+  // now also using this same shared aliases — see persistReexportRenamesForFile).
+  aliases: PathAliases,
   // #2077: forwarded to buildCallEdges — see its own param doc.
   maxIterations?: number,
 ): number {
@@ -334,9 +348,8 @@ function rebuildReverseDepEdges(
 
   // #1967: keep this reverse-dep's persisted barrel rename table current if
   // it's itself a barrel — independent of the edges rebuilt below.
-  persistReexportRenamesForFile(db, depRelPath, symbols, rootDir, knownFiles);
+  persistReexportRenamesForFile(db, depRelPath, symbols, rootDir, knownFiles, aliases);
 
-  const aliases: PathAliases = { baseUrl: null, paths: {} };
   let edgesAdded = buildContainmentEdges(db, stmts, depRelPath, symbols);
   // Don't rebuild dir->file containment for reverse-deps (it was never deleted)
   edgesAdded += buildImportEdges(
@@ -601,6 +614,16 @@ function persistReexportRenamesForFile(
   symbols: ExtractorOutput,
   rootDir: string,
   knownFiles: readonly string[],
+  // Real tsconfig/jsconfig + codegraph-configured aliases (#1967 review,
+  // #2242) — using an empty aliases object here would resolve an
+  // alias-based reexport source (e.g. `@utils/foo`) to a bogus non-file
+  // specifier, overwriting a correct full-build row with one
+  // `resolveBarrelTarget` can never match to a graph node. Callers load
+  // this once per rebuildFile invocation (mirroring knownFiles) rather than
+  // this function loading its own — a stale cache spanning a whole
+  // long-running `codegraph watch` session would be the wrong tradeoff
+  // (#1967 review), but a fresh load per rebuild event is exactly as fresh.
+  aliases: PathAliases,
 ): void {
   const { renameDeleteStmt, renameInsertStmt } = getBarrelStmts(db);
   renameDeleteStmt.run(relPath);
@@ -608,17 +631,6 @@ function persistReexportRenamesForFile(
   const reexports = symbols.imports.filter((imp) => imp.reexport);
   if (reexports.length === 0) return;
 
-  // Real tsconfig/jsconfig aliases (#1967 review) — using an empty aliases
-  // object here would resolve an alias-based reexport source (e.g.
-  // `@utils/foo`) to a bogus non-file specifier, overwriting a correct
-  // full-build row with one `resolveBarrelTarget` can never match to a
-  // graph node. Loaded fresh (not cached) on every call: this branch only
-  // runs for files that are actually barrels with renamed specifiers — rare
-  // enough that the disk read is negligible — and a stale cache could
-  // otherwise persist a wrong `source_file` for the rest of a long-running
-  // `codegraph watch` session after a mid-session tsconfig/jsconfig edit
-  // (#1967 review).
-  const aliases = loadPathAliases(rootDir);
   for (const imp of reexports) {
     if (!imp.renamedImports?.length) continue;
     const source = resolveImportPath(
@@ -1072,6 +1084,8 @@ function makeIncrementalLookup(db: BetterSqlite3Database, stmts: IncrementalStmt
     resolveBarrel: (barrelFile, symbolName) => resolveBarrelTarget(db, barrelFile, symbolName),
     nodeId: (name, kind, file, line) =>
       stmts.getNodeId.get(name, kind, file, line) as { id: number } | undefined,
+    hasEnclosingCallable: (file, line, excludeId) =>
+      stmts.hasEnclosingCallable.get(file, excludeId, line, line) !== undefined,
   };
 }
 
@@ -1723,14 +1737,15 @@ function rebuildEdgesForTargetFile(
   // #2216: project-wide known-files list, needed for Rust crate::/self::/
   // super:: resolution (#2007) — see getKnownFilesForIncremental's doc comment.
   knownFiles: readonly string[],
+  // #2242: real tsconfig/jsconfig aliases — see rebuildReverseDepEdges' param doc.
+  aliases: PathAliases,
   // #2077: forwarded to buildCallEdges — see its own param doc.
   maxIterations?: number,
 ): number {
   // #1967: keep this file's persisted barrel rename table current if it's
   // itself a barrel — independent of the edges rebuilt below.
-  persistReexportRenamesForFile(db, relPath, symbols, rootDir, knownFiles);
+  persistReexportRenamesForFile(db, relPath, symbols, rootDir, knownFiles, aliases);
 
-  const aliases: PathAliases = { baseUrl: null, paths: {} };
   let edgesAdded = buildContainmentEdges(db, stmts, relPath, symbols);
   edgesAdded += rebuildDirContainment(db, stmts, relPath);
   edgesAdded += buildImportEdges(
@@ -1811,19 +1826,20 @@ function emitBarrelImportEdgesForReverseDeps(
   depSymbols: Map<string, ExtractorOutput>,
   rootDir: string,
   knownFiles: readonly string[],
+  // #2242: real tsconfig/jsconfig aliases — see rebuildReverseDepEdges' param doc.
+  aliases: PathAliases,
 ): number {
   let edgesAdded = 0;
   for (const [depRelPath, symbols_] of depSymbols) {
     const fileNodeRow_ = stmts.getNodeId.get(depRelPath, 'file', depRelPath, 0);
     if (!fileNodeRow_) continue;
-    const aliases_: PathAliases = { baseUrl: null, paths: {} };
     for (const imp of symbols_.imports) {
       if (imp.reexport) continue;
       const resolvedPath = resolveImportPath(
         path.join(rootDir, depRelPath),
         imp.source,
         rootDir,
-        aliases_,
+        aliases,
         knownFiles,
       );
       edgesAdded += resolveBarrelImportEdges(db, stmts, fileNodeRow_.id, resolvedPath, imp);
@@ -1850,6 +1866,8 @@ async function runReverseDepCascade(
   cache: unknown,
   // #2216: see getKnownFilesForIncremental's doc comment.
   knownFiles: readonly string[],
+  // #2242: real tsconfig/jsconfig aliases — see rebuildReverseDepEdges' param doc.
+  aliases: PathAliases,
 ): Promise<{
   edgesAdded: number;
   reverseDepsEdgesBefore: number;
@@ -1875,11 +1893,19 @@ async function runReverseDepCascade(
       stmts,
       true,
       knownFiles,
+      aliases,
       engineOpts.pointsToMaxIterations,
     );
   }
   // Pass 2: add barrel import edges (reexports edges now exist)
-  edgesAdded += emitBarrelImportEdgesForReverseDeps(db, stmts, depSymbols, rootDir, knownFiles);
+  edgesAdded += emitBarrelImportEdgesForReverseDeps(
+    db,
+    stmts,
+    depSymbols,
+    rootDir,
+    knownFiles,
+    aliases,
+  );
   return { edgesAdded, reverseDepsEdgesBefore, depSymbols };
 }
 
@@ -1939,14 +1965,18 @@ function emitChaDispatchForCall(
       relPath,
     );
   } else {
-    const typeEntry = typeMap.get(call.receiver);
+    // Function-scoped key checked before the bare key (#2235 follow-up) —
+    // mirrors emitChaCallEdgesForCall (stages/build-edges.ts, full-build path).
+    const typeEntry = caller.callerName
+      ? (typeMap.get(`${caller.callerName}::${call.receiver}`) ?? typeMap.get(call.receiver))
+      : typeMap.get(call.receiver);
     const typeName = typeEntry
       ? typeof typeEntry === 'string'
         ? typeEntry
         : (typeEntry as { type?: string }).type
       : null;
     if (typeName) {
-      chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup);
+      chaTargets = resolveChaTargets(typeName, call.name, chaCtx, lookup, relPath);
       isTypedReceiverDispatch = true;
     }
   }
@@ -2244,6 +2274,17 @@ export async function rebuildFile(
   // just Rust ones — means the very next Rust file to change (a near-certain
   // companion edit to any real Cargo.toml target change) re-scans fresh.
   clearCargoTargetOverridesCache();
+  // #2242: real tsconfig/jsconfig + codegraph-configured aliases, loaded
+  // once per rebuild (mirrors knownFiles just above) and threaded through
+  // every edge-building call below — a hardcoded empty PathAliases
+  // previously dropped every edge kind (not just reexports) for any file
+  // whose imports use an alias. engineOpts.aliases carries
+  // `.codegraphrc.json`'s own `aliases` field (mirroring pipeline.ts's
+  // full-build loadAliases stage, which merges the same on top of
+  // tsconfig/jsconfig) since rebuildFile has no PipelineContext to read
+  // `ctx.config` from directly.
+  const aliases = loadPathAliases(rootDir);
+  mergeConfigAliases(aliases, engineOpts.aliases, rootDir);
 
   let edgesAdded = rebuildEdgesForTargetFile(
     db,
@@ -2253,13 +2294,23 @@ export async function rebuildFile(
     fileNodeRow,
     rootDir,
     knownFiles,
+    aliases,
     engineOpts.pointsToMaxIterations,
   );
   const {
     edgesAdded: cascadeEdges,
     reverseDepsEdgesBefore,
     depSymbols,
-  } = await runReverseDepCascade(db, rootDir, reverseDeps, stmts, engineOpts, cache, knownFiles);
+  } = await runReverseDepCascade(
+    db,
+    rootDir,
+    reverseDeps,
+    stmts,
+    engineOpts,
+    cache,
+    knownFiles,
+    aliases,
+  );
   edgesAdded += cascadeEdges;
 
   // Phase 8.5 CHA + RTA dispatch expansion post-pass (#1852) — runs after all

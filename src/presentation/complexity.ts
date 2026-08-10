@@ -88,7 +88,7 @@ function renderDefaultTable(functions: ComplexityFunction[]): void {
 export function complexity(customDbPath: string | undefined, opts: ComplexityCliOpts = {}): void {
   const data = complexityData(customDbPath, opts as any) as unknown as ComplexityResult;
 
-  if (outputResult(data, 'functions', opts)) return;
+  if (outputResult(data, 'functions', opts, customDbPath)) return;
 
   if (data.functions.length === 0) {
     if (data.summary === null) {

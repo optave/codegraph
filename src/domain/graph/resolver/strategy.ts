@@ -284,12 +284,15 @@ function resolveReceiverTypeName(
       typeEntry = typeMap.get(`${callerClass}.${effectiveReceiver}`);
     }
   }
-  typeEntry ??=
-    typeMap.get(effectiveReceiver) ??
-    typeMap.get(receiver) ??
-    // Phase 8.3f: callee-scoped rest-param key (`callee::restName`) to avoid
-    // same-name rest-binding collision across functions in the same file (#1358).
-    (callerName ? typeMap.get(`${callerName}::${effectiveReceiver}`) : undefined);
+  // Function-scoped key (`callerName::name`) — checked before the bare
+  // fallback keys below so a same-named local/parameter/rest-binding in a
+  // DIFFERENT function in this file can't shadow the correct entry for the
+  // function actually calling here (Phase 8.3f rest-param collision, #1358;
+  // generalized to plain locals/parameters, #2235).
+  if (callerName) {
+    typeEntry ??= typeMap.get(`${callerName}::${effectiveReceiver}`);
+  }
+  typeEntry ??= typeMap.get(effectiveReceiver) ?? typeMap.get(receiver);
 
   let typeName = unwrapTypeEntry(typeEntry);
 

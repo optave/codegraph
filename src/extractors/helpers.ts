@@ -98,6 +98,34 @@ export function setTypeMapEntry(
 }
 
 /**
+ * Merge a type-map entry for a plain local variable/parameter under both its
+ * bare name AND, when `enclosingQualifier` is non-null, a function-scoped key
+ * `${enclosingQualifier}::${name}` — mirroring the existing `ClassName.field`
+ * (class-scoped) and `callerName::name` (rest-param-scoped) key conventions
+ * already used elsewhere in this file's typeMap. The bare key alone is a flat,
+ * per-file, name-only slot: two different functions in the same file each
+ * declaring their own differently-typed local/parameter of the same name
+ * silently collide under it, with whichever has the higher confidence (or was
+ * inserted first, on a tie) winning for BOTH functions' call resolution —
+ * wrongly for whichever loses (issue #2235). The scoped key gives a caller
+ * with `callerName` in scope (already available at nearly every real
+ * call-resolution site) an unambiguous, collision-proof lookup; the bare key
+ * remains as a fallback for callers without that context.
+ */
+export function setScopedTypeMapEntry(
+  typeMap: Map<string, TypeMapEntry>,
+  enclosingQualifier: string | null,
+  name: string,
+  type: string,
+  confidence: number,
+): void {
+  setTypeMapEntry(typeMap, name, type, confidence);
+  if (enclosingQualifier) {
+    setTypeMapEntry(typeMap, `${enclosingQualifier}::${name}`, type, confidence);
+  }
+}
+
+/**
  * Extract visibility from a node by scanning its children for modifier keywords.
  * Works for Java, C#, PHP, and similar languages where modifiers are child nodes.
  * @param {object} node - tree-sitter node

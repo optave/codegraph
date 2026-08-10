@@ -380,7 +380,7 @@ export function astQuery(
 ): void {
   const data = astQueryData(pattern, customDbPath, opts);
 
-  if (outputResult(data, 'results', opts)) return;
+  if (outputResult(data, 'results', opts, customDbPath)) return;
 
   if (data.results.length === 0) {
     process.stdout.write(`No AST nodes found${pattern ? ` matching "${pattern}"` : ''}.\n`);

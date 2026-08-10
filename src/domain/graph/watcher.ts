@@ -67,6 +67,14 @@ function prepareWatcherStatements(db: ReturnType<typeof openDb>): IncrementalStm
       "SELECT id, file, kind, line, accessor_kind AS accessorKind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
     ),
     listSymbols: db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? AND kind != 'file'"),
+    // Mirrors native-orchestrator.ts's makePostNativeCallLookup containment
+    // query (issue #2238 follow-up, Greptile finding on PR #2400).
+    hasEnclosingCallable: db.prepare(`
+      SELECT 1 FROM nodes
+      WHERE file = ? AND kind IN ('method', 'function') AND id != ?
+      AND line <= ? AND (end_line IS NULL OR end_line >= ?)
+      LIMIT 1
+    `),
     upsertFileHash: db.prepare(
       'INSERT OR REPLACE INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)',
     ),
@@ -223,6 +231,10 @@ function setupWatcher(rootDir: string, opts: { engine?: string; dbPath?: string 
     // buildPointsToMapForFile's own default parameter instead of honoring a
     // .codegraphrc.json override, diverging from the full-build path below.
     pointsToMaxIterations: config.analysis.pointsToMaxIterations,
+    // #2242: without this, rebuildFile only resolved tsconfig/jsconfig
+    // aliases, silently excluding aliases configured via .codegraphrc.json's
+    // own `aliases` field that a full build does honor.
+    aliases: config.aliases,
   };
   const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
   info(`Watch mode using ${engineName} engine${engineVersion ? ` (v${engineVersion})` : ''}`);

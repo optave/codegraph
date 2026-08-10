@@ -278,16 +278,6 @@ describe.each(ENGINES)(
     });
 
     it('the rename row still resolves to the real aliased file after the barrel is reparsed', () => {
-      // Deliberately scoped to the row itself, not the barrel's own `calls`/
-      // `imports` edges: incremental.ts's edge-building functions
-      // (buildImportEdges, buildImportedNamesMap, etc.) hardcode an *empty*
-      // PathAliases object for every import resolution — a separate,
-      // pre-existing limitation of the whole file (not introduced by this
-      // fix, and not scoped to reexports/renames) that also breaks the
-      // barrel's own alias-resolved edges when it's reparsed under watch.
-      // Filed as a follow-up (issue link in the PR description) rather than
-      // fixed here — it affects every edge kind under watch for alias-based
-      // projects, well beyond this fix's scope.
       expect(readReexportRenames(dbPath)).toEqual([
         {
           barrel_file: 'barrel.ts',
@@ -296,6 +286,31 @@ describe.each(ENGINES)(
           source_file: 'utils/foo.ts',
         },
       ]);
+    });
+
+    it("the barrel's own alias-resolved reexports edge also survives being reparsed under watch (#2242)", () => {
+      // incremental.ts's edge-building functions (buildImportEdges,
+      // buildImportedNamesMap, etc.) used to hardcode an *empty* PathAliases
+      // object for every import resolution — not just reexports/renames —
+      // so reparsing this alias-based barrel under watch would drop its own
+      // reexports edge to utils/foo.ts even though the rename row (above)
+      // was already fixed for #1967. Fixed for every edge kind by #2242.
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        const row = db
+          .prepare(
+            `SELECT 1 FROM edges e
+             JOIN nodes n1 ON e.source_id = n1.id
+             JOIN nodes n2 ON e.target_id = n2.id
+             WHERE n1.kind = 'file' AND n1.file = 'barrel.ts'
+             AND n2.kind = 'file' AND n2.file = 'utils/foo.ts'
+             AND e.kind = 'reexports'`,
+          )
+          .get();
+        expect(row).toBeDefined();
+      } finally {
+        db.close();
+      }
     });
   },
 );

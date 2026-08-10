@@ -29,6 +29,7 @@ import {
   MAX_WALK_DEPTH,
   nodeEndLine,
   nodeStartLine,
+  setScopedTypeMapEntry,
   setTypeMapEntry,
 } from './helpers.js';
 
@@ -2525,6 +2526,28 @@ function extractImplementsFromNode(node: TreeSitterNode): string[] {
 
 // ── Type inference helpers ───────────────────────────────────────────────
 
+/**
+ * TypeScript utility types that describe another type through a type-level
+ * transform rather than naming a concrete class/interface with its own
+ * methods — `ReturnType<typeof fn>`/`InstanceType<typeof Cls>` are this
+ * codebase's own idiomatic way to type a variable/parameter as "whatever
+ * this other function returns" (see e.g. tests/helpers/incremental-stmts.ts's
+ * `db: ReturnType<typeof openDb>`). Returning the wrapper's own name here
+ * ("ReturnType") previously seeded the typeMap with a resolvable-looking but
+ * meaningless type — defeating class-hierarchy method lookup for that
+ * variable directly, and, when it wins the bare per-file key, silently
+ * poisoning cross-file return-type propagation for every other same-named
+ * local in the file too (issue #2235). Returning null here instead defers to
+ * whatever other, more specific typeMap entry exists for the name (a
+ * `new Foo()` constructor call, a scoped entry, or cross-file propagation).
+ */
+const OPAQUE_TYPE_TRANSFORM_WRAPPERS = new Set([
+  'ReturnType',
+  'InstanceType',
+  'Parameters',
+  'ConstructorParameters',
+]);
+
 function extractSimpleTypeName(typeAnnotationNode: TreeSitterNode): string | null {
   if (!typeAnnotationNode) return null;
   for (let i = 0; i < typeAnnotationNode.childCount; i++) {
@@ -2532,7 +2555,10 @@ function extractSimpleTypeName(typeAnnotationNode: TreeSitterNode): string | nul
     if (!child) continue;
     const t = child.type;
     if (t === 'type_identifier' || t === 'identifier') return child.text;
-    if (t === 'generic_type') return child.child(0)?.text || null;
+    if (t === 'generic_type') {
+      const base = child.child(0)?.text || null;
+      return base && OPAQUE_TYPE_TRANSFORM_WRAPPERS.has(base) ? null : base;
+    }
     if (t === 'parenthesized_type') return extractSimpleTypeName(child);
     // Skip union, intersection, and array types — too ambiguous
   }
@@ -3340,6 +3366,7 @@ function handleCallExprTypeMap(
   typeMap: Map<string, TypeMapEntry>,
   returnTypeMap: Map<string, TypeMapEntry> | undefined,
   callAssignments: CallAssignment[] | undefined,
+  enclosingQualifier: string | null,
 ): void {
   const createFn = valueN.childForFieldName('function');
   // Phase 8.3e: Object.create({ f1, f2 }) — seed composite pts keys obj.f1 → f1, etc.
@@ -3369,7 +3396,7 @@ function handleCallExprTypeMap(
   if (returnTypeMap) {
     const result = resolveCallExprReturnType(valueN, typeMap, returnTypeMap, 0);
     if (result) {
-      setTypeMapEntry(typeMap, lhsName, result.type, result.confidence);
+      setScopedTypeMapEntry(typeMap, enclosingQualifier, lhsName, result.type, result.confidence);
       return;
     }
   }
@@ -3383,7 +3410,7 @@ function handleCallExprTypeMap(
     if (obj?.type === 'identifier') {
       const objName = obj.text;
       if (objName[0] && objName[0] !== objName[0].toLowerCase() && !BUILTIN_GLOBALS.has(objName)) {
-        setTypeMapEntry(typeMap, lhsName, objName, 0.7);
+        setScopedTypeMapEntry(typeMap, enclosingQualifier, lhsName, objName, 0.7);
       }
     }
   }
@@ -3475,11 +3502,16 @@ function handleVarDeclaratorTypeMap(
     collectFnRefBindings(nameN.text, valueN, fnRefBindings);
   }
 
+  // Also seed a function-scoped key alongside the bare one (issue #2235) — two
+  // different functions in this file each declaring their own differently-typed
+  // local of this same name would otherwise silently collide under the bare key.
+  const enclosingQualifier = findEnclosingFunctionQualifier(node);
+
   // 2. Constructor wins over annotation: `const x: Base = new Derived()` resolves to Derived.
   if (valueN?.type === 'new_expression') {
     const ctorType = extractNewExprTypeName(valueN);
     if (ctorType) {
-      setTypeMapEntry(typeMap, nameN.text, ctorType, 1.0);
+      setScopedTypeMapEntry(typeMap, enclosingQualifier, nameN.text, ctorType, 1.0);
       return;
     }
   }
@@ -3488,7 +3520,7 @@ function handleVarDeclaratorTypeMap(
   if (typeAnno) {
     const typeName = extractSimpleTypeName(typeAnno);
     if (typeName) {
-      setTypeMapEntry(typeMap, nameN.text, typeName, 0.9);
+      setScopedTypeMapEntry(typeMap, enclosingQualifier, nameN.text, typeName, 0.9);
       return;
     }
   }
@@ -3498,7 +3530,14 @@ function handleVarDeclaratorTypeMap(
 
   // 4a. call_expression — Object.create / return-type propagation / factory heuristic.
   if (valueN.type === 'call_expression') {
-    handleCallExprTypeMap(nameN.text, valueN, typeMap, returnTypeMap, callAssignments);
+    handleCallExprTypeMap(
+      nameN.text,
+      valueN,
+      typeMap,
+      returnTypeMap,
+      callAssignments,
+      enclosingQualifier,
+    );
     return;
   }
 
@@ -3535,13 +3574,19 @@ function handleVarDeclaratorTypeMap(
  * a false edge via CHA dispatch (#2080 review).
  */
 function handleParamTypeMap(node: TreeSitterNode, typeMap: Map<string, TypeMapEntry>): void {
+  // Also seed a function-scoped key alongside the bare one (issue #2235) — see
+  // handleVarDeclaratorTypeMap's identical rationale for local variables, which
+  // applies equally to two different functions' same-named typed parameters.
+  const enclosingQualifier = findEnclosingFunctionQualifier(node);
   const nameNode =
     node.childForFieldName('pattern') || node.childForFieldName('left') || node.child(0);
   if (nameNode?.type === 'identifier') {
     const typeAnno = findChild(node, 'type_annotation');
     if (typeAnno) {
       const typeName = extractSimpleTypeName(typeAnno);
-      if (typeName) setTypeMapEntry(typeMap, nameNode.text, typeName, 0.9);
+      if (typeName) {
+        setScopedTypeMapEntry(typeMap, enclosingQualifier, nameNode.text, typeName, 0.9);
+      }
     }
     return;
   }
@@ -3564,7 +3609,9 @@ function handleParamTypeMap(node: TreeSitterNode, typeMap: Map<string, TypeMapEn
       // rest_pattern/rest_element node: `...identifier` — the identifier is
       // at child index 1 (mirrors collectObjectRestParams's own extraction).
       const restId = inner.child(1) ?? inner.childForFieldName('name');
-      if (restId?.type === 'identifier') setTypeMapEntry(typeMap, restId.text, typeName, 0.9);
+      if (restId?.type === 'identifier') {
+        setScopedTypeMapEntry(typeMap, enclosingQualifier, restId.text, typeName, 0.9);
+      }
     }
   }
 }
