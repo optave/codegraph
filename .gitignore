@@ -1,8 +1,14 @@
 node_modules/
 # codegraph — graph DB is local build output; basics.md is committed guidance for agents.
-# Must be `.codegraph/*`, not `.codegraph/`: ignoring the directory stops git descending
-# into it, which silently voids the negation below.
-.codegraph/*
+# Must be `**/.codegraph/*`, not `.codegraph/*` or `.codegraph/`:
+#  - the `**/` prefix is required because a bare `.codegraph/*` has a slash in the
+#    middle, which anchors it to this .gitignore's own directory (the repo root) —
+#    it silently stops matching nested `.codegraph/` dirs, e.g. under
+#    tests/benchmarks/resolution/fixtures/**, letting build output like
+#    changes.journal or graph.db-wal/-shm leak through as untracked cruft.
+#  - ignoring the directory itself (`.codegraph/`) would stop git descending into
+#    it, which silently voids the negation below.
+**/.codegraph/*
 !.codegraph/basics.md
 dist/
 .tsbuildinfo
