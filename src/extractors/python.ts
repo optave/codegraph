@@ -113,19 +113,39 @@ function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: Extrac
  * enclosing guard carries into it. A `__main__.py` therefore starts guarded at
  * the root, and a guard's *consequence* turns it on anywhere it appears — but
  * not the guard's `else:` branch, which is the imported-as-a-module path.
+ *
+ * `atModuleLevel` tracks a second, independent thing: whether we have crossed
+ * *any* function/class boundary at all since the root, regardless of guard
+ * status, and — unlike `guarded` — never turns back on once it's off. A guard
+ * is only recognized while this holds. Without it, a guard syntactically
+ * nested inside a function or class (never executed by the runtime — only
+ * when/if that function is later called) would still flip `guarded` on for
+ * its consequence, because at the point the guard is seen, `guarded` itself
+ * is `false` either way — the guard sets it, it doesn't read it — so the two
+ * situations ("truly at module level" vs. "nested inside a def, coincidentally
+ * `false` too") are indistinguishable without this separate flag (review
+ * finding on #2411).
  */
 function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set<number> {
   const lines = new Set<number>();
 
-  const visit = (node: TreeSitterNode, depth: number, guarded: boolean): void => {
+  const visit = (
+    node: TreeSitterNode,
+    depth: number,
+    guarded: boolean,
+    atModuleLevel: boolean,
+  ): void => {
     if (depth >= MAX_WALK_DEPTH) return;
     if (node.type === 'call' && guarded) lines.add(node.startPosition.row + 1);
 
     const leavesRuntimeScope =
       node.type === 'function_definition' || node.type === 'class_definition';
     const childGuarded = leavesRuntimeScope ? false : guarded;
+    const childAtModuleLevel = atModuleLevel && !leavesRuntimeScope;
     const guardConsequence =
-      node.type === 'if_statement' && isMainGuardCondition(node.childForFieldName('condition'))
+      atModuleLevel &&
+      node.type === 'if_statement' &&
+      isMainGuardCondition(node.childForFieldName('condition'))
         ? node.childForFieldName('consequence') || findChild(node, 'block')
         : null;
     // Matched by source position, not object identity: the tree-sitter
@@ -141,11 +161,11 @@ function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set
       const isGuardBody =
         guardStart !== null &&
         `${child.startPosition.row}:${child.startPosition.column}` === guardStart;
-      visit(child, depth + 1, isGuardBody ? true : childGuarded);
+      visit(child, depth + 1, isGuardBody ? true : childGuarded, childAtModuleLevel);
     }
   };
 
-  visit(root, 0, filePath.endsWith('__main__.py'));
+  visit(root, 0, filePath.endsWith('__main__.py'), true);
   return lines;
 }
 
