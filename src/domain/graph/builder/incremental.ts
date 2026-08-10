@@ -58,7 +58,7 @@ import {
   resolveChaTargets,
   resolveThisDispatch,
 } from './cha.js';
-import { persistEntrypointCallsForFile, projectEntrypointAttribution } from './entrypoints.js';
+import { persistEntrypointCalls, projectEntrypointAttribution } from './entrypoints.js';
 import {
   BUILTIN_RECEIVERS,
   CHA_DISPATCH_PENALTY,
@@ -2265,11 +2265,10 @@ function refreshEntrypointAttribution(
   relPath: string,
   symbols: ExtractorOutput | null,
 ): void {
-  // `call.entrypoint` is only ever set by the Python extractor, so a
-  // non-Python file has no evidence to write in this build and had none in
-  // any earlier one.
-  if (symbols && relPath.endsWith('.py')) {
-    persistEntrypointCallsForFile(db, relPath, symbols.calls);
+  // `persistEntrypointCalls` skips non-Python files itself — their evidence
+  // set is empty in this build and was empty in every earlier one.
+  if (symbols) {
+    persistEntrypointCalls(db, [[relPath, symbols.calls]]);
   }
   const touchedFiles = projectEntrypointAttribution(db);
   if (touchedFiles.length === 0) return;

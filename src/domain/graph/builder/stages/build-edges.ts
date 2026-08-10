@@ -59,7 +59,7 @@ import {
 import type { ChaContext } from '../cha.js';
 import { buildChaContext, resolveChaTargets, resolveThisDispatch } from '../cha.js';
 import type { PipelineContext } from '../context.js';
-import { persistEntrypointCallsForFile, projectEntrypointAttribution } from '../entrypoints.js';
+import { persistEntrypointCalls, projectEntrypointAttribution } from '../entrypoints.js';
 import {
   BUILTIN_RECEIVERS,
   batchInsertEdges,
@@ -1168,12 +1168,10 @@ function buildImportedNamesForNative(
  * Persist this build's Python entrypoint-call evidence (#2392) and re-project
  * it onto `nodes.entrypoint` (#2428).
  *
- * Writing evidence is scoped to `.py` files: `call.entrypoint` is only ever
- * set by the Python extractor, so a non-Python file's evidence set is empty
- * in this build and was empty in every earlier one. The projection then runs
- * over the whole graph — it is driven by `entrypoint_calls`, which is tiny
- * and short-circuits to two O(1) probes when empty, so "whole graph" costs
- * nothing on a tree with no Python entrypoints.
+ * `persistEntrypointCalls` skips non-Python files itself. The projection then
+ * runs over the whole graph — it is driven by `entrypoint_calls`, which is
+ * tiny, and short-circuits to two O(1) probes when empty, so "whole graph"
+ * costs nothing on a tree with no Python entrypoints.
  *
  * Files whose flag actually changed land on `ctx.entrypointTouchedFiles`, so
  * `classifyRoles` (buildStructure stage) can seed incremental role
@@ -1182,10 +1180,10 @@ function buildImportedNamesForNative(
  */
 function applyEntrypointAttribution(ctx: PipelineContext): void {
   const { db, fileSymbols } = ctx;
-  for (const [relPath, symbols] of fileSymbols) {
-    if (!relPath.endsWith('.py')) continue;
-    persistEntrypointCallsForFile(db, relPath, symbols.calls);
-  }
+  persistEntrypointCalls(
+    db,
+    [...fileSymbols].map(([relPath, symbols]) => [relPath, symbols.calls] as const),
+  );
   ctx.entrypointTouchedFiles.push(...projectEntrypointAttribution(db));
 }
 

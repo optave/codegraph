@@ -52,8 +52,8 @@ interface EntrypointCall {
 }
 
 /**
- * Replace `file`'s persisted entrypoint-call evidence with the calls the
- * extractor just flagged.
+ * Replace each reparsed file's persisted entrypoint-call evidence with the
+ * calls the extractor just flagged.
  *
  * Deletes first so a file that lost its guard (or whose guard moved to a
  * different callee) leaves nothing stale behind. The purge paths delete the
@@ -61,25 +61,39 @@ interface EntrypointCall {
  * work without a dedicated pre-purge step — see `preparePurgeStmts` in
  * `db/repository/build-stmts.ts`.
  *
- * Callers may skip this entirely for non-Python files: `call.entrypoint` is
- * only ever set by the Python extractor, so any other file's evidence set is
- * empty in this build and was empty in every earlier one.
+ * Non-Python files are skipped: `call.entrypoint` is only ever set by the
+ * Python extractor, so their evidence set is empty in this build and was
+ * empty in every earlier one. Filtering here rather than at each call site
+ * keeps that rule in one place.
+ *
+ * Statements are hoisted out of the loop and the whole sweep runs in one
+ * transaction, mirroring `persistInvokedPropertyNames` (build-edges.ts) —
+ * a full build of a large Python tree would otherwise pay a compile and an
+ * autocommit per file.
  */
-export function persistEntrypointCallsForFile(
+export function persistEntrypointCalls(
   db: BetterSqlite3Database,
-  file: string,
-  calls: ReadonlyArray<EntrypointCall>,
+  entries: Iterable<readonly [string, ReadonlyArray<EntrypointCall>]>,
 ): void {
-  const names = new Set<string>();
-  for (const call of calls) {
-    if (call.entrypoint) names.add(call.name);
-  }
-  db.prepare('DELETE FROM entrypoint_calls WHERE file = ?').run(file);
-  if (names.size === 0) return;
-  const insert = db.prepare('INSERT OR IGNORE INTO entrypoint_calls (file, name) VALUES (?, ?)');
-  for (const name of names) {
-    insert.run(file, name);
-  }
+  const deleteStmt = db.prepare('DELETE FROM entrypoint_calls WHERE file = ?');
+  const insertStmt = db.prepare(
+    'INSERT OR IGNORE INTO entrypoint_calls (file, name) VALUES (?, ?)',
+  );
+
+  const tx = db.transaction(() => {
+    for (const [file, calls] of entries) {
+      if (!file.endsWith('.py')) continue;
+      deleteStmt.run(file);
+      const names = new Set<string>();
+      for (const call of calls) {
+        if (call.entrypoint) names.add(call.name);
+      }
+      for (const name of names) {
+        insertStmt.run(file, name);
+      }
+    }
+  });
+  tx();
 }
 
 /** A node row the projection wants flagged, keyed by node id. */

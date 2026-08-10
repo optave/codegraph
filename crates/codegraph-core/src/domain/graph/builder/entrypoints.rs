@@ -57,29 +57,40 @@ use crate::types::FileSymbols;
 /// Non-Python files are skipped: `call.entrypoint` is only ever set by the
 /// Python extractor (`mark_entrypoint_calls`), so their evidence set is empty
 /// in this build and was empty in every earlier one.
+///
+/// Statements are hoisted out of the loop and the whole sweep runs in one
+/// transaction, mirroring `persist_invoked_property_names` (import_edges.rs) —
+/// a full build of a large Python tree would otherwise pay an autocommit per
+/// file.
 fn persist_entrypoint_calls(conn: &Connection, file_symbols: &BTreeMap<String, FileSymbols>) {
-    let Ok(mut delete) = conn.prepare("DELETE FROM entrypoint_calls WHERE file = ?1") else {
+    let Ok(tx) = conn.unchecked_transaction() else {
         return;
     };
-    let Ok(mut insert) =
-        conn.prepare("INSERT OR IGNORE INTO entrypoint_calls (file, name) VALUES (?1, ?2)")
-    else {
-        return;
-    };
+    {
+        let Ok(mut delete) = tx.prepare("DELETE FROM entrypoint_calls WHERE file = ?1") else {
+            return;
+        };
+        let Ok(mut insert) =
+            tx.prepare("INSERT OR IGNORE INTO entrypoint_calls (file, name) VALUES (?1, ?2)")
+        else {
+            return;
+        };
 
-    for (rel_path, symbols) in file_symbols {
-        if !rel_path.ends_with(".py") {
-            continue;
-        }
-        let _ = delete.execute(rusqlite::params![rel_path]);
-        let mut seen: HashSet<&str> = HashSet::new();
-        for call in &symbols.calls {
-            if !call.entrypoint.unwrap_or(false) || !seen.insert(call.name.as_str()) {
+        for (rel_path, symbols) in file_symbols {
+            if !rel_path.ends_with(".py") {
                 continue;
             }
-            let _ = insert.execute(rusqlite::params![rel_path, call.name]);
+            let _ = delete.execute(rusqlite::params![rel_path]);
+            let mut seen: HashSet<&str> = HashSet::new();
+            for call in &symbols.calls {
+                if !call.entrypoint.unwrap_or(false) || !seen.insert(call.name.as_str()) {
+                    continue;
+                }
+                let _ = insert.execute(rusqlite::params![rel_path, call.name]);
+            }
         }
     }
+    let _ = tx.commit();
 }
 
 /// A node row the projection wants flagged.
@@ -186,40 +197,50 @@ fn project_entrypoint_attribution(conn: &Connection) -> HashSet<String> {
         }
     }
 
-    let Ok(mut clear) = conn
-        .prepare("UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL WHERE id = ?1")
-    else {
+    // One transaction for the whole write phase, mirroring the TS path's
+    // `db.transaction` — a first full build of a Python tree can flip many
+    // rows at once, and each autocommit is an fsync.
+    let Ok(tx) = conn.unchecked_transaction() else {
         return touched_files;
     };
-    let Ok(mut mark) =
-        conn.prepare("UPDATE nodes SET entrypoint = 1, entrypoint_source_file = ?1 WHERE id = ?2")
-    else {
-        return touched_files;
-    };
+    {
+        let Ok(mut clear) = tx.prepare(
+            "UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL WHERE id = ?1",
+        ) else {
+            return touched_files;
+        };
+        let Ok(mut mark) = tx
+            .prepare("UPDATE nodes SET entrypoint = 1, entrypoint_source_file = ?1 WHERE id = ?2")
+        else {
+            return touched_files;
+        };
 
-    let mut current_ids: HashSet<i64> = HashSet::new();
-    for (id, file, source_file) in &current {
-        current_ids.insert(*id);
-        match desired.get(id) {
-            None => {
-                let _ = clear.execute(rusqlite::params![id]);
-                touched_files.insert(file.clone());
+        let mut current_ids: HashSet<i64> = HashSet::new();
+        for (id, file, source_file) in &current {
+            current_ids.insert(*id);
+            match desired.get(id) {
+                None => {
+                    let _ = clear.execute(rusqlite::params![id]);
+                    touched_files.insert(file.clone());
+                }
+                // Still an entrypoint, only the attributing file changed. The
+                // role is `entry` either way, so this needs no role
+                // reclassification.
+                Some(want) if Some(&want.source_file) != source_file.as_ref() => {
+                    let _ = mark.execute(rusqlite::params![want.source_file, id]);
+                }
+                Some(_) => {}
             }
-            // Still an entrypoint, only the attributing file changed. The role
-            // is `entry` either way, so this needs no role reclassification.
-            Some(want) if Some(&want.source_file) != source_file.as_ref() => {
-                let _ = mark.execute(rusqlite::params![want.source_file, id]);
+        }
+        for (id, want) in &desired {
+            if current_ids.contains(id) {
+                continue;
             }
-            Some(_) => {}
+            let _ = mark.execute(rusqlite::params![want.source_file, id]);
+            touched_files.insert(want.file.clone());
         }
     }
-    for (id, want) in &desired {
-        if current_ids.contains(id) {
-            continue;
-        }
-        let _ = mark.execute(rusqlite::params![want.source_file, id]);
-        touched_files.insert(want.file.clone());
-    }
+    let _ = tx.commit();
 
     touched_files
 }
