@@ -4241,6 +4241,13 @@ fn handle_instanceof_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>
 /// doesn't get mistaken for a reference to the outer fallback variable being
 /// checked (issue #2257, Greptile review).
 ///
+/// `for_in_statement` is deliberately ABSENT (Greptile review, PR #2432): a
+/// `for (… of right)` head that binds `name` must not prune the whole loop,
+/// because `right` is evaluated in the ENCLOSING scope and can hold a genuine
+/// read (`for (const x of fn())`). `block_contains_identifier_excluding`
+/// handles that shape directly instead — scanning `right` while skipping the
+/// body.
+///
 /// Mirrors `SCOPE_NODE_TYPES` in `src/extractors/javascript.ts`.
 const SCOPE_NODE_TYPES: &[&str] = &[
     "statement_block",
@@ -4252,21 +4259,80 @@ const SCOPE_NODE_TYPES: &[&str] = &[
     "method_definition",
     "catch_clause",
     "for_statement",
-    "for_in_statement",
     "switch_body",
 ];
 
+/// Node types that open a new FUNCTION scope — the boundary at which a `var`
+/// declaration is scoped, and therefore the level at which a `var` shadow of
+/// `name` has to be detected (see `function_scope_declares_var`).
+///
+/// Mirrors `FUNCTION_SCOPE_NODE_TYPES` in `src/extractors/javascript.ts`.
+const FUNCTION_SCOPE_NODE_TYPES: &[&str] = &[
+    "function_declaration",
+    "function_expression",
+    "generator_function_declaration",
+    "generator_function",
+    "arrow_function",
+    "method_definition",
+];
+
+/// True when `node`'s subtree declares `var name` anywhere within the SAME
+/// function scope — i.e. without crossing into a nested function, which opens
+/// its own independent `var` scope and is checked separately when the
+/// recursive scan reaches it.
+///
+/// `var` is function-scoped, not block-scoped, so a `var name` buried in any
+/// nested block/loop/switch of a function body still shadows an outer `name`
+/// for that ENTIRE function — `function inner() { if (x) { var fn = 1; } fn(); }`
+/// reads `inner`'s own hoisted `fn`, not the outer fallback variable, so the
+/// whole function must be pruned from the liveness scan (Greptile review, PR
+/// #2432). Detecting this only at the block that physically contains the
+/// `var` would miss the read that sits outside that block.
+///
+/// Depth-bounded like every other recursive walk in this file
+/// (`MAX_WALK_DEPTH`).
+///
+/// Mirrors `functionScopeDeclaresVar` in `src/extractors/javascript.ts`.
+fn function_scope_declares_var(node: &Node, name: &str, source: &[u8], depth: usize) -> bool {
+    if depth >= MAX_WALK_DEPTH {
+        return false;
+    }
+    if node.kind() == "variable_declaration" && declaration_declares_name(node, name, source) {
+        return true;
+    }
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        // A nested function opens its own `var` scope — its declarations
+        // don't shadow anything out here.
+        if FUNCTION_SCOPE_NODE_TYPES.contains(&child.kind()) {
+            continue;
+        }
+        if function_scope_declares_var(&child, name, source, depth + 1) {
+            return true;
+        }
+    }
+    false
+}
+
 /// True when `node` (one of `SCOPE_NODE_TYPES`) declares its OWN binding
 /// named `name` at this scope's own level — a function/method parameter or
-/// own name, a catch clause's exception binding, a for-loop's own loop
-/// variable, or a `let`/`const` declared directly inside this block (not a
-/// deeper nested block, which gets its own independent shadow check when
-/// the recursive scan reaches it). Deliberately NOT `var` (Greptile review,
-/// PR #2432): `var` is function-scoped, so a `var` anywhere below this node
-/// is always the SAME binding as an outer `var` of the same name, never a
-/// distinct shadow — treating it as one would wrongly prune a genuine read
-/// elsewhere in this subtree for a redeclaration that isn't actually a
-/// different variable.
+/// own name, a `var` hoisted anywhere inside a function body, a catch
+/// clause's exception binding, a for-loop's own `let`/`const` loop variable,
+/// or a `let`/`const` declared directly inside this block (not a deeper
+/// nested block, which gets its own independent shadow check when the
+/// recursive scan reaches it).
+///
+/// The BLOCK-level cases deliberately exclude `variable_declaration` (`var`)
+/// (Greptile review, PR #2432): `var` is function-scoped, so a `var` anywhere
+/// below such a node is always the SAME binding as an outer `var` of the same
+/// name, never a distinct shadow — treating it as one would wrongly prune a
+/// genuine read elsewhere in that subtree for a redeclaration that isn't
+/// actually a different variable.
+///
+/// `var` shadowing is therefore decided at the FUNCTION boundary instead, via
+/// `function_scope_declares_var` — the scope a `var` actually belongs to.
 ///
 /// Mirrors `introducesShadowedBinding` in `src/extractors/javascript.ts`.
 fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
@@ -4282,17 +4348,19 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
                     return true;
                 }
             }
-            match node.child_by_field_name("parameters") {
-                Some(params) => {
-                    for i in 0..params.child_count() {
-                        if let Some(param) = params.child(i) {
-                            if pattern_binds_name(&param, name, source, 0) {
-                                return true;
-                            }
+            if let Some(params) = node.child_by_field_name("parameters") {
+                for i in 0..params.child_count() {
+                    if let Some(param) = params.child(i) {
+                        if pattern_binds_name(&param, name, source, 0) {
+                            return true;
                         }
                     }
-                    false
                 }
+            }
+            // A `var` anywhere in this function's body is scoped to THIS
+            // function.
+            match node.child_by_field_name("body") {
+                Some(body) => function_scope_declares_var(&body, name, source, 0),
                 None => false,
             }
         }
@@ -4300,44 +4368,30 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
             Some(param) => pattern_binds_name(&param, name, source, 0),
             None => false,
         },
-        // A C-style for-loop's init clause (`for (let/const x = ...; ...)`)
-        // wraps its declaration in a `lexical_declaration` child node.
-        // `var`, deliberately EXCLUDED (Greptile review, PR #2432): it's
-        // function-scoped, not scoped to this loop, so a `var` init here is
-        // the SAME binding as the outer variable, never a distinct shadow —
-        // treating it as one would wrongly prune a genuine read anywhere in
-        // this loop's body.
+        // A C-style for-loop's init clause wraps its declaration in a
+        // `lexical_declaration` child, and a for-head `let`/`const fn` is a
+        // genuinely new binding scoped to the loop whose own initializer lives
+        // in that same loop scope (`for (let fn = fn; …)` is a TDZ error), so
+        // pruning the whole loop is correct.
         //
-        // A for-in/for-of loop's DECLARING form (`for (let/const x of/in
-        // y)`), by contrast, does NOT wrap its loop variable in a
-        // `lexical_declaration` node at all — `kind` (the let/const/var
-        // keyword) and `left` (the bare identifier/pattern) are separate
-        // direct fields instead (discovered while verifying the `var`
-        // exclusion above — Greptile review, PR #2432 — this specific check
-        // had never actually matched a for-in/for-of declaring form's real
-        // AST shape). A `let`/`const` loop variable genuinely IS a new
-        // binding scoped to just this loop (unlike `var`, whose bare `left`
-        // here is the SAME function-scoped binding as an outer `var` and is
-        // therefore excluded, matching the var-never-shadows principle
-        // above).
-        "for_statement" | "for_in_statement" => {
+        // `var` is deliberately EXCLUDED: it's function-scoped, so a `var`
+        // init here is the SAME binding as the outer variable, never a
+        // distinct shadow (matching the reasoning applied to
+        // `statement_block` and `switch_body`). It's handled as a KILL in
+        // `block_contains_identifier_excluding` instead — which still scans
+        // the initializer, so `for (var fn = fn; …)` keeps its genuine read
+        // (Greptile review, PR #2432).
+        //
+        // A for-in/for-of head is NOT handled here at all — see
+        // `SCOPE_NODE_TYPES` and the for-in branch of
+        // `block_contains_identifier_excluding`: its `right` is evaluated in
+        // the ENCLOSING scope, so pruning the whole node would lose a real
+        // read.
+        "for_statement" => {
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
                     if child.kind() == "lexical_declaration"
                         && declaration_declares_name(&child, name, source)
-                    {
-                        return true;
-                    }
-                }
-            }
-            if node.kind() == "for_in_statement" {
-                let kind = node
-                    .child_by_field_name("kind")
-                    .map(|k| node_text(&k, source));
-                let left = node.child_by_field_name("left");
-                if let (Some(kind), Some(left)) = (kind, left) {
-                    if (kind == "let" || kind == "const")
-                        && pattern_binds_name(&left, name, source, 0)
                     {
                         return true;
                     }
@@ -4389,19 +4443,15 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
         // independent block scope instead, already handled when the
         // recursive scan reaches that nested `statement_block`.
         //
-        // Deliberately EXCLUDES `variable_declaration` (`var`), unlike the
-        // `statement_block` case above (Greptile review, PR #2432): `var`
-        // is function-scoped, not block-scoped, so a `var fn` in one case
-        // is never a genuinely NEW binding — it's the SAME outer `fn` (or,
-        // if the outer `fn` is `let`/`const`, redeclaring it is a
-        // SyntaxError, so a valid parse can't reach this with a real shadow
-        // anyway). Treating it as a shadow here would skip the ENTIRE
-        // switch — including a genuine read in a DIFFERENT, unrelated
-        // case — for a redeclaration that isn't actually a distinct
-        // binding. (The `statement_block` case above doesn't have this
-        // problem: each `{}` is checked independently, so a `var` in one
-        // sibling block never affects a different sibling's shadow check
-        // the way one shared switch scope does here.)
+        // Like the `statement_block` case above, deliberately EXCLUDES
+        // `variable_declaration` (`var`) — it's function-scoped, so a `var
+        // fn` in one case is never a genuinely NEW binding, just the SAME
+        // outer `fn` (and if the outer `fn` is `let`/`const`, redeclaring it
+        // is a SyntaxError, so a valid parse can't reach this with a real
+        // shadow anyway). Treating it as a shadow here would skip the ENTIRE
+        // switch — including a genuine read in a DIFFERENT, unrelated case —
+        // for a redeclaration that isn't a distinct binding at all (Greptile
+        // review, PR #2432).
         "switch_body" => {
             for i in 0..node.child_count() {
                 let Some(switch_case) = node.child(i) else {
@@ -4797,37 +4847,33 @@ fn block_contains_identifier_excluding(
             }
         }
     }
-    // A `for (fn of values) {}` / `for (fn in obj) {}` loop with NO
-    // declaration keyword reassigns an EXISTING binding on every iteration —
-    // a WRITE, like assignment_expression's left side, not a read of the
-    // value `fn` held before the loop started (Greptile review, PR #2432).
-    // A declaring form (`for (let fn of values)`) is already excluded from
-    // reaching here: it shadows `name` entirely via
-    // introduces_shadowed_binding above when `left` binds `name`, or is
-    // simply unrelated otherwise — either way `pattern_binds_name` (which
-    // only recognizes bare identifiers/destructuring patterns, not
-    // declaration nodes) returns false for it, so this branch only fires
-    // for the bare-target form.
+    // A `for (… of right)` / `for (… in right)` head that BINDS `name` kills
+    // the value `name` held before the loop: `right` is evaluated first, then
+    // `name` is assigned on every iteration, so nothing in the body can be
+    // reading the pre-loop value (Greptile review, PR #2432). So scan `right`
+    // — which is evaluated in the ENCLOSING scope and can hold a genuine read
+    // (`for (const x of fn())`) — plus any default hidden in the `left`
+    // pattern, and never the body.
+    //
+    // This covers ALL binding forms uniformly, whichever kills the value:
+    // - bare (`for (fn of values)`) — reassigns the existing binding;
+    // - `var` (`for (var fn of values)`) — the SAME function-scoped binding;
+    // - `let`/`const` (`for (let fn of values)`) — a new per-iteration binding
+    //   that shadows the outer one inside the body.
+    //
+    // Note the grammar gives a declaring for-in/of head a `kind` FIELD
+    // (`var`/`let`/`const`) with `left` holding the pattern directly — there
+    // is no `variable_declaration` child to detect, which is why this must be
+    // handled here rather than in `introduces_shadowed_binding`.
     if node.kind() == "for_in_statement" {
         if let Some(left) = node.child_by_field_name("left") {
             if pattern_binds_name(&left, name, source, 0) {
                 if scan_pattern_defaults_for_reference(&left, name, exclude_id, source, depth + 1) {
                     return true;
                 }
-                if let Some(right) = node.child_by_field_name("right") {
-                    if block_contains_identifier_excluding(
+                return match node.child_by_field_name("right") {
+                    Some(right) => block_contains_identifier_excluding(
                         &right,
-                        name,
-                        exclude_id,
-                        source,
-                        depth + 1,
-                    ) {
-                        return true;
-                    }
-                }
-                return match node.child_by_field_name("body") {
-                    Some(body) => block_contains_identifier_excluding(
-                        &body,
                         name,
                         exclude_id,
                         source,
@@ -4835,6 +4881,29 @@ fn block_contains_identifier_excluding(
                     ),
                     None => false,
                 };
+            }
+        }
+    }
+    // A classic `for (var fn = …; cond; update) body` head likewise kills the
+    // value before `cond`/`update`/`body` ever run, so only the declaration's
+    // own initializer can still hold a genuine read (`for (var fn = fn; …)`).
+    // The `let`/`const` form never reaches here — `introduces_shadowed_binding`
+    // prunes the whole loop for it (Greptile review, PR #2432).
+    if node.kind() == "for_statement" {
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else {
+                continue;
+            };
+            if child.kind() == "variable_declaration"
+                && declaration_declares_name(&child, name, source)
+            {
+                return block_contains_identifier_excluding(
+                    &child,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                );
             }
         }
     }
@@ -8245,15 +8314,37 @@ mod tests {
         }));
     }
 
-    // Same principle for a C-style for-loop: a `var` in the loop's own init
-    // clause is the SAME function-scoped binding, so a read in the loop's
-    // test/update clause must still count.
+    // A C-style for-loop whose own init clause rebinds the name via `var` is
+    // the SAME function-scoped binding — and that is precisely why it KILLS
+    // the fallback value rather than reading it: `var fn = 0` runs before the
+    // test/update clauses, so `fn < 10` and `fn++` only ever see the number.
+    // Verified at runtime: `typeof fn` inside that loop is always `number`,
+    // and the fallback function is never invoked. Crediting liveness here
+    // would fabricate an edge for a value that is assigned and immediately
+    // overwritten without ever being consumed.
+    //
+    // A loop that does NOT rebind the name is unaffected — see the next test.
     #[test]
-    fn still_credits_liveness_from_a_for_loop_read_when_the_loop_redeclares_the_name_via_var() {
+    fn does_not_credit_liveness_from_a_for_loop_whose_own_var_init_overwrote_the_value() {
         let s = parse_js(
             "function outer() {\n\
                var fn = options.custom || fetchLatestVersion;\n\
                for (var fn = 0; fn < 10; fn++) {}\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // The guard for that last sentence: a loop counter with a DIFFERENT name
+    // must not suppress a real read in the loop body.
+    #[test]
+    fn credits_liveness_from_a_loop_body_read_when_the_loop_counter_is_a_different_name() {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               for (var i = 0; i < 10; i++) { fn(); }\n\
              }",
         );
         assert!(s.calls.iter().any(|c| {
@@ -8274,6 +8365,52 @@ mod tests {
              }",
         );
         assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // The flip side of the var-is-function-scoped model: because `var` hoists
+    // to the FUNCTION scope, a nested function declaring `var fn` at ANY depth
+    // in its body shadows the outer `fn` for that whole function — including a
+    // read sitting outside the block that physically contains the `var`.
+    #[test]
+    fn does_not_credit_liveness_from_a_nested_function_that_hoists_its_own_var_deeper_down() {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               function inner(flag) {\n\
+                 if (flag) { var fn = 1; }\n\
+                 return fn();\n\
+               }\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // A for-in/of head that binds the name kills the pre-loop value, so the
+    // BODY can never be reading it — even for a bare (non-declaring) target.
+    #[test]
+    fn does_not_credit_liveness_from_a_for_of_body_read_of_a_bare_loop_target() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             for (fn of values) { fn(); }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // …but `right` IS evaluated in the enclosing scope, so a genuine read
+    // there must still count.
+    #[test]
+    fn credits_liveness_from_a_for_of_right_hand_side_read_in_the_enclosing_scope() {
+        let s = parse_js(
+            "const fn = options.custom || fetchLatestVersion;\n\
+             for (const item of fn()) { use(item); }",
+        );
+        assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
     }

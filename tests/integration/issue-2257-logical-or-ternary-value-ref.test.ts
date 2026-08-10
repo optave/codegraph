@@ -46,6 +46,46 @@ function unrelatedShadower() { return 99; }
 
 function siblingUsed(x) { return x + 4; }
 
+function readAroundNestedVar(x) { return x + 5; }
+function hoistedInNestedFn(x) { return x + 6; }
+function loopOwnBinding(x) { return x + 7; }
+function loopBareTarget(x) { return x + 8; }
+
+// \`var\` is FUNCTION-scoped, so the nested block's \`var varScoped\` is the SAME
+// binding as the outer one — the \`varScoped()\` read before it genuinely
+// consumes the fallback, and must not be pruned as a nested-scope shadow.
+export function nestedVarBlock(opts) {
+  var varScoped = opts.z || readAroundNestedVar;
+  {
+    varScoped();
+    var varScoped = somethingElse;
+  }
+}
+
+// The inner function hoists its OWN \`var hoisted\` (from a deeper block), so
+// \`hoisted()\` there reads that binding, never the outer fallback.
+export function nestedFnHoistsVar(opts) {
+  var hoisted = opts.z || hoistedInNestedFn;
+  function inner(flag) {
+    if (flag) { var hoisted = 1; }
+    return hoisted();
+  }
+  return inner;
+}
+
+// A for-in/of head that BINDS the name kills the pre-loop value: the body's
+// read is of the loop's own per-iteration binding, not the fallback.
+export function loopDeclaringOwnBinding(opts, values) {
+  const loopVar = opts.z || loopOwnBinding;
+  for (let loopVar of values) { loopVar(); }
+}
+
+// Same for a bare (non-declaring) target — it reassigns before the body runs.
+export function loopBareAssignTarget(opts, values) {
+  let bare = opts.z || loopBareTarget;
+  for (bare of values) { bare(); }
+}
+
 export function run(opts, cond) {
   const fetchFn = opts.custom || reachedViaFallback;
   const neverUsedAgain = opts.other || deadViaUnusedFallback;
@@ -130,6 +170,30 @@ function runShared(getDbPath: () => string) {
 
   it('creates a value-ref edge when the variable is used by a sibling declarator in the same statement', () => {
     expect(countCallEdgesTo(getDbPath(), 'siblingUsed')).toBeGreaterThan(0);
+  });
+
+  // Greptile review, PR #2432: `var` is function-scoped, so a nested block's
+  // `var` redeclaration is the SAME binding — it must not prune the block and
+  // discard a genuine read of the fallback.
+  it('still credits liveness from a read in a block that also redeclares the name via var', () => {
+    expect(countCallEdgesTo(getDbPath(), 'readAroundNestedVar')).toBeGreaterThan(0);
+  });
+
+  // The flip side of the same `var` model: a nested function that hoists its
+  // own `var` of that name — from ANY depth in its body — shadows the outer
+  // variable for the whole function, so a read there is not evidence.
+  it('does not credit liveness from a nested function that hoists its own var', () => {
+    expect(countCallEdgesTo(getDbPath(), 'hoistedInNestedFn')).toBe(0);
+  });
+
+  // A for-of head binding the name kills the pre-loop value, whether it
+  // declares a new binding or reassigns the existing one.
+  it('does not credit liveness from a for-of loop that declares its own binding', () => {
+    expect(countCallEdgesTo(getDbPath(), 'loopOwnBinding')).toBe(0);
+  });
+
+  it('does not credit liveness from a for-of body read of a bare loop target', () => {
+    expect(countCallEdgesTo(getDbPath(), 'loopBareTarget')).toBe(0);
   });
 }
 
