@@ -151,7 +151,28 @@ case "$LANG" in
             # isn't practical here; excluding the known control-flow keywords is
             # the pragmatic option, matching how class/interface are already
             # excluded below.
-            sedi_append_unless '/\)[[:space:]]*\{$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]/' \
+            #
+            # The `new` fragment (#2272) additionally excludes an anonymous
+            # class instantiation (`new Runnable() {`), which also shares the
+            # "...) {" shape: injecting into that line would be invalid Java
+            # (a bare statement directly in a class body, rather than a
+            # distinct method body to trace).
+            #
+            # Requires the `new <Type>(args)` call itself -- not just the
+            # bare `new` keyword -- to be followed by nothing but whitespace
+            # before the line's own opening brace (an optional `/* ... */`
+            # comment is tolerated between `new` and the type, since
+            # `new /* description */ Runnable() {` was still missed by an
+            # earlier version anchored on `new[[:space:]]+[A-Za-z_$]` --
+            # Greptile review, PR #2449, round 1). Java itself has no default
+            # parameter values, so a bare `new[[:space:]]` was never
+            # ambiguous *here* the way it is in Groovy -- but this fragment is
+            # deliberately kept identical to the Groovy branch below (which
+            # DOES need the tighter form, to avoid excluding
+            # `def run(Config c = new Config()) {` -- Greptile review, PR
+            # #2449, round 2) rather than letting the two drift into
+            # parallel-but-inconsistent patterns for the same construct.
+            sedi_append_unless '/\)[[:space:]]*\{$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\/\*[^*]*\*\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\([^()]*\)[[:space:]]*\{[[:space:]]*$/' \
                 '        CallTracer.traceCall();' "$javafile"
         done
 
@@ -232,9 +253,39 @@ case "$LANG" in
 
         # Inject CallTracer.traceCall() into every method body
         # (see the java branch above for why the negate pattern also excludes
-        # control-flow keywords -- #2045)
+        # control-flow keywords -- #2045, and the `new` fragment for
+        # anonymous classes -- #2272; Groovy supports Java-style anonymous
+        # classes too). Unlike Java, Groovy supports default parameter
+        # values, so a real method signature CAN itself contain the token
+        # `new` followed by whitespace (`def run(Config c = new Config()) {`)
+        # -- that is exactly why the `new` fragment requires the `new
+        # <Type>(args)` call to be followed by nothing but whitespace before
+        # the line's own opening brace, rather than matching on the bare
+        # keyword: a default-parameter `new Config()` is always followed by
+        # the enclosing parameter list's own closing `)` before that `{`,
+        # which the tighter fragment does not match (Greptile review, PR
+        # #2449, round 2 -- an earlier bare `new[[:space:]]` version wrongly
+        # excluded this line, silently dropping the method from tracing).
+        #
+        # `^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\([^()]*\)[[:space:]]*\{[[:space:]]*$`
+        # (#2272) additionally excludes a trailing-closure method CALL, e.g.
+        # `list.findAll() {`, a DSL-style `lock.withLock() {`, or the same
+        # calls WITHOUT an explicit receiver (`findAll() {`, `withLock() {` --
+        # Greptile review, PR #2449, round 1, on an earlier version of this
+        # fix that only handled the qualified form) -- these share the
+        # "...) {" shape but the `traceCall()` would land inside a closure
+        # literal, not a real method body. Anchored at the start of the
+        # (trimmed) line: a real Groovy method DECLARATION always has a
+        # `def`/type/modifier token, separated by WHITESPACE, before the
+        # method name -- so the declaration's own name is never the first
+        # token on the line -- while a call expression's name (optionally
+        # preceded by a `receiver.`) is. A dotted, fully-qualified RETURN TYPE
+        # (`java.util.List getUsers() {`) still has a space (not a dot)
+        # directly before the method name, so `getUsers` -- not `List` --
+        # would need to start the trimmed line for this to false-positive,
+        # which it doesn't.
         for grfile in "$TMP_DIR"/*.groovy; do
-            sedi_append_unless '/\)[[:space:]]*\{[[:space:]]*$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]/' \
+            sedi_append_unless '/\)[[:space:]]*\{[[:space:]]*$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\/\*[^*]*\*\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\([^()]*\)[[:space:]]*\{[[:space:]]*$|^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\([^()]*\)[[:space:]]*\{[[:space:]]*$/' \
                 '        CallTracer.traceCall();' "$grfile"
         done
 
