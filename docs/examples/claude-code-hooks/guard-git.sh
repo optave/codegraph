@@ -96,8 +96,14 @@ if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+res
   deny "BLOCKED: 'git reset' can unstage or destroy other sessions' work. To unstage your own files, use: git restore --staged <file>"
 fi
 
-# git checkout -- <file> (reverting files)
-if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--'; then
+# git checkout -- <file> (reverting files). Requires "--" to be its own
+# token (immediately followed by whitespace or end-of-segment/string), not
+# a longer flag that merely starts with "--" (#2280) — otherwise this also
+# denied legitimate flags sharing the same "checkout --" prefix, like
+# --detach, --track, --orphan, --no-track, --guess, --ours, --theirs, none
+# of which revert working-tree changes the way a bare "--" pathspec
+# separator does.
+if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--([[:space:]]|$)'; then
   deny "BLOCKED: 'git checkout -- <file>' reverts working tree changes and may destroy other sessions' edits. If you need to discard your own changes, be explicit about which files."
 fi
 

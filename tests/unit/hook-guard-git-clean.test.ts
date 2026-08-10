@@ -242,6 +242,38 @@ describe('guard-git.sh mask-quoted-text.mjs', () => {
   });
 });
 
+describe('guard-git.sh checkout -- boundary requires a bare "--" token (#2280)', () => {
+  it('still blocks the real file-reverting form', () => {
+    expect(isDenied('git checkout -- file.txt')).toBe(true);
+    expect(isDenied('git checkout -- file1.txt file2.txt')).toBe(true);
+  });
+
+  it('still blocks a bare trailing -- with no pathspec (ambiguous, same as before)', () => {
+    expect(isDenied('git checkout --')).toBe(true);
+  });
+
+  it('allows --detach, which shares the "checkout --" prefix but does not revert working-tree changes', () => {
+    expect(isDenied('git checkout --detach origin/main')).toBe(false);
+    expect(isDenied('git checkout --detach')).toBe(false);
+  });
+
+  it('allows --track, --orphan, --no-track, and --guess for the same reason', () => {
+    expect(isDenied('git checkout --track origin/feature')).toBe(false);
+    expect(isDenied('git checkout --orphan new-branch')).toBe(false);
+    expect(isDenied('git checkout --no-track feature')).toBe(false);
+    expect(isDenied('git checkout --guess')).toBe(false);
+  });
+
+  it('allows --ours/--theirs (merge-conflict side selection, not a working-tree revert)', () => {
+    expect(isDenied('git checkout --ours file.txt')).toBe(false);
+    expect(isDenied('git checkout --theirs file.txt')).toBe(false);
+  });
+
+  it('still blocks a real revert chained after an allowed --detach invocation', () => {
+    expect(isDenied('git checkout --detach && git checkout -- file.txt')).toBe(true);
+  });
+});
+
 describe('guard-git.sh docs example stays in sync (#2105)', () => {
   // docs/examples/claude-code-hooks/guard-git.sh is meant to be a working
   // copy of the live hook for users setting up their own repo — it had
