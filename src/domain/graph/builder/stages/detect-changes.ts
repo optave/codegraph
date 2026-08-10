@@ -690,6 +690,22 @@ function makeFastSkipLogger(fastSkipDiag: boolean): (reason: string) => void {
 }
 
 /**
+ * Error code for "prior build state exists but could not be read".
+ *
+ * Distinct from a generic `DB_ERROR` because callers must be able to single
+ * this case out: the native fast-skip pre-flight in `pipeline.ts` treats its
+ * own failures as best-effort and falls through to the Rust orchestrator, and
+ * falling through here would hand the decision to a loader that still answers
+ * "no prior state" — wiping the graph this error exists to protect.
+ */
+export const UNREADABLE_BUILD_STATE = 'DB_STATE_UNREADABLE';
+
+/** True for the error `loadFileHashes` raises when prior state exists but is unreadable. */
+export function isUnreadableBuildStateError(e: unknown): boolean {
+  return e instanceof DbError && e.code === UNREADABLE_BUILD_STATE;
+}
+
+/**
  * True when the `file_hashes` table exists in the schema.
  *
  * Read from `sqlite_master` rather than inferred from a failed `SELECT`, so a
@@ -773,7 +789,7 @@ function loadFileHashes(
         'is a database failure rather than a first build. Refusing to fall back to a ' +
         'from-scratch build, which would delete the existing graph and its embeddings. ' +
         'Retry once the database is readable, or pass --no-incremental to rebuild deliberately.',
-      { cause: e instanceof Error ? e : undefined },
+      { code: UNREADABLE_BUILD_STATE, cause: e instanceof Error ? e : undefined },
     );
   }
   if (rows.length === 0) {

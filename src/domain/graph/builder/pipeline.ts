@@ -37,7 +37,11 @@ import { buildEdges } from './stages/build-edges.js';
 import { buildStructure } from './stages/build-structure.js';
 // Pipeline stages
 import { collectFiles } from './stages/collect-files.js';
-import { detectChanges, detectNoChanges } from './stages/detect-changes.js';
+import {
+  detectChanges,
+  detectNoChanges,
+  isUnreadableBuildStateError,
+} from './stages/detect-changes.js';
 import { finalize } from './stages/finalize.js';
 import { commitFileHashes, insertNodes } from './stages/insert-nodes.js';
 import {
@@ -456,8 +460,16 @@ export async function buildGraph(
           return;
         }
       } catch (err) {
-        // Pre-flight is best-effort — any failure falls through to the
-        // orchestrator, which performs its own complete detection.
+        // "Prior state exists but is unreadable" is the one failure that must
+        // not fall through. The orchestrator's own detection is the Rust
+        // `load_file_hashes`, which still collapses a read failure into "no
+        // prior state" and rebuilds from scratch — deleting the graph and
+        // embeddings this error is raised to protect. Falling through would
+        // therefore route around the safeguard and produce exactly the wipe it
+        // prevents on the JS path (see `loadFileHashes` in detect-changes.ts).
+        if (isUnreadableBuildStateError(err)) throw err;
+        // Every other pre-flight failure stays best-effort — fall through to
+        // the orchestrator, which performs its own complete detection.
         // Reset ctx.allFiles so runPipelineStages re-collects under its own
         // engine state if we ended up partially populated before throwing.
         ctx.allFiles = undefined as unknown as string[];

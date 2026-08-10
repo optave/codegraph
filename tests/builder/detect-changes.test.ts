@@ -10,6 +10,7 @@ import { PipelineContext } from '../../src/domain/graph/builder/context.js';
 import {
   detectChanges,
   detectNoChanges,
+  isUnreadableBuildStateError,
 } from '../../src/domain/graph/builder/stages/detect-changes.js';
 import { writeJournalHeader } from '../../src/domain/graph/journal.js';
 import { DbError } from '../../src/shared/errors.js';
@@ -223,6 +224,35 @@ describe('detectNoChanges fast-skip', () => {
     );
     return { mtime, size: stat.size };
   }
+
+  it('throws rather than falling through when file_hashes is unreadable', () => {
+    // This pre-flight must not answer "false" (fall through) for an unreadable
+    // table. pipeline.ts treats pre-flight failures as best-effort, so falling
+    // through hands the build to the Rust orchestrator, whose loader still
+    // reads a failed row query as "no prior state" and rebuilds from scratch —
+    // the exact wipe this guards against on the JS path.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-noChange-unreadable-'));
+    const dbDir = path.join(dir, '.codegraph');
+    fs.mkdirSync(dbDir, { recursive: true });
+    const db = openDb(path.join(dbDir, 'graph.db'));
+    initSchema(db);
+    const file = seedFile(dir, 'a.js', 'export const a = 1;');
+    seedHashRow(db, 'a.js', file);
+    db.exec('ALTER TABLE file_hashes DROP COLUMN size');
+
+    let thrown: unknown;
+    try {
+      detectNoChanges(db, [file], dir);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(DbError);
+    // The code is what pipeline.ts keys on to re-throw instead of falling through.
+    expect(isUnreadableBuildStateError(thrown)).toBe(true);
+
+    closeDb(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 
   it('returns false when file_hashes is empty (first build)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-noChange-empty-'));
