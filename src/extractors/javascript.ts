@@ -4265,6 +4265,7 @@ const SCOPE_NODE_TYPES: ReadonlySet<string> = new Set([
   'catch_clause',
   'for_statement',
   'for_in_statement',
+  'switch_body',
 ]);
 
 /**
@@ -4331,6 +4332,40 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
           child.childForFieldName('name')?.text === name
         ) {
           return true;
+        }
+      }
+      return false;
+    }
+    case 'switch_body': {
+      // All `case`/`default` clauses in a switch share ONE lexical scope
+      // (unlike a function's separate statement blocks) — an UNBRACED
+      // case's own `let`/`const`/`var`/function/class declaration shadows
+      // the outer variable for the whole switch, even though it isn't
+      // wrapped in its own `statement_block` (Greptile review, PR #2432). A
+      // BRACED case (`case 1: { let fn = 1; }`) creates its own independent
+      // block scope instead, already handled when the recursive scan
+      // reaches that nested `statement_block`.
+      for (let i = 0; i < node.childCount; i++) {
+        const switchCase = node.child(i);
+        if (!switchCase) continue;
+        if (switchCase.type !== 'switch_case' && switchCase.type !== 'switch_default') continue;
+        for (let j = 0; j < switchCase.childCount; j++) {
+          const stmt = switchCase.child(j);
+          if (!stmt) continue;
+          if (
+            (stmt.type === 'lexical_declaration' || stmt.type === 'variable_declaration') &&
+            declarationDeclaresName(stmt, name)
+          ) {
+            return true;
+          }
+          if (
+            (stmt.type === 'function_declaration' ||
+              stmt.type === 'generator_function_declaration' ||
+              stmt.type === 'class_declaration') &&
+            stmt.childForFieldName('name')?.text === name
+          ) {
+            return true;
+          }
         }
       }
       return false;
@@ -4550,6 +4585,41 @@ function blockContainsIdentifierExcluding(
   if (node.id === excludeId) return false;
   if (node.type === 'identifier' && node.text === name) return true;
   if (SCOPE_NODE_TYPES.has(node.type) && introducesShadowedBinding(node, name)) return false;
+  // A declaration statement with MULTIPLE sibling declarators
+  // (`var result = fn(), fn = custom || fallback;`) — if the excluded
+  // (target) declarator is one of this statement's own declarators, only
+  // scan siblings AT OR AFTER it. An earlier sibling's initializer runs (and
+  // is assigned) BEFORE this declarator, so it cannot have consumed a value
+  // that hasn't been assigned yet; a LATER sibling reading this declarator's
+  // name after it's assigned is still valid evidence (Greptile review, PR
+  // #2432 — matches the same at-or-after ordering already applied at the
+  // enclosing-block level in hasLaterReferenceInEnclosingBlock).
+  if (node.type === 'variable_declaration' || node.type === 'lexical_declaration') {
+    let hasExcludedDeclarator = false;
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child?.type === 'variable_declarator' && child.id === excludeId) {
+        hasExcludedDeclarator = true;
+        break;
+      }
+    }
+    if (hasExcludedDeclarator) {
+      let reachedExcluded = false;
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (!child) continue;
+        if (!reachedExcluded) {
+          if (child.id === excludeId) {
+            reachedExcluded = true;
+          } else {
+            continue;
+          }
+        }
+        if (blockContainsIdentifierExcluding(child, name, excludeId, depth + 1)) return true;
+      }
+      return false;
+    }
+  }
   if (node.type === 'variable_declarator') {
     const declName = node.childForFieldName('name');
     const value = node.childForFieldName('value');
@@ -4564,6 +4634,26 @@ function blockContainsIdentifierExcluding(
     if (left && patternBindsName(left, name)) {
       if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1)) return true;
       return right ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1) : false;
+    }
+  }
+  // A `for (fn of values) {}` / `for (fn in obj) {}` loop with NO
+  // declaration keyword reassigns an EXISTING binding on every iteration —
+  // a WRITE, like assignment_expression's left side, not a read of the
+  // value `fn` held before the loop started (Greptile review, PR #2432). A
+  // declaring form (`for (let fn of values)`) is already excluded from
+  // reaching here: it shadows `name` entirely via introducesShadowedBinding
+  // above when `left` binds `name`, or is simply unrelated otherwise —
+  // either way `patternBindsName` (which only recognizes bare
+  // identifiers/destructuring patterns, not declaration nodes) returns
+  // false for it, so this branch only fires for the bare-target form.
+  if (node.type === 'for_in_statement') {
+    const left = node.childForFieldName('left');
+    if (left && patternBindsName(left, name)) {
+      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1)) return true;
+      const right = node.childForFieldName('right');
+      const body = node.childForFieldName('body');
+      if (right && blockContainsIdentifierExcluding(right, name, excludeId, depth + 1)) return true;
+      return body ? blockContainsIdentifierExcluding(body, name, excludeId, depth + 1) : false;
     }
   }
   for (let i = 0; i < node.childCount; i++) {

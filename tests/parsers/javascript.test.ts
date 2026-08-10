@@ -2271,6 +2271,73 @@ function runDemo(reporter: Reporter, users: string[]): void {
         symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
       ).toBe(true);
     });
+
+    // Greptile review, PR #2432: all `case`/`default` clauses in a switch
+    // share ONE lexical scope. An UNBRACED case's own `let` declaration of
+    // the SAME name shadows the outer fallback variable for the whole
+    // switch, even though it isn't wrapped in its own block.
+    it('does not credit liveness from an unbraced switch-case shadowing the name', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        switch (x) {
+          case 1:
+            let fn = 1;
+            fn();
+            break;
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Greptile review, PR #2432: `for (fn of values) {}` / `for (fn in obj)
+    // {}` with NO declaration keyword reassigns fn on every iteration — a
+    // WRITE, not a read of the value it held before the loop started.
+    it('does not credit liveness from a for-of loop write target', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        for (fn of values) {}
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    it('does not credit liveness from a for-in loop write target', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        for (fn in obj) {}
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Using the fallback variable as the ITERABLE (not the loop target) is
+    // a genuine read and must still count.
+    it('still credits liveness when the fallback variable is the for-of iterable', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        for (const x of fn) {}
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: with a hoisted declaration like
+    // `var result = fn(), fn = custom || fallback`, the EARLIER sibling
+    // declarator's initializer runs before this one is assigned — it
+    // cannot have consumed a value that doesn't exist yet.
+    it('does not credit liveness from an earlier sibling declarator in the same statement', () => {
+      const symbols = parseJS(`
+        var result = fn(), fn = options.custom || fetchLatestVersion;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {
