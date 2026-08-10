@@ -552,6 +552,344 @@ fn relativize_to_root(candidate: &str, root_dir: &str) -> String {
     }
 }
 
+// ── Python module-path resolution ───────────────────────────────────
+// Mirrors resolve.ts's resolvePythonImportPath and its helpers (issue #2387).
+
+/// True if `file` is Python source. Both engines resolve Python imports by
+/// module path rather than by filesystem path, so this gates the whole Python
+/// branch of `resolve_import_path_inner`.
+fn is_python_file(file: &str) -> bool {
+    file.ends_with(".py") || file.ends_with(".pyi")
+}
+
+/// Import roots declared by `pyproject.toml`, as absolute directories.
+///
+/// Layout conventions cover most projects (see `python_package_root`), but a
+/// root that is neither the repo root nor derivable from `__init__.py`
+/// placement can only be known from configuration — `pythonpath = ["src",
+/// "scripts"]` being the case observed on `data-analytics-pipeline-svc`
+/// (#2387), where `scripts/` is importable but contains no package marker.
+///
+/// Best-effort: unreadable or malformed TOML contributes no roots rather than
+/// failing resolution, matching `parse_cargo_target_overrides`'s precedent.
+fn parse_pyproject_import_roots(root_dir: &str) -> Vec<String> {
+    let manifest = Path::new(root_dir).join("pyproject.toml");
+    let Ok(content) = std::fs::read_to_string(&manifest) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = toml::from_str::<toml::Value>(&content) else {
+        return Vec::new();
+    };
+    let Some(tool) = parsed.get("tool") else {
+        return Vec::new();
+    };
+
+    let mut roots = Vec::new();
+    // `package-dir` maps an import prefix to a directory; only the directory
+    // half is an import root. An empty-string value means "the repo root",
+    // which is already probed unconditionally.
+    let mut add_root = |value: Option<&toml::Value>| {
+        if let Some(s) = value.and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            roots.push(
+                Path::new(root_dir)
+                    .join(s)
+                    .display()
+                    .to_string()
+                    .replace('\\', "/"),
+            );
+        }
+    };
+
+    // [tool.pytest.ini_options] pythonpath = ["src", "scripts"]
+    if let Some(entries) = tool
+        .get("pytest")
+        .and_then(|p| p.get("ini_options"))
+        .and_then(|o| o.get("pythonpath"))
+        .and_then(|v| v.as_array())
+    {
+        for entry in entries {
+            add_root(Some(entry));
+        }
+    }
+    // [tool.setuptools] package-dir = { "" = "src" }
+    if let Some(table) = tool
+        .get("setuptools")
+        .and_then(|s| s.get("package-dir"))
+        .and_then(|v| v.as_table())
+    {
+        for value in table.values() {
+            add_root(Some(value));
+        }
+    }
+    // [tool.setuptools.packages.find] where = ["src"]
+    if let Some(entries) = tool
+        .get("setuptools")
+        .and_then(|s| s.get("packages"))
+        .and_then(|p| p.get("find"))
+        .and_then(|f| f.get("where"))
+        .and_then(|v| v.as_array())
+    {
+        for entry in entries {
+            add_root(Some(entry));
+        }
+    }
+    // [tool.poetry] packages = [{ include = "pipeline", from = "src" }]
+    if let Some(entries) = tool
+        .get("poetry")
+        .and_then(|p| p.get("packages"))
+        .and_then(|v| v.as_array())
+    {
+        for entry in entries {
+            add_root(entry.get("from"));
+        }
+    }
+
+    roots
+}
+
+/// Cache: root_dir → configured import roots. Populated lazily on the first
+/// Python import resolved for a given root_dir, so non-Python projects never
+/// pay for the manifest read.
+fn python_configured_roots_cache() -> &'static Mutex<HashMap<String, Vec<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cache: file directory → its derived package root.
+fn python_package_root_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Clear both Python import-root caches — called from the NAPI-exported
+/// `clear_python_import_roots_cache` (so a long-lived process picks up
+/// pyproject.toml edits and `__init__.py` additions/removals) and
+/// `resolve_imports`'s once-per-build reset, as well as directly from tests.
+pub fn clear_python_import_roots_cache() {
+    python_configured_roots_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    python_package_root_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
+fn get_python_configured_roots(root_dir: &str) -> Vec<String> {
+    let mut cache = python_configured_roots_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = cache.get(root_dir) {
+        return existing.clone();
+    }
+    let roots = parse_pyproject_import_roots(root_dir);
+    cache.insert(root_dir.to_string(), roots.clone());
+    roots
+}
+
+/// The directory an absolute Python import from `from_file` resolves against,
+/// derived from package layout: walk up from the file's own directory for as
+/// long as each level is a package (contains `__init__.py`), and stop at the
+/// first ancestor that is not.
+///
+/// That ancestor is the directory that would be on `sys.path` at runtime, so
+/// this handles the PyPA-endorsed "src layout" (`src/pipeline/…`, imported as
+/// `from pipeline…`) and a flat layout with the same rule and no
+/// configuration — the src-layout case being precisely what made
+/// `data-analytics-pipeline-svc` resolve zero imports (#2387).
+///
+/// Never walks above `root_dir`: a stray `__init__.py` at the repo root must
+/// not send resolution outside the project.
+fn python_package_root(
+    from_file: &str,
+    root_dir: &str,
+    known_files: Option<&HashSet<String>>,
+) -> String {
+    let start_dir = Path::new(from_file)
+        .parent()
+        .unwrap_or(Path::new(""))
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    if let Some(hit) = python_package_root_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&start_dir)
+    {
+        return hit.clone();
+    }
+
+    let root_normalized = root_dir.replace('\\', "/");
+    let mut dir = start_dir.clone();
+    loop {
+        if dir == root_normalized {
+            break;
+        }
+        let init = Path::new(&dir)
+            .join("__init__.py")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        if !file_exists(&init, known_files, root_dir) {
+            break;
+        }
+        let Some(parent) = Path::new(&dir).parent() else {
+            break;
+        };
+        let parent_str = parent.display().to_string().replace('\\', "/");
+        if parent_str == dir {
+            break;
+        }
+        dir = parent_str;
+    }
+
+    python_package_root_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(start_dir, dir.clone());
+    dir
+}
+
+/// Candidate import roots for `from_file`, most specific first: the
+/// layout-derived package root, then the conventional `src/` directory, then
+/// the repo root, then anything `pyproject.toml` declares.
+fn python_import_roots(
+    from_file: &str,
+    root_dir: &str,
+    known_files: Option<&HashSet<String>>,
+) -> Vec<String> {
+    let mut roots = vec![
+        python_package_root(from_file, root_dir, known_files),
+        Path::new(root_dir)
+            .join("src")
+            .display()
+            .to_string()
+            .replace('\\', "/"),
+        root_dir.replace('\\', "/"),
+    ];
+    roots.extend(get_python_configured_roots(root_dir));
+    roots
+}
+
+/// Resolve dotted module `segments` beneath `base_dir` to the file that
+/// declares that module: `a/b/c.py`, then the package form
+/// `a/b/c/__init__.py`, then the stub `a/b/c.pyi`. Empty `segments` means the
+/// package itself (`from . import x`), which only ever resolves to its
+/// `__init__.py`.
+///
+/// Returns a root-relative path, or None when nothing matches — including
+/// when a candidate would land outside `root_dir`, which a relative import
+/// with more leading dots than there are package levels can otherwise do.
+fn resolve_python_module_under(
+    base_dir: &str,
+    segments: &[&str],
+    root_dir: &str,
+    known_files: Option<&HashSet<String>>,
+) -> Option<String> {
+    let mut target = PathBuf::from(base_dir);
+    for segment in segments {
+        target.push(segment);
+    }
+    let target_str = target.display().to_string().replace('\\', "/");
+
+    let candidates: Vec<String> = if segments.is_empty() {
+        vec![format!("{target_str}/__init__.py")]
+    } else {
+        vec![
+            format!("{target_str}.py"),
+            format!("{target_str}/__init__.py"),
+            format!("{target_str}.pyi"),
+        ]
+    };
+    for candidate in candidates {
+        if !file_exists(&candidate, known_files, root_dir) {
+            continue;
+        }
+        let rel = relativize_to_root(&candidate, root_dir);
+        if rel.starts_with("..") {
+            continue;
+        }
+        return Some(rel);
+    }
+    None
+}
+
+/// Resolve a Python `import a.b.c` / `from a.b import c` / `from .. import c`
+/// module path to the file that declares it (#2387).
+///
+/// Returns None for anything not found under a project import root — standard
+/// library and third-party modules included — so the caller falls through to
+/// the bare-specifier behaviour that treats them as external.
+fn resolve_python_import_path(
+    from_file: &str,
+    import_source: &str,
+    root_dir: &str,
+    known_files: Option<&HashSet<String>>,
+) -> Option<String> {
+    let dots = import_source.chars().take_while(|c| *c == '.').count();
+
+    if dots > 0 {
+        // Relative import: one dot is the current package, each extra dot
+        // climbs one level further up before the remaining segments are
+        // walked down.
+        let rest = &import_source[dots..];
+        let mut dir = Path::new(from_file)
+            .parent()
+            .unwrap_or(Path::new(""))
+            .to_path_buf();
+        for _ in 1..dots {
+            if !dir.pop() {
+                return None;
+            }
+        }
+        let dir_str = dir.display().to_string().replace('\\', "/");
+        let segments: Vec<&str> = if rest.is_empty() {
+            Vec::new()
+        } else {
+            rest.split('.').collect()
+        };
+        return resolve_python_module_under(&dir_str, &segments, root_dir, known_files);
+    }
+
+    let segments: Vec<&str> = import_source.split('.').collect();
+    if segments.iter().any(|s| s.is_empty()) {
+        return None;
+    }
+    for root in python_import_roots(from_file, root_dir, known_files) {
+        if let Some(resolved) = resolve_python_module_under(&root, &segments, root_dir, known_files)
+        {
+            return Some(resolved);
+        }
+    }
+    None
+}
+
+/// Resolve `from <source> import <name>` where `name` is itself a submodule
+/// rather than a symbol (`from pipeline.stages import extract`) — Python's two
+/// readings of that statement are indistinguishable without knowing which
+/// files exist, so this is decided here rather than in the extractor.
+///
+/// Returns the submodule's root-relative path, or None when `name` is an
+/// ordinary symbol declared inside the source module.
+pub fn resolve_python_submodule(
+    from_file: &str,
+    import_source: &str,
+    name: &str,
+    root_dir: &str,
+    known_files: Option<&HashSet<String>>,
+) -> Option<String> {
+    if !is_python_file(from_file) || name == "*" {
+        return None;
+    }
+    let combined = if import_source.ends_with('.') {
+        format!("{import_source}{name}")
+    } else {
+        format!("{import_source}.{name}")
+    };
+    resolve_python_import_path(from_file, &combined, root_dir, known_files)
+}
+
 // ── Rust `crate::`/`self::`/`super::` module-path resolution ────────
 // Mirrors resolve.ts's resolveRustUsePath and its helpers (issue #2007).
 
@@ -1044,6 +1382,18 @@ fn resolve_import_path_inner(
     known_files: Option<&HashSet<String>>,
     workspaces: Option<&HashMap<String, WorkspaceEntry>>,
 ) -> String {
+    // Python resolves by module path, not filesystem path, in both the
+    // absolute (`import a.b.c`) and relative (`from ..pkg import x`) forms —
+    // the latter shares JS's leading-dot spelling but means "climb the package
+    // tree", not "a path relative to this directory", so this must run before
+    // the generic relative branch below ever sees it (#2387).
+    if is_python_file(from_file) {
+        if let Some(resolved) =
+            resolve_python_import_path(from_file, import_source, root_dir, known_files)
+        {
+            return resolved;
+        }
+    }
     if !import_source.starts_with('.') {
         return resolve_non_relative_import(
             from_file,
@@ -1850,6 +2200,207 @@ mod tests {
         let normalized = normalize_known_files(input);
         assert!(normalized.contains("/project/main.rs"));
         assert!(normalized.contains("service.rs"));
+    }
+
+    // ── Python module-path resolution (#2387) ──────────────────────
+    //
+    // Each test uses a distinct root_dir so the process-wide package-root
+    // cache (keyed by directory) can never leak between tests running in
+    // parallel on separate threads.
+
+    fn python_src_layout_known_files(root: &str) -> HashSet<String> {
+        [
+            "src/pipeline/__init__.py",
+            "src/pipeline/util.py",
+            "src/pipeline/main.py",
+            "src/pipeline/stages/__init__.py",
+            "src/pipeline/stages/extract.py",
+            "src/pipeline/stages/load.py",
+            "scripts/tool.py",
+        ]
+        .iter()
+        .map(|f| format!("{root}/{f}"))
+        .collect()
+    }
+
+    #[test]
+    fn python_absolute_import_resolves_through_src_layout_package_root() {
+        // PyPA "src layout": package root is src/, imports written `pipeline…`.
+        let root = "/py-abs";
+        let known = python_src_layout_known_files(root);
+        let resolved = resolve_python_import_path(
+            &format!("{root}/src/pipeline/main.py"),
+            "pipeline.util",
+            root,
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("src/pipeline/util.py".to_string()));
+    }
+
+    #[test]
+    fn python_absolute_import_resolves_nested_module() {
+        let root = "/py-nested";
+        let known = python_src_layout_known_files(root);
+        let resolved = resolve_python_import_path(
+            &format!("{root}/src/pipeline/main.py"),
+            "pipeline.stages.extract",
+            root,
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("src/pipeline/stages/extract.py".to_string()));
+    }
+
+    #[test]
+    fn python_package_import_resolves_to_its_init_file() {
+        let root = "/py-pkg";
+        let known = python_src_layout_known_files(root);
+        let resolved = resolve_python_import_path(
+            &format!("{root}/src/pipeline/main.py"),
+            "pipeline.stages",
+            root,
+            Some(&known),
+        );
+        assert_eq!(
+            resolved,
+            Some("src/pipeline/stages/__init__.py".to_string())
+        );
+    }
+
+    #[test]
+    fn python_single_dot_relative_import_resolves_to_sibling_module() {
+        let root = "/py-rel1";
+        let known = python_src_layout_known_files(root);
+        let resolved = resolve_python_import_path(
+            &format!("{root}/src/pipeline/stages/load.py"),
+            ".extract",
+            root,
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("src/pipeline/stages/extract.py".to_string()));
+    }
+
+    #[test]
+    fn python_double_dot_relative_import_resolves_to_parent_package() {
+        let root = "/py-rel2";
+        let known = python_src_layout_known_files(root);
+        let resolved = resolve_python_import_path(
+            &format!("{root}/src/pipeline/stages/load.py"),
+            "..util",
+            root,
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("src/pipeline/util.py".to_string()));
+    }
+
+    #[test]
+    fn python_bare_dot_relative_import_resolves_to_current_package_init() {
+        let root = "/py-rel0";
+        let known = python_src_layout_known_files(root);
+        let resolved = resolve_python_import_path(
+            &format!("{root}/src/pipeline/stages/load.py"),
+            ".",
+            root,
+            Some(&known),
+        );
+        assert_eq!(
+            resolved,
+            Some("src/pipeline/stages/__init__.py".to_string())
+        );
+    }
+
+    #[test]
+    fn python_import_from_outside_the_package_tree_resolves_via_src_convention() {
+        let root = "/py-outside";
+        let known = python_src_layout_known_files(root);
+        let resolved = resolve_python_import_path(
+            &format!("{root}/scripts/tool.py"),
+            "pipeline.util",
+            root,
+            Some(&known),
+        );
+        assert_eq!(resolved, Some("src/pipeline/util.py".to_string()));
+    }
+
+    #[test]
+    fn python_stdlib_and_third_party_modules_stay_unresolved() {
+        // Must return None so the caller falls through to the bare-specifier
+        // behaviour that treats them as external, rather than inventing an
+        // edge to some coincidentally-named project file.
+        let root = "/py-external";
+        let known = python_src_layout_known_files(root);
+        let from = format!("{root}/src/pipeline/main.py");
+        assert_eq!(
+            resolve_python_import_path(&from, "os.path", root, Some(&known)),
+            None
+        );
+        assert_eq!(
+            resolve_python_import_path(&from, "numpy", root, Some(&known)),
+            None
+        );
+    }
+
+    #[test]
+    fn python_relative_import_never_escapes_the_repo_root() {
+        let root = "/py-escape";
+        let known = python_src_layout_known_files(root);
+        let resolved = resolve_python_import_path(
+            &format!("{root}/src/pipeline/stages/load.py"),
+            "...escape",
+            root,
+            Some(&known),
+        );
+        assert!(resolved.is_none_or(|p| !p.starts_with("..")));
+    }
+
+    #[test]
+    fn python_submodule_import_is_distinguished_from_a_symbol_import() {
+        // `from pipeline.stages import extract` — extract is a module.
+        // `from pipeline.util import shared_helper` — shared_helper is not.
+        let root = "/py-submodule";
+        let known = python_src_layout_known_files(root);
+        let from = format!("{root}/src/pipeline/main.py");
+        assert_eq!(
+            resolve_python_submodule(&from, "pipeline.stages", "extract", root, Some(&known)),
+            Some("src/pipeline/stages/extract.py".to_string())
+        );
+        assert_eq!(
+            resolve_python_submodule(&from, "pipeline.util", "shared_helper", root, Some(&known)),
+            None
+        );
+    }
+
+    #[test]
+    fn python_submodule_resolution_declines_wildcards_and_non_python_callers() {
+        let root = "/py-submodule-guard";
+        let known = python_src_layout_known_files(root);
+        assert_eq!(
+            resolve_python_submodule(
+                &format!("{root}/src/pipeline/main.py"),
+                "pipeline",
+                "*",
+                root,
+                Some(&known)
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_python_submodule(
+                &format!("{root}/src/main.ts"),
+                "pipeline",
+                "stages",
+                root,
+                Some(&known)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn is_python_file_recognizes_source_and_stub_extensions() {
+        assert!(is_python_file("app/main.py"));
+        assert!(is_python_file("app/types.pyi"));
+        assert!(!is_python_file("src/index.ts"));
+        assert!(!is_python_file("main.rs"));
     }
 
     #[test]

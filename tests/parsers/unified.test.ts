@@ -105,6 +105,30 @@ describe('Unified parser API', () => {
         expect.objectContaining({ name: 'greet', kind: 'function' }),
       );
     });
+
+    it('records the local alias, not the pre-alias name, for an aliased Python from-import (#2387)', async () => {
+      // Found in review of #2387: `from pkg import submod as alias` recorded
+      // only `submod` (the pre-alias name declared in `pkg`) as the local
+      // binding, so `alias.f()` had no local name to key namespace/submodule
+      // resolution off of and resolved to nothing in both engines.
+      const symbols = await parseFileAuto('test.py', 'from pkg import submod as alias\n', {
+        engine: 'wasm',
+      });
+      expect(symbols).not.toBeNull();
+      expect(symbols.imports).toHaveLength(1);
+      expect(symbols.imports[0].source).toBe('pkg');
+      expect(symbols.imports[0].names).toEqual(['alias']);
+      expect(symbols.imports[0].renamedImports).toEqual([{ local: 'alias', imported: 'submod' }]);
+    });
+
+    it('only records a rename pair for the aliased specifier in a multi-name from-import', async () => {
+      const symbols = await parseFileAuto('test.py', 'from pkg import a, b as c\n', {
+        engine: 'wasm',
+      });
+      expect(symbols).not.toBeNull();
+      expect(symbols.imports[0].names).toEqual(['a', 'c']);
+      expect(symbols.imports[0].renamedImports).toEqual([{ local: 'c', imported: 'b' }]);
+    });
   });
 
   describe('parseFilesAuto', () => {

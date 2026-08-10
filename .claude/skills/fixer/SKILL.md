@@ -31,7 +31,7 @@ A previous batch run on this repo collapsed under compounding merge conflicts �
 - **I5 — Never rebase; always `git merge origin/main`.** The ruleset forbids non-fast-forward pushes to `main` and the repo disables rebase-merge.
 - **I6 — A parked PR never blocks the next issue.** Parking is the escape hatch that keeps the batch moving; Phase: Drain Parked PRs cleans up.
 - **I7 — Every issue's work happens in a freshly dispatched sub-agent, never inline in the orchestrating session.** The orchestrator only reads state back off disk between dispatches, the same disk state a resumed run already relies on. This keeps a multi-batch run's context from growing without bound and gives each issue a genuinely clean slate.
-- **I8 — A merge to `main` is not complete until `main`'s own post-merge CI is confirmed green.** This repo's GitHub Actions run a separate `CI` workflow triggered directly by the push-to-`main` event at merge time — a full, independent re-run of the entire test suite on the new `main` HEAD, distinct from and in addition to the PR's own pre-merge checks G1-G5 evaluate in step 2f. A PR's pre-merge checks passing is necessary but not sufficient: this post-merge run can fail for reasons the PR branch alone could never have shown — environmental drift, shared-runner contention (a run of rapid-fire merges pays for its own cadence in strained Windows-runner capacity), or a genuine merge-order-dependent regression. `main` staying green, not just each PR's own checks, is the real ground truth for whether the batch is leaving the repo in a healthy state, so every merge — in step 2f-bis and in Phase: Drain Parked PRs — is followed by a mandatory check of that run, with a mandatory fix (or confirmed-transient rerun) before advancing if it's red.
+- **I8 — A merge to `main` is not complete until `main`'s own post-merge CI is confirmed green.** This repo's GitHub Actions run a separate `CI` workflow triggered directly by the push-to-`main` event at merge time — a full, independent re-run of the entire test suite on the new `main` HEAD, distinct from and in addition to the PR's own pre-merge checks G1-G5 evaluate in step 2f. A PR's pre-merge checks passing is necessary but not sufficient: this post-merge run can fail for reasons the PR branch alone could never have shown — environmental drift, shared-runner contention (a run of rapid-fire merges pays for its own cadence in strained Windows-runner capacity), or a genuine merge-order-dependent regression. `main` staying green, not just each PR's own checks, is the real ground truth for whether the batch is leaving the repo in a healthy state, so every merge — in step 2f-bis, in Phase: Drain Parked PRs, and in the crash-resume reconciliation's own `MERGED` branch (a sub-agent can crash after `gh pr merge` but before ever reaching 2f-bis) — is followed by a mandatory check of that run, with a mandatory fix (or confirmed-transient rerun) before advancing if it's red.
 
 ---
 
@@ -404,7 +404,61 @@ case "$STATUS" in
         [ -n "$EX_PR" ] && EX_STATE=OPEN || EX_STATE=CLOSED
       fi
       case "$EX_STATE" in
-        MERGED) echo "fixer: PR #$EX_PR for issue #$ISSUE is already merged — the crash was between 2f's merge and 2g's write. Reconciling state.json directly, no retry."; RECONCILE=merged ;;
+        MERGED)
+          echo "fixer: PR #$EX_PR for issue #$ISSUE is already merged — the crash was between 2f's merge and 2g's write. Reconciling state.json directly, no retry."
+          # I8 (issue #2249): this reconciliation is the only other place besides 2f-bis
+          # itself that lets the queue advance past a merge to main — skipping the check
+          # here would silently let a crash landing in exactly the 2f/2g gap bypass I8 on
+          # resume. Adapted inline (not "run 2f-bis's blocks unmodified" the way Phase:
+          # Drain Parked PRs references them) because this whole reconciliation must stay
+          # one continuous bash invocation (see the note above this block) — 2f-bis's own
+          # two-block split doesn't apply here. current-pr is seeded from EX_PR (2f-bis
+          # normally reads it from a file 2e/2f already wrote, but the crash that brought
+          # us here means that file may be stale or absent) and cleared via trap so a
+          # `exit 1` below never leaves it pointing at a PR this invocation didn't dispatch.
+          printf '%s\n' "$EX_PR" > .codegraph/fixer/current-pr
+          trap 'rm -f .codegraph/fixer/current-pr' EXIT
+          MERGE_SHA=$(gh pr view "$EX_PR" --repo "$REPO" --json mergeCommit --jq '.mergeCommit.oid')
+          if [ -z "$MERGE_SHA" ] || [ "$MERGE_SHA" = "null" ]; then
+            echo "ERROR: could not read PR #$EX_PR's merge commit — cannot verify post-merge CI"; exit 1
+          fi
+          git fetch origin main || { echo "ERROR: git fetch failed"; exit 1; }
+          echo "fixer: verifying post-merge CI on main for merge commit $MERGE_SHA (PR #$EX_PR)"
+          CI_RUN_ID=""
+          for _ in $(seq 1 20); do
+            CI_RUN_ID=$(gh run list --repo "$REPO" --branch main --workflow "CI" --limit 5 \
+              --json databaseId,conclusion,headSha,createdAt \
+              --jq "[.[] | select(.headSha == \"$MERGE_SHA\")] | .[0].databaseId // empty")
+            [ -n "$CI_RUN_ID" ] && break
+            sleep 5
+          done
+          if [ -z "$CI_RUN_ID" ]; then
+            echo "ERROR: no post-merge 'CI' workflow run found for commit $MERGE_SHA after polling — investigate manually. Do not cut the next issue's branch while main's post-merge state is unknown."
+            exit 1
+          fi
+          echo "fixer: post-merge CI run $CI_RUN_ID for commit $MERGE_SHA"
+          gh run watch "$CI_RUN_ID" --repo "$REPO" --exit-status
+          CONCLUSION=$(gh run view "$CI_RUN_ID" --repo "$REPO" --json conclusion --jq '.conclusion')
+          if [ "$CONCLUSION" = "success" ]; then
+            echo "fixer: post-merge CI on main is green (I8 satisfied) — reconciling as merged"
+          else
+            echo "fixer: post-merge CI on main is RED ($CONCLUSION) — I8 requires fixing this before advancing"
+            gh run view "$CI_RUN_ID" --repo "$REPO" --log-failed
+            gh run rerun "$CI_RUN_ID" --repo "$REPO" --failed
+            gh run watch "$CI_RUN_ID" --repo "$REPO" --exit-status
+            CONCLUSION=$(gh run view "$CI_RUN_ID" --repo "$REPO" --json conclusion --jq '.conclusion')
+            if [ "$CONCLUSION" = "success" ]; then
+              echo "fixer: confirmed transient — post-merge CI green after rerun, reconciling as merged"
+            else
+              echo "ERROR: post-merge CI on main is still red after a rerun — this is not transient."
+              echo "Root-cause it: if it traces to PR #$EX_PR, fix it with a new small PR through the normal branch/PR/merge machinery before proceeding. Never let this reconciliation advance the queue while main's latest post-merge CI is red and unexplained."
+              exit 1
+            fi
+          fi
+          trap - EXIT
+          rm -f .codegraph/fixer/current-pr
+          RECONCILE=merged
+          ;;
         OPEN) echo "fixer: PR #$EX_PR for issue #$ISSUE is already open — the crash was mid-2f. Recording it as parked so Phase: Drain Parked PRs converges it, rather than opening a duplicate PR."; RECONCILE=parked ;;
         CLOSED) echo "fixer: every PR for fix/issue-$ISSUE is closed without merging — nothing to reconcile from. Safe to retry the full 2a-2g dispatch."; RECONCILE=retry ;;
       esac
@@ -1506,7 +1560,7 @@ All state is under `.codegraph/fixer/`:
 - **`--admin` covers the missing approval only.** Never merge past a check that is red because of this PR's own changes. A check may be bypassed only after reading its logs, establishing the failure is unrelated to the diff, and recording that diagnosis in the final report.
 - **Rerun the `Pre-publish benchmark gate` once** before treating its failure as a real regression — it is known to fail intermittently by a thin margin on unrelated PRs.
 - **All five gate conditions must hold before a merge:** Greptile 5/5, every comment addressed and replied to, up to date with `main`, no conflicts, all six required checks green.
-- **Verify and fix post-merge CI on `main`, not just the PR's own pre-merge checks (I8).** After every merge — in step 2f-bis and in Phase: Drain Parked PRs — wait for the separate push-triggered `CI` workflow run on that merge commit, and if it's red, diagnose and fix a genuine regression or confirm-and-clear a transient failure via rerun before cutting the next issue's branch. The five gate conditions above cover the PR's own pre-merge state; `main`'s post-merge CI is the independent ground truth for whether the batch is leaving the repo healthy.
+- **Verify and fix post-merge CI on `main`, not just the PR's own pre-merge checks (I8).** After every merge — in step 2f-bis, in Phase: Drain Parked PRs, and in the crash-resume reconciliation's own `MERGED` branch — wait for the separate push-triggered `CI` workflow run on that merge commit, and if it's red, diagnose and fix a genuine regression or confirm-and-clear a transient failure via rerun before cutting the next issue's branch. The five gate conditions above cover the PR's own pre-merge state; `main`'s post-merge CI is the independent ground truth for whether the batch is leaving the repo healthy.
 - **Mine the Greptile summary, not just inline comments.** A score below 5/5 always names at least one gap in prose, and those gaps frequently have no inline comment.
 - **Never defer without tracking.** Out-of-scope findings become GitHub issues via `gh issue create` immediately, and the issue number goes in the reply.
 - **PR bodies use `Closes #N`**, never a bare `(#N)` — the closing keyword is what auto-closes the issue on merge.

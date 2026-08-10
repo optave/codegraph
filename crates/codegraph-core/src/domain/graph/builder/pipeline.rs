@@ -1576,6 +1576,40 @@ fn collect_imported_names_for_file(
                     name: local,
                     file: String::new(),
                     imported: None,
+                    namespace: None,
+                });
+                continue;
+            }
+            // A binding that names the module itself targets the module file
+            // and has no declared symbol to trace through a barrel (#2387).
+            if imp
+                .namespace_bindings
+                .as_ref()
+                .is_some_and(|b| b.contains(&local))
+            {
+                imported_names.push(ImportedName {
+                    name: local,
+                    file: resolved_path.clone(),
+                    imported: None,
+                    namespace: Some(true),
+                });
+                continue;
+            }
+            // `from pkg import submod` binds a module too, but which reading
+            // applies depends on whether `pkg/submod.py` exists — a question
+            // only the resolver can answer (#2387).
+            if let Some(submodule) = crate::domain::graph::resolve::resolve_python_submodule(
+                abs_str,
+                &imp.source,
+                &original,
+                &import_ctx.root_dir,
+                Some(&import_ctx.known_files),
+            ) {
+                imported_names.push(ImportedName {
+                    name: local,
+                    file: submodule,
+                    imported: None,
+                    namespace: Some(true),
                 });
                 continue;
             }
@@ -1598,6 +1632,7 @@ fn collect_imported_names_for_file(
                 },
                 name: local,
                 file: target_file,
+                namespace: None,
             });
         }
     }

@@ -173,35 +173,78 @@ fn handle_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     }
 }
 
+/// `import a.b`, `import a.b as ab`, `import a, b` — the module-binding form.
+///
+/// Each module in the statement becomes its own `Import`, whose `source` is
+/// the module path and whose single name is the local binding it introduces.
+/// That split matters twice over: `source` previously carried the *alias* for
+/// `import lib as L`, which can never resolve to a file, and a multi-module
+/// `import a, b` collapsed into one record naming only `a` as its source
+/// (#2387).
+///
+/// The binding names a module object rather than a symbol, so it is also
+/// recorded in `namespace_bindings` — that is what lets `L.strip_block()`
+/// resolve `strip_block` inside the module `L` refers to. For the unaliased
+/// dotted form the binding is recorded under its full dotted spelling (`a.b`),
+/// because that is the receiver text a call site writes (`a.b.func()`).
+///
+/// Mirrors `handlePyImport` in src/extractors/python.ts.
 fn handle_import_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let mut names = Vec::new();
+    let line = start_line(node);
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
-        if child.kind() != "dotted_name" && child.kind() != "aliased_import" {
-            continue;
-        }
-        let name = if child.kind() == "aliased_import" {
-            child
-                .child_by_field_name("alias")
-                .or_else(|| child.child_by_field_name("name"))
-                .map(|n| node_text(&n, source).to_string())
-        } else {
-            Some(node_text(&child, source).to_string())
+        let (module, local) = match child.kind() {
+            "dotted_name" => {
+                let text = node_text(&child, source).to_string();
+                (Some(text.clone()), Some(text))
+            }
+            "aliased_import" => {
+                let module = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(&n, source).to_string());
+                let local = child
+                    .child_by_field_name("alias")
+                    .map(|n| node_text(&n, source).to_string())
+                    .or_else(|| module.clone());
+                (module, local)
+            }
+            _ => continue,
         };
-        if let Some(name) = name {
-            names.push(name);
-        }
-    }
-    if !names.is_empty() {
-        let mut imp = Import::new(names[0].clone(), names, start_line(node));
+        let (Some(module), Some(local)) = (module, local) else {
+            continue;
+        };
+        let mut imp = Import::new(module, vec![local.clone()], line);
+        imp.namespace_bindings = Some(vec![local]);
         imp.python_import = Some(true);
         symbols.imports.push(imp);
     }
 }
 
+/// `from pkg import submod`, `from pkg import submod as alias`, `from pkg
+/// import a, b as c` — the symbol/submodule-binding form.
+///
+/// `names` must carry the *local* binding (the alias, when there is one) —
+/// call sites write `alias.f()`, not `submod.f()`, and every downstream
+/// consumer (`import_name_pairs`, the namespace/submodule maps in
+/// `collect_imported_names_for_file`/build_edges.rs) keys off the local name.
+/// Previously this took the `aliased_import`'s pre-alias `name` field
+/// unconditionally, so an aliased specifier's local binding was silently
+/// dropped: `from pkg import submod as alias` recorded `submod`, and a call
+/// through `alias` resolved to nothing in both engines (#2387).
+///
+/// The pre-alias name doesn't disappear — it's the name actually declared in
+/// `source` (whether that turns out to be a symbol in `pkg`'s file or, per
+/// `resolve_python_submodule`, a submodule `pkg/submod.py`), so it is
+/// recorded in `renamed_imports` exactly like a renamed JS specifier
+/// (`import { X as Y }`, #1730). `import_name_pairs` already recovers it from
+/// there for barrel tracing, submodule probing, and namespace-import mapping
+/// — mirrors `scan_import_names_depth`'s `import_specifier` handling in
+/// extractors/javascript.rs. Mirrors `handlePyImportFrom` in
+/// src/extractors/python.ts.
 fn handle_import_from_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let mut source_str = String::new();
     let mut names = Vec::new();
+    let mut renamed_imports = Vec::new();
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
         match child.kind() {
@@ -213,9 +256,21 @@ fn handle_import_from_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols
                 }
             }
             "aliased_import" => {
-                let n = child.child_by_field_name("name").or_else(|| child.child(0));
-                if let Some(n) = n {
-                    names.push(node_text(&n, source).to_string());
+                let source_name_node = child.child_by_field_name("name");
+                let alias_node = child.child_by_field_name("alias");
+                let local_node = alias_node.or(source_name_node).or_else(|| child.child(0));
+                if let Some(local_node) = local_node {
+                    names.push(node_text(&local_node, source).to_string());
+                    if let (Some(alias), Some(source_name)) = (alias_node, source_name_node) {
+                        let alias_text = node_text(&alias, source);
+                        let source_text = node_text(&source_name, source);
+                        if alias_text != source_text {
+                            renamed_imports.push(RenamedImport {
+                                local: alias_text.to_string(),
+                                imported: source_text.to_string(),
+                            });
+                        }
+                    }
                 }
             }
             "wildcard_import" => {
@@ -227,6 +282,9 @@ fn handle_import_from_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols
     if !source_str.is_empty() {
         let mut imp = Import::new(source_str, names, start_line(node));
         imp.python_import = Some(true);
+        if !renamed_imports.is_empty() {
+            imp.renamed_imports = Some(renamed_imports);
+        }
         symbols.imports.push(imp);
     }
 }
@@ -561,6 +619,109 @@ mod tests {
         assert_eq!(s.imports.len(), 1);
         assert_eq!(s.imports[0].source, "os.path");
         assert!(s.imports[0].names.contains(&"join".to_string()));
+    }
+
+    #[test]
+    fn plain_import_records_the_module_as_source_and_a_namespace_binding() {
+        // #2387: `source` must be the module, not the binding name — a binding
+        // name can never resolve to a file.
+        let s = parse_py("import lib\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "lib");
+        assert_eq!(s.imports[0].names, vec!["lib".to_string()]);
+        assert_eq!(
+            s.imports[0].namespace_bindings,
+            Some(vec!["lib".to_string()])
+        );
+    }
+
+    #[test]
+    fn aliased_import_keeps_the_module_as_source_and_the_alias_as_the_binding() {
+        // #2387: this previously stored the alias ("L") as `source`, which is
+        // why `import lib as L` produced no imports edge and `L.f()` resolved
+        // to nothing.
+        let s = parse_py("import lib as L\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "lib");
+        assert_eq!(s.imports[0].names, vec!["L".to_string()]);
+        assert_eq!(s.imports[0].namespace_bindings, Some(vec!["L".to_string()]));
+    }
+
+    #[test]
+    fn dotted_import_binds_under_its_full_dotted_spelling() {
+        // `import a.b.c` is written `a.b.c.func()` at the call site, so the
+        // binding is recorded under the dotted text a receiver would carry.
+        let s = parse_py("import a.b.c\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "a.b.c");
+        assert_eq!(
+            s.imports[0].namespace_bindings,
+            Some(vec!["a.b.c".to_string()])
+        );
+    }
+
+    #[test]
+    fn multi_module_import_produces_one_record_per_module() {
+        // #2387: `import a, b` used to collapse into a single record whose
+        // source was "a", silently losing b entirely.
+        let s = parse_py("import alpha, beta as B\n");
+        assert_eq!(s.imports.len(), 2);
+        let sources: Vec<&str> = s.imports.iter().map(|i| i.source.as_str()).collect();
+        assert!(sources.contains(&"alpha"));
+        assert!(sources.contains(&"beta"));
+        let beta = s.imports.iter().find(|i| i.source == "beta").unwrap();
+        assert_eq!(beta.names, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn from_import_names_are_not_namespace_bindings() {
+        // `from mod import name` binds a symbol; whether `name` is actually a
+        // submodule is decided at resolution time, not here.
+        let s = parse_py("from lib import helper\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "lib");
+        assert_eq!(s.imports[0].names, vec!["helper".to_string()]);
+        assert_eq!(s.imports[0].namespace_bindings, None);
+    }
+
+    /// Found in review of #2387: `from pkg import submod as alias` must
+    /// record the *local* binding (`alias`) in `names` — that's what call
+    /// sites reference (`alias.f()`) — plus the `{ local: alias, imported:
+    /// submod }` pair in `renamed_imports` so `import_name_pairs` can recover
+    /// the pre-alias name for barrel tracing and submodule probing
+    /// (`resolve_python_submodule` needs the real file/symbol name, not the
+    /// alias). Previously this took the `aliased_import`'s pre-alias `name`
+    /// field unconditionally, silently dropping the alias.
+    #[test]
+    fn aliased_from_import_records_local_alias_and_rename_pair() {
+        let s = parse_py("from pkg import submod as alias\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "pkg");
+        assert_eq!(s.imports[0].names, vec!["alias".to_string()]);
+        let renamed = s.imports[0]
+            .renamed_imports
+            .as_ref()
+            .expect("renamed_imports should be populated for an aliased from-import");
+        assert_eq!(renamed.len(), 1);
+        assert_eq!(renamed[0].local, "alias");
+        assert_eq!(renamed[0].imported, "submod");
+    }
+
+    #[test]
+    fn aliased_from_import_multi_name_only_renames_the_aliased_specifier() {
+        // `from pkg import a, b as c` — the unaliased `a` must stay a plain
+        // name with no rename entry; only `b as c` contributes to
+        // `renamed_imports`.
+        let s = parse_py("from pkg import a, b as c\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].names, vec!["a".to_string(), "c".to_string()]);
+        let renamed = s.imports[0]
+            .renamed_imports
+            .as_ref()
+            .expect("renamed_imports should be populated when any specifier is aliased");
+        assert_eq!(renamed.len(), 1);
+        assert_eq!(renamed[0].local, "c");
+        assert_eq!(renamed[0].imported, "b");
     }
 
     #[test]

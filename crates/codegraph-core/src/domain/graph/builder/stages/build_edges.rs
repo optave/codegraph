@@ -74,6 +74,12 @@ pub struct ImportedName {
     /// `name` — the renamed local alias only exists in the importing file,
     /// not in `file` itself (#1730).
     pub imported: Option<String>,
+    /// True when `name` is bound to the whole module `file` rather than to a
+    /// symbol inside it (Python's `import lib as L`, `from pkg import
+    /// submod`). A call written `L.f()` then means "f, as declared in `file`"
+    /// — see `resolve_call_targets`'s namespace branch (#2387). Mirrors the
+    /// `namespace` field of the TS `importedNames` FFI entry.
+    pub namespace: Option<bool>,
 }
 
 #[napi(object)]
@@ -896,6 +902,7 @@ struct PtsAliasCtx<'a> {
     rel_path: &'a str,
     imported_names: &'a HashMap<&'a str, &'a str>,
     imported_original_names: &'a HashMap<&'a str, &'a str>,
+    namespace_imports: &'a HashMap<&'a str, &'a str>,
     type_map: &'a HashMap<&'a str, (&'a str, f64)>,
 }
 
@@ -934,6 +941,7 @@ fn emit_pts_alias_edges<'a>(
             alias_ctx.caller_name,
             alias_ctx.imported_names,
             alias_ctx.imported_original_names,
+            alias_ctx.namespace_imports,
             &mut alias_confidence_override,
         );
         sort_targets_by_confidence(
@@ -1016,6 +1024,11 @@ struct FileContext<'a> {
     /// omitted. Consulted by `resolve_call_targets` so a call to the local
     /// alias resolves against the correct exported symbol (#1730).
     imported_original_names: HashMap<&'a str, &'a str>,
+    /// Local binding -> module file, for bindings that name a module rather
+    /// than a symbol (Python's `import lib as L`, `from pkg import submod`).
+    /// Lets `resolve_call_targets` read `L.f()` as "f, declared in that
+    /// module" instead of resolving it to nothing (#2387).
+    namespace_imports: HashMap<&'a str, &'a str>,
     type_map: HashMap<&'a str, (&'a str, f64)>,
     defs_with_ids: Vec<DefWithId<'a>>,
     pts_map: Option<HashMap<String, HashSet<String>>>,
@@ -1152,6 +1165,12 @@ fn build_file_context<'a>(
         .iter()
         .filter_map(|im| im.imported.as_deref().map(|orig| (im.name.as_str(), orig)))
         .collect();
+    let namespace_imports: HashMap<&str, &str> = file_input
+        .imported_names
+        .iter()
+        .filter(|im| im.namespace.unwrap_or(false))
+        .map(|im| (im.name.as_str(), im.file.as_str()))
+        .collect();
     let type_map = build_type_map(file_input);
     let file_nodes: Vec<&NodeInfo> = all_nodes.iter().filter(|n| n.file == rel_path).collect();
     let defs_with_ids: Vec<DefWithId> = file_input
@@ -1181,6 +1200,7 @@ fn build_file_context<'a>(
         file_node_id: file_input.file_node_id,
         imported_names,
         imported_original_names,
+        namespace_imports,
         type_map,
         defs_with_ids,
         pts_map,
@@ -1250,6 +1270,7 @@ fn emit_no_receiver_pts_edges<'a>(
                 rel_path: fc.rel_path,
                 imported_names: &fc.imported_names,
                 imported_original_names: &fc.imported_original_names,
+                namespace_imports: &fc.namespace_imports,
                 type_map: &fc.type_map,
             },
             seen_edges,
@@ -1297,6 +1318,7 @@ fn emit_receiver_pts_edges<'a>(
             rel_path: fc.rel_path,
             imported_names: &fc.imported_names,
             imported_original_names: &fc.imported_original_names,
+            namespace_imports: &fc.namespace_imports,
             type_map: &fc.type_map,
         },
         seen_edges,
@@ -1356,6 +1378,7 @@ fn process_file<'a>(
             caller_name,
             &fc.imported_names,
             &fc.imported_original_names,
+            &fc.namespace_imports,
             &mut confidence_override,
         );
         // #1771/#1784: value-ref references (object-literal property values,
@@ -1742,6 +1765,7 @@ fn resolve_call_targets<'a>(
     caller_name: &str,
     imported_names: &HashMap<&str, &str>,
     imported_original_names: &HashMap<&str, &str>,
+    namespace_imports: &HashMap<&str, &str>,
     confidence_override: &mut Option<f64>,
 ) -> Vec<&'a NodeInfo> {
     let targets = resolve_call_targets_core(
@@ -1753,6 +1777,7 @@ fn resolve_call_targets<'a>(
         caller_name,
         imported_names,
         imported_original_names,
+        namespace_imports,
         confidence_override,
     );
     if call.receiver.is_some() {
@@ -1801,6 +1826,7 @@ fn resolve_call_targets_core<'a>(
     caller_name: &str,
     imported_names: &HashMap<&str, &str>,
     imported_original_names: &HashMap<&str, &str>,
+    namespace_imports: &HashMap<&str, &str>,
     confidence_override: &mut Option<f64>,
 ) -> Vec<&'a NodeInfo> {
     // Flagged dynamic calls use synthetic names like "<dynamic:eval>". Short-circuit
@@ -1876,6 +1902,29 @@ fn resolve_call_targets_core<'a>(
                     .collect()
             })
             .unwrap_or_default();
+    }
+
+    // A call through a module namespace binding (`import lib as L; L.f()`,
+    // `from pkg import submod; submod.f()`) names a module, not a value, so
+    // the target is simply `call.name` as declared in that module's file.
+    // Resolved ahead of the general cascade because the cascade has nothing to
+    // work with here: `call.name` is not itself an imported binding, and the
+    // receiver has no type to look up — which is why every such call
+    // previously resolved to nothing and left the callee reported as dead
+    // (#2387).
+    //
+    // Scoped to the module's own file and authoritative: a miss means the
+    // module does not declare that name, not "keep looking". Falling through
+    // would let an unrelated same-named function elsewhere in the project
+    // claim the call. Mirrors resolveCallTargets in call-resolver.ts.
+    if let Some(receiver) = call.receiver.as_deref() {
+        if let Some(namespace_file) = namespace_imports.get(receiver) {
+            return ctx
+                .nodes_by_name_and_file
+                .get(&(call.name.as_str(), *namespace_file))
+                .map(|v| v.to_vec())
+                .unwrap_or_default();
+        }
     }
 
     // When the call site uses a renamed import binding (`import { X as Y }`),
@@ -4590,6 +4639,7 @@ mod call_edge_tests {
             name: "SR".to_string(),
             file: "sqlite-repository.js".to_string(),
             imported: Some("SqliteRepository".to_string()),
+            namespace: None,
         }];
 
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
@@ -4648,6 +4698,7 @@ mod call_edge_tests {
             name: "SqliteRepository".to_string(),
             file: "sqlite-repository.js".to_string(),
             imported: None,
+            namespace: None,
         }];
 
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
@@ -4705,6 +4756,7 @@ mod call_edge_tests {
             name: "SqliteRepository".to_string(),
             file: "sqlite-repository.js".to_string(),
             imported: None,
+            namespace: None,
         }];
 
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
@@ -4819,6 +4871,7 @@ mod call_edge_tests {
             name: "Calculator".to_string(),
             file: "utils.js".to_string(),
             imported: None,
+            namespace: None,
         }];
 
         let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
@@ -6155,6 +6208,7 @@ mod call_edge_tests {
             name: "e4".to_string(),
             file: "other.js".to_string(),
             imported: None,
+            namespace: None,
         }];
         file.param_bindings = Some(vec![ParamBinding {
             callee: "f3".to_string(),
