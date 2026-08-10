@@ -1,3 +1,4 @@
+import { escapeLikeUnderscores, TEST_FILE_LIKE_PATTERNS } from '../infrastructure/test-filter.js';
 import { DbError } from '../shared/errors.js';
 import { DEAD_ROLE_PREFIX, EVERY_EDGE_KIND } from '../shared/kinds.js';
 import type { BetterSqlite3Database, NativeDatabase } from '../types.js';
@@ -148,11 +149,9 @@ export function collectFile(val: string, acc?: string[]): string[] {
 export function testFilterSQL(column = 'n.file', enabled = true): string {
   if (!enabled) return '';
   validateColumn(column);
-  return `AND ${column} NOT LIKE '%.test.%'
-       AND ${column} NOT LIKE '%.spec.%'
-       AND ${column} NOT LIKE '%__test__%'
-       AND ${column} NOT LIKE '%__tests__%'
-       AND ${column} NOT LIKE '%.stories.%'`;
+  return TEST_FILE_LIKE_PATTERNS.map(
+    (pattern) => `AND ${column} NOT LIKE '${escapeLikeUnderscores(pattern)}' ESCAPE '\\'`,
+  ).join('\n       ');
 }
 
 /** Build IN (?, ?, ?) placeholders and params array for a kind filter. */
@@ -215,15 +214,13 @@ export class NodeQuery {
     return this;
   }
 
-  /** Add 5 NOT LIKE conditions to exclude test files. No-op when enabled is falsy. */
+  /** Add NOT LIKE conditions to exclude test/fixture files. No-op when enabled is falsy. */
   excludeTests(enabled: boolean | undefined): this {
     if (!enabled) return this;
     this.#conditions.push(
-      `n.file NOT LIKE '%.test.%'`,
-      `n.file NOT LIKE '%.spec.%'`,
-      `n.file NOT LIKE '%__test__%'`,
-      `n.file NOT LIKE '%__tests__%'`,
-      `n.file NOT LIKE '%.stories.%'`,
+      ...TEST_FILE_LIKE_PATTERNS.map(
+        (pattern) => `n.file NOT LIKE '${escapeLikeUnderscores(pattern)}' ESCAPE '\\'`,
+      ),
     );
     return this;
   }

@@ -1,5 +1,5 @@
 import { openReadonlyOrFail, resolveDbConfig } from '../db/index.js';
-import { buildFileConditionSQL } from '../db/query-builder.js';
+import { buildFileConditionSQL, testFilterSQL } from '../db/query-builder.js';
 import { findCycles } from '../domain/graph/cycles.js';
 import { DEFAULTS } from '../infrastructure/config.js';
 import { debug } from '../infrastructure/logger.js';
@@ -70,13 +70,6 @@ export const RULE_DEFS: RuleDef[] = [
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────
-
-const NO_TEST_SQL = `
-  AND n.file NOT LIKE '%.test.%'
-  AND n.file NOT LIKE '%.spec.%'
-  AND n.file NOT LIKE '%__test__%'
-  AND n.file NOT LIKE '%__tests__%'
-  AND n.file NOT LIKE '%.stories.%'`;
 
 interface ResolvedRules {
   [name: string]: ThresholdRule;
@@ -251,7 +244,7 @@ function evaluateFunctionRules(
 
   let where = "WHERE n.kind IN ('function','method')";
   const params: unknown[] = [];
-  if (opts.noTests) where += NO_TEST_SQL;
+  where += ` ${testFilterSQL('n.file', opts.noTests ?? false)}`;
   {
     const fc = buildFileConditionSQL(opts.file as string, 'n.file');
     where += fc.sql;
@@ -305,7 +298,7 @@ function evaluateFileRules(
 
   let where = "WHERE n.kind = 'file'";
   const params: unknown[] = [];
-  if (opts.noTests) where += NO_TEST_SQL;
+  where += ` ${testFilterSQL('n.file', opts.noTests ?? false)}`;
   {
     const fc = buildFileConditionSQL(opts.file as string, 'n.file');
     where += fc.sql;

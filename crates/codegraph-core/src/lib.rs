@@ -13,6 +13,7 @@
 //! | `types.rs`                           | `src/types.ts`                                  |
 //! | `shared/constants.rs`                | `src/shared/constants.ts`                       |
 //! | `infrastructure/config.rs`           | `src/infrastructure/config.ts`                  |
+//! | `infrastructure/test_filter.rs`      | `src/infrastructure/test-filter.ts`             |
 //! | `db/connection.rs`                   | `src/db/connection.ts` + `src/db/migrations.ts` |
 //! | `db/repository/*`                    | `src/db/repository/*`                           |
 //! | `domain/parser.rs`                   | `src/domain/parser.ts`                          |

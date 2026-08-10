@@ -63,25 +63,17 @@ fn push_file_filter(
     *idx += files.len();
 }
 
-/// Check if a file path looks like a test file (mirrors `isTestFile` in JS).
+/// Check if a file path looks like a test file. Delegates to the shared
+/// `infrastructure::test_filter` module (single source of truth, #2256);
+/// mirrors TS `isTestFile`.
 fn is_test_file(file: &str) -> bool {
-    file.contains(".test.")
-        || file.contains(".spec.")
-        || file.contains("__test__")
-        || file.contains("__tests__")
-        || file.contains(".stories.")
+    crate::infrastructure::test_filter::is_test_file(file)
 }
 
-/// Build test-file exclusion clauses for a column.
+/// Build test-file exclusion clauses for a column. Delegates to the shared
+/// `infrastructure::test_filter` module (single source of truth, #2256).
 fn test_filter_clauses(column: &str) -> String {
-    format!(
-        "AND {col} NOT LIKE '%.test.%' \
-         AND {col} NOT LIKE '%.spec.%' \
-         AND {col} NOT LIKE '%__test__%' \
-         AND {col} NOT LIKE '%__tests__%' \
-         AND {col} NOT LIKE '%.stories.%'",
-        col = column,
-    )
+    crate::infrastructure::test_filter::test_file_filter_col(column)
 }
 
 /// Read a full NativeNodeRow from a rusqlite Row by column name.

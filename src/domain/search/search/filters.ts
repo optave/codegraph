@@ -1,3 +1,5 @@
+import { isTestFile } from '../../../infrastructure/test-filter.js';
+
 export function globMatch(filePath: string, pattern: string): boolean {
   const normalized = filePath.replace(/\\/g, '/');
   let regex = pattern.replace(/\\/g, '/').replace(/[.+^${}()|[\]\\]/g, '\\$&');
@@ -11,8 +13,6 @@ export function globMatch(filePath: string, pattern: string): boolean {
     return normalized.includes(pattern);
   }
 }
-
-const TEST_PATTERN = /\.(test|spec)\.|__test__|__tests__|\.stories\./;
 
 export interface FilterOpts {
   filePattern?: string | string[];
@@ -32,7 +32,7 @@ export function applyFilters<T extends { file: string }>(rows: T[], opts: Filter
     );
   }
   if (opts.noTests) {
-    filtered = filtered.filter((row) => !TEST_PATTERN.test(row.file));
+    filtered = filtered.filter((row) => !isTestFile(row.file));
   }
   return filtered;
 }
