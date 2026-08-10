@@ -218,6 +218,7 @@ fn classify_node(
     fan_in: u32,
     fan_out: u32,
     is_exported: bool,
+    is_entrypoint: bool,
     production_fan_in: u32,
     has_active_file_siblings: bool,
     is_type_member: bool,
@@ -232,6 +233,15 @@ fn classify_node(
 
     // Framework entry
     if FRAMEWORK_ENTRY_PREFIXES.iter().any(|p| name.starts_with(p)) {
+        return "entry";
+    }
+
+    // A confirmed program entrypoint (#2392) — the runtime invokes it, so its
+    // in-repo fan-in shape says nothing about how it is reached. Checked
+    // before the `fan_in == 0` gate, unlike the export-based rule: an
+    // entrypoint invoked from its own module's `__main__` guard does have an
+    // inbound call edge (the module-level call, attributed to the file node).
+    if is_entrypoint {
         return "entry";
     }
 
@@ -439,6 +449,16 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
         return Ok(summary);
     }
 
+    // 2b. Program-entrypoint IDs (#2392) — set by `mark_entrypoint_targets`
+    // from an extractor-flagged call site (Python's `__main__` guard and
+    // `__main__.py` module level). Mirrors the `entrypoint` column read by
+    // `buildClassifierInput` in features/structure.ts.
+    let entrypoint_ids: std::collections::HashSet<i64> = {
+        let mut stmt = tx.prepare("SELECT id FROM nodes WHERE entrypoint = 1")?;
+        let mapped = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        mapped.filter_map(|r| r.ok()).collect()
+    };
+
     // 3. Exported IDs (cross-file callers including imports-type)
     let mut exported_ids: std::collections::HashSet<i64> = {
         let mut stmt = tx.prepare(
@@ -626,6 +646,7 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
     let mut role_by_id = classify_rows(
         &rows,
         &exported_ids,
+        &entrypoint_ids,
         &prod_fan_in,
         &active_files,
         &called_active_files,
@@ -656,6 +677,7 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
         &public_surface_ids,
         &called_active_files,
         &type_def_names_by_file,
+        &entrypoint_ids,
         &call_edges,
         &mut role_by_id,
     );
@@ -786,6 +808,7 @@ fn query_id_counts(
 fn classify_rows(
     rows: &[(i64, String, String, String, u32, u32)],
     exported_ids: &std::collections::HashSet<i64>,
+    entrypoint_ids: &std::collections::HashSet<i64>,
     prod_fan_in: &HashMap<i64, u32>,
     active_files: &std::collections::HashSet<String>,
     called_active_files: &std::collections::HashSet<String>,
@@ -823,6 +846,7 @@ fn classify_rows(
             *fan_in,
             *fan_out,
             is_exported,
+            entrypoint_ids.contains(id),
             prod_fi,
             has_active_siblings,
             is_type_member,
@@ -875,12 +899,20 @@ fn is_live_root(
     kind: &str,
     file: &str,
     is_public_surface: bool,
+    is_entrypoint: bool,
     is_type_member: bool,
 ) -> bool {
     if is_type_member {
         return false;
     }
     if FRAMEWORK_ENTRY_PREFIXES.iter().any(|p| name.starts_with(p)) {
+        return true;
+    }
+    // A program entrypoint is live by definition, so everything it calls is
+    // reachable — without this, a `main()` invoked only from its module's
+    // `__main__` guard would seed no BFS root and its whole call tree would be
+    // eligible for the transitive dead-code downgrade (#2392).
+    if is_entrypoint {
         return true;
     }
     if kind != "function" && kind != "method" {
@@ -1027,6 +1059,7 @@ fn apply_reachability_downgrade(
     public_surface_ids: &std::collections::HashSet<i64>,
     called_active_files: &std::collections::HashSet<String>,
     type_def_names_by_file: &HashMap<String, std::collections::HashSet<String>>,
+    entrypoint_ids: &std::collections::HashSet<i64>,
     call_edges: &[(i64, i64)],
     role_by_id: &mut HashMap<i64, &'static str>,
 ) {
@@ -1041,7 +1074,14 @@ fn apply_reachability_downgrade(
     for (id, name, kind, file, fan_in, fan_out) in rows {
         let is_public_surface = public_surface_ids.contains(id);
         let is_type_member = is_type_declaration_member(name, kind, file, type_def_names_by_file);
-        if is_live_root(name, kind, file, is_public_surface, is_type_member) {
+        if is_live_root(
+            name,
+            kind,
+            file,
+            is_public_surface,
+            entrypoint_ids.contains(id),
+            is_type_member,
+        ) {
             roots.insert(*id);
             continue;
         }
@@ -1359,6 +1399,15 @@ pub(crate) fn do_classify_incremental(
 
     let (leaf_rows, rows) = query_nodes_for_files(&tx, &all_affected)?;
 
+    // Program-entrypoint IDs (#2392) — see the full-classification path for
+    // the rationale. Scoped to the affected rows, like every other set on
+    // this path.
+    let entrypoint_ids: std::collections::HashSet<i64> = {
+        let mut stmt = tx.prepare("SELECT id FROM nodes WHERE entrypoint = 1")?;
+        let mapped = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        mapped.filter_map(|r| r.ok()).collect()
+    };
+
     if rows.is_empty() && leaf_rows.is_empty() {
         tx.commit()?;
         return Ok(summary);
@@ -1492,6 +1541,7 @@ pub(crate) fn do_classify_incremental(
     let role_by_id = classify_rows(
         &rows,
         &exported_ids,
+        &entrypoint_ids,
         &prod_fan_in,
         &active_files,
         &called_active_files,

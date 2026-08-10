@@ -1156,6 +1156,57 @@ function buildImportedNamesForNative(
 }
 
 /**
+ * Set `nodes.entrypoint` on whatever the extractor's entrypoint-flagged calls
+ * resolved to (#2392) — Python's `if __name__ == "__main__":` guard and
+ * `__main__.py` module level.
+ *
+ * Runs after the edges for this pass are inserted, and reads them back rather
+ * than re-resolving: an entrypoint call is module-level by construction (see
+ * `handlePyCall`), so its `calls` edge is always sourced from the file node,
+ * and matching that edge's target by the called name is enough to identify it.
+ * Doing it here rather than inside either resolver keeps the two engines on
+ * one implementation — the native path and the JS path both arrive with their
+ * edges already written.
+ *
+ * Cleared per file first, so a guard that is deleted or renamed doesn't leave
+ * a stale entrypoint flag behind on an incremental rebuild.
+ */
+function markEntrypointTargets(ctx: PipelineContext): void {
+  const { db, fileSymbols } = ctx;
+  const clearStmt = db.prepare(
+    `UPDATE nodes SET entrypoint = 0
+     WHERE entrypoint = 1 AND id IN (
+       SELECT e.target_id FROM edges e
+       JOIN nodes src ON e.source_id = src.id
+       WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = @file
+     )`,
+  );
+  const markStmt = db.prepare(
+    `UPDATE nodes SET entrypoint = 1
+     WHERE id IN (
+       SELECT e.target_id FROM edges e
+       JOIN nodes src ON e.source_id = src.id
+       JOIN nodes tgt ON e.target_id = tgt.id
+       WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = @file
+         AND (tgt.name = @name OR tgt.name LIKE @suffix)
+     )`,
+  );
+
+  const tx = db.transaction(() => {
+    for (const [relPath, symbols] of fileSymbols) {
+      const entrypointNames = new Set(symbols.calls.filter((c) => c.entrypoint).map((c) => c.name));
+      clearStmt.run({ file: relPath });
+      for (const name of entrypointNames) {
+        // A method entrypoint (`Runner().start()`) is declared as
+        // `Owner.start`, so match the bare name or any `*.name` qualification.
+        markStmt.run({ file: relPath, name, suffix: `%.${name}` });
+      }
+    }
+  });
+  tx();
+}
+
+/**
  * Persist per-file invoked-property-name evidence (#2087) into
  * `invoked_property_names` — the durable counterpart of
  * `persistInvokedPropertyNamesForFile` in `domain/graph/builder/incremental.ts`
@@ -2940,6 +2991,11 @@ export async function buildEdges(ctx: PipelineContext): Promise<void> {
   // Note: the native orchestrator success path runs this independently in
   // tryNativeOrchestrator; this phase covers the WASM and native-fallback paths.
   runChaPostPass(ctx.db);
+
+  // Phase 5: flag program entrypoints (#2392). Must follow every edge-insert
+  // path above — it identifies its targets from the committed `calls` edges —
+  // and must precede role classification, which reads the column it sets.
+  markEntrypointTargets(ctx);
 
   ctx.timing.edgesMs = performance.now() - t0;
 }

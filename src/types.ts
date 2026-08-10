@@ -574,6 +574,20 @@ export interface Call {
   line: number;
   receiver?: string;
   dynamic?: boolean;
+  /**
+   * True when this call site is a program entrypoint invocation — the callee
+   * is started by the runtime rather than by other code in the repo. Set for
+   * Python's two canonical conventions: a call inside an
+   * `if __name__ == "__main__":` guard, and a module-level call in a
+   * `__main__.py` (`python -m pkg`).
+   *
+   * Carried on the *call*, not the definition, because the convention is a
+   * property of the invocation, and the guard frequently invokes a `main`
+   * imported from another module — marking the declaration would miss that
+   * entirely (#2392). `buildEntrypointNodes` turns a resolved entrypoint call
+   * into the `nodes.entrypoint` flag the role classifier reads.
+   */
+  entrypoint?: boolean;
   dynamicKind?: DynamicKind;
   /** Raw key/arg text — used for diagnostics and future RES-1 const-string resolution. */
   keyExpr?: string;

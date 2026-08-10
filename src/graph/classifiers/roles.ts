@@ -237,6 +237,20 @@ export interface RoleClassificationNode {
    * (safe: callers that don't supply `callEdges` never reach `isLiveRoot`).
    */
   isPublicSurface?: boolean;
+  /**
+   * True when a program-entrypoint call resolves to this node — the callee is
+   * started by the runtime, not by other code in the repo (#2392). Sourced
+   * from the `nodes.entrypoint` column, which the build sets from an
+   * extractor-flagged call site (Python's `if __name__ == "__main__":` guard
+   * and `__main__.py` module level).
+   *
+   * Checked before the `fanIn === 0` gate, unlike the export-based `entry`
+   * rule: an entrypoint invoked from its own module's guard *does* have an
+   * inbound call edge (the module-level call, attributed to the file node),
+   * so a zero-fan-in requirement would never fire for the very convention
+   * this exists to recognize.
+   */
+  isEntrypoint?: boolean;
 }
 
 /**
@@ -337,6 +351,10 @@ function classifyNodeRole(
 
   if (FRAMEWORK_ENTRY_PREFIXES.some((p) => node.name.startsWith(p))) return 'entry';
 
+  // A confirmed program entrypoint (#2392) — the runtime invokes it, so its
+  // in-repo fan-in shape says nothing about how it is reached.
+  if (node.isEntrypoint) return 'entry';
+
   if (node.fanIn === 0) {
     if (!node.isExported) {
       // Well-known Commander.js dispatch methods (execute, validate) in framework
@@ -419,6 +437,11 @@ function isLiveRoot(
 ): boolean {
   if (isTypeDeclarationMember(node, typeDefNamesByFile)) return false;
   if (FRAMEWORK_ENTRY_PREFIXES.some((p) => node.name.startsWith(p))) return true;
+  // A program entrypoint is live by definition, so everything it calls is
+  // reachable — without this, a `main()` invoked only from its module's
+  // `__main__` guard would seed no BFS root and its whole call tree would be
+  // eligible for the transitive dead-code downgrade (#2392).
+  if (node.isEntrypoint) return true;
   if (node.kind !== 'function' && node.kind !== 'method') return false;
   if (node.isPublicSurface) return true;
   return !!(

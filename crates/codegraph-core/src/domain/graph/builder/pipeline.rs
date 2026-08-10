@@ -437,6 +437,57 @@ fn run_structure_phase(
     }
 }
 
+/// Set `nodes.entrypoint` on whatever the extractor's entrypoint-flagged calls
+/// resolved to (#2392) — Python's `if __name__ == "__main__":` guard and
+/// `__main__.py` module level.
+///
+/// Reads the committed `calls` edges back rather than re-resolving: an
+/// entrypoint call is module-level by construction (see
+/// `collect_entrypoint_call_lines`), so its edge is always sourced from the
+/// file node, and matching that edge's target by the called name identifies
+/// it. Cleared per file first, so a guard that is deleted or renamed doesn't
+/// leave a stale flag behind on an incremental rebuild.
+///
+/// Mirrors `markEntrypointTargets` in stages/build-edges.ts.
+fn mark_entrypoint_targets(conn: &Connection, file_symbols: &BTreeMap<String, FileSymbols>) {
+    let Ok(mut clear) = conn.prepare(
+        "UPDATE nodes SET entrypoint = 0
+         WHERE entrypoint = 1 AND id IN (
+           SELECT e.target_id FROM edges e
+           JOIN nodes src ON e.source_id = src.id
+           WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = ?1
+         )",
+    ) else {
+        return;
+    };
+    let Ok(mut mark) = conn.prepare(
+        "UPDATE nodes SET entrypoint = 1
+         WHERE id IN (
+           SELECT e.target_id FROM edges e
+           JOIN nodes src ON e.source_id = src.id
+           JOIN nodes tgt ON e.target_id = tgt.id
+           WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = ?1
+             AND (tgt.name = ?2 OR tgt.name LIKE ?3)
+         )",
+    ) else {
+        return;
+    };
+
+    for (rel_path, symbols) in file_symbols {
+        let _ = clear.execute(rusqlite::params![rel_path]);
+        let mut seen: HashSet<&str> = HashSet::new();
+        for call in &symbols.calls {
+            if !call.entrypoint.unwrap_or(false) || !seen.insert(call.name.as_str()) {
+                continue;
+            }
+            // A method entrypoint (`Runner().start()`) is declared as
+            // `Owner.start`, so match the bare name or any `*.name` form.
+            let suffix = format!("%.{}", call.name);
+            let _ = mark.execute(rusqlite::params![rel_path, call.name, suffix]);
+        }
+    }
+}
+
 /// Stage 8 (roles): classify roles for the affected file set. Removal
 /// reverse-deps need to be seeded explicitly because their fan-in/out can
 /// no longer be discovered via neighbour expansion once the deleted file's
@@ -447,6 +498,11 @@ fn run_role_classification(
     removal_reverse_deps: Vec<String>,
     is_full_build: bool,
 ) {
+    // Program-entrypoint flags must be current before roles are computed, and
+    // the edges they are derived from are complete by this stage — the same
+    // position the TS path uses (end of `buildEdges`, before `buildStructure`).
+    mark_entrypoint_targets(conn, file_symbols);
+
     let changed_files: Vec<String> = file_symbols.keys().cloned().collect();
     let changed_file_list: Option<Vec<String>> = if is_full_build {
         None
