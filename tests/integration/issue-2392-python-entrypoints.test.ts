@@ -17,6 +17,13 @@
  *     is invoked by that function, not by `python -m pkg`; and
  *   - a function called only from ordinary module-level code (no guard) is
  *     not an entrypoint.
+ *
+ * And two review findings fixed after the original #2392 PR landed (#2411):
+ *   - a guard syntactically nested inside a function or class is only run if
+ *     and when that def is called, never automatically by the runtime, so it
+ *     must not be treated as module level; and
+ *   - clearing a stale flag on incremental rebuild must survive the guard's
+ *     target living in a *different* file than the guard itself.
  */
 
 import fs from 'node:fs';
@@ -57,6 +64,24 @@ def side_effect():
     return 3
 
 side_effect()
+`,
+  // Review finding on #2411: a guard nested inside a function or class is
+  // only run if and when that def is called, never automatically by the
+  // runtime, so it must not be treated as module level.
+  'nested_guards.py': `
+def maybe_run():
+    if __name__ == "__main__":
+        guard_in_function()
+
+def guard_in_function():
+    return 4
+
+class Config:
+    if __name__ == "__main__":
+        guard_in_class()
+
+def guard_in_class():
+    return 5
 `,
 };
 
@@ -143,4 +168,54 @@ describe.each(ENGINES)('Python entrypoint classification (#2392) — engine: %s'
     expect(byName('side_effect').entrypoint).toBe(0);
     expect(byName('side_effect').role).not.toBe('entry');
   });
+
+  it('does not mark a guard nested inside a function as module level', () => {
+    expect(byName('guard_in_function').entrypoint).toBe(0);
+    expect(byName('guard_in_function').role).not.toBe('entry');
+  });
+
+  it('does not mark a guard nested inside a class as module level', () => {
+    expect(byName('guard_in_class').entrypoint).toBe(0);
+    expect(byName('guard_in_class').role).not.toBe('entry');
+  });
 });
+
+describe.each(ENGINES)(
+  'Python entrypoint incremental staleness (#2411 review fix) — engine: %s',
+  (engine) => {
+    it('clears a cross-file entrypoint target when its guard call is removed on incremental rebuild', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2411-stale-${engine}-`));
+      try {
+        const guardFile = path.join(dir, 'run.py');
+        const libFile = path.join(dir, 'lib.py');
+        fs.writeFileSync(libFile, 'def shared_main():\n    return 1\n');
+        fs.writeFileSync(
+          guardFile,
+          'from lib import shared_main\n\nif __name__ == "__main__":\n    shared_main()\n',
+        );
+
+        await buildGraph(dir, { incremental: false, skipRegistry: true, engine });
+        const before = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db')).find(
+          (n) => n.name === 'shared_main',
+        );
+        expect(before?.entrypoint).toBe(1);
+        expect(before?.role).toBe('entry');
+
+        // Remove the guard: shared_main, declared in a *different* file, is
+        // no longer a program entrypoint. The old `run.py` -> `shared_main`
+        // `calls` edge is purged as part of reprocessing `run.py`, before the
+        // clear step for this build even runs — the exact scenario the
+        // review finding on #2411 flagged as unable to clear.
+        fs.writeFileSync(guardFile, 'from lib import shared_main\n');
+        await buildGraph(dir, { incremental: true, skipRegistry: true, engine });
+        const after = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db')).find(
+          (n) => n.name === 'shared_main',
+        );
+        expect(after?.entrypoint).toBe(0);
+        expect(after?.role).not.toBe('entry');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  },
+);
