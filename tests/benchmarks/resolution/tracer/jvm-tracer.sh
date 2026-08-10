@@ -155,13 +155,17 @@ case "$LANG" in
             # `new[[:space:]]` (#2272) additionally excludes an anonymous class
             # instantiation (`new Runnable() {`), which also shares the "...) {"
             # shape: Java has no default parameter values, so a method's own
-            # signature can never itself contain `new SomeType(` -- any line
-            # matching the outer pattern that also contains `new <Identifier>`
-            # is unambiguously an anonymous-class body opening, not a method
-            # signature (injecting into it would be invalid Java -- a bare
-            # statement directly in a class body -- rather than a distinct
-            # method body to trace).
-            sedi_append_unless '/\)[[:space:]]*\{$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+[A-Za-z_$]/' \
+            # signature can never itself contain the token `new` followed by
+            # whitespace -- any line matching the outer pattern that also
+            # contains it is unambiguously an anonymous-class body opening, not
+            # a method signature (injecting into it would be invalid Java -- a
+            # bare statement directly in a class body -- rather than a distinct
+            # method body to trace). Deliberately NOT anchored to an identifier
+            # immediately after the whitespace (`new[[:space:]]+[A-Za-z_$]`)
+            # -- that missed `new /* comment */ Runnable() {} ` (Greptile
+            # review, PR #2449); the bare `new` keyword followed by whitespace
+            # is already the unambiguous signal on its own.
+            sedi_append_unless '/\)[[:space:]]*\{$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]/' \
                 '        CallTracer.traceCall();' "$javafile"
         done
 
@@ -245,18 +249,24 @@ case "$LANG" in
         # control-flow keywords -- #2045, and `new[[:space:]]` for anonymous
         # classes -- #2272; Groovy supports Java-style anonymous classes too).
         #
-        # `\.[A-Za-z_][A-Za-zA-Z0-9_]*\([^()]*\)[[:space:]]*\{[[:space:]]*$`
+        # `^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\([^()]*\)[[:space:]]*\{[[:space:]]*$`
         # (#2272) additionally excludes a trailing-closure method CALL, e.g.
-        # `list.findAll() {` or a DSL-style `lock.withLock() {` -- these share
-        # the "...) {" shape but the `traceCall()` would land inside a closure
-        # literal, not a real method body. The distinguishing feature is the
-        # `.` immediately before the call name: a real Groovy method
-        # DECLARATION is never written as `<qualifier>.<name>(...) {` -- a
-        # dotted, fully-qualified RETURN TYPE (`java.util.List getUsers() {`)
-        # still has a space (not a dot) directly before the method name, so it
-        # doesn't match this pattern.
+        # `list.findAll() {`, a DSL-style `lock.withLock() {`, or the same
+        # calls WITHOUT an explicit receiver (`findAll() {`, `withLock() {` --
+        # Greptile review, PR #2449, on an earlier version of this fix that
+        # only handled the qualified form) -- these share the "...) {" shape
+        # but the `traceCall()` would land inside a closure literal, not a
+        # real method body. Anchored at the start of the (trimmed) line: a
+        # real Groovy method DECLARATION always has a `def`/type/modifier
+        # token, separated by WHITESPACE, before the method name -- so the
+        # declaration's own name is never the first token on the line -- while
+        # a call expression's name (optionally preceded by a `receiver.`) is.
+        # A dotted, fully-qualified RETURN TYPE (`java.util.List getUsers() {`)
+        # still has a space (not a dot) directly before the method name, so
+        # `getUsers` -- not `List` -- would need to start the trimmed line for
+        # this to false-positive, which it doesn't.
         for grfile in "$TMP_DIR"/*.groovy; do
-            sedi_append_unless '/\)[[:space:]]*\{[[:space:]]*$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+[A-Za-z_$]|\.[A-Za-z_][A-Za-zA-Z0-9_]*\([^()]*\)[[:space:]]*\{[[:space:]]*$/' \
+            sedi_append_unless '/\)[[:space:]]*\{[[:space:]]*$/' '/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]|^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\([^()]*\)[[:space:]]*\{[[:space:]]*$/' \
                 '        CallTracer.traceCall();' "$grfile"
         done
 
