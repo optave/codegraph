@@ -4333,11 +4333,15 @@ function declarationDeclaresName(declarationNode: TreeSitterNode, name: string):
   return false;
 }
 
-function blockContainsIdentifier(node: TreeSitterNode, name: string): boolean {
+/** Depth-bounded like every other recursive walk in this file (MAX_WALK_DEPTH) — stops a
+ * pathologically deep expression/statement tree (e.g. deeply nested generated JS) from
+ * overflowing the stack (Greptile review, #2257). */
+function blockContainsIdentifier(node: TreeSitterNode, name: string, depth = 0): boolean {
+  if (depth >= MAX_WALK_DEPTH) return false;
   if (node.type === 'identifier' && node.text === name) return true;
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    if (child && blockContainsIdentifier(child, name)) return true;
+    if (child && blockContainsIdentifier(child, name, depth + 1)) return true;
   }
   return false;
 }
@@ -4349,18 +4353,21 @@ function blockContainsIdentifier(node: TreeSitterNode, name: string): boolean {
  * declaration (`const fetchFn = a || b, result = fetchFn();`) still counts
  * as a reference (issue #2257, Greptile review) — and stops descending into
  * any nested scope that shadows `name` (see `introducesShadowedBinding`).
+ * Depth-bounded for the same reason as `blockContainsIdentifier`.
  */
 function blockContainsIdentifierExcluding(
   node: TreeSitterNode,
   name: string,
   excludeId: number,
+  depth = 0,
 ): boolean {
+  if (depth >= MAX_WALK_DEPTH) return false;
   if (node.id === excludeId) return false;
   if (node.type === 'identifier' && node.text === name) return true;
   if (SCOPE_NODE_TYPES.has(node.type) && introducesShadowedBinding(node, name)) return false;
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    if (child && blockContainsIdentifierExcluding(child, name, excludeId)) return true;
+    if (child && blockContainsIdentifierExcluding(child, name, excludeId, depth + 1)) return true;
   }
   return false;
 }

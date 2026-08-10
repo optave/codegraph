@@ -4277,12 +4277,12 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
                 }
             }
             match node.child_by_field_name("parameters") {
-                Some(params) => block_contains_identifier(&params, name, source),
+                Some(params) => block_contains_identifier(&params, name, source, 0),
                 None => false,
             }
         }
         "catch_clause" => match node.child_by_field_name("parameter") {
-            Some(param) => block_contains_identifier(&param, name, source),
+            Some(param) => block_contains_identifier(&param, name, source, 0),
             None => false,
         },
         "for_statement" | "for_in_statement" => {
@@ -4324,7 +4324,7 @@ fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8])
             continue;
         }
         if let Some(decl_name) = declarator.child_by_field_name("name") {
-            if block_contains_identifier(&decl_name, name, source) {
+            if block_contains_identifier(&decl_name, name, source, 0) {
                 return true;
             }
         }
@@ -4332,13 +4332,20 @@ fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8])
     false
 }
 
-fn block_contains_identifier(node: &Node, name: &str, source: &[u8]) -> bool {
+/// Depth-bounded like every other recursive walk in this file
+/// (`MAX_WALK_DEPTH`) — stops a pathologically deep expression/statement tree
+/// (e.g. deeply nested generated JS) from overflowing the stack (Greptile
+/// review, #2257).
+fn block_contains_identifier(node: &Node, name: &str, source: &[u8], depth: usize) -> bool {
+    if depth >= MAX_WALK_DEPTH {
+        return false;
+    }
     if node.kind() == "identifier" && node_text(node, source) == name {
         return true;
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            if block_contains_identifier(&child, name, source) {
+            if block_contains_identifier(&child, name, source, depth + 1) {
                 return true;
             }
         }
@@ -4352,7 +4359,8 @@ fn block_contains_identifier(node: &Node, name: &str, source: &[u8]) -> bool {
 /// comma-separated declaration (`const fetchFn = a || b, result =
 /// fetchFn();`) still counts as a reference (issue #2257, Greptile review) —
 /// and stops descending into any nested scope that shadows `name` (see
-/// `introduces_shadowed_binding`).
+/// `introduces_shadowed_binding`). Depth-bounded for the same reason as
+/// `block_contains_identifier`.
 ///
 /// Mirrors `blockContainsIdentifierExcluding` in `src/extractors/javascript.ts`.
 fn block_contains_identifier_excluding(
@@ -4360,7 +4368,11 @@ fn block_contains_identifier_excluding(
     name: &str,
     exclude_id: usize,
     source: &[u8],
+    depth: usize,
 ) -> bool {
+    if depth >= MAX_WALK_DEPTH {
+        return false;
+    }
     if node.id() == exclude_id {
         return false;
     }
@@ -4372,7 +4384,7 @@ fn block_contains_identifier_excluding(
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            if block_contains_identifier_excluding(&child, name, exclude_id, source) {
+            if block_contains_identifier_excluding(&child, name, exclude_id, source, depth + 1) {
                 return true;
             }
         }
@@ -4423,7 +4435,7 @@ fn has_later_reference_in_enclosing_block(
     // the whole block as shadowed, skipping every sibling statement.
     for i in 0..block.child_count() {
         if let Some(child) = block.child(i) {
-            if block_contains_identifier_excluding(&child, name, declarator_node.id(), source) {
+            if block_contains_identifier_excluding(&child, name, declarator_node.id(), source, 0) {
                 return true;
             }
         }
@@ -7473,6 +7485,22 @@ mod tests {
         assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
+    }
+
+    // Greptile review, PR #2432: the liveness scan's recursive walk must be
+    // depth-bounded (MAX_WALK_DEPTH), matching every other recursive walk in
+    // this file, so a pathologically deep enclosing block (e.g. deeply
+    // nested generated JS) can't overflow the stack.
+    #[test]
+    fn does_not_overflow_the_stack_on_a_pathologically_deep_enclosing_block() {
+        let depth = 300;
+        let nested = format!(
+            "{}call(fetchFn);\n{}",
+            "if (true) {\n".repeat(depth),
+            "}\n".repeat(depth)
+        );
+        let source = format!("const fetchFn = options.custom || fetchLatestVersion;\n{nested}");
+        let _ = parse_js(&source);
     }
 
     // #1895: key_expr capture — the property key, distinct from the

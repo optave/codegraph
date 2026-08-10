@@ -2027,6 +2027,92 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('logical-or/nullish-coalescing/ternary fallback value-ref extraction (#2257)', () => {
+    it('extracts a value-ref call for a logical-or fallback whose variable is used again', () => {
+      const symbols = parseJS(`
+        const fetchFn = options.custom || fetchLatestVersion;
+        call(fetchFn);
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({
+          name: 'fetchLatestVersion',
+          dynamic: true,
+          dynamicKind: 'value-ref',
+        }),
+      );
+    });
+
+    it('does not extract a value-ref call when the variable is never referenced again', () => {
+      const symbols = parseJS(`
+        const fetchFn = options.custom || fetchLatestVersion;
+        console.log('unrelated');
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    it('extracts value-ref calls for both ternary branches when the variable is used again', () => {
+      const symbols = parseJS(`
+        const picked = cond ? left : right;
+        call(picked);
+      `);
+      const names = symbols.calls.filter((c) => c.dynamicKind === 'value-ref').map((c) => c.name);
+      expect(names).toContain('left');
+      expect(names).toContain('right');
+    });
+
+    it('extracts a value-ref call for a nullish-coalescing fallback', () => {
+      const symbols = parseJS(`
+        const fetchFn = options.custom ?? fetchLatestVersion;
+        call(fetchFn);
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: a same-named binding declared in a nested
+    // scope must not be mistaken for a reference to the outer fallback
+    // variable.
+    it('does not credit liveness from a same-named binding shadowed in a nested scope', () => {
+      const symbols = parseJS(`
+        function outer() {
+          const fetchFn = options.custom || fetchLatestVersion;
+          function helper() {
+            let fetchFn = somethingElse();
+            return fetchFn();
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Greptile review, PR #2432: a reference in a sibling declarator of the
+    // SAME comma-separated declaration must still count.
+    it('extracts a value-ref call when the variable is used by a sibling declarator in the same statement', () => {
+      const symbols = parseJS(
+        `const fetchFn = options.custom || fetchLatestVersion, result = fetchFn();`,
+      );
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: the liveness scan's recursive walk must be
+    // depth-bounded (MAX_WALK_DEPTH), matching every other recursive walk in
+    // this file, so a pathologically deep enclosing block (e.g. deeply
+    // nested generated JS) can't overflow the stack.
+    it('does not overflow the stack on a pathologically deep enclosing block', () => {
+      const depth = 300;
+      const nested = `${'if (true) {\n'.repeat(depth)}call(fetchFn);\n${'}\n'.repeat(depth)}`;
+      const source = `const fetchFn = options.custom || fetchLatestVersion;\n${nested}`;
+      expect(() => parseJS(source)).not.toThrow();
+    });
+  });
+
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {
     // Mirrors the Rust `dispatch_table_emits_dt_call_and_array_elem_bindings`
     // / `dispatch_table_parenthesized_object_also_works` unit tests in
