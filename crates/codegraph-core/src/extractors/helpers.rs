@@ -1098,6 +1098,34 @@ pub fn push_type_map_entry(
     set_type_map_entry(symbols, name, type_name, 0.9);
 }
 
+/// Push a type-map entry for a plain local variable/parameter under both its
+/// bare name AND, when `qualifier` is `Some`, a function-scoped key
+/// `${qualifier}::${name}` — mirroring the existing `ClassName.field`
+/// (class-scoped) and `callerName::name` (rest-param-scoped) key conventions
+/// already used elsewhere in this typeMap. The bare key alone is a flat,
+/// per-file, name-only slot: two different functions in the same file each
+/// declaring their own differently-typed local/parameter of the same name
+/// silently collide under it, with whichever [`dedup_type_map`] keeps (by
+/// confidence, then first-write-wins) shadowing the other's entry at every
+/// call site, in either function, that resolves through the bare key alone.
+/// The scoped key lets the receiver-resolution consumers (`resolve_call_targets_core`,
+/// `emit_receiver_edge`) disambiguate by the calling function's own qualifier
+/// when one is available. Mirrors `setScopedTypeMapEntry` in
+/// `src/extractors/helpers.ts` (#2235).
+pub fn push_scoped_type_map_entry(
+    symbols: &mut FileSymbols,
+    qualifier: Option<&str>,
+    name: &str,
+    type_name: impl Into<String>,
+    confidence: f64,
+) {
+    let type_name = type_name.into();
+    set_type_map_entry(symbols, name.to_string(), type_name.clone(), confidence);
+    if let Some(q) = qualifier {
+        set_type_map_entry(symbols, format!("{}::{}", q, name), type_name, confidence);
+    }
+}
+
 /// Deduplicate a type-map `Vec` in-place, keeping the highest-confidence
 /// entry per key (first-write-wins on ties, matching `setTypeMapEntry` in
 /// `src/extractors/helpers.ts`).

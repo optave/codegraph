@@ -83,6 +83,13 @@ export class PipelineContext {
   // ── Node lookup (set by insertNodes / buildEdges stages) ───────────
   nodesByName!: Map<string, NodeRow[]>;
   nodesByNameAndFile!: Map<string, NodeRow[]>;
+  /**
+   * Function/method-kind nodes grouped by file, for the "is this node nested
+   * inside another callable" containment check `resolveThisDispatch` (cha.ts)
+   * needs via `CallNodeLookup.hasEnclosingCallable` (issue #2238 follow-up,
+   * Greptile finding on PR #2400).
+   */
+  callablesByFile!: Map<string, Array<{ id: number; line: number; endLine: number | null }>>;
 
   // ── Reverse-dep edge reconnection (set by detectChanges) ───────────
   /**

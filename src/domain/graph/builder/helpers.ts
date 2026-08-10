@@ -20,6 +20,7 @@ import type {
   SqliteStatement,
 } from '../../../types.js';
 import { isConstructorMethodSuffix } from '../resolver/strategy.js';
+import { RECEIVER_KINDS } from './call-resolver.js';
 
 export const BUILTIN_RECEIVERS: Set<string> = new Set([
   'console',
@@ -297,6 +298,31 @@ export function loadPathAliases(rootDir: string): PathAliases {
 }
 
 /**
+ * Merge `.codegraphrc.json`'s own `aliases` config field into `aliases.paths`
+ * (mutating in place), matching `pipeline.ts`'s `loadAliases` stage exactly —
+ * shared so `rebuildFile` (watch-mode single-file rebuild, `incremental.ts`)
+ * resolves the SAME alias set a full build does, not just tsconfig/jsconfig
+ * (issue #2242 review — codegraph-configured aliases were silently excluded
+ * from watch rebuilds even after tsconfig/jsconfig aliases were fixed).
+ */
+export function mergeConfigAliases(
+  aliases: PathAliases,
+  configAliases: Record<string, unknown> | undefined,
+  rootDir: string,
+): void {
+  if (!configAliases) return;
+  for (const [key, value] of Object.entries(configAliases)) {
+    if (typeof value !== 'string') {
+      warn(`Alias target for "${key}" must be a string, got ${typeof value}. Skipping.`);
+      continue;
+    }
+    const pattern = key.endsWith('/') ? `${key}*` : key;
+    const target = path.resolve(rootDir, value);
+    aliases.paths[pattern] = [target.endsWith('/') ? `${target}*` : `${target}/*`];
+  }
+}
+
+/**
  * Compute MD5 hash of file contents for incremental builds.
  */
 export function fileHash(content: string): string {
@@ -460,12 +486,26 @@ export function markExportedSymbols(db: BetterSqlite3Database, exportKeys: unkno
 export const CHA_DISPATCH_CONFIDENCE = 0.8;
 
 /**
- * Build the parent→children implementor map from `extends`/`implements` edges.
- * Returns null if no hierarchy edges exist.
+ * Build the parent→children implementor map from `extends`/`implements` edges,
+ * plus its file-scoped variant and the child→parent map used to walk up to a
+ * declaring ancestor. Returns null if no hierarchy edges exist.
+ *
+ * `implementorsByFile` (`${parentName}|${childFile}` → children) is
+ * populated only when `childFile` ALSO locally declares a class/interface
+ * named `parentName` — the child's heritage reference most plausibly means
+ * that co-located declaration, not an unrelated same-named one elsewhere
+ * (issue #2237). Mirrors `ChaContext.implementorsByFile` in `cha.ts` /
+ * `EdgeContext.cha_implementors_by_file` in the Rust engine — this DB-driven
+ * post-pass has its own independent implementor-map construction and must
+ * carry the identical fix.
  */
-function buildImplementorMap(
-  db: BetterSqlite3Database,
-): { implementors: Map<string, string[]>; implementorSets: Map<string, Set<string>> } | null {
+function buildImplementorMap(db: BetterSqlite3Database): {
+  implementors: Map<string, string[]>;
+  implementorSets: Map<string, Set<string>>;
+  implementorsByFile: Map<string, string[]>;
+  parents: Map<string, string>;
+  parentsByFile: Map<string, string>;
+} | null {
   const hasHierarchy = db
     .prepare(`SELECT 1 FROM edges WHERE kind IN ('extends', 'implements') LIMIT 1`)
     .get();
@@ -473,15 +513,39 @@ function buildImplementorMap(
 
   const hierarchyRows = db
     .prepare(
-      `SELECT src.name AS child_name, tgt.name AS parent_name
+      `SELECT src.name AS child_name, src.file AS child_file, tgt.name AS parent_name, e.kind AS edge_kind
        FROM edges e
        JOIN nodes src ON e.source_id = src.id
        JOIN nodes tgt ON e.target_id = tgt.id
        WHERE e.kind IN ('extends', 'implements')`,
     )
-    .all() as Array<{ child_name: string; parent_name: string }>;
+    .all() as Array<{
+    child_name: string;
+    child_file: string;
+    parent_name: string;
+    edge_kind: string;
+  }>;
+
+  const receiverKindsList = [...RECEIVER_KINDS];
+  const localNameRows = db
+    .prepare(
+      `SELECT file, name FROM nodes WHERE kind IN (${receiverKindsList.map(() => '?').join(',')})`,
+    )
+    .all(...receiverKindsList) as Array<{ file: string; name: string }>;
+  const localNamesByFile = new Map<string, Set<string>>();
+  for (const row of localNameRows) {
+    let names = localNamesByFile.get(row.file);
+    if (!names) {
+      names = new Set();
+      localNamesByFile.set(row.file, names);
+    }
+    names.add(row.name);
+  }
 
   const implementorSets = new Map<string, Set<string>>();
+  const implementorsByFile = new Map<string, string[]>();
+  const parents = new Map<string, string>();
+  const parentsByFile = new Map<string, string>();
   for (const row of hierarchyRows) {
     let set = implementorSets.get(row.parent_name);
     if (!set) {
@@ -489,12 +553,28 @@ function buildImplementorMap(
       implementorSets.set(row.parent_name, set);
     }
     set.add(row.child_name);
+
+    if (localNamesByFile.get(row.child_file)?.has(row.parent_name)) {
+      const key = `${row.parent_name}|${row.child_file}`;
+      let scoped = implementorsByFile.get(key);
+      if (!scoped) {
+        scoped = [];
+        implementorsByFile.set(key, scoped);
+      }
+      if (!scoped.includes(row.child_name)) scoped.push(row.child_name);
+    }
+    if (row.edge_kind === 'extends') {
+      if (!parents.has(row.child_name)) {
+        parents.set(row.child_name, row.parent_name);
+      }
+      parentsByFile.set(`${row.child_name}|${row.child_file}`, row.parent_name);
+    }
   }
   if (implementorSets.size === 0) return null;
 
   // Convert to arrays for iteration compatibility
   const implementors = new Map([...implementorSets.entries()].map(([k, v]) => [k, [...v]]));
-  return { implementors, implementorSets };
+  return { implementors, implementorSets, implementorsByFile, parents, parentsByFile };
 }
 
 /**
@@ -552,18 +632,74 @@ function collectRtaInstantiated(
 }
 
 /**
+ * Resolve `${methodSuffix}` on `cls` or, if `cls` inherits it without
+ * overriding, the nearest ancestor (via `parents`/`parentsByFile`) that
+ * actually declares it. A direct qualified lookup alone
+ * (`${cls}.${methodSuffix}`) misses whenever `cls` is instantiated but
+ * doesn't override the dispatched method — the method node is registered
+ * under the declaring ANCESTOR's qualified name, not `cls`'s (issue #2237).
+ *
+ * `clsFile`, when known (propagated from a file-scoped BFS hop in
+ * `expandChaCall`), is used to prefer a same-file qualified-method lookup
+ * and a same-file parent-edge lookup at each step — otherwise an unrelated
+ * file's identically-named class can still leak in even after the BFS has
+ * correctly scoped which concrete class to walk from (Greptile review
+ * finding on PR #2399). Falls back to the bare/global lookup at each step
+ * when the scoped one finds nothing. Mirrors `resolveMethodViaAncestors` in
+ * `cha.ts`.
+ */
+function findMethodViaAncestors(
+  cls: string,
+  clsFile: string | null,
+  methodSuffix: string,
+  parents: Map<string, string>,
+  parentsByFile: Map<string, string>,
+  findMethodStmt: { all(name: string): unknown[] },
+): Array<{ id: number; file: string | null }> {
+  let current: string | undefined = cls;
+  let currentFile = clsFile;
+  const visited = new Set<string>();
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const qualified = `${current}.${methodSuffix}`;
+    const allFound = findMethodStmt.all(qualified) as Array<{ id: number; file: string | null }>;
+    const scopedFound = currentFile ? allFound.filter((n) => n.file === currentFile) : [];
+    const found = scopedFound.length > 0 ? scopedFound : allFound;
+    if (found.length > 0) return found;
+    const scopedParent: string | undefined = currentFile
+      ? parentsByFile.get(`${current}|${currentFile}`)
+      : undefined;
+    const nextFile = scopedParent ? currentFile : null;
+    current = scopedParent ?? parents.get(current);
+    currentFile = nextFile;
+  }
+  return [];
+}
+
+/**
  * BFS-expand a single call-to-qualified-method into CHA dispatch edges.
  *
  * For `source_id` calling `typeName.methodSuffix`, walks the implementors
  * map (BFS) and emits an edge for each concrete override that passes the
  * RTA filter.  New edges are appended to `newEdges`; `seen` is updated in
  * place to prevent duplicate insertions within the same pass.
+ *
+ * At every BFS level (not just the root), when the current node's file is
+ * known, this prefers `implementorsByFile` over the bare (project-wide)
+ * `implementors` map — disambiguating two unrelated files that each declare
+ * their own same-named interface/base class (#2237; mirrors
+ * `resolveChaTargets`'s identical scoping in `cha.ts` — see that function's
+ * doc comment for the full rationale and non-regression guarantee).
  */
 function expandChaCall(
   sourceId: number,
   typeName: string,
   methodSuffix: string,
   implementors: Map<string, string[]>,
+  implementorsByFile: Map<string, string[]>,
+  parents: Map<string, string>,
+  parentsByFile: Map<string, string>,
+  callerFile: string | undefined,
   instantiated: Set<string>,
   noRtaEvidence: boolean,
   findMethodStmt: { all(name: string): unknown[] },
@@ -573,11 +709,15 @@ function expandChaCall(
   // BFS over the implementors map — handles multi-level hierarchies where
   // abstract/non-instantiated classes sit between the call-site type and
   // the concrete leaf implementations (matches runPostNativeCha, issue #1311).
-  const bfsQueue: string[] = [typeName];
+  const bfsQueue: Array<{ name: string; file: string | null }> = [
+    { name: typeName, file: callerFile ?? null },
+  ];
   const bfsVisited = new Set<string>([typeName]);
   while (bfsQueue.length > 0) {
-    const current = bfsQueue.shift()!;
-    const children = implementors.get(current);
+    const { name: current, file: currentFile } = bfsQueue.shift()!;
+    const scoped = currentFile ? implementorsByFile.get(`${current}|${currentFile}`) : undefined;
+    const children = scoped ?? implementors.get(current);
+    const childFile = scoped ? currentFile : null;
     if (!children?.length) continue;
 
     for (const cls of children) {
@@ -585,8 +725,14 @@ function expandChaCall(
       bfsVisited.add(cls);
 
       if (noRtaEvidence || instantiated.has(cls)) {
-        const qualifiedName = `${cls}.${methodSuffix}`;
-        const methodNodes = findMethodStmt.all(qualifiedName) as Array<{ id: number }>;
+        const methodNodes = findMethodViaAncestors(
+          cls,
+          childFile,
+          methodSuffix,
+          parents,
+          parentsByFile,
+          findMethodStmt,
+        );
         for (const methodNode of methodNodes) {
           if (methodNode.id === sourceId) continue; // skip self-loops
           const key = `${sourceId}|${methodNode.id}`;
@@ -610,7 +756,7 @@ function expandChaCall(
       }
 
       // Always traverse children — non-instantiated classes may have instantiated subclasses.
-      bfsQueue.push(cls);
+      bfsQueue.push({ name: cls, file: childFile });
     }
   }
 }
@@ -633,7 +779,7 @@ function expandChaCall(
 export function runChaPostPass(db: BetterSqlite3Database): number {
   const hierarchy = buildImplementorMap(db);
   if (!hierarchy) return 0;
-  const { implementors, implementorSets } = hierarchy;
+  const { implementors, implementorSets, implementorsByFile, parents, parentsByFile } = hierarchy;
 
   const instantiated = collectRtaInstantiated(db, implementorSets);
   const noRtaEvidence = instantiated.size === 0;
@@ -641,10 +787,10 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
     debug('runChaPostPass: no constructor-call evidence — proceeding without RTA filter');
   }
 
-  // No technique exclusion here: this pass's own prior output is now tagged
-  // 'cha' (#1996), the same label as this/super-dispatch edges from a
-  // different pass — both are legitimate candidates for further BFS
-  // expansion (e.g. a this-dispatch edge resolved to an ancestor's method
+  // No technique exclusion for 'cha'/this-dispatch here: this pass's own
+  // prior output is now tagged 'cha' (#1996), the same label as this-dispatch
+  // edges from a different pass — both are legitimate candidates for further
+  // BFS expansion (e.g. a this-dispatch edge resolved to an ancestor's method
   // may still need expanding to sibling overrides). Re-examining a
   // previously-expanded edge as a candidate again is safe: the BFS below
   // already walks the full multi-level hierarchy in one pass, so any
@@ -653,16 +799,27 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
   // incorrect edges result, only bounded redundant work on incremental
   // rebuilds that re-scan the whole candidate set (Gate A/B in the native
   // orchestrator's equivalent, `fetchChaCallToMethods`).
+  //
+  // 'super-dispatch' IS excluded: `super.method()` is a static, non-virtual
+  // call that always invokes the declaring ancestor's method directly and
+  // can never dispatch to a sibling subclass's override — unlike this/CHA
+  // edges, it must never be treated as an expansion candidate (issue #2243).
   const callToMethods = db
     .prepare(
-      `SELECT e.source_id, src.name AS caller_name, tgt.name AS method_name
+      `SELECT e.source_id, src.name AS caller_name, src.file AS caller_file, tgt.name AS method_name
        FROM edges e
        JOIN nodes tgt ON e.target_id = tgt.id
        JOIN nodes src ON e.source_id = src.id
        WHERE e.kind = 'calls' AND tgt.kind = 'method'
-       AND INSTR(tgt.name, '.') > 0`,
+       AND INSTR(tgt.name, '.') > 0
+       AND (e.technique IS NULL OR e.technique != 'super-dispatch')`,
     )
-    .all() as Array<{ source_id: number; caller_name: string; method_name: string }>;
+    .all() as Array<{
+    source_id: number;
+    caller_name: string;
+    caller_file: string;
+    method_name: string;
+  }>;
 
   // Scope deduplication to only the source_ids we are about to expand, avoiding
   // a full-table scan. CHA only inserts edges FROM callers that already call a
@@ -686,10 +843,12 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
   }
 
   // No LIMIT: multiple files can define the same qualified name in a monorepo.
-  const findMethodStmt = db.prepare(`SELECT id FROM nodes WHERE name = ? AND kind = 'method'`);
+  const findMethodStmt = db.prepare(
+    `SELECT id, file FROM nodes WHERE name = ? AND kind = 'method'`,
+  );
   const newEdges: Array<[number, number, string, number, number, string]> = [];
 
-  for (const { source_id, method_name } of callToMethods) {
+  for (const { source_id, caller_file, method_name } of callToMethods) {
     const dotIdx = method_name.indexOf('.');
     if (dotIdx === -1) continue;
     const typeName = method_name.slice(0, dotIdx);
@@ -707,6 +866,10 @@ export function runChaPostPass(db: BetterSqlite3Database): number {
       typeName,
       methodSuffix,
       implementors,
+      implementorsByFile,
+      parents,
+      parentsByFile,
+      caller_file,
       instantiated,
       noRtaEvidence,
       findMethodStmt,

@@ -18,8 +18,17 @@ function shouldIgnorePath(filePath: string, ignoreSet: ReadonlySet<string>): boo
 /** Prepare all SQL statements needed by the watcher's incremental rebuild. */
 function prepareWatcherStatements(db: ReturnType<typeof openDb>): IncrementalStmts {
   return {
+    // Column set and order mirror the full-build path's getNodeStmt
+    // (src/domain/graph/builder/helpers.ts) — issue #2220: a symbol touched
+    // only by a watch-mode rebuild must get the same qualified_name/scope/
+    // visibility/parent_id/content_hash a full or regular incremental build
+    // would have given it.
     insertNode: db.prepare(
-      'INSERT OR IGNORE INTO nodes (name, kind, file, line, end_line, accessor_kind) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO nodes (name,kind,file,line,end_line,parent_id,qualified_name,scope,visibility,content_hash,accessor_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    ),
+    // Mirrors the full-build path's getExportStmt (issue #2220).
+    markExported: db.prepare(
+      'UPDATE nodes SET exported = 1 WHERE name = ? AND kind = ? AND file = ? AND line = ?',
     ),
     getNodeId: {
       get: (...params: unknown[]) => {
@@ -58,6 +67,14 @@ function prepareWatcherStatements(db: ReturnType<typeof openDb>): IncrementalStm
       "SELECT id, file, kind, line, accessor_kind AS accessorKind FROM nodes WHERE name = ? AND kind IN ('function', 'method', 'class', 'interface', 'type', 'struct', 'enum', 'trait', 'record', 'module', 'constant')",
     ),
     listSymbols: db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? AND kind != 'file'"),
+    // Mirrors native-orchestrator.ts's makePostNativeCallLookup containment
+    // query (issue #2238 follow-up, Greptile finding on PR #2400).
+    hasEnclosingCallable: db.prepare(`
+      SELECT 1 FROM nodes
+      WHERE file = ? AND kind IN ('method', 'function') AND id != ?
+      AND line <= ? AND (end_line IS NULL OR end_line >= ?)
+      LIMIT 1
+    `),
     upsertFileHash: db.prepare(
       'INSERT OR REPLACE INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)',
     ),
@@ -214,6 +231,10 @@ function setupWatcher(rootDir: string, opts: { engine?: string; dbPath?: string 
     // buildPointsToMapForFile's own default parameter instead of honoring a
     // .codegraphrc.json override, diverging from the full-build path below.
     pointsToMaxIterations: config.analysis.pointsToMaxIterations,
+    // #2242: without this, rebuildFile only resolved tsconfig/jsconfig
+    // aliases, silently excluding aliases configured via .codegraphrc.json's
+    // own `aliases` field that a full build does honor.
+    aliases: config.aliases,
   };
   const { name: engineName, version: engineVersion } = getActiveEngine(engineOpts);
   info(`Watch mode using ${engineName} engine${engineVersion ? ` (v${engineVersion})` : ''}`);

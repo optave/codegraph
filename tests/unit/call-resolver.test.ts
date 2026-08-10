@@ -44,6 +44,9 @@ function makeLookup(
     nodeId() {
       return undefined;
     },
+    hasEnclosingCallable() {
+      return false;
+    },
   };
 }
 
@@ -403,6 +406,9 @@ function makeReceiverLookup(
     nodeId() {
       return undefined;
     },
+    hasEnclosingCallable() {
+      return false;
+    },
   };
 }
 
@@ -761,6 +767,9 @@ function makeLineAwareReceiverLookup(
     nodeId() {
       return undefined;
     },
+    hasEnclosingCallable() {
+      return false;
+    },
   };
 }
 
@@ -907,6 +916,9 @@ describe('resolveCallTargets — constructor attribution through a renaming barr
       },
       nodeId() {
         return undefined;
+      },
+      hasEnclosingCallable() {
+        return false;
       },
     };
   }
@@ -1108,6 +1120,9 @@ function makeAccessorLookup(
     },
     nodeId() {
       return undefined;
+    },
+    hasEnclosingCallable() {
+      return false;
     },
   };
 }

@@ -588,6 +588,90 @@ describe('JavaScript parser', () => {
       expect(symbols.typeMap.has('Foo.repo')).toBe(false);
     });
 
+    it('seeds a function-scoped key alongside the bare key for a typed parameter (issue #2235)', () => {
+      const symbols = parseTS(`function processOrder(db: OrderDb) {}`);
+      expect(symbols.typeMap.get('db')).toEqual({ type: 'OrderDb', confidence: 0.9 });
+      expect(symbols.typeMap.get('processOrder::db')).toEqual({
+        type: 'OrderDb',
+        confidence: 0.9,
+      });
+    });
+
+    it('seeds a function-scoped key alongside the bare key for a typed local (issue #2235)', () => {
+      const symbols = parseTS(`function makeOrder() { const db: OrderDb = getDb(); }`);
+      expect(symbols.typeMap.get('db')).toEqual({ type: 'OrderDb', confidence: 0.9 });
+      expect(symbols.typeMap.get('makeOrder::db')).toEqual({
+        type: 'OrderDb',
+        confidence: 0.9,
+      });
+    });
+
+    it('prevents cross-function collision for same-named parameters (issue #2235)', () => {
+      const symbols = parseTS(`
+        function processOrder(db: OrderDb) { db.commit(); }
+        function processUser(db: UserDb) { db.commit(); }
+      `);
+      // Each function gets its own scoped key — no collision.
+      expect(symbols.typeMap.get('processOrder::db')).toEqual({
+        type: 'OrderDb',
+        confidence: 0.9,
+      });
+      expect(symbols.typeMap.get('processUser::db')).toEqual({
+        type: 'UserDb',
+        confidence: 0.9,
+      });
+      // Bare "db" key holds the first function's type (second write is same
+      // confidence, no overwrite) — exactly why the scoped key is needed.
+      expect(symbols.typeMap.get('db')).toEqual({ type: 'OrderDb', confidence: 0.9 });
+    });
+
+    it('prevents cross-function collision for same-named constructor-typed locals (issue #2235)', () => {
+      const symbols = parseTS(`
+        function makeOrderConn() { const conn = new OrderDb(); conn.commit(); }
+        function makeUserConn() { const conn = new UserDb(); conn.commit(); }
+      `);
+      expect(symbols.typeMap.get('makeOrderConn::conn')).toEqual({
+        type: 'OrderDb',
+        confidence: 1.0,
+      });
+      expect(symbols.typeMap.get('makeUserConn::conn')).toEqual({
+        type: 'UserDb',
+        confidence: 1.0,
+      });
+    });
+
+    it('does not seed a typeMap entry for opaque generic type-transform wrappers (issue #2235)', () => {
+      // ReturnType<typeof fn>/InstanceType<typeof Ctor>/Parameters<typeof fn>/
+      // ConstructorParameters<typeof Ctor> transform their argument into an
+      // unrelated type — the wrapper's own name is never a legitimate receiver
+      // type, unlike an ordinary generic (`Map<string, number>` → `Map`, still
+      // extracted above).
+      const symbols = parseTS(`
+        function processOrder(db: ReturnType<typeof makeConn>) {}
+        function processInstance(x: InstanceType<typeof Ctor>) {}
+        function processArgs(a: Parameters<typeof fn>) {}
+        function processCtorArgs(a: ConstructorParameters<typeof Ctor>) {}
+      `);
+      expect(symbols.typeMap.has('db')).toBe(false);
+      expect(symbols.typeMap.has('x')).toBe(false);
+      expect(symbols.typeMap.has('a')).toBe(false);
+    });
+
+    it('opaque generic wrapper on one function does not poison a same-named parameter elsewhere (issue #2235)', () => {
+      const symbols = parseTS(`
+        function processOrder(db: ReturnType<typeof makeConn>) { db.commit(); }
+        function processUser(db: UserDb) { db.commit(); }
+      `);
+      // processOrder's bogus annotation seeds nothing, so processUser's bare
+      // "db" entry is uncontested.
+      expect(symbols.typeMap.get('db')).toEqual({ type: 'UserDb', confidence: 0.9 });
+      expect(symbols.typeMap.get('processUser::db')).toEqual({
+        type: 'UserDb',
+        confidence: 0.9,
+      });
+      expect(symbols.typeMap.has('processOrder::db')).toBe(false);
+    });
+
     it('returns empty typeMap when no annotations', () => {
       const symbols = parseJS(`const x = 42; function foo(a, b) {}`);
       expect(symbols.typeMap).toBeInstanceOf(Map);
