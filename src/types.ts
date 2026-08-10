@@ -950,8 +950,15 @@ export interface ExtractorOutput {
    * functions/files far more often than a dispatch-table's own constant
    * name does — the same reasoning #2257 used to reject a global,
    * name-only liveness check for local variables. Keying on the TABLE name
-   * instead is safe to aggregate graph-wide, matching #1895's own
-   * `invokedPropertyNames` precedent for dispatch-table property keys.
+   * is still not enough on its own, though (Greptile review, PR #2445): two
+   * unrelated files — or two different functions in the same file — can
+   * each declare their own same-named table. The consumer
+   * (`build-edges.ts`/`build_edges.rs`) scopes evidence by file, and each
+   * entry here already carries a `#${startLine}` suffix identifying its
+   * enclosing function when the table is function-scoped, bare when it's
+   * module-scoped (see `findEnclosingTableName`/`findConsumerTableScopeLine`
+   * in extractors/javascript.ts) — so aggregating these strings graph-wide
+   * is safe once file+scope qualification is applied on lookup.
    *
    * Consumed alongside `invokedPropertyNames` as an alternate liveness
    * pathway for a `dynamicKind: 'value-ref'` Call whose `receiver` (the

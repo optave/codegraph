@@ -26,6 +26,12 @@
  * with a handler that is never independently invoked and whose table is
  * never accessed computedly — that handler must stay dead even once
  * `dispatch.js`'s same-named table earns evidence.
+ *
+ * File-scoping alone still left one gap Greptile caught on the next review
+ * round: two different FUNCTIONS in the SAME file, each declaring their own
+ * same-named local table. `sameFileScopes.js` below regression-tests that —
+ * `scopeA`'s locally-scoped `HANDLERS` earns computed-access evidence,
+ * `scopeB`'s unrelated, separately-scoped `HANDLERS` must not inherit it.
  */
 
 import fs from 'node:fs';
@@ -69,6 +75,25 @@ const GROOVY_NODE_HANDLERS = {
   some_other_kind: unrelatedHandler,
 };
 `,
+  'sameFileScopes.js': `
+function scopeAHandler(node) {
+  return node;
+}
+
+function scopeBHandler(node) {
+  return node;
+}
+
+function scopeA(node) {
+  const HANDLERS = { compute: scopeAHandler };
+  const handler = HANDLERS[node.type];
+  if (handler) handler(node);
+}
+
+function scopeB() {
+  const HANDLERS = { other: scopeBHandler };
+}
+`,
 };
 
 const DEAD_ROLES = new Set(['dead-unresolved', 'dead-leaf', 'dead-entry', 'dead-ffi']);
@@ -104,6 +129,23 @@ function countCallEdges(dbPath: string, sourceName: string, targetName: string):
   }
 }
 
+function countIncomingCallEdges(dbPath: string, targetName: string): number {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS cnt
+         FROM edges e
+         JOIN nodes t ON e.target_id = t.id
+         WHERE e.kind = 'calls' AND t.name = ?`,
+      )
+      .get(targetName) as { cnt: number };
+    return row.cnt;
+  } finally {
+    db.close();
+  }
+}
+
 function runShared(getDbPath: () => string) {
   it('creates a calls edge from the dispatch table to the handler reached via a computed lookup', () => {
     expect(
@@ -127,6 +169,16 @@ function runShared(getDbPath: () => string) {
     // independently invoked. Its own handler must get no calls edge even
     // though dispatch.js's same-named table has confirmed evidence.
     expect(countCallEdges(getDbPath(), 'GROOVY_NODE_HANDLERS', 'unrelatedHandler')).toBe(0);
+  });
+
+  it("does not credit a same-named table in a different function's scope, same file (Greptile review, PR #2445)", () => {
+    // sameFileScopes.js: scopeA's locally-scoped HANDLERS earns computed-
+    // access evidence (attributed to scopeA, the enclosing function, since
+    // the table itself is function-local) and its own handler gets an edge.
+    // scopeB's separately-scoped, same-named HANDLERS never earns any
+    // evidence of its own and must not inherit scopeA's.
+    expect(countCallEdges(getDbPath(), 'scopeA', 'scopeAHandler')).toBeGreaterThan(0);
+    expect(countIncomingCallEdges(getDbPath(), 'scopeBHandler')).toBe(0);
   });
 }
 

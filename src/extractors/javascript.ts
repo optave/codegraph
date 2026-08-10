@@ -4210,6 +4210,19 @@ const TABLE_NAME_PASSTHROUGH_TYPES: ReadonlySet<string> = new Set([
  * argument) simply yields no table name — the computed-access pathway then
  * requires the dot/#1895 evidence instead, matching this file's "prefer no
  * edge over a wrong one" precedent.
+ *
+ * When the table's own declaration is function-scoped (not module-level),
+ * the returned name carries a `#${qualifier}` suffix naming that enclosing
+ * function (`findEnclosingFunctionQualifier`, the same FUNCTION_SCOPE_TYPES
+ * walk `extractObjectLiteralFunctions` already uses for qualified
+ * definitions, #2033) — `#` can never appear in a real identifier, so this
+ * can't collide with an actual table name, and a module-scope table (the
+ * common case) is returned bare, unchanged from before this suffix existed.
+ * Disambiguates two different functions in the same file that each declare
+ * their own same-named local dispatch table (Greptile review, PR #2445):
+ * without it, both bindings would produce the identical `receiver` string
+ * and share one evidence-set entry, wrongly crediting each other's
+ * computed-invocation evidence.
  */
 function findEnclosingTableName(node: TreeSitterNode): string | undefined {
   let current: TreeSitterNode | null = node.parent;
@@ -4217,7 +4230,9 @@ function findEnclosingTableName(node: TreeSitterNode): string | undefined {
   while (current && hops < 6) {
     if (current.type === 'variable_declarator') {
       const nameNode = current.childForFieldName('name');
-      return nameNode?.type === 'identifier' ? nameNode.text : undefined;
+      if (nameNode?.type !== 'identifier') return undefined;
+      const scopeQualifier = findEnclosingFunctionQualifier(current);
+      return scopeQualifier === null ? nameNode.text : `${nameNode.text}#${scopeQualifier}`;
     }
     if (!TABLE_NAME_PASSTHROUGH_TYPES.has(current.type)) return undefined;
     current = current.parent;
@@ -4947,6 +4962,43 @@ function collectLogicalOrTernaryValueRefCall(declaratorNode: TreeSitterNode, cal
 }
 
 /**
+ * Walk outward from a `TABLE[computedExpr]` reference through every
+ * enclosing function scope, returning the qualifier name
+ * (`findEnclosingFunctionQualifier`'s `qualifierForFunctionScopeNode`) of
+ * the nearest one that locally declares `tableName` itself (via
+ * `introducesShadowedBinding`, the same hardened shadow-detection #2257
+ * built out) — i.e. the table is a function-local binding, not a
+ * module-level one. `undefined` when no enclosing function locally
+ * redeclares it (the common case: a module-level table referenced from
+ * inside a function), matching the bare, unsuffixed name
+ * `findEnclosingTableName` produces for that same module-level declaration
+ * on the value-ref side.
+ *
+ * Without this, two different functions each declaring their own
+ * same-named local table (Greptile review, PR #2445) would both reduce to
+ * the identical bare `tableName` and share one evidence-set entry — this
+ * makes the consumer side agree with `findEnclosingTableName`'s
+ * declaration-side scoping so the two can only match when they really are
+ * the same lexical binding.
+ */
+function findConsumerTableScopeQualifier(
+  node: TreeSitterNode,
+  tableName: string,
+): string | undefined {
+  let current: TreeSitterNode | null = node.parent;
+  while (current) {
+    if (FUNCTION_SCOPE_TYPES.has(current.type)) {
+      const body = current.childForFieldName('body');
+      if (body && introducesShadowedBinding(body, tableName)) {
+        return qualifierForFunctionScopeNode(current) ?? undefined;
+      }
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+/**
  * Collect computed/bracket-access dispatch-table invocation evidence (issue
  * #2260) — extends the #1771/#1895 dot-property value-ref mechanism to the
  * `const handler = TABLE[computedExpr]; ...; handler(...)` idiom (a
@@ -4974,7 +5026,8 @@ function collectLogicalOrTernaryValueRefCall(declaratorNode: TreeSitterNode, cal
  *    generic local name (`handler`) collides across unrelated
  *    files/functions far more often than a dispatch-table's own constant
  *    name does (see `computedDispatchTableEvidence`'s doc comment in
- *    types.ts for why the table name itself is safe to credit graph-wide).
+ *    types.ts for the file+scope qualification that makes crediting the
+ *    table name safe to aggregate graph-wide).
  */
 function collectComputedDispatchTableEvidence(
   declaratorNode: TreeSitterNode,
@@ -4989,7 +5042,10 @@ function collectComputedDispatchTableEvidence(
   const indexNode = valueNode.childForFieldName('index');
   if (indexNode?.type === 'string' || indexNode?.type === 'template_string') return;
   if (!hasLaterReferenceInEnclosingBlock(declaratorNode, nameNode.text, true)) return;
-  evidence.push(objectNode.text);
+  const scopeQualifier = findConsumerTableScopeQualifier(declaratorNode, objectNode.text);
+  evidence.push(
+    scopeQualifier === undefined ? objectNode.text : `${objectNode.text}#${scopeQualifier}`,
+  );
 }
 
 function extractReceiverName(objNode: TreeSitterNode | null): string | undefined {
