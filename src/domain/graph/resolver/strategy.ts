@@ -485,22 +485,40 @@ function resolveViaAccessorThisDispatch(
  * `Processor.run` must not resolve to `Processor.flush`). this.method()
  * calls are unaffected: they still reach the fallback because
  * `call.receiver === 'this'` is truthy, not a bare call.
+ *
+ * `enclosingClassHint` (issue #2259) is consulted ONLY when `callerName`
+ * itself has no dot to derive a class from — e.g. the caller is a synthetic
+ * framework-dispatch placeholder (`event:${eventName}` for an EventEmitter
+ * `.on('event', callback)` registration; see `findEnclosingClassHint` in
+ * call-resolver.ts) with no class context of its own, even though the
+ * callback is lexically nested inside a real class method (`w.on('message',
+ * (msg) => this.onMessage(msg))` inside `ensureWorker`). The callback's
+ * calls-edge still sources from the synthetic placeholder unchanged (so
+ * flow/sequence traversal starting from that entry point keeps working) —
+ * this hint only supplies the class needed to resolve `this`/`self` here.
  */
 function resolveViaSameClassSibling(
   lookup: StrategyLookup,
   call: { name: string; receiver?: string | null },
   relPath: string,
   callerName?: string | null,
+  enclosingClassHint?: string | null,
 ): ReadonlyArray<ResolvedCandidate> {
   const isBareCall = !call.receiver;
   if (!callerName || (isBareCall && isModuleScopedLanguage(relPath))) return [];
   const dotIdx = callerName.lastIndexOf('.');
-  if (dotIdx <= -1) return [];
-  // Extract only the segment immediately before the method name so that
-  // 'Namespace.ClassName.method' yields 'ClassName', not 'Namespace.ClassName'.
-  // Symbols are stored under their bare class name, not their qualified path.
-  const prevDot = callerName.lastIndexOf('.', dotIdx - 1);
-  const callerClass = callerName.slice(prevDot + 1, dotIdx);
+  let callerClass: string;
+  if (dotIdx > -1) {
+    // Extract only the segment immediately before the method name so that
+    // 'Namespace.ClassName.method' yields 'ClassName', not 'Namespace.ClassName'.
+    // Symbols are stored under their bare class name, not their qualified path.
+    const prevDot = callerName.lastIndexOf('.', dotIdx - 1);
+    callerClass = callerName.slice(prevDot + 1, dotIdx);
+  } else if (enclosingClassHint) {
+    callerClass = enclosingClassHint;
+  } else {
+    return [];
+  }
   const qualifiedName = `${callerClass}.${call.name}`;
   return lookup
     .byName(qualifiedName)
@@ -569,6 +587,7 @@ export function resolveByGlobal(
   relPath: string,
   typeMap: Map<string, unknown>,
   callerName?: string | null,
+  enclosingClassHint?: string | null,
 ): ReadonlyArray<ResolvedCandidate> {
   const viaAccessor = resolveViaAccessorThisDispatch(lookup, typeMap, call, relPath, callerName);
   if (viaAccessor.length > 0) return viaAccessor;
@@ -576,7 +595,13 @@ export function resolveByGlobal(
   const exact = resolveExactGlobalMatch(lookup, call, relPath);
   if (exact.length > 0) return exact;
 
-  const sameClass = resolveViaSameClassSibling(lookup, call, relPath, callerName);
+  const sameClass = resolveViaSameClassSibling(
+    lookup,
+    call,
+    relPath,
+    callerName,
+    enclosingClassHint,
+  );
   if (sameClass.length > 0) return sameClass;
 
   return exact; // empty

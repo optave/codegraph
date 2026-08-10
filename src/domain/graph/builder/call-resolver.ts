@@ -267,22 +267,6 @@ function isFrameworkEntryName(name: string): boolean {
 /**
  * Find the narrowest enclosing function/method definition for `callLine`.
  * Returns the DB node and name, or null if none encloses the call.
- *
- * Two passes: real (non-synthetic) callables first, then synthetic
- * framework-dispatch placeholders (`route:`/`event:`/`command:`-prefixed,
- * e.g. `extractCallbackDefinition`'s `event:${eventName}` for an
- * EventEmitter `.on('event', callback)` registration) only as a fallback.
- * A synthetic placeholder has no class/`this` context of its own — a
- * `this.method()` call inside its callback body can never resolve if
- * attributed to it (issue #2259) — whereas a REAL enclosing method's own
- * name already carries that context. Without this preference, a one-line
- * callback body (`(msg) => this.onMessage(msg)`) registered inside a class
- * method would win caller attribution purely by having the narrower span
- * (its own single line vs. the enclosing method's full body), even though
- * the enclosing method is *also* a valid, strictly more useful candidate.
- * A synthetic placeholder is still picked when it's the ONLY candidate
- * (the common case: a route/event/command registered directly at module
- * scope, with no enclosing real method to prefer).
  */
 function findEnclosingCallable(
   lookup: CallNodeLookup,
@@ -290,23 +274,10 @@ function findEnclosingCallable(
   definitions: ReadonlyArray<Def>,
   relPath: string,
 ): CallerMatch {
-  const real = findNarrowestEnclosingCallable(lookup, callLine, definitions, relPath, false);
-  if (real) return real;
-  return findNarrowestEnclosingCallable(lookup, callLine, definitions, relPath, true);
-}
-
-function findNarrowestEnclosingCallable(
-  lookup: CallNodeLookup,
-  callLine: number,
-  definitions: ReadonlyArray<Def>,
-  relPath: string,
-  onlyFrameworkEntry: boolean,
-): CallerMatch {
   let best: CallerMatch = null;
   let bestSpan = Infinity;
   for (const def of definitions) {
     if (!CALLABLE_SYMBOL_KINDS.has(def.kind)) continue;
-    if (isFrameworkEntryName(def.name) !== onlyFrameworkEntry) continue;
     if (def.line > callLine) continue;
     const end = def.endLine ?? Infinity;
     if (callLine > end) continue;
@@ -317,6 +288,49 @@ function findNarrowestEnclosingCallable(
         best = { ...row, name: def.name };
         bestSpan = span;
       }
+    }
+  }
+  return best;
+}
+
+/**
+ * Find the class context of the nearest enclosing REAL (non-synthetic)
+ * method for `callLine`, for use ONLY as a `this`/`self`/`super` resolution
+ * fallback when the call's ATTRIBUTED caller (from `findEnclosingCallable`)
+ * is itself a synthetic framework-dispatch placeholder (`route:`/`event:`/
+ * `command:`-prefixed — e.g. `extractCallbackDefinition`'s
+ * `event:${eventName}` for an EventEmitter `.on('event', callback)`
+ * registration) and therefore carries no class/`this` context of its own
+ * (issue #2259 — `w.on('message', (msg) => this.onMessage(msg))` inside a
+ * class method: `this.onMessage` can never resolve if the only context
+ * available is `event:message`'s own classless name).
+ *
+ * Deliberately does NOT change which node the call's edge is SOURCED
+ * from — `findEnclosingCallable` still attributes the call to the
+ * synthetic placeholder unchanged, so flow/sequence traversal starting
+ * from that entry point keeps seeing the callback's own calls (Greptile
+ * review, PR #2444). This function only supplies an ADDITIONAL class name
+ * for `resolveViaSameClassSibling` to try when the caller's own name has
+ * no dot to derive a class from.
+ *
+ * Picks the NARROWEST enclosing real method (like `findEnclosingCallable`
+ * itself), so a callback nested inside nested classes/methods resolves
+ * against the innermost one — the correct `this` binding at that point.
+ */
+function findEnclosingClassHint(callLine: number, definitions: ReadonlyArray<Def>): string | null {
+  let best: string | null = null;
+  let bestSpan = Infinity;
+  for (const def of definitions) {
+    if (def.kind !== 'method' || isFrameworkEntryName(def.name)) continue;
+    if (def.line > callLine) continue;
+    const end = def.endLine ?? Infinity;
+    if (callLine > end) continue;
+    const dotIdx = def.name.lastIndexOf('.');
+    if (dotIdx <= 0) continue;
+    const span = end === Infinity ? Infinity : end - def.line;
+    if (span < bestSpan) {
+      best = def.name.slice(0, dotIdx);
+      bestSpan = span;
     }
   }
   return best;
@@ -359,7 +373,7 @@ export function findCaller(
   definitions: ReadonlyArray<Def>,
   relPath: string,
   fileNodeRow: { id: number },
-): { id: number; callerName: string | null } {
+): { id: number; callerName: string | null; enclosingClassHint?: string | null } {
   // Pass 1: find the narrowest enclosing function/method.
   const fnCaller = findEnclosingCallable(lookup, call.line, definitions, relPath);
 
@@ -368,7 +382,14 @@ export function findCaller(
   // top-level scope (no enclosing function/method found), which handles
   // languages like Haskell where `main` is a top-level `bind` node.
   if (fnCaller) {
-    return { id: fnCaller.id, callerName: fnCaller.name };
+    // A synthetic framework-dispatch placeholder (issue #2259) has no
+    // class/`this` context of its own — supply the nearest REAL enclosing
+    // method's class as a fallback for `this`/`self`/`super` resolution,
+    // without changing the edge's source (see findEnclosingClassHint).
+    const enclosingClassHint = isFrameworkEntryName(fnCaller.name)
+      ? findEnclosingClassHint(call.line, definitions)
+      : null;
+    return { id: fnCaller.id, callerName: fnCaller.name, enclosingClassHint };
   }
 
   // Pass 2: find the widest (outermost) enclosing variable/constant binding.
@@ -423,6 +444,7 @@ export function resolveByMethodOrGlobal(
   typeMap: Map<string, unknown>,
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
+  enclosingClassHint?: string | null,
 ): ReadonlyArray<ResolvedCandidate> {
   // `super`/`super.method()` inside a REAL class is never resolvable by a
   // same-name/global lookup (resolveByGlobal): unlike `this`, where a
@@ -463,7 +485,7 @@ export function resolveByMethodOrGlobal(
     call.receiver === 'self' ||
     call.receiver === 'super'
   ) {
-    return resolveByGlobal(lookup, call, relPath, typeMap, callerName);
+    return resolveByGlobal(lookup, call, relPath, typeMap, callerName, enclosingClassHint);
   }
   return [];
 }
@@ -477,6 +499,7 @@ export function resolveCallTargets(
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
   namespaceImports?: ReadonlyMap<string, string>,
+  enclosingClassHint?: string | null,
 ): {
   targets: Array<ResolvedCandidate>;
   importedFrom: string | undefined;
@@ -630,6 +653,7 @@ export function resolveCallTargets(
         typeMap,
         callerName,
         importedOriginalNames,
+        enclosingClassHint,
       );
       if (targets.length === 0) {
         targets = viaReceiverOrGlobal;

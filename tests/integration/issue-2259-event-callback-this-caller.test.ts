@@ -9,17 +9,20 @@
  * Root cause: `extractCallbackDefinition` creates a synthetic
  * `event:${eventName}` definition spanning just the callback's own
  * (typically one-line) body, so `.on()`'s callback registrations get their
- * own entry-point node for root classification. `findEnclosingCallable`
- * picked this synthetic definition as the call's ATTRIBUTED CALLER purely
- * because its span is narrower than the real enclosing method's — but a
- * synthetic `event:`/`route:`/`command:`-prefixed definition has no
- * class/`this` context of its own, so a `this.handler()` call attributed to
- * it can never resolve through any strategy in the this/self/super cascade.
+ * own entry-point node for root classification and remain the call's
+ * ATTRIBUTED CALLER — but a synthetic `event:`/`route:`/`command:`-prefixed
+ * definition has no class/`this` context of its own, so a `this.handler()`
+ * call attributed to it could never resolve through any strategy in the
+ * this/self/super cascade.
  *
- * Fix: prefer a REAL (non-synthetic) enclosing callable over a synthetic
- * framework-dispatch placeholder for caller attribution, falling back to
- * the synthetic one only when no real callable also encloses the call (the
- * common case: a route/event/command registered directly at module scope).
+ * Fix: when the attributed caller is a synthetic placeholder, supply the
+ * nearest REAL enclosing method's class as a resolution-only hint (used
+ * ONLY to resolve `this`/`self` — see `findEnclosingClassHint` in
+ * call-resolver.ts). The call's edge still sources from the synthetic
+ * placeholder unchanged, so flow/sequence traversal starting from that
+ * entry point still sees the callback's own calls (Greptile review, PR
+ * #2444, on an earlier version of this fix that instead switched caller
+ * attribution to the real method and broke that traversal).
  */
 
 import fs from 'node:fs';
@@ -95,10 +98,19 @@ function countCallEdges(dbPath: string, sourceName: string, targetName: string):
 }
 
 function runShared(getDbPath: () => string) {
-  it('creates a calls edge from the enclosing method to the this-bound handler', () => {
+  it('creates a calls edge from the synthetic event: entry to the this-bound handler, resolving via the enclosing class hint', () => {
+    expect(
+      countCallEdges(getDbPath(), 'event:message', 'WasmWorkerPool.onMessage'),
+    ).toBeGreaterThan(0);
+  });
+
+  it('does not misattribute the call to the enclosing real method instead (Greptile review, PR #2444)', () => {
+    // The call must stay sourced from the synthetic entry point, not the
+    // enclosing `ensureWorker` — otherwise flow/sequence traversal starting
+    // from `event:message` would see no outgoing edges at all.
     expect(
       countCallEdges(getDbPath(), 'WasmWorkerPool.ensureWorker', 'WasmWorkerPool.onMessage'),
-    ).toBeGreaterThan(0);
+    ).toBe(0);
   });
 
   it('keeps the handler and its own callees reachable, not dead', () => {
@@ -112,7 +124,7 @@ function runShared(getDbPath: () => string) {
   });
 }
 
-describe('EventEmitter this-bound callback registration gets a real calls edge (#2259) — WASM', () => {
+describe('EventEmitter this-bound callback registration resolves via enclosing-class hint (#2259) — WASM', () => {
   let tmpDir: string;
 
   beforeAll(async () => {
@@ -131,7 +143,7 @@ describe('EventEmitter this-bound callback registration gets a real calls edge (
 });
 
 describe.skipIf(!isNativeAvailable())(
-  'EventEmitter this-bound callback registration gets a real calls edge (#2259) — native',
+  'EventEmitter this-bound callback registration resolves via enclosing-class hint (#2259) — native',
   () => {
     let nativeTmpDir: string;
 

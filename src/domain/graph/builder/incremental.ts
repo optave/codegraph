@@ -1548,6 +1548,7 @@ function buildCallEdges(
             caller.callerName,
             importedOriginalNames,
             namespaceImports,
+            caller.enclosingClassHint,
           );
 
     let targets = applyCallFallbacks(

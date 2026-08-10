@@ -1673,7 +1673,7 @@ function resolveDefinePropertyAccessorFallback(
  */
 function resolveFallbackTargets(
   call: Call,
-  caller: { id: number; callerName: string | null },
+  caller: { id: number; callerName: string | null; enclosingClassHint?: string | null },
   relPath: string,
   importedNames: Map<string, string>,
   lookup: CallNodeLookup,
@@ -1703,6 +1703,7 @@ function resolveFallbackTargets(
           caller.callerName,
           importedOriginalNames,
           namespaceImports,
+          caller.enclosingClassHint,
         );
 
   // Fallback strategies, applied in order until one yields a match. Each
