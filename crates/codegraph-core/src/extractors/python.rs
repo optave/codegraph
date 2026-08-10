@@ -70,24 +70,30 @@ fn is_main_guard_condition(condition: Option<Node>, source: &[u8]) -> bool {
 
 /// Lines of the call sites that qualify as program-entrypoint invocations.
 ///
-/// `guarded` propagates down the tree and is reset at every function/class
-/// definition: code below a definition is invoked by that definition, not by
-/// the runtime, so neither the `__main__.py` module-level context nor an
-/// enclosing guard carries into it. A `__main__.py` therefore starts guarded at
+/// `guarded` propagates down the tree and is reset at every *function*
+/// definition: code below a `def` is invoked when that function is called,
+/// not by the runtime, so neither the `__main__.py` module-level context nor
+/// an enclosing guard carries into it. A class definition does NOT reset it —
+/// unlike a function body, a class body is a normal statement sequence Python
+/// executes immediately while evaluating the `class` statement, so a guard
+/// directly inside a class body runs exactly when the enclosing scope does
+/// (review finding on #2411: a guard nested in a module-level class body was
+/// wrongly excluded before this). A `__main__.py` therefore starts guarded at
 /// the root, and a guard's *consequence* turns it on anywhere it appears — but
 /// not the guard's `else:` branch, which is the imported-as-a-module path.
 ///
 /// `at_module_level` tracks a second, independent thing: whether we have
-/// crossed *any* function/class boundary at all since the root, regardless of
-/// guard status, and — unlike `guarded` — never turns back on once it's off.
-/// A guard is only recognized while this holds. Without it, a guard
-/// syntactically nested inside a function or class (never executed by the
-/// runtime — only when/if that function is later called) would still flip
-/// `guarded` on for its consequence, because at the point the guard is seen,
-/// `guarded` itself is `false` either way — the guard sets it, it doesn't
-/// read it — so the two situations ("truly at module level" vs. "nested
-/// inside a def, coincidentally `false` too") are indistinguishable without
-/// this separate flag (review finding on #2411).
+/// crossed *any* function boundary at all since the root, regardless of guard
+/// status, and — unlike `guarded` — never turns back on once it's off. A guard
+/// is only recognized while this holds. Without it, a guard syntactically
+/// nested inside a function (never executed by the runtime — only when/if
+/// that function is later called) would still flip `guarded` on for its
+/// consequence, because at the point the guard is seen, `guarded` itself is
+/// `false` either way — the guard sets it, it doesn't read it — so the two
+/// situations ("truly at module level" vs. "nested inside a def, coincidentally
+/// `false` too") are indistinguishable without this separate flag (review
+/// finding on #2411). Like `guarded`, entering a class does not turn this off
+/// either, for the same immediate-execution reason.
 fn collect_entrypoint_call_lines(
     root: &Node,
     source: &[u8],
@@ -120,8 +126,14 @@ fn visit_entrypoint_calls(
         lines.insert(start_line(node));
     }
 
-    let leaves_runtime_scope =
-        node.kind() == "function_definition" || node.kind() == "class_definition";
+    // Only a function defers its body — a class body is a normal statement
+    // sequence that Python executes immediately while evaluating the `class`
+    // statement, so a guard (or any call) directly inside a class body runs
+    // at the same time the enclosing scope does (review finding on #2411: a
+    // guard nested in a module-level class body was wrongly excluded here).
+    // A method defined inside the class is a `function_definition` in its
+    // own right and still resets scope normally on its own recursive step.
+    let leaves_runtime_scope = node.kind() == "function_definition";
     let child_guarded = if leaves_runtime_scope { false } else { guarded };
     let child_at_module_level = at_module_level && !leaves_runtime_scope;
     let guard_consequence = if at_module_level
@@ -881,8 +893,25 @@ mod tests {
     }
 
     #[test]
-    fn does_not_mark_a_guard_nested_inside_a_class() {
+    fn marks_a_guard_nested_inside_a_module_level_class_as_entrypoint() {
+        // Review finding on #2411: a class body, unlike a function body, is
+        // a normal statement sequence Python executes immediately while
+        // evaluating the `class` statement — so a guard directly inside a
+        // module-level class body runs exactly when the module does, and
+        // must be treated the same as a guard directly at module level.
         let s = parse_py("class Config:\n    if __name__ == \"__main__\":\n        do_it()\n");
+        let call = s.calls.iter().find(|c| c.name == "do_it").unwrap();
+        assert_eq!(call.entrypoint, Some(true));
+    }
+
+    #[test]
+    fn does_not_mark_a_guard_nested_inside_a_class_defined_inside_a_function() {
+        // A class's body only runs once *its* enclosing function is called —
+        // the class-body-executes-immediately reasoning above only holds
+        // when the class itself is reached without an intervening def.
+        let s = parse_py(
+            "def factory():\n    class Config:\n        if __name__ == \"__main__\":\n            do_it()\n",
+        );
         let call = s.calls.iter().find(|c| c.name == "do_it").unwrap();
         assert_eq!(call.entrypoint, None);
     }

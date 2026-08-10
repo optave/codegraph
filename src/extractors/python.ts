@@ -107,24 +107,30 @@ function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: Extrac
 /**
  * Lines of the call sites that qualify as program-entrypoint invocations.
  *
- * `guarded` propagates down the tree and is reset at every function/class
- * definition: code below a definition is invoked by that definition, not by
- * the runtime, so neither the `__main__.py` module-level context nor an
- * enclosing guard carries into it. A `__main__.py` therefore starts guarded at
+ * `guarded` propagates down the tree and is reset at every *function*
+ * definition: code below a `def` is invoked when that function is called,
+ * not by the runtime, so neither the `__main__.py` module-level context nor
+ * an enclosing guard carries into it. A class definition does NOT reset it —
+ * unlike a function body, a class body is a normal statement sequence Python
+ * executes immediately while evaluating the `class` statement, so a guard
+ * directly inside a class body runs exactly when the enclosing scope does
+ * (review finding on #2411: a guard nested in a module-level class body was
+ * wrongly excluded before this). A `__main__.py` therefore starts guarded at
  * the root, and a guard's *consequence* turns it on anywhere it appears — but
  * not the guard's `else:` branch, which is the imported-as-a-module path.
  *
  * `atModuleLevel` tracks a second, independent thing: whether we have crossed
- * *any* function/class boundary at all since the root, regardless of guard
- * status, and — unlike `guarded` — never turns back on once it's off. A guard
- * is only recognized while this holds. Without it, a guard syntactically
- * nested inside a function or class (never executed by the runtime — only
- * when/if that function is later called) would still flip `guarded` on for
- * its consequence, because at the point the guard is seen, `guarded` itself
- * is `false` either way — the guard sets it, it doesn't read it — so the two
- * situations ("truly at module level" vs. "nested inside a def, coincidentally
- * `false` too") are indistinguishable without this separate flag (review
- * finding on #2411).
+ * *any* function boundary at all since the root, regardless of guard status,
+ * and — unlike `guarded` — never turns back on once it's off. A guard is only
+ * recognized while this holds. Without it, a guard syntactically nested inside
+ * a function (never executed by the runtime — only when/if that function is
+ * later called) would still flip `guarded` on for its consequence, because at
+ * the point the guard is seen, `guarded` itself is `false` either way — the
+ * guard sets it, it doesn't read it — so the two situations ("truly at module
+ * level" vs. "nested inside a def, coincidentally `false` too") are
+ * indistinguishable without this separate flag (review finding on #2411).
+ * Like `guarded`, entering a class does not turn this off either, for the
+ * same immediate-execution reason.
  */
 function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set<number> {
   const lines = new Set<number>();
@@ -138,8 +144,12 @@ function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set
     if (depth >= MAX_WALK_DEPTH) return;
     if (node.type === 'call' && guarded) lines.add(node.startPosition.row + 1);
 
-    const leavesRuntimeScope =
-      node.type === 'function_definition' || node.type === 'class_definition';
+    // Only a function defers its body — a class body is executed immediately
+    // while evaluating the `class` statement, so it must not be treated the
+    // same as a function for either flag. A method inside the class is a
+    // `function_definition` in its own right and still resets scope normally
+    // on its own recursive step.
+    const leavesRuntimeScope = node.type === 'function_definition';
     const childGuarded = leavesRuntimeScope ? false : guarded;
     const childAtModuleLevel = atModuleLevel && !leavesRuntimeScope;
     const guardConsequence =
