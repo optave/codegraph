@@ -290,6 +290,18 @@ describe('guard-git.sh checkout -- boundary requires a bare "--" token (#2280)',
     expect(isDenied('git checkout --${IFS}file.txt')).toBe(true);
     expect(isDenied('git checkout --$IFS')).toBe(true);
   });
+
+  it('still blocks the same IFS-expansion bypass applied to --ours/--theirs (Greptile review, PR #2450, round 3)', () => {
+    // Round 3's negated-letter-class boundary on the outer "--" doesn't
+    // automatically cover --ours/--theirs' OWN trailing boundary, which was
+    // still anchored on literal whitespace-or-end-of-line — so
+    // `--ours${IFS}file.txt` had no literal space right after "ours" either
+    // and slipped through the same way the outer "--" case did in round 1.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git checkout --ours${IFS}file.txt')).toBe(true);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git checkout --theirs${IFS}file.txt')).toBe(true);
+  });
 });
 
 describe('guard-git.sh docs example stays in sync (#2105)', () => {

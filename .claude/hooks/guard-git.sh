@@ -123,8 +123,13 @@ fi
 # this whole check exists to catch, just from a different source (a
 # merge stage instead of HEAD/the index). #2280's own suggested
 # exclusion list named these as safe; that premise was wrong (Greptile
-# review, PR #2450, round 2).
-if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--([^A-Za-z]|$|ours([[:space:]]|$)|theirs([[:space:]]|$))'; then
+# review, PR #2450, round 2). Their own trailing boundary is a negated
+# letter class too, not literal whitespace-or-end-of-line, for the same
+# ${IFS}-expansion reason as the outer "--" boundary above:
+# `git checkout --ours${IFS}file.txt` has no literal space in the
+# command TEXT right after "ours" either (Greptile review, PR #2450,
+# round 3).
+if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--([^A-Za-z]|$|ours([^A-Za-z]|$)|theirs([^A-Za-z]|$))'; then
   deny "BLOCKED: 'git checkout -- <file>' reverts working tree changes and may destroy other sessions' edits. If you need to discard your own changes, be explicit about which files."
 fi
 
