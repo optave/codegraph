@@ -83,19 +83,24 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Go: `foo_test.go` (#2256 follow-up).
-fn is_go_test_filename(path: &str) -> bool {
-    path.ends_with("_test.go")
+/// Go: `foo_test.go` (#2256 follow-up). `path` must already be lowercased —
+/// matched case-insensitively for parity with SQLite's case-insensitive
+/// `LIKE` (Greptile review, #2256): a mixed-case path like `pkg/foo_TEST.go`
+/// must be excluded consistently whether evaluated via `test_file_filter_col`
+/// or `is_test_file`.
+fn is_go_test_filename(lower_path: &str) -> bool {
+    lower_path.ends_with("_test.go")
 }
 
 /// Python: `test_foo.py` (prefix, checked on the basename) or `foo_test.py`
-/// (suffix, checked on the whole path) (#2256 follow-up).
-fn is_python_test_filename(path: &str) -> bool {
-    let base = basename(path);
+/// (suffix, checked on the whole path) (#2256 follow-up). `lower_path` must
+/// already be lowercased — see `is_go_test_filename`'s doc comment.
+fn is_python_test_filename(lower_path: &str) -> bool {
+    let base = basename(lower_path);
     if base.starts_with("test_") && base.ends_with(".py") {
         return true;
     }
-    path.ends_with("_test.py")
+    lower_path.ends_with("_test.py")
 }
 
 /// Java: `TestFoo.java` (prefix, camelCase-boundary-aware) or `FooTest.java`
@@ -122,15 +127,27 @@ fn is_java_test_filename(path: &str) -> bool {
 }
 
 /// Check whether a file path looks like a test file. Mirrors TS `isTestFile`
-/// (`src/infrastructure/test-filter.ts`).
+/// (`src/infrastructure/test-filter.ts`). Every check except the Java
+/// filename convention is case-insensitive, for parity with SQLite's
+/// case-insensitive `LIKE` (Greptile review, #2256) — the Java check stays
+/// case-sensitive on the original `path`, matching TS and this module's own
+/// top-of-file doc comment on why it's deliberately excluded from
+/// `TEST_FILE_LIKE_PATTERNS`.
 pub fn is_test_file(path: &str) -> bool {
-    if FILENAME_SUBSTRING_MARKERS.iter().any(|m| path.contains(m)) {
+    let lower = path.to_lowercase();
+    if FILENAME_SUBSTRING_MARKERS.iter().any(|m| lower.contains(m)) {
         return true;
     }
-    if path.split('/').any(|seg| TEST_PATH_SEGMENTS.contains(&seg)) {
+    if lower
+        .split('/')
+        .any(|seg| TEST_PATH_SEGMENTS.contains(&seg))
+    {
         return true;
     }
-    is_go_test_filename(path) || is_python_test_filename(path) || is_java_test_filename(path)
+    if is_go_test_filename(&lower) || is_python_test_filename(&lower) {
+        return true;
+    }
+    is_java_test_filename(path)
 }
 
 #[cfg(test)]
@@ -169,9 +186,27 @@ mod tests {
         "src/Protest.java",
     ];
 
+    // Mixed-case variants of the filename/segment/Go/Python markers — must
+    // match, for parity with SQLite's case-insensitive LIKE (#2256).
+    const MIXED_CASE_MATCH: &[&str] = &[
+        "src/foo.TEST.ts",
+        "src/Tests/foo.ts",
+        "src/TEST/foo.go",
+        "pkg/foo_TEST.go",
+        "TEST_foo.py",
+        "src/FOO_TEST.py",
+    ];
+
     #[test]
     fn matches_expected_test_paths() {
         for path in SHOULD_MATCH {
+            assert!(is_test_file(path), "expected {path} to be a test file");
+        }
+    }
+
+    #[test]
+    fn matches_mixed_case_variants() {
+        for path in MIXED_CASE_MATCH {
             assert!(is_test_file(path), "expected {path} to be a test file");
         }
     }

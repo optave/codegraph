@@ -74,22 +74,37 @@ const TEST_PATH_SEGMENTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Per-language filename conventions not covered by a directory segment or a
- * simple substring — camelCase-boundary-aware so `TestFoo`/`FooTest` match
- * but `Testament`/`Latest`/`Contest` don't (#2256 follow-up). Case-sensitive
- * by design: real Java test classes are always capitalized this way.
+ * Go/Python filename-suffix conventions — mirror the LIKE patterns above, so
+ * matched case-insensitively (`i` flag) for parity with SQLite's
+ * case-insensitive `LIKE` (Greptile review, #2256): a mixed-case path like
+ * `pkg/foo_TEST.go` must be excluded consistently whether it's evaluated via
+ * `testFilterSQL`/`NOT LIKE` or via `isTestFile`.
  */
-const LANGUAGE_FILENAME_PATTERNS: readonly RegExp[] = [
-  /_test\.go$/, // Go: foo_test.go
-  /(?:^|\/)test_[^/]*\.py$/, // Python: test_foo.py
-  /_test\.py$/, // Python: foo_test.py
+const CASE_INSENSITIVE_LANGUAGE_PATTERNS: readonly RegExp[] = [
+  /_test\.go$/i, // Go: foo_test.go
+  /(?:^|\/)test_[^/]*\.py$/i, // Python: test_foo.py
+  /_test\.py$/i, // Python: foo_test.py
+];
+
+/**
+ * Java filename convention not covered by a directory segment or a simple
+ * substring — camelCase-boundary-aware so `TestFoo`/`FooTest` match but
+ * `Testament`/`Latest`/`Contest` don't (#2256 follow-up). Case-sensitive by
+ * design (real Java test classes are always capitalized this way) and, unlike
+ * the patterns above, deliberately NOT mirrored in `TEST_FILE_LIKE_PATTERNS`
+ * — see this file's top doc comment for why a LIKE-based approximation can't
+ * express this precisely.
+ */
+const JAVA_LANGUAGE_PATTERNS: readonly RegExp[] = [
   /(?:^|\/)Test[A-Z]\w*\.java$/, // Java: TestFoo.java
   /[a-z0-9]Test\.java$/, // Java: FooTest.java
 ];
 
 /** Check whether a file path looks like a test file. */
 export function isTestFile(filePath: string): boolean {
-  if (FILENAME_SUBSTRING_MARKERS.some((marker) => filePath.includes(marker))) return true;
-  if (filePath.split('/').some((segment) => TEST_PATH_SEGMENTS.has(segment))) return true;
-  return LANGUAGE_FILENAME_PATTERNS.some((pattern) => pattern.test(filePath));
+  const lower = filePath.toLowerCase();
+  if (FILENAME_SUBSTRING_MARKERS.some((marker) => lower.includes(marker))) return true;
+  if (lower.split('/').some((segment) => TEST_PATH_SEGMENTS.has(segment))) return true;
+  if (CASE_INSENSITIVE_LANGUAGE_PATTERNS.some((pattern) => pattern.test(filePath))) return true;
+  return JAVA_LANGUAGE_PATTERNS.some((pattern) => pattern.test(filePath));
 }

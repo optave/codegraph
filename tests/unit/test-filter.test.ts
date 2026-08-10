@@ -48,6 +48,18 @@ const SHOULD_NOT_MATCH: readonly string[] = [
   'src/latest.py',
 ];
 
+// Mixed-case variants of the filename/segment/Go/Python markers — must match
+// consistently with sqlExcludes, since SQLite's LIKE is case-insensitive
+// (Greptile review, #2256).
+const MIXED_CASE_MATCH: readonly string[] = [
+  'src/foo.TEST.ts',
+  'src/Tests/foo.ts',
+  'src/TEST/foo.go',
+  'pkg/foo_TEST.go',
+  'TEST_foo.py',
+  'src/FOO_TEST.py',
+];
+
 // Recognized only by isTestFile's precise, case-sensitive regex — deliberately
 // excluded from the SQL LIKE list because SQLite's LIKE is case-insensitive,
 // so a substring approximation would also match ordinary words like
@@ -69,6 +81,10 @@ describe('isTestFile', () => {
     expect(isTestFile(file)).toBe(false);
   });
 
+  it.each(MIXED_CASE_MATCH)('matches the mixed-case variant %s', (file) => {
+    expect(isTestFile(file)).toBe(true);
+  });
+
   it.each(JAVA_FILENAME_MATCH)('recognizes the Java test-class filename convention: %s', (file) => {
     expect(isTestFile(file)).toBe(true);
   });
@@ -82,8 +98,16 @@ describe('isTestFile', () => {
 });
 
 describe('isTestFile / testFilterSQL parity', () => {
-  it.each([...SHOULD_MATCH, ...SHOULD_NOT_MATCH])('agrees with the SQL filter for %s', (file) => {
-    expect(sqlExcludes(file)).toBe(isTestFile(file));
+  it.each([...SHOULD_MATCH, ...SHOULD_NOT_MATCH, ...MIXED_CASE_MATCH])(
+    'agrees with the SQL filter for %s',
+    (file) => {
+      expect(sqlExcludes(file)).toBe(isTestFile(file));
+    },
+  );
+
+  it.each(MIXED_CASE_MATCH)('both filters exclude the mixed-case variant %s', (file) => {
+    expect(sqlExcludes(file)).toBe(true);
+    expect(isTestFile(file)).toBe(true);
   });
 
   it('SQL filter does not attempt the Java filename convention (documented asymmetry)', () => {
