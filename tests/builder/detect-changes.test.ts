@@ -254,6 +254,42 @@ describe('detectNoChanges fast-skip', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('tags a failure of the table-existence probe itself as unreadable state', () => {
+    // The `sqlite_master` probe can fail too (lock, corruption, I/O). If that
+    // error escapes untagged, pipeline.ts does not recognise it, treats the
+    // pre-flight as best-effort, and falls through to the native loader — which
+    // reads it as absent state and wipes. Being unable to determine whether
+    // prior state exists is not evidence that it doesn't.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-noChange-probe-'));
+    const dbDir = path.join(dir, '.codegraph');
+    fs.mkdirSync(dbDir, { recursive: true });
+    const db = openDb(path.join(dbDir, 'graph.db'));
+    initSchema(db);
+    const file = seedFile(dir, 'a.js', 'export const a = 1;');
+    seedHashRow(db, 'a.js', file);
+
+    // Force the existence probe to fail while leaving the handle usable enough
+    // to reach it, by stubbing `prepare` for the sqlite_master query only.
+    const realPrepare = db.prepare.bind(db);
+    (db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (sql.includes('sqlite_master')) throw new Error('database disk image is malformed');
+      return realPrepare(sql);
+    };
+
+    let thrown: unknown;
+    try {
+      detectNoChanges(db, [file], dir);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(isUnreadableBuildStateError(thrown)).toBe(true);
+    expect((thrown as Error).message).toContain('database disk image is malformed');
+
+    (db as unknown as { prepare: unknown }).prepare = realPrepare;
+    closeDb(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('returns false when file_hashes is empty (first build)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-noChange-empty-'));
     const dbDir = path.join(dir, '.codegraph');

@@ -706,6 +706,24 @@ export function isUnreadableBuildStateError(e: unknown): boolean {
 }
 
 /**
+ * Build the tagged error for "prior state may exist but could not be read".
+ *
+ * Every SQLite failure on the way to an answer must go through here. An
+ * untagged error is not merely less descriptive — `pipeline.ts` keys on the
+ * code to decide whether to re-throw or fall through to the Rust orchestrator,
+ * so an untagged escape is silently treated as best-effort and produces the
+ * very wipe this error prevents.
+ */
+function unreadableBuildState(detail: string, cause: unknown): DbError {
+  return new DbError(
+    `${detail} Refusing to fall back to a from-scratch build, which would delete the ` +
+      'existing graph and its embeddings. Retry once the database is readable, or pass ' +
+      '--no-incremental to rebuild deliberately.',
+    { code: UNREADABLE_BUILD_STATE, cause: cause instanceof Error ? cause : undefined },
+  );
+}
+
+/**
  * True when the `file_hashes` table exists in the schema.
  *
  * Read from `sqlite_master` rather than inferred from a failed `SELECT`, so a
@@ -716,15 +734,23 @@ export function isUnreadableBuildStateError(e: unknown): boolean {
  * Mirrors the `sqlite_master` probe in the native `load_file_hashes`, and the
  * `hasTable` helper in `db/migrations.ts`.
  *
- * Deliberately not wrapped in try/catch: if `sqlite_master` itself is
- * unreadable the database is unusable, and that must surface rather than be
- * silently reinterpreted as "no prior build".
+ * A failure here is itself an unreadable-state error, not an absent table:
+ * being unable to determine whether prior state exists is not evidence that it
+ * doesn't, and answering `false` would license a full rebuild on nothing more
+ * than a lock or an I/O fault.
  */
 function fileHashesTableExists(db: BetterSqlite3Database): boolean {
-  const row = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes'")
-    .get();
-  return !!row;
+  try {
+    const row = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes'")
+      .get();
+    return !!row;
+  } catch (e) {
+    throw unreadableBuildState(
+      `Could not determine whether the file_hashes table exists: ${toErrorMessage(e)}.`,
+      e,
+    );
+  }
 }
 
 /**
@@ -784,12 +810,10 @@ function loadFileHashes(
   try {
     rows = db.prepare('SELECT file, hash, mtime, size FROM file_hashes').all() as FileHashRow[];
   } catch (e) {
-    throw new DbError(
+    throw unreadableBuildState(
       `Could not read the file_hashes table: ${toErrorMessage(e)}. The table exists, so this ` +
-        'is a database failure rather than a first build. Refusing to fall back to a ' +
-        'from-scratch build, which would delete the existing graph and its embeddings. ' +
-        'Retry once the database is readable, or pass --no-incremental to rebuild deliberately.',
-      { code: UNREADABLE_BUILD_STATE, cause: e instanceof Error ? e : undefined },
+        'is a database failure rather than a first build.',
+      e,
     );
   }
   if (rows.length === 0) {
