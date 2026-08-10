@@ -4247,6 +4247,115 @@ function collectInstanceofValueRefCall(binaryNode: TreeSitterNode, calls: Call[]
   });
 }
 
+/**
+ * True when `name` appears as a bare identifier reference anywhere else in
+ * `declarationNode`'s enclosing block (function body, module top level, or
+ * arrow-function body) — the local, position-scoped liveness evidence
+ * `collectLogicalOrTernaryValueRefCall` requires before extracting a value-ref
+ * (issue #2257).
+ *
+ * Deliberately NOT the same mechanism as #1895's `invokedPropertyNames` (a
+ * global, name-only set matched across the whole codebase): a bare local
+ * variable name (`fetchFn`, `handler`) collides across unrelated files far
+ * more often than a dispatch-table property key does, so crediting liveness
+ * from an identically-named variable in a different file would fabricate a
+ * relationship that doesn't exist. Scoping the search to the declaration's
+ * own enclosing block avoids that risk entirely, at the cost of missing a
+ * consumer in a different function/file (accepted — matches this file's
+ * general "restrict to the simplest syntactic shape, prefer no edge over a
+ * wrong one" precedent, #1771/#1784).
+ */
+function hasLaterReferenceInEnclosingBlock(declarationNode: TreeSitterNode, name: string): boolean {
+  let statement: TreeSitterNode | null = declarationNode;
+  while (
+    statement &&
+    statement.type !== 'lexical_declaration' &&
+    statement.type !== 'variable_declaration'
+  ) {
+    statement = statement.parent;
+  }
+  if (!statement) return false;
+  const block = statement.parent;
+  if (!block) return false;
+  const statementId = statement.id;
+
+  for (let i = 0; i < block.childCount; i++) {
+    const sibling = block.child(i);
+    // Compare `.id`, not `===` — tree-sitter WASM node wrappers are not
+    // reference-stable across repeated `.child(i)` calls, so `sibling ===
+    // statement` would never exclude the declaration itself here, making
+    // every declared name trivially "reference" itself via its own `name`
+    // field.
+    if (!sibling || sibling.id === statementId) continue;
+    if (blockContainsIdentifier(sibling, name)) return true;
+  }
+  return false;
+}
+
+function blockContainsIdentifier(node: TreeSitterNode, name: string): boolean {
+  if (node.type === 'identifier' && node.text === name) return true;
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && blockContainsIdentifier(child, name)) return true;
+  }
+  return false;
+}
+
+/**
+ * Collect dynamic value-ref `Call`s for a logical-or/nullish-coalescing
+ * fallback or ternary default assigned to a named variable — e.g.
+ * `const fetchFn = options._fetchLatest || fetchLatestVersion` or
+ * `const fn = cond ? a : b` (issue #2257). Restricted to declarations with a
+ * plain identifier name (no destructuring) whose enclosing block contains at
+ * least one other reference to that name (`hasLaterReferenceInEnclosingBlock`)
+ * — without that check, this would fabricate a `calls` edge for a fallback
+ * value that's assigned but never actually read anywhere.
+ *
+ * Only fires when the declarator's value is DIRECTLY a `binary_expression`
+ * (`||`/`??`) or `ternary_expression` — a wrapped/parenthesized or nested
+ * form (`const x = a || (b || c)`) is left unresolved rather than recursing,
+ * matching this file's "restrict to the simplest syntactic shape" precedent
+ * (#1771/#1784).
+ */
+function collectLogicalOrTernaryValueRefCall(declaratorNode: TreeSitterNode, calls: Call[]): void {
+  const nameNode = declaratorNode.childForFieldName('name');
+  if (nameNode?.type !== 'identifier') return;
+  const valueNode = declaratorNode.childForFieldName('value');
+  if (!valueNode) return;
+
+  const candidates: TreeSitterNode[] = [];
+  if (valueNode.type === 'binary_expression') {
+    const op = valueNode.childForFieldName('operator')?.text;
+    if (op !== '||' && op !== '??') return;
+    const left = valueNode.childForFieldName('left');
+    const right = valueNode.childForFieldName('right');
+    if (left) candidates.push(left);
+    if (right) candidates.push(right);
+  } else if (valueNode.type === 'ternary_expression') {
+    const consequence = valueNode.childForFieldName('consequence');
+    const alternative = valueNode.childForFieldName('alternative');
+    if (consequence) candidates.push(consequence);
+    if (alternative) candidates.push(alternative);
+  } else {
+    return;
+  }
+
+  const identifierCandidates = candidates.filter(
+    (n) => n.type === 'identifier' && !BUILTIN_GLOBALS.has(n.text),
+  );
+  if (identifierCandidates.length === 0) return;
+  if (!hasLaterReferenceInEnclosingBlock(declaratorNode, nameNode.text)) return;
+
+  for (const n of identifierCandidates) {
+    calls.push({
+      name: n.text,
+      line: nodeStartLine(n),
+      dynamic: true,
+      dynamicKind: 'value-ref',
+    });
+  }
+}
+
 function extractReceiverName(objNode: TreeSitterNode | null): string | undefined {
   if (!objNode) return undefined;
   const t = objNode.type;
@@ -5184,6 +5293,9 @@ function runCollectorWalk(rootNode: TreeSitterNode, targets: CollectorWalkTarget
       case 'variable_declarator':
         collectArrayElemBindings(node, targets.arrayElemBindings);
         collectObjectPropBindings(node, targets.objectPropBindings);
+        // #2257: logical-or/nullish-coalescing/ternary default assigned to a
+        // named variable, e.g. `const fetchFn = options._fetchLatest || fetchLatestVersion`.
+        collectLogicalOrTernaryValueRefCall(node, targets.valueRefCalls);
         break;
       case 'expression_statement': {
         const expr = node.child(0);

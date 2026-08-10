@@ -2494,6 +2494,10 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         if declarator.kind() != "variable_declarator" {
             continue;
         }
+        // #2257: logical-or/nullish-coalescing/ternary default assigned to a
+        // named variable, e.g. `const fetchFn = options._fetchLatest || fetchLatestVersion`.
+        handle_logical_or_ternary_value_ref(&declarator, source, &mut symbols.calls);
+
         let name_n = declarator.child_by_field_name("name");
         let value_n = declarator.child_by_field_name("value");
         let (Some(name_n), Some(value_n)) = (name_n, value_n) else {
@@ -4229,6 +4233,148 @@ fn handle_instanceof_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>
         dynamic_kind: Some("value-ref".to_string()),
         ..Default::default()
     });
+}
+
+/// True when `name` appears as a bare identifier reference anywhere else in
+/// `declaration_node`'s enclosing block (function body, module top level, or
+/// arrow-function body) — the local, position-scoped liveness evidence
+/// `handle_logical_or_ternary_value_ref` requires before extracting a
+/// value-ref (issue #2257).
+///
+/// Deliberately NOT the same mechanism as #1895's `invoked_property_names` (a
+/// global, name-only set matched across the whole codebase): a bare local
+/// variable name (`fetchFn`, `handler`) collides across unrelated files far
+/// more often than a dispatch-table property key does, so crediting liveness
+/// from an identically-named variable in a different file would fabricate a
+/// relationship that doesn't exist. Scoping the search to the declaration's
+/// own enclosing block avoids that risk entirely, at the cost of missing a
+/// consumer in a different function/file (accepted — matches this file's
+/// general "restrict to the simplest syntactic shape, prefer no edge over a
+/// wrong one" precedent, #1771/#1784).
+///
+/// Mirrors `hasLaterReferenceInEnclosingBlock` in `src/extractors/javascript.ts`.
+fn has_later_reference_in_enclosing_block(
+    declaration_node: &Node,
+    name: &str,
+    source: &[u8],
+) -> bool {
+    let mut statement = Some(*declaration_node);
+    while let Some(n) = statement {
+        if n.kind() == "lexical_declaration" || n.kind() == "variable_declaration" {
+            break;
+        }
+        statement = n.parent();
+    }
+    let Some(statement) = statement else {
+        return false;
+    };
+    let Some(block) = statement.parent() else {
+        return false;
+    };
+
+    for i in 0..block.child_count() {
+        let Some(sibling) = block.child(i) else {
+            continue;
+        };
+        if sibling.id() == statement.id() {
+            continue;
+        }
+        if block_contains_identifier(&sibling, name, source) {
+            return true;
+        }
+    }
+    false
+}
+
+fn block_contains_identifier(node: &Node, name: &str, source: &[u8]) -> bool {
+    if node.kind() == "identifier" && node_text(node, source) == name {
+        return true;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if block_contains_identifier(&child, name, source) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Collect a dynamic value-ref `Call` for a logical-or/nullish-coalescing
+/// fallback or ternary default assigned to a named variable — e.g.
+/// `const fetchFn = options._fetchLatest || fetchLatestVersion` or
+/// `const fn = cond ? a : b` (issue #2257). Restricted to declarations with a
+/// plain identifier name (no destructuring) whose enclosing block contains at
+/// least one other reference to that name
+/// (`has_later_reference_in_enclosing_block`) — without that check, this
+/// would fabricate a `calls` edge for a fallback value that's assigned but
+/// never actually read anywhere.
+///
+/// Only fires when the declarator's value is DIRECTLY a `binary_expression`
+/// (`||`/`??`) or `ternary_expression` — a wrapped/parenthesized or nested
+/// form (`const x = a || (b || c)`) is left unresolved rather than recursing,
+/// matching this file's "restrict to the simplest syntactic shape" precedent
+/// (#1771/#1784).
+///
+/// Mirrors `collectLogicalOrTernaryValueRefCall` in `src/extractors/javascript.ts`.
+fn handle_logical_or_ternary_value_ref(declarator: &Node, source: &[u8], calls: &mut Vec<Call>) {
+    let Some(name_n) = declarator.child_by_field_name("name") else {
+        return;
+    };
+    if name_n.kind() != "identifier" {
+        return;
+    }
+    let Some(value_n) = declarator.child_by_field_name("value") else {
+        return;
+    };
+
+    let mut candidates: Vec<Node> = Vec::new();
+    if value_n.kind() == "binary_expression" {
+        let Some(op_n) = value_n.child_by_field_name("operator") else {
+            return;
+        };
+        let op = node_text(&op_n, source);
+        if op != "||" && op != "??" {
+            return;
+        }
+        if let Some(left) = value_n.child_by_field_name("left") {
+            candidates.push(left);
+        }
+        if let Some(right) = value_n.child_by_field_name("right") {
+            candidates.push(right);
+        }
+    } else if value_n.kind() == "ternary_expression" {
+        if let Some(consequence) = value_n.child_by_field_name("consequence") {
+            candidates.push(consequence);
+        }
+        if let Some(alternative) = value_n.child_by_field_name("alternative") {
+            candidates.push(alternative);
+        }
+    } else {
+        return;
+    }
+
+    let identifier_candidates: Vec<Node> = candidates
+        .into_iter()
+        .filter(|n| n.kind() == "identifier" && !JS_BUILTIN_GLOBALS.contains(&node_text(n, source)))
+        .collect();
+    if identifier_candidates.is_empty() {
+        return;
+    }
+    let name_text = node_text(&name_n, source);
+    if !has_later_reference_in_enclosing_block(declarator, name_text, source) {
+        return;
+    }
+
+    for n in identifier_candidates {
+        calls.push(Call {
+            name: node_text(&n, source).to_string(),
+            line: start_line(&n),
+            dynamic: Some(true),
+            dynamic_kind: Some("value-ref".to_string()),
+            ..Default::default()
+        });
+    }
 }
 
 /// Extract definitions from destructured object bindings: `const { handleToken,
@@ -7112,6 +7258,50 @@ mod tests {
             .filter(|c| c.dynamic_kind.as_deref() == Some("value-ref"))
             .collect();
         assert!(value_refs.iter().any(|c| c.name == "someFunction"));
+    }
+
+    // ── #2257: logical-or/nullish-coalescing/ternary value-ref extraction ───
+
+    #[test]
+    fn extracts_value_ref_call_for_logical_or_fallback_when_variable_used_again() {
+        let s = parse_js("const fetchFn = options.custom || fetchLatestVersion;\ncall(fetchFn);");
+        let value_refs: Vec<_> = s
+            .calls
+            .iter()
+            .filter(|c| c.dynamic_kind.as_deref() == Some("value-ref"))
+            .collect();
+        assert!(value_refs.iter().any(|c| c.name == "fetchLatestVersion"));
+    }
+
+    #[test]
+    fn does_not_extract_value_ref_call_when_variable_never_used_again() {
+        let s = parse_js(
+            "const fetchFn = options.custom || fetchLatestVersion;\nconsole.log('unrelated');",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn extracts_value_ref_calls_for_both_ternary_branches_when_variable_used_again() {
+        let s = parse_js("const picked = cond ? left : right;\ncall(picked);");
+        let names: Vec<&str> = s
+            .calls
+            .iter()
+            .filter(|c| c.dynamic_kind.as_deref() == Some("value-ref"))
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(names.contains(&"left"));
+        assert!(names.contains(&"right"));
+    }
+
+    #[test]
+    fn extracts_value_ref_call_for_nullish_coalescing_fallback() {
+        let s = parse_js("const fetchFn = options.custom ?? fetchLatestVersion;\ncall(fetchFn);");
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
     }
 
     // #1895: key_expr capture — the property key, distinct from the

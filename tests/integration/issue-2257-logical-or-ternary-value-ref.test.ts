@@ -1,0 +1,151 @@
+/**
+ * Integration test for #2257: a function referenced only as a logical-or/
+ * nullish-coalescing fallback or ternary default (e.g.
+ * `const fetchFn = options._fetchLatest || fetchLatestVersion`) produced no
+ * `calls` edge at all — unlike the #1771 object-literal-property-value
+ * pattern, which gets a real edge once invocation evidence is confirmed
+ * (#1895). The function was only kept out of `roles --role dead` via
+ * `classifyUnreferencedNode`'s `fanOut > 0` heuristic rescue, which does not
+ * make the function a reachability ROOT (#2032) — so a callee reachable only
+ * through it (e.g. `collectResponseBody`, called only by `fetchLatestVersion`
+ * in `src/infrastructure/update-check.ts`) was wrongly flagged dead.
+ *
+ * Fix: `const x = a || b` / `const x = a ?? b` / `const x = cond ? a : b`
+ * now extract a value-ref `calls` edge from the enclosing scope to each bare-
+ * identifier operand/branch — but only when the declared variable `x` is
+ * referenced again somewhere in its own enclosing block. That local,
+ * position-scoped check (not a global name-based one, unlike #1895's
+ * `invokedPropertyNames`) is what distinguishes `reachedViaFallback` (whose
+ * variable is later passed to `useCallback`) from `deadViaUnusedFallback`
+ * (whose variable is declared and never touched again) — both reference
+ * their target identically, so only the liveness check tells them apart.
+ */
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildGraph } from '../../src/domain/graph/builder.js';
+import { isNativeAvailable } from '../../src/infrastructure/native.js';
+
+const FIXTURE = {
+  'factory.js': `
+function reachedViaFallback(x) { calleeOfReachedFn(); return x; }
+function calleeOfReachedFn() { return 42; }
+
+function deadViaUnusedFallback(x) { return x + 2; }
+
+function ternaryLeft() { return 1; }
+function ternaryRight() { return 2; }
+
+function useCallback(fn) { return fn(1); }
+
+export function run(opts, cond) {
+  const fetchFn = opts.custom || reachedViaFallback;
+  const neverUsedAgain = opts.other || deadViaUnusedFallback;
+  const picked = cond ? ternaryLeft : ternaryRight;
+  return useCallback(fetchFn) + useCallback(picked);
+}
+`,
+};
+
+const DEAD_ROLES = new Set(['dead-unresolved', 'dead-leaf', 'dead-entry', 'dead-ffi']);
+
+function readNodesWithRoles(dbPath: string) {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    return db.prepare('SELECT name, kind, role FROM nodes ORDER BY name').all() as Array<{
+      name: string;
+      kind: string;
+      role: string | null;
+    }>;
+  } finally {
+    db.close();
+  }
+}
+
+function countCallEdgesTo(dbPath: string, targetName: string): number {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS cnt
+         FROM edges e
+         JOIN nodes t ON e.target_id = t.id
+         WHERE e.kind = 'calls' AND t.name = ?`,
+      )
+      .get(targetName) as { cnt: number };
+    return row.cnt;
+  } finally {
+    db.close();
+  }
+}
+
+function runShared(getDbPath: () => string) {
+  it('creates a value-ref edge for a logical-or fallback whose variable is used again', () => {
+    expect(countCallEdgesTo(getDbPath(), 'reachedViaFallback')).toBeGreaterThan(0);
+  });
+
+  it('does not create a value-ref edge when the variable is never referenced again', () => {
+    expect(countCallEdgesTo(getDbPath(), 'deadViaUnusedFallback')).toBe(0);
+  });
+
+  it('creates value-ref edges for both ternary branches', () => {
+    expect(countCallEdgesTo(getDbPath(), 'ternaryLeft')).toBeGreaterThan(0);
+    expect(countCallEdgesTo(getDbPath(), 'ternaryRight')).toBeGreaterThan(0);
+  });
+
+  it('keeps a callee reachable only through the logical-or fallback alive (#2032)', () => {
+    const nodes = readNodesWithRoles(getDbPath());
+    const callee = nodes.find((n) => n.name === 'calleeOfReachedFn' && n.kind === 'function');
+    expect(callee, 'calleeOfReachedFn node not found').toBeDefined();
+    expect(DEAD_ROLES.has(callee!.role ?? '')).toBe(false);
+  });
+
+  it('classifies the unused-fallback function as dead', () => {
+    const nodes = readNodesWithRoles(getDbPath());
+    const dead = nodes.find((n) => n.name === 'deadViaUnusedFallback' && n.kind === 'function');
+    expect(dead, 'deadViaUnusedFallback node not found').toBeDefined();
+    expect(DEAD_ROLES.has(dead!.role ?? '')).toBe(true);
+  });
+}
+
+describe('logical-or/ternary value-ref requires local usage evidence (#2257) — WASM', () => {
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-2257-'));
+    for (const [rel, content] of Object.entries(FIXTURE)) {
+      fs.writeFileSync(path.join(tmpDir, rel), content);
+    }
+    await buildGraph(tmpDir, { engine: 'wasm', incremental: false, skipRegistry: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  runShared(() => path.join(tmpDir, '.codegraph', 'graph.db'));
+});
+
+describe.skipIf(!isNativeAvailable())(
+  'logical-or/ternary value-ref requires local usage evidence (#2257) — native',
+  () => {
+    let nativeTmpDir: string;
+
+    beforeAll(async () => {
+      nativeTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-2257-native-'));
+      for (const [rel, content] of Object.entries(FIXTURE)) {
+        fs.writeFileSync(path.join(nativeTmpDir, rel), content);
+      }
+      await buildGraph(nativeTmpDir, { engine: 'native', incremental: false, skipRegistry: true });
+    }, 60_000);
+
+    afterAll(() => {
+      fs.rmSync(nativeTmpDir, { recursive: true, force: true });
+    });
+
+    runShared(() => path.join(nativeTmpDir, '.codegraph', 'graph.db'));
+  },
+);
