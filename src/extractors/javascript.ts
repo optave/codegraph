@@ -4285,11 +4285,16 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
     case 'method_definition': {
       if (node.childForFieldName('name')?.text === name) return true;
       const params = node.childForFieldName('parameters');
-      return params ? blockContainsIdentifier(params, name) : false;
+      if (!params) return false;
+      for (let i = 0; i < params.childCount; i++) {
+        const param = params.child(i);
+        if (param && parameterBindsName(param, name)) return true;
+      }
+      return false;
     }
     case 'catch_clause': {
       const param = node.childForFieldName('parameter');
-      return param ? blockContainsIdentifier(param, name) : false;
+      return param ? parameterBindsName(param, name) : false;
     }
     case 'for_statement':
     case 'for_in_statement': {
@@ -4333,6 +4338,69 @@ function declarationDeclaresName(declarationNode: TreeSitterNode, name: string):
   return false;
 }
 
+/**
+ * True when `paramNode` (one child of a function/method's `parameters` list,
+ * or a `catch` clause's exception binding) BINDS `name` as a parameter —
+ * i.e. `name` is the pattern being declared, not a reference appearing
+ * inside a default-value expression. `function helper(x = fetchFn) {}`
+ * does NOT bind `fetchFn` — `fetchFn` there is a REFERENCE (a real use of
+ * the outer variable), and `introducesShadowedBinding`'s old blanket
+ * "does the whole parameters subtree contain this text anywhere" check
+ * wrongly treated that reference as a binding, incorrectly pruning the
+ * function body from the liveness scan and losing a real edge (Greptile
+ * review, PR #2432). Only the BOUND side of an `assignment_pattern`/
+ * `object_assignment_pattern` (`left`) is checked — the default-value side
+ * (`right`) is deliberately left for the ordinary reference scan to find.
+ */
+function parameterBindsName(paramNode: TreeSitterNode, name: string): boolean {
+  switch (paramNode.type) {
+    case 'identifier':
+      return paramNode.text === name;
+    case 'assignment_pattern':
+    case 'object_assignment_pattern': {
+      const left = paramNode.childForFieldName('left');
+      return left ? parameterBindsName(left, name) : false;
+    }
+    case 'rest_pattern': {
+      for (let i = 0; i < paramNode.childCount; i++) {
+        const child = paramNode.child(i);
+        if (child && child.type !== '...' && parameterBindsName(child, name)) return true;
+      }
+      return false;
+    }
+    case 'object_pattern': {
+      for (let i = 0; i < paramNode.childCount; i++) {
+        const child = paramNode.child(i);
+        if (!child) continue;
+        if (child.type === 'shorthand_property_identifier_pattern') {
+          if (child.text === name) return true;
+        } else if (child.type === 'pair_pattern') {
+          const value = child.childForFieldName('value');
+          if (value && parameterBindsName(value, name)) return true;
+        } else if (child.type === 'rest_pattern' || child.type === 'object_assignment_pattern') {
+          if (parameterBindsName(child, name)) return true;
+        }
+      }
+      return false;
+    }
+    case 'array_pattern': {
+      for (let i = 0; i < paramNode.childCount; i++) {
+        const child = paramNode.child(i);
+        if (child && parameterBindsName(child, name)) return true;
+      }
+      return false;
+    }
+    // TS-specific parameter wrappers (type-annotated / optional params).
+    case 'required_parameter':
+    case 'optional_parameter': {
+      const pattern = paramNode.childForFieldName('pattern') ?? paramNode.childForFieldName('name');
+      return pattern ? parameterBindsName(pattern, name) : false;
+    }
+    default:
+      return false;
+  }
+}
+
 /** Depth-bounded like every other recursive walk in this file (MAX_WALK_DEPTH) — stops a
  * pathologically deep expression/statement tree (e.g. deeply nested generated JS) from
  * overflowing the stack (Greptile review, #2257). */
@@ -4354,6 +4422,11 @@ function blockContainsIdentifier(node: TreeSitterNode, name: string, depth = 0):
  * as a reference (issue #2257, Greptile review) — and stops descending into
  * any nested scope that shadows `name` (see `introducesShadowedBinding`).
  * Depth-bounded for the same reason as `blockContainsIdentifier`.
+ *
+ * A `variable_declarator`'s `name` field is always a BINDING, never a read —
+ * even for a sibling declarator in the same statement, a legal `var`
+ * rebinding (`var fn = a || b, fn = c;`) must not be mistaken for a use of
+ * `fn` (Greptile review, PR #2432), so only its `value` field is scanned.
  */
 function blockContainsIdentifierExcluding(
   node: TreeSitterNode,
@@ -4365,6 +4438,10 @@ function blockContainsIdentifierExcluding(
   if (node.id === excludeId) return false;
   if (node.type === 'identifier' && node.text === name) return true;
   if (SCOPE_NODE_TYPES.has(node.type) && introducesShadowedBinding(node, name)) return false;
+  if (node.type === 'variable_declarator') {
+    const value = node.childForFieldName('value');
+    return value ? blockContainsIdentifierExcluding(value, name, excludeId, depth + 1) : false;
+  }
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (child && blockContainsIdentifierExcluding(child, name, excludeId, depth + 1)) return true;

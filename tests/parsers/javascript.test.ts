@@ -2111,6 +2111,33 @@ function runDemo(reporter: Reporter, users: string[]): void {
       const source = `const fetchFn = options.custom || fetchLatestVersion;\n${nested}`;
       expect(() => parseJS(source)).not.toThrow();
     });
+
+    // Greptile review, PR #2432: a default-value expression referencing the
+    // outer fallback variable is a REFERENCE (a real use), not a shadowing
+    // parameter binding — must not be pruned from the liveness scan.
+    it('does not treat a parameter default reference as a shadowing binding', () => {
+      const symbols = parseJS(`
+        function outer() {
+          const fetchFn = options.custom || fetchLatestVersion;
+          function helper(x = fetchFn) {
+            return x();
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: a legal `var` sibling rebinding the SAME
+    // name in the same statement (`var fn = a, fn = b;`) is a binding, not a
+    // read — must not fabricate liveness for the first declarator's fallback.
+    it('does not credit liveness from a var sibling rebinding the same name', () => {
+      const symbols = parseJS(`var fn = options.custom || fetchLatestVersion, fn = replacement;`);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {

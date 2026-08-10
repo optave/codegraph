@@ -4277,12 +4277,21 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
                 }
             }
             match node.child_by_field_name("parameters") {
-                Some(params) => block_contains_identifier(&params, name, source, 0),
+                Some(params) => {
+                    for i in 0..params.child_count() {
+                        if let Some(param) = params.child(i) {
+                            if parameter_binds_name(&param, name, source) {
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                }
                 None => false,
             }
         }
         "catch_clause" => match node.child_by_field_name("parameter") {
-            Some(param) => block_contains_identifier(&param, name, source, 0),
+            Some(param) => parameter_binds_name(&param, name, source),
             None => false,
         },
         "for_statement" | "for_in_statement" => {
@@ -4332,6 +4341,91 @@ fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8])
     false
 }
 
+/// True when `param_node` (one child of a function/method's `parameters`
+/// list, or a `catch` clause's exception binding) BINDS `name` as a
+/// parameter — i.e. `name` is the pattern being declared, not a reference
+/// appearing inside a default-value expression. `function helper(x =
+/// fetchFn) {}` does NOT bind `fetchFn` — `fetchFn` there is a REFERENCE (a
+/// real use of the outer variable), and the old blanket "does the whole
+/// parameters subtree contain this text anywhere" check wrongly treated
+/// that reference as a binding, incorrectly pruning the function body from
+/// the liveness scan and losing a real edge (Greptile review, PR #2432).
+/// Only the BOUND side of an `assignment_pattern`/`object_assignment_pattern`
+/// (`left`) is checked — the default-value side (`right`) is deliberately
+/// left for the ordinary reference scan to find.
+///
+/// Mirrors `parameterBindsName` in `src/extractors/javascript.ts`.
+fn parameter_binds_name(param_node: &Node, name: &str, source: &[u8]) -> bool {
+    match param_node.kind() {
+        "identifier" => node_text(param_node, source) == name,
+        "assignment_pattern" | "object_assignment_pattern" => {
+            match param_node.child_by_field_name("left") {
+                Some(left) => parameter_binds_name(&left, name, source),
+                None => false,
+            }
+        }
+        "rest_pattern" => {
+            for i in 0..param_node.child_count() {
+                if let Some(child) = param_node.child(i) {
+                    if child.kind() != "..." && parameter_binds_name(&child, name, source) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        "object_pattern" => {
+            for i in 0..param_node.child_count() {
+                let Some(child) = param_node.child(i) else {
+                    continue;
+                };
+                match child.kind() {
+                    "shorthand_property_identifier_pattern" => {
+                        if node_text(&child, source) == name {
+                            return true;
+                        }
+                    }
+                    "pair_pattern" => {
+                        if let Some(value) = child.child_by_field_name("value") {
+                            if parameter_binds_name(&value, name, source) {
+                                return true;
+                            }
+                        }
+                    }
+                    "rest_pattern" | "object_assignment_pattern" => {
+                        if parameter_binds_name(&child, name, source) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        "array_pattern" => {
+            for i in 0..param_node.child_count() {
+                if let Some(child) = param_node.child(i) {
+                    if parameter_binds_name(&child, name, source) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        // TS-specific parameter wrappers (type-annotated / optional params).
+        "required_parameter" | "optional_parameter" => {
+            let pattern = param_node
+                .child_by_field_name("pattern")
+                .or_else(|| param_node.child_by_field_name("name"));
+            match pattern {
+                Some(p) => parameter_binds_name(&p, name, source),
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Depth-bounded like every other recursive walk in this file
 /// (`MAX_WALK_DEPTH`) — stops a pathologically deep expression/statement tree
 /// (e.g. deeply nested generated JS) from overflowing the stack (Greptile
@@ -4362,6 +4456,12 @@ fn block_contains_identifier(node: &Node, name: &str, source: &[u8], depth: usiz
 /// `introduces_shadowed_binding`). Depth-bounded for the same reason as
 /// `block_contains_identifier`.
 ///
+/// A `variable_declarator`'s `name` field is always a BINDING, never a
+/// read — even for a sibling declarator in the same statement, a legal
+/// `var` rebinding (`var fn = a || b, fn = c;`) must not be mistaken for a
+/// use of `fn` (Greptile review, PR #2432), so only its `value` field is
+/// scanned.
+///
 /// Mirrors `blockContainsIdentifierExcluding` in `src/extractors/javascript.ts`.
 fn block_contains_identifier_excluding(
     node: &Node,
@@ -4381,6 +4481,14 @@ fn block_contains_identifier_excluding(
     }
     if SCOPE_NODE_TYPES.contains(&node.kind()) && introduces_shadowed_binding(node, name, source) {
         return false;
+    }
+    if node.kind() == "variable_declarator" {
+        return match node.child_by_field_name("value") {
+            Some(value) => {
+                block_contains_identifier_excluding(&value, name, exclude_id, source, depth + 1)
+            }
+            None => false,
+        };
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -7501,6 +7609,35 @@ mod tests {
         );
         let source = format!("const fetchFn = options.custom || fetchLatestVersion;\n{nested}");
         let _ = parse_js(&source);
+    }
+
+    // Greptile review, PR #2432: a default-value expression referencing the
+    // outer fallback variable is a REFERENCE (a real use), not a shadowing
+    // parameter binding — must not be pruned from the liveness scan.
+    #[test]
+    fn does_not_treat_a_parameter_default_reference_as_a_shadowing_binding() {
+        let s = parse_js(
+            "function outer() {\n\
+               const fetchFn = options.custom || fetchLatestVersion;\n\
+               function helper(x = fetchFn) {\n\
+                 return x();\n\
+               }\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: a legal `var` sibling rebinding the SAME
+    // name in the same statement (`var fn = a, fn = b;`) is a binding, not a
+    // read — must not fabricate liveness for the first declarator's fallback.
+    #[test]
+    fn does_not_credit_liveness_from_a_var_sibling_rebinding_the_same_name() {
+        let s = parse_js("var fn = options.custom || fetchLatestVersion, fn = replacement;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
     }
 
     // #1895: key_expr capture — the property key, distinct from the
