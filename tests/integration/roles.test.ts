@@ -308,6 +308,102 @@ describe('named barrel reexport scoped to the actual symbol', () => {
   });
 });
 
+// ─── Incremental classification also runs the #2032 downgrade (issue #2255) ──
+
+describe('incremental classification applies the #2032 reachability downgrade', () => {
+  let incTmpDir: string, incDbPath: string;
+
+  beforeAll(() => {
+    incTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-incremental-reachability-'));
+    fs.mkdirSync(path.join(incTmpDir, '.codegraph'));
+    incDbPath = path.join(incTmpDir, '.codegraph', 'graph.db');
+
+    const db = new Database(incDbPath);
+    db.pragma('journal_mode = WAL');
+    initSchema(db);
+
+    insertNode(db, 'src/lib.ts', 'file', 'src/lib.ts', 0);
+    // Same #2032 shape as the full-classification test above (deadIntermediate
+    // is never called; deadHelper's only caller is deadIntermediate) — but
+    // classified via classifyNodeRoles(db, changedFiles), the INCREMENTAL
+    // path, which never ran this downgrade at all before issue #2255's fix.
+    const deadIntermediate = insertNode(db, 'deadIntermediate', 'function', 'src/lib.ts', 10);
+    const deadHelper = insertNode(db, 'deadHelper', 'function', 'src/lib.ts', 20);
+    insertEdge(db, deadIntermediate, deadHelper, 'calls');
+
+    classifyNodeRoles(db, ['src/lib.ts']);
+    db.close();
+  });
+
+  afterAll(() => {
+    if (incTmpDir) fs.rmSync(incTmpDir, { recursive: true, force: true });
+  });
+
+  test('deadHelper is downgraded to dead on the incremental path, not left at its fan-shape role', () => {
+    const data = rolesData(incDbPath);
+    const result = data.symbols.find((s) => s.name === 'deadHelper');
+    expect(result).toBeDefined();
+    expect(result!.role).toBe('dead-unresolved');
+  });
+});
+
+describe('incremental reachability downgrade is safe across the affected-files window boundary (issue #2255)', () => {
+  let boundaryTmpDir: string, boundaryDbPath: string;
+
+  beforeAll(() => {
+    boundaryTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-incremental-boundary-'));
+    fs.mkdirSync(path.join(boundaryTmpDir, '.codegraph'));
+    boundaryDbPath = path.join(boundaryTmpDir, '.codegraph', 'graph.db');
+
+    const db = new Database(boundaryDbPath);
+    db.pragma('journal_mode = WAL');
+    initSchema(db);
+
+    insertNode(db, 'src/entry.ts', 'file', 'src/entry.ts', 0);
+    insertNode(db, 'src/helpers.ts', 'file', 'src/helpers.ts', 0);
+    insertNode(db, 'src/deep.ts', 'file', 'src/deep.ts', 0);
+
+    // publicEntry (exported) -> helperA -> helperB. helperA's ONLY caller is
+    // publicEntry, two hops away from the changed file (src/deep.ts) — outside
+    // the incrementally-scoped "changed files + one-hop neighbours" window,
+    // which only pulls in src/helpers.ts (a direct neighbour of deep.ts via
+    // the helperA->helperB edge), not src/entry.ts.
+    const publicEntry = insertNode(db, 'publicEntry', 'function', 'src/entry.ts', 1);
+    const helperA = insertNode(db, 'helperA', 'function', 'src/helpers.ts', 1);
+    const helperB = insertNode(db, 'helperB', 'function', 'src/deep.ts', 1);
+    db.prepare('UPDATE nodes SET exported = 1 WHERE id = ?').run(publicEntry);
+    insertEdge(db, publicEntry, helperA, 'calls');
+    insertEdge(db, helperA, helperB, 'calls');
+
+    // Simulate src/deep.ts being the only changed file — src/entry.ts is
+    // never in `allAffectedFiles`.
+    classifyNodeRoles(db, ['src/deep.ts']);
+    db.close();
+  });
+
+  afterAll(() => {
+    if (boundaryTmpDir) fs.rmSync(boundaryTmpDir, { recursive: true, force: true });
+  });
+
+  test('helperA is NOT wrongly downgraded to dead merely because its only caller is outside the window', () => {
+    // Without considering outside-window nodes as potential roots, helperA's
+    // only caller (publicEntry) would be invisible to the reachability BFS,
+    // and helperA (fanIn=1, a genuine downgrade candidate) would be wrongly
+    // marked dead — exactly the false positive this fix must never produce.
+    const data = rolesData(boundaryDbPath);
+    const result = data.symbols.find((s) => s.name === 'helperA');
+    expect(result).toBeDefined();
+    expect(result!.role).not.toMatch(/^dead/);
+  });
+
+  test('helperB stays live too, transitively through helperA', () => {
+    const data = rolesData(boundaryDbPath);
+    const result = data.symbols.find((s) => s.name === 'helperB');
+    expect(result).toBeDefined();
+    expect(result!.role).not.toMatch(/^dead/);
+  });
+});
+
 // ─── rolesData ──────────────────────────────────────────────────────────
 
 describe('rolesData', () => {

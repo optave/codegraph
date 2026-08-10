@@ -7,6 +7,7 @@ import { getAncestorDirs, normalizePath } from '../shared/constants.js';
 import type {
   BetterSqlite3Database,
   SqliteStatement as DbSqliteStatement,
+  Role,
   StmtCache,
 } from '../types.js';
 
@@ -451,10 +452,12 @@ export function buildStructure(
 export { FRAMEWORK_ENTRY_PREFIXES } from '../graph/classifiers/roles.js';
 
 import {
+  applyReachabilityDowngrade,
   classifyRoles,
   computeTypeDefNamesByFile,
   isTypeDeclarationMember,
   median,
+  type RoleClassificationNode,
 } from '../graph/classifiers/roles.js';
 
 interface RoleSummary {
@@ -1166,6 +1169,98 @@ function isBarrelProdReachable(db: BetterSqlite3Database, barrelFile: string): b
 }
 
 /**
+ * Run #2032's transitive-reachability dead-code downgrade on the incremental
+ * path, which `classifyRoles` alone never does here (it's called above with
+ * no `callEdges`, deliberately — see its call site's neighbouring comment
+ * history). Reachability is a whole-graph property: a window node's only
+ * live path in can run through files entirely outside `allAffectedFiles`, so
+ * this cannot be answered from the incremental window alone the way the rest
+ * of this function's classification can.
+ *
+ * Mutates `roleMap` in place, downgrading only entries that already exist in
+ * it (i.e. only `allAffectedFiles`' own nodes — `applyReachabilityDowngrade`'s
+ * own `!role` guard skips any node absent from `roleMap`, which every node
+ * outside the window is, since only window nodes were ever classified above).
+ *
+ * Avoids `classifyNodeRolesFull`'s expensive whole-graph `prod_reachable`
+ * recursive CTE (used there to compute the exact "genuinely public surface"
+ * root signal) by using the plain `exported` column as a deliberately
+ * OVER-INCLUSIVE root approximation for nodes outside the window instead.
+ * This is safe in only one direction: more roots can only make the reachable
+ * set bigger, which can only prevent a downgrade, never cause a wrong one — a
+ * node that would have been correctly downgraded with the exact computation
+ * might be missed here (matching the pre-#2032, already-accepted status quo
+ * for such nodes until the next full build), but a live node can never be
+ * wrongly marked dead by this approximation. Window nodes themselves reuse
+ * the EXACT `isPublicSurface` already computed above (step 3b) — cheaply,
+ * via the same backward-scoped barrel check `classifyNodeRolesFull` cannot
+ * exploit, since it has no smaller scope to restrict to.
+ *
+ * `hasActiveFileSiblings` for outside-window nodes is likewise set to `true`
+ * unconditionally rather than computed — it only widens
+ * `isInterfaceDispatchMethodRoot`'s own rescue (same safe direction), and
+ * accurately computing it project-wide would need the same
+ * `buildActiveFilesSet`-style full scan this function exists to avoid.
+ */
+function runIncrementalReachabilityDowngrade(
+  db: BetterSqlite3Database,
+  allAffectedFiles: string[],
+  windowNodes: RoleClassificationNode[],
+  roleMap: Map<string, Role>,
+): void {
+  const placeholders = allAffectedFiles.map(() => '?').join(',');
+
+  const outsideRows = db
+    .prepare(
+      `SELECT n.id, n.name, n.kind, n.file, n.exported,
+        COALESCE(fi.cnt, 0) AS fan_in,
+        COALESCE(fo.cnt, 0) AS fan_out
+      FROM nodes n
+      LEFT JOIN (
+        SELECT target_id, COUNT(*) AS cnt FROM edges WHERE kind IN ('calls', 'imports-type') GROUP BY target_id
+      ) fi ON n.id = fi.target_id
+      LEFT JOIN (
+        SELECT source_id, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source_id
+      ) fo ON n.id = fo.source_id
+      WHERE n.kind NOT IN ('file', 'directory', 'parameter', 'property')
+        AND n.file NOT IN (${placeholders})`,
+    )
+    .all(...allAffectedFiles) as Array<{
+    id: number;
+    name: string;
+    kind: string;
+    file: string;
+    exported: number;
+    fan_in: number;
+    fan_out: number;
+  }>;
+
+  const outsideNodes: RoleClassificationNode[] = outsideRows.map((r) => ({
+    id: String(r.id),
+    name: r.name,
+    kind: r.kind,
+    file: r.file,
+    fanIn: r.fan_in,
+    fanOut: r.fan_out,
+    isExported: r.exported === 1,
+    isPublicSurface: r.exported === 1,
+    hasActiveFileSiblings: true,
+  }));
+
+  const allCallEdgeRows = db
+    .prepare(`SELECT source_id, target_id FROM edges WHERE kind = 'calls'`)
+    .all() as Array<{ source_id: number; target_id: number }>;
+  const allCallEdges: Array<readonly [string, string]> = allCallEdgeRows.map((e) => [
+    String(e.source_id),
+    String(e.target_id),
+  ]);
+
+  const widerNodes = [...windowNodes, ...outsideNodes];
+  const typeDefNamesByFile = computeTypeDefNamesByFile(widerNodes);
+  applyReachabilityDowngrade(widerNodes, roleMap, allCallEdges, typeDefNamesByFile);
+}
+
+/**
  * Incremental role classification: only reclassify nodes from changed files
  * plus their immediate edge neighbours (callers and callees in other files).
  *
@@ -1174,7 +1269,10 @@ function isBarrelProdReachable(db: BetterSqlite3Database, barrelFile: string): b
  * classification; the cache is only recomputed when the edge count drifts
  * beyond MEDIAN_INVALIDATION_DELTA (i.e. large structural changes).
  * Unchanged files not connected to changed files keep their roles from the
- * previous build.
+ * previous build. The transitive-reachability dead-code downgrade (#2032)
+ * DOES still run here (`runIncrementalReachabilityDowngrade`, called below)
+ * — see its own doc comment for why this needs its own logic distinct from
+ * `classifyNodeRolesFull`'s approach.
  */
 function classifyNodeRolesIncremental(
   db: BetterSqlite3Database,
@@ -1402,6 +1500,7 @@ function classifyNodeRolesIncremental(
     publicSurfaceIds,
   );
   const roleMap = classifyRoles(classifierInput, globalMedians);
+  runIncrementalReachabilityDowngrade(db, allAffectedFiles, classifierInput, roleMap);
 
   // Filter property rows down to interface/type property-signature members
   // (#1809); non-member property rows get no role at all (#1810) — see
