@@ -97,13 +97,24 @@ if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+res
 fi
 
 # git checkout -- <file> (reverting files). Requires "--" to be its own
-# token (immediately followed by whitespace or end-of-segment/string), not
-# a longer flag that merely starts with "--" (#2280) — otherwise this also
-# denied legitimate flags sharing the same "checkout --" prefix, like
-# --detach, --track, --orphan, --no-track, --guess, --ours, --theirs, none
-# of which revert working-tree changes the way a bare "--" pathspec
-# separator does.
-if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--([[:space:]]|$)'; then
+# token, not a longer flag that merely starts with "--" (#2280) —
+# otherwise this also denied legitimate flags sharing the same
+# "checkout --" prefix, like --detach, --track, --orphan, --no-track,
+# --guess, --ours, --theirs, none of which revert working-tree changes
+# the way a bare "--" pathspec separator does.
+#
+# Deliberately NOT anchored on literal whitespace-or-end-of-line after
+# "--" (i.e. NOT `--([[:space:]]|$)`): every one of those legitimate
+# flag names starts with a plain letter right after "--", so "anything
+# that isn't a letter" is the correct, safe boundary — and it must
+# reject unquoted shell expansions too, not just literal whitespace.
+# `git checkout --${IFS}file.txt` has no literal space in the command
+# TEXT between "--" and "file.txt" (so a whitespace-anchored version of
+# this check misses it), but bash expands the unquoted `${IFS}` to
+# whitespace at actual execution time — Git still receives the exact
+# dangerous `checkout -- file.txt` (Greptile review, PR #2450). `$` is
+# not a letter, so the negated-letter-class form below still denies it.
+if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--([^A-Za-z]|$)'; then
   deny "BLOCKED: 'git checkout -- <file>' reverts working tree changes and may destroy other sessions' edits. If you need to discard your own changes, be explicit about which files."
 fi
 

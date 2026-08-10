@@ -272,6 +272,18 @@ describe('guard-git.sh checkout -- boundary requires a bare "--" token (#2280)',
   it('still blocks a real revert chained after an allowed --detach invocation', () => {
     expect(isDenied('git checkout --detach && git checkout -- file.txt')).toBe(true);
   });
+
+  it('still blocks an IFS-expansion bypass with no literal whitespace between -- and the path (Greptile review, PR #2450)', () => {
+    // `${IFS}` (unquoted) is bash's own whitespace-field-separator variable
+    // — the command TEXT has no literal space between "--" and "file.txt",
+    // but bash expands `${IFS}` to whitespace before git ever sees it, so
+    // git actually receives `checkout -- file.txt`. A check anchored on
+    // literal `[[:space:]]` after "--" misses this; the negated-letter-class
+    // form does not, since "$" is not a letter.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git checkout --${IFS}file.txt')).toBe(true);
+    expect(isDenied('git checkout --$IFS')).toBe(true);
+  });
 });
 
 describe('guard-git.sh docs example stays in sync (#2105)', () => {
