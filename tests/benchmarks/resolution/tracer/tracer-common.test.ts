@@ -148,10 +148,13 @@ describe('tracer-common.sh sed-injection helpers (#1913)', () => {
       ].join('\n'),
     );
 
-    // The exact negate pattern jvm-tracer.sh's java branch uses (post-#2272).
+    // The exact negate pattern jvm-tracer.sh's java branch uses (post-#2272,
+    // round 3 -- the `new` fragment now requires the call's own closing
+    // paren to be followed directly by the line's `{`, not just a bare
+    // `new[[:space:]]`).
     const out = runHelper(
       `sedi_append_unless '/\\)[[:space:]]*\\{$/' ` +
-        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\\/\\*[^*]*\\*\\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
         `'        CallTracer.traceCall();' "${file}"`,
       file,
     );
@@ -191,7 +194,7 @@ describe('tracer-common.sh sed-injection helpers (#1913)', () => {
 
     const out = runHelper(
       `sedi_append_unless '/\\)[[:space:]]*\\{$/' ` +
-        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\\/\\*[^*]*\\*\\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
         `'        CallTracer.traceCall();' "${file}"`,
       file,
     );
@@ -227,10 +230,11 @@ describe('tracer-common.sh sed-injection helpers (#1913)', () => {
       ].join('\n'),
     );
 
-    // The exact negate pattern jvm-tracer.sh's groovy branch uses (post-#2272).
+    // The exact negate pattern jvm-tracer.sh's groovy branch uses (post-#2272,
+    // round 3).
     const out = runHelper(
       `sedi_append_unless '/\\)[[:space:]]*\\{[[:space:]]*$/' ` +
-        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]|^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\\/\\*[^*]*\\*\\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$|^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
         `'        CallTracer.traceCall();' "${file}"`,
       file,
     );
@@ -245,6 +249,37 @@ describe('tracer-common.sh sed-injection helpers (#1913)', () => {
     // method body).
     expect(out).not.toContain('list.findAll() {\n        CallTracer.traceCall();');
     expect(out).not.toContain('        findAll() {\n        CallTracer.traceCall();');
+  });
+
+  it('sedi_append_unless still traces a Groovy method with a `new`-valued default parameter (#2272 round 3)', () => {
+    // Greptile review, PR #2449, round 2: unlike Java, Groovy supports
+    // default parameter values, so a real method signature can itself
+    // contain the token `new` followed by whitespace. The round-1 fix's
+    // bare `new[[:space:]]` fragment wrongly excluded this line entirely,
+    // silently dropping the method from tracing.
+    const file = path.join(tmpDir, 'RunDefaultParam.groovy');
+    fs.writeFileSync(
+      file,
+      [
+        'class RunDefaultParam {',
+        '    def run(Config c = new Config()) {',
+        '        return c',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    const out = runHelper(
+      `sedi_append_unless '/\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\\/\\*[^*]*\\*\\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$|^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'        CallTracer.traceCall();' "${file}"`,
+      file,
+    );
+
+    expect(out).toContain(
+      '    def run(Config c = new Config()) {\n        CallTracer.traceCall();',
+    );
   });
 
   it('rejects a regression back to the GNU-only single-line a\\/i\\ shortcut in the tracer scripts', () => {
