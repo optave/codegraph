@@ -11,7 +11,15 @@ export interface DynamicCallCount {
   count: number;
 }
 
-/** Return a count of flagged dynamic call sink edges, grouped by kind. */
+/**
+ * Return a count of flagged dynamic call sink edges, grouped by kind.
+ *
+ * Only Track B (flag-only) edges ever have a persisted `dynamic_kind` — a
+ * Track A call that resolved successfully becomes an ordinary edge with
+ * `dynamic_kind=NULL` and is intentionally invisible here. See the
+ * `DynamicKind` doc comment in `types.ts` (issue #2270) for the full
+ * rationale.
+ */
 export function dynamicCallsData(customDbPath: string): DynamicCallCount[] {
   const db = openReadonlyOrFail(customDbPath, resolveBusyTimeoutMs(customDbPath));
   try {

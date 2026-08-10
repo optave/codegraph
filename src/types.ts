@@ -572,6 +572,28 @@ export interface LOCMetrics {
  * Taxonomy for dynamic/computed call sites — distinguishes resolvable kinds
  * (computed-literal, reflection) from flag-only kinds (eval, computed-key,
  * unresolved-dynamic) that cannot be resolved statically.
+ *
+ * `dynamicKind` on a `Call` and `dynamic_kind` on a persisted `edges` row are
+ * NOT the same thing, and only the latter is what `codegraph roles --dynamic`
+ * queries (issue #2270). Per ADR-002 (`docs/architecture/decisions/
+ * 002-dynamic-call-resolution.md`), only Track B — flag-only sink edges
+ * (`eval`, `computed-key` when unresolved, `unresolved-dynamic`, `reflection`
+ * when unresolved) — ever get a persisted `dynamic_kind`, at `confidence=0.0`.
+ * A Track A call that resolves successfully (`computed-literal`, `value-ref`,
+ * `dispatch-table`, resolved `reflection`/`computed-key`) becomes an ordinary
+ * `calls` edge with `dynamic_kind=NULL` — the extractor-level `dynamicKind`
+ * tag did its job (told the resolver how to find the target) and is then
+ * discarded, exactly like any other resolution-time detail that isn't part
+ * of the persisted edge. This is deliberate, not a bug: `codegraph roles
+ * --dynamic`'s whole purpose is surfacing calls that would otherwise be
+ * silently dropped (ADR-002's "never silently dropped" guarantee) — a
+ * resolved Track A call was never at risk of that, so it has nothing to
+ * surface there. It is also NOT safe to change by simply threading
+ * `dynamicKind` through resolved edges too: `incremental.ts`/
+ * `native-orchestrator.ts` already use `dynamic_kind IS NULL` (alongside
+ * `technique IS NULL`) to identify plain, not-yet-backfilled edges for a
+ * `technique` migration — repurposing the column for Track A would silently
+ * exclude those edges from that backfill.
  */
 export type DynamicKind =
   | 'computed-literal' // obj["foo"]()    — resolvable; already emitted as normal edge
