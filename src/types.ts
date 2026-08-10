@@ -464,6 +464,20 @@ export interface Definition {
   name: string;
   kind: SymbolKind;
   line: number;
+  /**
+   * 0-based source column of this Definition's own node — mirrors
+   * tree-sitter's own convention directly (unlike `line`, never
+   * `+1`-adjusted for display), since this is purely an internal
+   * disambiguation key for `matchResultToDef`/`matchNativeResult` (issue
+   * #2265), never rendered to users. Only populated for var/const-assigned
+   * anonymous function values (`handleVarFnAssignment`/`handleVarFnCapture`
+   * in extractors/javascript.ts) — the one Definition category where two
+   * distinct functions can legitimately share `line` (a multi-declarator
+   * statement, or two genuinely same-line closures) and where `name`
+   * (the variable bound, not the function's own — usually absent —
+   * internal name) can never disambiguate them.
+   */
+  column?: number;
   endLine?: number;
   children?: SubDeclaration[];
   visibility?: 'public' | 'private' | 'protected';
@@ -558,6 +572,28 @@ export interface LOCMetrics {
  * Taxonomy for dynamic/computed call sites — distinguishes resolvable kinds
  * (computed-literal, reflection) from flag-only kinds (eval, computed-key,
  * unresolved-dynamic) that cannot be resolved statically.
+ *
+ * `dynamicKind` on a `Call` and `dynamic_kind` on a persisted `edges` row are
+ * NOT the same thing, and only the latter is what `codegraph roles --dynamic`
+ * queries (issue #2270). Per ADR-002 (`docs/architecture/decisions/
+ * 002-dynamic-call-resolution.md`), only Track B — flag-only sink edges
+ * (`eval`, `computed-key` when unresolved, `unresolved-dynamic`, `reflection`
+ * when unresolved) — ever get a persisted `dynamic_kind`, at `confidence=0.0`.
+ * A Track A call that resolves successfully (`computed-literal`, `value-ref`,
+ * `dispatch-table`, resolved `reflection`/`computed-key`) becomes an ordinary
+ * `calls` edge with `dynamic_kind=NULL` — the extractor-level `dynamicKind`
+ * tag did its job (told the resolver how to find the target) and is then
+ * discarded, exactly like any other resolution-time detail that isn't part
+ * of the persisted edge. This is deliberate, not a bug: `codegraph roles
+ * --dynamic`'s whole purpose is surfacing calls that would otherwise be
+ * silently dropped (ADR-002's "never silently dropped" guarantee) — a
+ * resolved Track A call was never at risk of that, so it has nothing to
+ * surface there. It is also NOT safe to change by simply threading
+ * `dynamicKind` through resolved edges too: `incremental.ts`/
+ * `native-orchestrator.ts` already use `dynamic_kind IS NULL` (alongside
+ * `technique IS NULL`) to identify plain, not-yet-backfilled edges for a
+ * `technique` migration — repurposing the column for Track A would silently
+ * exclude those edges from that backfill.
  */
 export type DynamicKind =
   | 'computed-literal' // obj["foo"]()    — resolvable; already emitted as normal edge
@@ -565,7 +601,7 @@ export type DynamicKind =
   | 'reflection' // .call/.apply/.bind / Reflect.* / callable-ref — resolved when target is in codebase; sink edge emitted if unresolved
   | 'eval' // eval() / new Function() — undecidable; always flagged
   | 'unresolved-dynamic' // any other detected dynamic pattern; flagged
-  | 'value-ref' // bare identifier used as a value reference rather than a call site — object-literal property value (dispatch-table pattern, e.g. `{ resolve: someFn }`, #1771), assignment to a Lua global/builtin identifier (e.g. `require = tracedRequire`, #1776), or the right operand of an `instanceof` check (e.g. `err instanceof CodegraphError`, #1784) — resolved against function/method/class-kind targets; class was added for instanceof, but the filter is per-kind rather than per-site, so all three sites share the same allow-list; unresolved (e.g. plain data references) are dropped silently, NOT flagged
+  | 'value-ref' // bare identifier used as a value reference rather than a call site — object-literal property value (dispatch-table pattern, e.g. `{ resolve: someFn }`, #1771), assignment to a Lua global/builtin identifier (e.g. `require = tracedRequire`, #1776), the right operand of an `instanceof` check (e.g. `err instanceof CodegraphError`, #1784), or a logical-or/nullish-coalescing/ternary default assigned to a named variable (e.g. `const fetchFn = options._fetchLatest || fetchLatestVersion`, #2257) — resolved against function/method/class-kind targets; class was added for instanceof, but the filter is per-kind rather than per-site, so all sites share the same allow-list; unresolved (e.g. plain data references) are dropped silently, NOT flagged
   | 'dispatch-table'; // inline object-literal subscript dispatch, e.g. `({a:fnA,b:fnB})[key]()` (#1897) — resolved via the points-to wildcard solver against synthetic `<dt_line_col>[*]` array-elem bindings seeded from each property's identifier value; never flagged (excluded from FLAG_ONLY_DYNAMIC_KINDS) so an unresolved table produces no sink edge, matching the named-array `[fn1,fn2][*]` dispatch pattern
 
 /** A function/method call detected by an extractor. */
@@ -937,6 +973,36 @@ export interface ExtractorOutput {
    * `definePropertyReceivers.set("getter", "obj")`.
    */
   definePropertyReceivers?: Map<string, string>;
+  /**
+   * Table names (issue #2260) confirmed to have LOCAL computed-invocation
+   * evidence: `const handler = TABLE[computedExpr]; ...; handler(...)` —
+   * `TABLE`'s name is recorded here only when the declared variable
+   * (`handler`) is later found as the callee of a call expression in its
+   * own enclosing block (mirroring #2257's local, position-scoped liveness
+   * check — see `hasLaterCallInEnclosingBlock` in extractors/javascript.ts).
+   *
+   * Deliberately NOT keyed on the intermediate variable's name (`handler`):
+   * that's a generic local identifier that collides across unrelated
+   * functions/files far more often than a dispatch-table's own constant
+   * name does — the same reasoning #2257 used to reject a global,
+   * name-only liveness check for local variables. Keying on the TABLE name
+   * is still not enough on its own, though (Greptile review, PR #2445): two
+   * unrelated files — or two different functions in the same file — can
+   * each declare their own same-named table. The consumer
+   * (`build-edges.ts`/`build_edges.rs`) scopes evidence by file, and each
+   * entry here already carries a `#${startLine}` suffix identifying its
+   * enclosing function when the table is function-scoped, bare when it's
+   * module-scoped (see `findEnclosingTableName`/`findConsumerTableScopeLine`
+   * in extractors/javascript.ts) — so aggregating these strings graph-wide
+   * is safe once file+scope qualification is applied on lookup.
+   *
+   * Consumed alongside `invokedPropertyNames` as an alternate liveness
+   * pathway for a `dynamicKind: 'value-ref'` Call whose `receiver` (the
+   * table name, set by `collectObjectLiteralValueRefCall`) matches an
+   * entry here — extending the #1895 dot-property mechanism to the
+   * computed/bracket-access dispatch-table idiom.
+   */
+  computedDispatchTableEvidence?: readonly string[];
   /**
    * CJS require bindings from `const { X, Y } = require('./path')` patterns.
    * Used by buildImportedNamesMap to classify X and Y as import artifacts so
@@ -2662,6 +2728,8 @@ export interface NativeAddon {
 export interface NativeFunctionComplexityResult {
   name: string;
   line: number;
+  /** See `Definition.column`'s doc comment (issue #2265). */
+  column?: number | null;
   endLine: number | null;
   complexity: {
     cognitive: number;
@@ -2688,6 +2756,8 @@ export interface NativeFunctionComplexityResult {
 export interface NativeFunctionCfgResult {
   name: string;
   line: number;
+  /** See `Definition.column`'s doc comment (issue #2265). */
+  column?: number | null;
   endLine: number | null;
   cfg: { blocks: CfgBlock[]; edges: CfgEdge[] };
 }

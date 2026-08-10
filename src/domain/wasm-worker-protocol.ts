@@ -81,6 +81,8 @@ export interface SerializedExtractorOutput {
   dataflowVertices?: import('../types.js').DataflowVertex[];
   /** CJS require bindings — see ExtractorOutput.cjsRequireBindings (#1661). */
   cjsRequireBindings?: Array<{ names: string[]; source: string }>;
+  /** Issue #2260 — see ExtractorOutput.computedDispatchTableEvidence. */
+  computedDispatchTableEvidence?: readonly string[];
 }
 
 export interface WorkerParseResponseOk {

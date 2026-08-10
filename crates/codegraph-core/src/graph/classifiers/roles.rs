@@ -12,7 +12,7 @@ use rusqlite::Connection;
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const FRAMEWORK_ENTRY_PREFIXES: &[&str] = &["route:", "event:", "command:"];
+pub(crate) const FRAMEWORK_ENTRY_PREFIXES: &[&str] = &["route:", "event:", "command:"];
 
 const LEAF_KINDS: &[&str] = &["parameter", "property", "constant"];
 

@@ -433,6 +433,23 @@ describe('JavaScript parser', () => {
     });
   });
 
+  describe('CJS require() array-pattern destructuring (#2268)', () => {
+    // `extractCjsRequireBinding` only ever recognized an object_pattern
+    // destructure of the require() result — `const [a, b] = require(...)`
+    // never got recorded as a CJS-require import artifact at all, in either
+    // engine, unlike the object-pattern shape.
+
+    it('records a plain array-pattern require destructure', () => {
+      const symbols: any = parseJS(`const [a, b] = require('./mod');`);
+      expect(symbols.cjsRequireBindings).toEqual([{ names: ['a', 'b'], source: './mod' }]);
+    });
+
+    it('includes a rest binding in an array-pattern require destructure', () => {
+      const symbols: any = parseJS(`const [a, ...rest] = require('./mod');`);
+      expect(symbols.cjsRequireBindings).toEqual([{ names: ['a', 'rest'], source: './mod' }]);
+    });
+  });
+
   it('extracts call expressions', () => {
     const symbols = parseJS(`import { foo } from './bar'; foo(); baz();`);
     expect(symbols.calls).toContainEqual(expect.objectContaining({ name: 'foo' }));
@@ -2027,6 +2044,506 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('logical-or/nullish-coalescing/ternary fallback value-ref extraction (#2257)', () => {
+    it('extracts a value-ref call for a logical-or fallback whose variable is used again', () => {
+      const symbols = parseJS(`
+        const fetchFn = options.custom || fetchLatestVersion;
+        call(fetchFn);
+      `);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({
+          name: 'fetchLatestVersion',
+          dynamic: true,
+          dynamicKind: 'value-ref',
+        }),
+      );
+    });
+
+    it('does not extract a value-ref call when the variable is never referenced again', () => {
+      const symbols = parseJS(`
+        const fetchFn = options.custom || fetchLatestVersion;
+        console.log('unrelated');
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    it('extracts value-ref calls for both ternary branches when the variable is used again', () => {
+      const symbols = parseJS(`
+        const picked = cond ? left : right;
+        call(picked);
+      `);
+      const names = symbols.calls.filter((c) => c.dynamicKind === 'value-ref').map((c) => c.name);
+      expect(names).toContain('left');
+      expect(names).toContain('right');
+    });
+
+    it('extracts a value-ref call for a nullish-coalescing fallback', () => {
+      const symbols = parseJS(`
+        const fetchFn = options.custom ?? fetchLatestVersion;
+        call(fetchFn);
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: a same-named binding declared in a nested
+    // scope must not be mistaken for a reference to the outer fallback
+    // variable.
+    it('does not credit liveness from a same-named binding shadowed in a nested scope', () => {
+      const symbols = parseJS(`
+        function outer() {
+          const fetchFn = options.custom || fetchLatestVersion;
+          function helper() {
+            let fetchFn = somethingElse();
+            return fetchFn();
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Greptile review, PR #2432: a reference in a sibling declarator of the
+    // SAME comma-separated declaration must still count.
+    it('extracts a value-ref call when the variable is used by a sibling declarator in the same statement', () => {
+      const symbols = parseJS(
+        `const fetchFn = options.custom || fetchLatestVersion, result = fetchFn();`,
+      );
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: the liveness scan's recursive walk must be
+    // depth-bounded (MAX_WALK_DEPTH), matching every other recursive walk in
+    // this file, so a pathologically deep enclosing block (e.g. deeply
+    // nested generated JS) can't overflow the stack.
+    it('does not overflow the stack on a pathologically deep enclosing block', () => {
+      const depth = 300;
+      const nested = `${'if (true) {\n'.repeat(depth)}call(fetchFn);\n${'}\n'.repeat(depth)}`;
+      const source = `const fetchFn = options.custom || fetchLatestVersion;\n${nested}`;
+      expect(() => parseJS(source)).not.toThrow();
+    });
+
+    // Greptile review, PR #2432: a default-value expression referencing the
+    // outer fallback variable is a REFERENCE (a real use), not a shadowing
+    // parameter binding — must not be pruned from the liveness scan.
+    it('does not treat a parameter default reference as a shadowing binding', () => {
+      const symbols = parseJS(`
+        function outer() {
+          const fetchFn = options.custom || fetchLatestVersion;
+          function helper(x = fetchFn) {
+            return x();
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: a legal `var` sibling rebinding the SAME
+    // name in the same statement (`var fn = a, fn = b;`) is a binding, not a
+    // read — must not fabricate liveness for the first declarator's fallback.
+    it('does not credit liveness from a var sibling rebinding the same name', () => {
+      const symbols = parseJS(`var fn = options.custom || fetchLatestVersion, fn = replacement;`);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Greptile review, PR #2432: a block-local function declaration also
+    // introduces its own binding — a call to it inside that block must not
+    // be mistaken for a use of the outer fallback variable sharing its name.
+    it('does not credit liveness from a block-local function declaration sharing the name', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        {
+          function fn() {}
+          fn();
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Greptile review, PR #2432: a plain `=` reassignment overwrites the
+    // variable without ever consuming its current value — must not
+    // fabricate liveness for the fallback that was assigned to it.
+    it('does not credit liveness from a write-only reassignment', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        fn = replacement;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // A compound assignment (`+=`, `||=`, etc.) DOES read the current value
+    // before writing, so its left-hand identifier is a real reference and
+    // must still count.
+    it('credits liveness from a compound assignment reference', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        fn += 1;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: overwriting a fallback variable through
+    // OBJECT destructuring is still a WRITE, not a read — the same as a
+    // plain `fn = replacement`.
+    it('does not credit liveness from a write-only object destructuring reassignment', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        ({ fn } = replacement);
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Same as above, for ARRAY destructuring.
+    it('does not credit liveness from a write-only array destructuring reassignment', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        [fn] = replacement;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Greptile review, PR #2432: patternBindsName's own recursive descent
+    // through nested destructuring patterns must be depth-bounded too, like
+    // every other recursive walk in this file (MAX_WALK_DEPTH) — a
+    // pathologically deep array/object pattern must not overflow the stack.
+    it('does not overflow the stack on a pathologically deep destructuring pattern', () => {
+      const depth = 300;
+      const pattern = `${'['.repeat(depth)}fn${']'.repeat(depth)}`;
+      const source = `let fn = options.custom || fetchLatestVersion;\n${pattern} = replacement;`;
+      expect(() => parseJS(source)).not.toThrow();
+    });
+
+    // Greptile review, PR #2432: a destructuring default that READS the
+    // outer fallback variable (`const { value = fn } = input;`) must not be
+    // mistaken for a binding of `fn` when deciding whether a nested block
+    // shadows it — the read must still be found.
+    it('does not treat a destructuring default reference as a shadowing declaration', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        {
+          const { value = fn } = input;
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: `({ fn = fn } = replacement)` both WRITES
+    // `fn` and READS its previous value as the default — the write must not
+    // suppress the read.
+    it('credits liveness from a default read inside a destructuring write', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        ({ fn = fn } = replacement);
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: a `var` is hoisted, so a reference in an
+    // earlier sibling statement executes BEFORE the fallback is assigned and
+    // reads the pre-assignment value, not the fallback — must not fabricate
+    // liveness for it.
+    it('does not credit liveness from a reference before a hoisted var initializer', () => {
+      const symbols = parseJS(`
+        fn();
+        var fn = options.custom || fetchLatestVersion;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // A reference in a LATER sibling statement is exactly the liveness
+    // evidence this mechanism requires — the position filter above must not
+    // suppress it too.
+    it('still credits liveness from a reference after the declaration', () => {
+      const symbols = parseJS(`
+        var fn = options.custom || fetchLatestVersion;
+        fn();
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: all `case`/`default` clauses in a switch
+    // share ONE lexical scope. An UNBRACED case's own `let` declaration of
+    // the SAME name shadows the outer fallback variable for the whole
+    // switch, even though it isn't wrapped in its own block.
+    it('does not credit liveness from an unbraced switch-case shadowing the name', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        switch (x) {
+          case 1:
+            let fn = 1;
+            fn();
+            break;
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Greptile review, PR #2432: `var` is function-scoped, not switch-scoped
+    // — a `var fn` redeclaration in one case is the SAME outer binding, not
+    // a distinct shadow, so it must not suppress a genuine read in a
+    // DIFFERENT, unrelated case.
+    it('still credits liveness from a switch-case read when another case redeclares the name via var', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          switch (x) {
+            case 1:
+              fn();
+              break;
+            case 2:
+              var fn = something;
+              break;
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: `for (fn of values) {}` / `for (fn in obj)
+    // {}` with NO declaration keyword reassigns fn on every iteration — a
+    // WRITE, not a read of the value it held before the loop started.
+    it('does not credit liveness from a for-of loop write target', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        for (fn of values) {}
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    it('does not credit liveness from a for-in loop write target', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        for (fn in obj) {}
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Using the fallback variable as the ITERABLE (not the loop target) is
+    // a genuine read and must still count.
+    it('still credits liveness when the fallback variable is the for-of iterable', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        for (const x of fn) {}
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: with a hoisted declaration like
+    // `var result = fn(), fn = custom || fallback`, the EARLIER sibling
+    // declarator's initializer runs before this one is assigned — it
+    // cannot have consumed a value that doesn't exist yet.
+    it('does not credit liveness from an earlier sibling declarator in the same statement', () => {
+      const symbols = parseJS(`
+        var result = fn(), fn = options.custom || fetchLatestVersion;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // Greptile review, PR #2432: `var` is function-scoped, so a `var`
+    // redeclaration anywhere in a nested block is the SAME binding as an
+    // outer `var` of the same name — it must not prune a genuine read
+    // elsewhere in that same block (here, one that textually precedes the
+    // redeclaration).
+    it('still credits liveness from a read in a nested block that also redeclares the name via var', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          {
+            fn();
+            var fn = something;
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Same principle for a C-style for-loop: a `var` in the loop's own init
+    // clause is the SAME function-scoped binding, so a read in the loop's
+    // test/update clause must still count.
+    it('still credits liveness from a for-loop read when the loop redeclares the name via var', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          for (var fn = 0; fn < 10; fn++) {}
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // A `let`/`const` declaring for-in loop variable IS a genuinely distinct
+    // block-scoped binding (unlike `var`) — it must still shadow correctly.
+    it('does not credit liveness from a let-declared for-in loop variable', () => {
+      const symbols = parseJS(`
+        function outer() {
+          const fn = options.custom || fetchLatestVersion;
+          for (let fn in obj) {
+            doSomething(fn);
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+  });
+
+  describe('computed/bracket-access dispatch-table invocation evidence (#2260)', () => {
+    // This mechanism's Call extraction is UNCONDITIONAL (like #1771/#1895 —
+    // every bare-identifier object-literal property value always produces a
+    // value-ref Call, regardless of liveness); only the RESOLVER (build-edges.ts
+    // / incremental.ts) later gates whether that Call becomes a real edge,
+    // consulting invokedPropertyNames/computedDispatchTableEvidence at that
+    // point — NOT here. So the correct thing to assert at the extractor level
+    // is computedDispatchTableEvidence's own contents (what THIS mechanism
+    // actually decides), not the calls array (which is always populated
+    // either way) — the full end-to-end edge-creation behavior is covered by
+    // the dual-engine integration test instead.
+
+    // The confirmed real-world case: an AST-node-type-keyed dispatch table
+    // (src/extractors/groovy.ts's GROOVY_NODE_HANDLERS), consumed via a
+    // computed lookup stored in an intermediate variable, then called.
+    it('records the table name when the intermediate variable is later called', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = {
+          interface_definition: handleInterfaceDecl,
+        };
+        function walkNode(node, ctx) {
+          const handler = NODE_HANDLERS[node.type];
+          if (handler) handler(node, ctx);
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toEqual(['NODE_HANDLERS']);
+    });
+
+    it('does not record the table name when the intermediate variable is only referenced, never called', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = {
+          interface_definition: handleInterfaceDecl,
+        };
+        function walkNode(node, ctx) {
+          const handler = NODE_HANDLERS[node.type];
+          console.log(handler);
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toBeUndefined();
+    });
+
+    it('does not fire for a string-literal key — already handled by the existing computed-literal path', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = {
+          interface_definition: handleInterfaceDecl,
+        };
+        function walkNode() {
+          const handler = NODE_HANDLERS['interface_definition'];
+          handler();
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toBeUndefined();
+    });
+
+    it('does not record the table name when the call is inside a nested scope that shadows the intermediate variable', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = {
+          interface_definition: handleInterfaceDecl,
+        };
+        function walkNode(node, ctx) {
+          const handler = NODE_HANDLERS[node.type];
+          {
+            let handler = unrelatedFn;
+            handler();
+          }
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toBeUndefined();
+    });
+
+    it('resolves the table name through a parenthesized/as-const wrapper', () => {
+      const symbols = parseJS(`
+        const NODE_HANDLERS = ({
+          interface_definition: handleInterfaceDecl,
+        } as const);
+        function walkNode(node, ctx) {
+          const handler = NODE_HANDLERS[node.type];
+          handler();
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toEqual(['NODE_HANDLERS']);
+    });
+
+    it('only records the specific table that has its own computed-invocation evidence', () => {
+      const symbols = parseJS(`
+        const HANDLERS_A = {
+          interface_definition: handleA,
+        };
+        const HANDLERS_B = {
+          interface_definition: handleB,
+        };
+        function walkNode(node, ctx) {
+          const handler = HANDLERS_A[node.type];
+          handler();
+        }
+      `);
+      expect(symbols.computedDispatchTableEvidence).toEqual(['HANDLERS_A']);
+    });
+
+    it('does not overflow the stack on a pathologically deep enclosing block', () => {
+      const depth = 300;
+      const nested = `${'if (true) {\n'.repeat(depth)}handler();\n${'}\n'.repeat(depth)}`;
+      const source = `
+        const NODE_HANDLERS = { interface_definition: handleInterfaceDecl };
+        function walkNode(node) {
+          const handler = NODE_HANDLERS[node.type];
+          ${nested}
+        }
+      `;
+      expect(() => parseJS(source)).not.toThrow();
+    });
+  });
+
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {
     // Mirrors the Rust `dispatch_table_emits_dt_call_and_array_elem_bindings`
     // / `dispatch_table_parenthesized_object_also_works` unit tests in
@@ -2115,6 +2632,45 @@ function runDemo(reporter: Reporter, users: string[]): void {
       expect(symbols.calls).toContainEqual(
         expect.objectContaining({ name: 'a', dynamicKind: 'computed-literal' }),
       );
+    });
+  });
+
+  describe('var/const-assigned function Definition.line/column (#2265)', () => {
+    it('gives each declarator in a multi-declarator statement its own function-node line, not the statement start', () => {
+      const symbols = parseJS(`
+        const a = (x) => {
+          if (x) { return 1; }
+          return 0;
+        }, b = (x) => {
+          return 2;
+        };
+        a(1); b(2);
+      `);
+      const a = symbols.definitions.find((d) => d.name === 'a');
+      const b = symbols.definitions.find((d) => d.name === 'b');
+      expect(a?.line).toBe(2);
+      expect(b?.line).toBe(5);
+      expect(a?.line).not.toBe(b?.line);
+    });
+
+    it('records each declarator its own start column, distinct even on a shared line', () => {
+      const symbols = parseJS(
+        `const a = (y) => { return y; }, b = (y) => { if (y) { return 1; } return 0; };`,
+      );
+      const a = symbols.definitions.find((d) => d.name === 'a');
+      const b = symbols.definitions.find((d) => d.name === 'b');
+      expect(a?.line).toBe(b?.line);
+      expect(a?.column).toBeDefined();
+      expect(b?.column).toBeDefined();
+      expect(a?.column).not.toBe(b?.column);
+    });
+
+    it('uses the function-expression value node line for a single named/anonymous function-expression declarator too', () => {
+      const symbols = parseJS(`const solo = function (x) { return x; };`);
+      const solo = symbols.definitions.find((d) => d.name === 'solo');
+      // Single-declarator statement: statement start and value-node start
+      // coincide here, so this must keep passing unchanged by the #2265 fix.
+      expect(solo?.line).toBe(1);
     });
   });
 

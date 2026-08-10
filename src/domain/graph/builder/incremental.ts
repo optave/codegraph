@@ -1528,6 +1528,12 @@ function buildCallEdges(
     relPath,
     ownInvokedPropertyNames,
   );
+  // #2260: same-file-only scope (unlike invokedPropertyNames above, which
+  // additionally reads a persisted table) — the table+consumer for this
+  // idiom are typically same-file (an internal AST-dispatch table, not an
+  // exported API); a cross-file case missed on a scoped rebuild recovers on
+  // the next full build. See the fuller trade-off note in stages/build-edges.ts.
+  const computedDispatchTableEvidence = new Set(symbols.computedDispatchTableEvidence ?? []);
   let edgesAdded = 0;
 
   for (const call of symbols.calls) {
@@ -1550,6 +1556,7 @@ function buildCallEdges(
             caller.callerName,
             importedOriginalNames,
             namespaceImports,
+            caller.enclosingClassHint,
           );
 
     let targets = applyCallFallbacks(
@@ -1573,7 +1580,14 @@ function buildCallEdges(
       // #1895: object-literal-property value-refs additionally require
       // independent evidence the property is actually invoked somewhere —
       // mirrors the same check in resolveFallbackTargets (stages/build-edges.ts).
-      if (call.keyExpr && !invokedPropertyNames.has(call.keyExpr)) {
+      // #2260: OR the property's own dispatch table has confirmed computed-
+      // access invocation evidence — see resolveFallbackTargets's fuller
+      // comment on this alternate pathway.
+      if (
+        call.keyExpr &&
+        !invokedPropertyNames.has(call.keyExpr) &&
+        !(call.receiver && computedDispatchTableEvidence.has(call.receiver))
+      ) {
         targets = [];
       }
     }
@@ -2280,6 +2294,32 @@ function refreshEntrypointAttribution(
 
 /**
  * Parse a single file and update the database incrementally.
+ *
+ * The destructive purge of the file's existing graph data runs only once a
+ * full replacement is in hand — after the file has been read AND parsed
+ * successfully (#2435). Purging first (as this did before) turned any
+ * transient read failure into permanent data loss: every bail-out path
+ * returned without re-inserting anything, leaving the file with zero nodes
+ * and zero edges while its `file_hashes` row survived still matching the
+ * on-disk content, so the next `codegraph build --incremental` classified the
+ * file as unchanged and skipped it. The file stayed missing from the graph
+ * until someone ran `--no-incremental`. Transient read failures are routine
+ * under `codegraph watch`: many editors save via write-to-temp-then-rename,
+ * and some briefly change permissions, so the watcher can easily fire while
+ * the path is momentarily unreadable.
+ *
+ * Ordering — not a transaction — is what provides the atomicity here: this
+ * function is async (it awaits the parse and the reverse-dep cascade) and
+ * better-sqlite3 transactions cannot span an await.
+ *
+ * This mirrors the discipline the reverse-dep cascade in this same file
+ * already follows: `parseReverseDeps` deletes a dep's outgoing edges only
+ * after that dep has parsed successfully. The full-build path likewise never
+ * purges a file it failed to *read* — change detection reads every candidate's
+ * content up front and silently drops the unreadable ones from the changed set
+ * (`stages/detect-changes.ts`), so they are never classified as changed. Note
+ * that it does purge before parsing, so it does not share this function's
+ * protection against a failed *parse* — tracked separately in #2441.
  */
 export async function rebuildFile(
   db: BetterSqlite3Database,
@@ -2299,18 +2339,16 @@ export async function rebuildFile(
   // Find reverse-deps BEFORE purging (edges still reference the old nodes)
   const reverseDeps = findReverseDeps(db, relPath);
 
-  // Purge ancillary tables (incl. embeddings), edges, and nodes in one pass.
-  // Embeddings must be purged before nodes — better-sqlite3 enforces foreign
-  // keys by default, and `embeddings.node_id` references `nodes.id`. Issue #1176.
-  // `purgeHashes: false` preserves file_hashes for the next incremental build.
-  purgeFileData(db, relPath, { purgeHashes: false });
-
   if (!fs.existsSync(filePath)) {
     if (cache) (cache as { remove(p: string): void }).remove(filePath);
+    // Purge ancillary tables (incl. embeddings), edges, and nodes in one pass.
+    // Embeddings must be purged before nodes — better-sqlite3 enforces foreign
+    // keys by default, and `embeddings.node_id` references `nodes.id`. Issue #1176.
     // The file no longer exists, so it has no edges to keep in sync with a
-    // hash — delete it immediately (mirrors the full-build removed-file path
-    // in insertNodes.ts, which is likewise unconditional).
-    stmts.deleteFileHash.run(relPath);
+    // hash — `purgeHashes` defaults to true here, unlike the replacement purge
+    // below (mirrors the full-build removed-file path in insertNodes.ts, which
+    // is likewise unconditional).
+    purgeFileData(db, relPath);
     // #2428: the purge above dropped this file's entrypoint evidence, so
     // re-projecting is what clears a target it was attributing — including
     // one declared in a different file, which nothing else in this rebuild
@@ -2319,27 +2357,29 @@ export async function rebuildFile(
     return buildDeletionResult(relPath, oldNodes, edgesBefore, oldSymbols, diffSymbols);
   }
 
+  // Read and parse before touching the graph (#2435) — both of these can fail
+  // on a file that is still perfectly present and valid in the DB, and there
+  // is nothing better to replace it with than what is already there.
   let code: string;
   try {
     code = readFileSafe(filePath);
   } catch (err) {
-    warn(`Cannot read ${relPath}: ${(err as Error).message}`);
-    // #2428: the purge above already dropped this file's evidence, so
-    // re-project before bailing out — `nodes.entrypoint` must never be left
-    // disagreeing with `entrypoint_calls`, or the next rebuild of some
-    // unrelated file silently corrects it and the flag appears to change for
-    // no reason. (The purge itself surviving a failed rebuild is the wider
-    // pre-existing bug #2435; once that is fixed there is nothing to
-    // re-project here and this call becomes a no-op.)
-    refreshEntrypointAttribution(db, relPath, null);
+    warn(`Cannot read ${relPath}: ${(err as Error).message} — graph left unchanged`);
     return null;
   }
 
   const symbols = await parseFileIncremental(cache, filePath, code, engineOpts);
   if (!symbols) {
-    refreshEntrypointAttribution(db, relPath, null);
+    debug(`rebuildFile: no symbols extracted for ${relPath} — graph left unchanged`);
     return null;
   }
+
+  // A full replacement now exists, so swapping it in is safe. Purge ancillary
+  // tables (incl. embeddings), edges, and nodes in one pass. Embeddings must be
+  // purged before nodes — better-sqlite3 enforces foreign keys by default, and
+  // `embeddings.node_id` references `nodes.id`. Issue #1176. `purgeHashes:
+  // false` preserves file_hashes for the next incremental build.
+  purgeFileData(db, relPath, { purgeHashes: false });
 
   insertFileNodes(stmts, relPath, symbols);
 
@@ -2351,6 +2391,13 @@ export async function rebuildFile(
     // Same invariant, but the parse succeeded — so this file's fresh evidence
     // is known and worth writing, even though no edges get built below.
     refreshEntrypointAttribution(db, relPath, symbols);
+    // Unreachable in practice (`insertFileNodes` just inserted this exact row),
+    // but the purge above has already run, so bailing out here leaves the file
+    // with nodes and no edges. Drop its `file_hashes` row so the next
+    // `codegraph build --incremental` is forced to reprocess the file instead
+    // of trusting a hash that no longer describes the graph (#2435) — every
+    // other bail-out path returns before the purge and needs no such repair.
+    stmts.deleteFileHash.run(relPath);
     return {
       file: relPath,
       nodesAdded: newNodes,

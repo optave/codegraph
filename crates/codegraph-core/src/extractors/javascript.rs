@@ -2481,6 +2481,50 @@ const VAR_DECL_FN_SCOPE_TYPES: [&str; 6] = [
     "generator_function",
 ];
 
+/// Detect `<destructured pattern> = require('./path')` and, if so, push a
+/// CJS-require `Import` so the receiver-edge resolver treats the destructured
+/// names as import artifacts, not local definitions (mirrors the WASM
+/// `cjsRequireBindings` mechanism, #1678). `names` is the pattern's
+/// already-collected bound names — `collect_object_pattern_names` for
+/// `const { a, b } = require(...)`, `collect_array_pattern_names` for
+/// `const [a, b] = require(...)` (issue #2268 added the array-pattern case;
+/// it was never recorded at all before, only the object-pattern shape was).
+fn record_cjs_require_import(
+    value_n: &Node,
+    source: &[u8],
+    names: Vec<String>,
+    node_line: u32,
+    imports: &mut Vec<Import>,
+) {
+    if names.is_empty() || value_n.kind() != "call_expression" {
+        return;
+    }
+    let Some(fn_node) = value_n.child_by_field_name("function") else {
+        return;
+    };
+    if node_text(&fn_node, source) != "require" {
+        return;
+    }
+    let args = value_n
+        .child_by_field_name("arguments")
+        .or_else(|| find_child(value_n, "arguments"));
+    let Some(args) = args else {
+        return;
+    };
+    let Some(str_arg) = find_child(&args, "string") else {
+        return;
+    };
+    let mod_path = node_text(&str_arg, source).replace(&['\'', '"'][..], "");
+    // CJS require bindings never populate renamed_imports — resolve_call_targets
+    // deliberately ignores the original name for these (empty target_file forces
+    // a same-file fallback match, matching WASM's importedNamesMap exclusion,
+    // #1678) — so any rename pairs the caller collected are discarded before
+    // reaching here (see the object-pattern call site's own comment).
+    let mut imp = Import::new(mod_path, names, node_line);
+    imp.cjs_require = Some(true);
+    imports.push(imp);
+}
+
 fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let is_const = node
         .child(0)
@@ -2494,6 +2538,17 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         if declarator.kind() != "variable_declarator" {
             continue;
         }
+        // #2257: logical-or/nullish-coalescing/ternary default assigned to a
+        // named variable, e.g. `const fetchFn = options._fetchLatest || fetchLatestVersion`.
+        handle_logical_or_ternary_value_ref(&declarator, source, &mut symbols.calls);
+        // #2260: computed dispatch-table access assigned to a named variable,
+        // e.g. `const handler = TABLE[node.type]; ...; handler(...)`.
+        handle_computed_dispatch_table_evidence(
+            &declarator,
+            source,
+            &mut symbols.computed_dispatch_table_evidence,
+        );
+
         let name_n = declarator.child_by_field_name("name");
         let value_n = declarator.child_by_field_name("value");
         let (Some(name_n), Some(value_n)) = (name_n, value_n) else {
@@ -2510,7 +2565,12 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             symbols.definitions.push(Definition {
                 name: node_text(&name_n, source).to_string(),
                 kind: "function".to_string(),
-                line: start_line(node),
+                // #2265: the function VALUE's own start line, not the
+                // enclosing statement's — `node` spans the whole
+                // `const a = fn1, b = fn2;` declaration, so every declarator
+                // in a multi-binding statement previously got the identical
+                // (wrong, for every declarator but the first) line.
+                line: start_line(&value_n),
                 end_line: Some(end_line(&value_n)),
                 decorators: None,
                 complexity: compute_all_metrics(&value_n, source, "javascript"),
@@ -2534,34 +2594,14 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             // If the RHS is a CJS require() call, also add to imports so the
             // receiver-edge resolver treats the names as import artifacts, not
             // local definitions — mirroring the WASM cjsRequireBindings fix (#1678).
-            if value_n.kind() == "call_expression" {
-                if let Some(fn_node) = value_n.child_by_field_name("function") {
-                    if node_text(&fn_node, source) == "require" {
-                        let args = value_n
-                            .child_by_field_name("arguments")
-                            .or_else(|| find_child(&value_n, "arguments"));
-                        if let Some(args) = args {
-                            if let Some(str_arg) = find_child(&args, "string") {
-                                let mod_path =
-                                    node_text(&str_arg, source).replace(&['\'', '"'][..], "");
-                                // CJS require bindings never populate renamed_imports —
-                                // resolve_call_targets deliberately ignores the original
-                                // name for these (empty target_file forces a same-file
-                                // fallback match, matching WASM's importedNamesMap
-                                // exclusion, #1678) — so the rename pairs collected here
-                                // are discarded.
-                                let names =
-                                    collect_object_pattern_names(&name_n, source, &mut Vec::new());
-                                if !names.is_empty() {
-                                    let mut imp = Import::new(mod_path, names, start_line(node));
-                                    imp.cjs_require = Some(true);
-                                    symbols.imports.push(imp);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            let names = collect_object_pattern_names(&name_n, source, &mut Vec::new());
+            record_cjs_require_import(
+                &value_n,
+                source,
+                names,
+                start_line(node),
+                &mut symbols.imports,
+            );
         } else if is_const && name_n.kind() == "identifier" && !in_function_scope {
             // Any other initializer shape becomes a "constant" Definition, regardless of
             // complexity (call/member/parenthesized expressions, etc.) — mirroring how
@@ -2596,6 +2636,16 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 start_line(node),
                 end_line(node),
                 &mut symbols.definitions,
+            );
+            // Mirrors the object_pattern branch above: `const [a, b] = require('./mod')`
+            // never got recorded as a CJS-require import artifact by either engine (#2268).
+            let names = collect_array_pattern_names(&name_n, source);
+            record_cjs_require_import(
+                &value_n,
+                source,
+                names,
+                start_line(node),
+                &mut symbols.imports,
             );
         } else if !is_const
             && value_n.kind() == "object"
@@ -4134,7 +4184,93 @@ fn extract_callback_reference_calls(
 /// the key, since that's the name a dispatch consumer would actually call
 /// (`table.resolve(...)`), not the function's own declared name.
 ///
+/// Node kinds `find_enclosing_table_name` passes through on its way up to a
+/// `variable_declarator`. Mirrors `TABLE_NAME_PASSTHROUGH_TYPES` in
+/// `src/extractors/javascript.ts`.
+const TABLE_NAME_PASSTHROUGH_KINDS: &[&str] = &[
+    "object",
+    "parenthesized_expression",
+    "as_expression",
+    "satisfies_expression",
+    "non_null_expression",
+];
+
+/// Walk outward from `node` through EVERY enclosing scope-introducing
+/// ancestor — not just function scopes — returning the start line of the
+/// nearest one that directly declares/shadows `name` itself
+/// (`introduces_shadowed_binding`, the same hardened shadow-detection #2257
+/// built out, already handles function-likes, `catch`, `for`/`for-in`,
+/// `statement_block`, and `switch_body`). `None` when no enclosing scope
+/// redeclares it, i.e. it comes from module scope.
+///
+/// Shared by both sides of issue #2260's computed-dispatch-table
+/// disambiguation (Greptile review, PR #2445, rounds 2 and 3): a file-scoped
+/// evidence key alone let two different FUNCTIONS in one file, each
+/// declaring their own same-named local table, share one entry; scoping by
+/// enclosing FUNCTION alone (round 2's fix) still let two sibling BLOCKS
+/// inside the SAME function do the same (e.g. an `if`/`else` each declaring
+/// their own same-named table). Walking every scope level, not just
+/// function boundaries, and identifying the match by its own line — not a
+/// human-readable qualifier, since a bare block has no name — disambiguates
+/// any two distinct lexical bindings of the same name anywhere in the file,
+/// regardless of nesting shape. Mirrors `findDeclaringScopeLine` in
+/// `src/extractors/javascript.ts`.
+fn find_declaring_scope_line(node: &Node, name: &str, source: &[u8]) -> Option<u32> {
+    let mut current = node.parent();
+    while let Some(cur) = current {
+        if introduces_shadowed_binding(&cur, name, source) {
+            return Some(cur.start_position().row as u32);
+        }
+        current = cur.parent();
+    }
+    None
+}
+
+/// Walk up from a dispatch-table object-literal's `pair`/shorthand-property
+/// node to find the name of the variable it's assigned to (e.g.
+/// `GROOVY_NODE_HANDLERS` for `const GROOVY_NODE_HANDLERS = { ... }`) — used
+/// to key the computed-access liveness pathway (issue #2260) on the TABLE's
+/// own name, set as the value-ref Call's `receiver`. Bounded to a small
+/// number of hops through common TS wrapper shapes so a deeply-nested or
+/// non-declarator-assigned object literal simply yields no table name.
+///
+/// When the table's own declaration is scoped inside any block (not
+/// module-level), the returned name carries a `#${line}` suffix identifying
+/// that declaring scope (`find_declaring_scope_line`) — `#` can never
+/// appear in a real identifier, so this can't collide with an actual table
+/// name, and a module-scope table (the common case) is returned bare,
+/// unchanged from before this suffix existed. Mirrors
+/// `findEnclosingTableName` in `src/extractors/javascript.ts`.
+fn find_enclosing_table_name(node: &Node, source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    let mut hops = 0;
+    while let Some(cur) = current {
+        if hops >= 6 {
+            return None;
+        }
+        if cur.kind() == "variable_declarator" {
+            let name_n = cur.child_by_field_name("name")?;
+            if name_n.kind() != "identifier" {
+                return None;
+            }
+            let name = node_text(&name_n, source);
+            return Some(match find_declaring_scope_line(&cur, name, source) {
+                Some(scope_line) => format!("{name}#{scope_line}"),
+                None => name.to_string(),
+            });
+        }
+        if !TABLE_NAME_PASSTHROUGH_KINDS.contains(&cur.kind()) {
+            return None;
+        }
+        current = cur.parent();
+        hops += 1;
+    }
+    None
+}
+
 /// Mirrors `collectObjectLiteralValueRefCall` in `src/extractors/javascript.ts`.
+/// `receiver` (issue #2260) carries the TABLE's own variable name, when
+/// resolvable — see `find_enclosing_table_name`.
 fn handle_object_literal_pair_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>) {
     let Some(value_n) = node.child_by_field_name("value") else {
         return;
@@ -4155,6 +4291,7 @@ fn handle_object_literal_pair_value_ref(node: &Node, source: &[u8], calls: &mut 
         dynamic: Some(true),
         dynamic_kind: Some("value-ref".to_string()),
         key_expr,
+        receiver: find_enclosing_table_name(node, source),
         ..Default::default()
     });
 }
@@ -4182,6 +4319,7 @@ fn handle_object_literal_shorthand_value_ref(node: &Node, source: &[u8], calls: 
         dynamic: Some(true),
         dynamic_kind: Some("value-ref".to_string()),
         key_expr: Some(text.to_string()),
+        receiver: find_enclosing_table_name(node, source),
         ..Default::default()
     });
 }
@@ -4229,6 +4367,927 @@ fn handle_instanceof_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>
         dynamic_kind: Some("value-ref".to_string()),
         ..Default::default()
     });
+}
+
+/// Node types that introduce their own lexical scope — checked for shadowing
+/// by `introduces_shadowed_binding` before `block_contains_identifier_excluding`
+/// recurses into them, so a same-named binding declared in a NESTED scope
+/// doesn't get mistaken for a reference to the outer fallback variable being
+/// checked (issue #2257, Greptile review).
+///
+/// Mirrors `SCOPE_NODE_TYPES` in `src/extractors/javascript.ts`.
+const SCOPE_NODE_TYPES: &[&str] = &[
+    "statement_block",
+    "function_declaration",
+    "function_expression",
+    "generator_function_declaration",
+    "generator_function",
+    "arrow_function",
+    "method_definition",
+    "catch_clause",
+    "for_statement",
+    "for_in_statement",
+    "switch_body",
+];
+
+/// True when `node` (one of `SCOPE_NODE_TYPES`) declares its OWN binding
+/// named `name` at this scope's own level — a function/method parameter or
+/// own name, a catch clause's exception binding, a for-loop's own loop
+/// variable, or a `let`/`const` declared directly inside this block (not a
+/// deeper nested block, which gets its own independent shadow check when
+/// the recursive scan reaches it). Deliberately NOT `var` (Greptile review,
+/// PR #2432): `var` is function-scoped, so a `var` anywhere below this node
+/// is always the SAME binding as an outer `var` of the same name, never a
+/// distinct shadow — treating it as one would wrongly prune a genuine read
+/// elsewhere in this subtree for a redeclaration that isn't actually a
+/// different variable.
+///
+/// Mirrors `introducesShadowedBinding` in `src/extractors/javascript.ts`.
+fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
+    match node.kind() {
+        "function_declaration"
+        | "function_expression"
+        | "generator_function_declaration"
+        | "generator_function"
+        | "arrow_function"
+        | "method_definition" => {
+            if let Some(name_n) = node.child_by_field_name("name") {
+                if node_text(&name_n, source) == name {
+                    return true;
+                }
+            }
+            match node.child_by_field_name("parameters") {
+                Some(params) => {
+                    for i in 0..params.child_count() {
+                        if let Some(param) = params.child(i) {
+                            if pattern_binds_name(&param, name, source, 0) {
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                }
+                None => false,
+            }
+        }
+        "catch_clause" => match node.child_by_field_name("parameter") {
+            Some(param) => pattern_binds_name(&param, name, source, 0),
+            None => false,
+        },
+        // A C-style for-loop's init clause (`for (let/const x = ...; ...)`)
+        // wraps its declaration in a `lexical_declaration` child node.
+        // `var`, deliberately EXCLUDED (Greptile review, PR #2432): it's
+        // function-scoped, not scoped to this loop, so a `var` init here is
+        // the SAME binding as the outer variable, never a distinct shadow —
+        // treating it as one would wrongly prune a genuine read anywhere in
+        // this loop's body.
+        //
+        // A for-in/for-of loop's DECLARING form (`for (let/const x of/in
+        // y)`), by contrast, does NOT wrap its loop variable in a
+        // `lexical_declaration` node at all — `kind` (the let/const/var
+        // keyword) and `left` (the bare identifier/pattern) are separate
+        // direct fields instead (discovered while verifying the `var`
+        // exclusion above — Greptile review, PR #2432 — this specific check
+        // had never actually matched a for-in/for-of declaring form's real
+        // AST shape). A `let`/`const` loop variable genuinely IS a new
+        // binding scoped to just this loop (unlike `var`, whose bare `left`
+        // here is the SAME function-scoped binding as an outer `var` and is
+        // therefore excluded, matching the var-never-shadows principle
+        // above).
+        "for_statement" | "for_in_statement" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "lexical_declaration"
+                        && declaration_declares_name(&child, name, source)
+                    {
+                        return true;
+                    }
+                }
+            }
+            if node.kind() == "for_in_statement" {
+                let kind = node
+                    .child_by_field_name("kind")
+                    .map(|k| node_text(&k, source));
+                let left = node.child_by_field_name("left");
+                if let (Some(kind), Some(left)) = (kind, left) {
+                    if (kind == "let" || kind == "const")
+                        && pattern_binds_name(&left, name, source, 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        "statement_block" => {
+            for i in 0..node.child_count() {
+                let Some(child) = node.child(i) else {
+                    continue;
+                };
+                // `var`, deliberately EXCLUDED (Greptile review, PR #2432):
+                // it's function-scoped, not block-scoped, so a `var`
+                // declared directly in this block is the SAME binding as
+                // the outer variable, never a distinct shadow — treating it
+                // as one would wrongly prune a genuine read anywhere in
+                // this block (e.g. a read before the `var` redeclaration,
+                // in the same block).
+                if child.kind() == "lexical_declaration"
+                    && declaration_declares_name(&child, name, source)
+                {
+                    return true;
+                }
+                // A block-local function/class declaration also introduces
+                // its own binding at this block's level (Greptile review,
+                // PR #2432) — e.g. `const fn = custom || fallback; { function
+                // fn() {} fn(); }` calls the INNER fn, not the outer
+                // fallback variable.
+                if child.kind() == "function_declaration"
+                    || child.kind() == "generator_function_declaration"
+                    || child.kind() == "class_declaration"
+                {
+                    if let Some(name_n) = child.child_by_field_name("name") {
+                        if node_text(&name_n, source) == name {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        }
+        // All `case`/`default` clauses in a switch share ONE lexical scope
+        // (unlike a function's separate statement blocks) — an UNBRACED
+        // case's own `let`/`const`/function/class declaration shadows the
+        // outer variable for the whole switch, even though it isn't wrapped
+        // in its own `statement_block` (Greptile review, PR #2432). A
+        // BRACED case (`case 1: { let fn = 1; }`) creates its own
+        // independent block scope instead, already handled when the
+        // recursive scan reaches that nested `statement_block`.
+        //
+        // Deliberately EXCLUDES `variable_declaration` (`var`), unlike the
+        // `statement_block` case above (Greptile review, PR #2432): `var`
+        // is function-scoped, not block-scoped, so a `var fn` in one case
+        // is never a genuinely NEW binding — it's the SAME outer `fn` (or,
+        // if the outer `fn` is `let`/`const`, redeclaring it is a
+        // SyntaxError, so a valid parse can't reach this with a real shadow
+        // anyway). Treating it as a shadow here would skip the ENTIRE
+        // switch — including a genuine read in a DIFFERENT, unrelated
+        // case — for a redeclaration that isn't actually a distinct
+        // binding. (The `statement_block` case above doesn't have this
+        // problem: each `{}` is checked independently, so a `var` in one
+        // sibling block never affects a different sibling's shadow check
+        // the way one shared switch scope does here.)
+        "switch_body" => {
+            for i in 0..node.child_count() {
+                let Some(switch_case) = node.child(i) else {
+                    continue;
+                };
+                if switch_case.kind() != "switch_case" && switch_case.kind() != "switch_default" {
+                    continue;
+                }
+                for j in 0..switch_case.child_count() {
+                    let Some(stmt) = switch_case.child(j) else {
+                        continue;
+                    };
+                    if stmt.kind() == "lexical_declaration"
+                        && declaration_declares_name(&stmt, name, source)
+                    {
+                        return true;
+                    }
+                    if stmt.kind() == "function_declaration"
+                        || stmt.kind() == "generator_function_declaration"
+                        || stmt.kind() == "class_declaration"
+                    {
+                        if let Some(name_n) = stmt.child_by_field_name("name") {
+                            if node_text(&name_n, source) == name {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Uses `pattern_binds_name`, not a blanket text scan — a destructuring
+/// default that READS the outer variable (`const { value = fn } = input;`)
+/// must not be mistaken for a declaration that BINDS it (Greptile review, PR
+/// #2432): `pattern_binds_name` already knows a default's `right` side is a
+/// reference, not a binding.
+fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8]) -> bool {
+    for i in 0..declaration_node.child_count() {
+        let Some(declarator) = declaration_node.child(i) else {
+            continue;
+        };
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+        if let Some(decl_name) = declarator.child_by_field_name("name") {
+            if pattern_binds_name(&decl_name, name, source, 0) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True when `param_node` BINDS `name` — i.e. `name` is the pattern being
+/// declared/written to, not a reference appearing inside a nested
+/// expression. Two callers reuse this same pattern-shape logic:
+///
+/// - A function/method's `parameters` list, or a `catch` clause's exception
+///   binding: `function helper(x = fetchFn) {}` does NOT bind `fetchFn` —
+///   `fetchFn` there is a REFERENCE (a real use of the outer variable), and
+///   the old blanket "does the whole parameters subtree contain this text
+///   anywhere" check wrongly treated that reference as a binding,
+///   incorrectly pruning the function body from the liveness scan and
+///   losing a real edge (Greptile review, PR #2432).
+/// - An assignment expression's `left` side, INCLUDING destructuring
+///   targets (`({ fn } = replacement)`, `[fn] = replacement`) — those are
+///   WRITES, not reads, the same as a plain `fn = replacement` (Greptile
+///   review, PR #2432): overwriting a fallback variable through
+///   destructuring doesn't consume its previous value either.
+///
+/// Only the BOUND side of an `assignment_pattern`/`object_assignment_pattern`
+/// (`left`) is checked — the default-value side (`right`) is deliberately
+/// left for the ordinary reference scan to find.
+///
+/// Depth-bounded like every other recursive walk in this file
+/// (`MAX_WALK_DEPTH`) — stops a pathologically deep destructuring/parameter
+/// pattern from overflowing the stack (Greptile review, PR #2432).
+///
+/// Mirrors `patternBindsName` in `src/extractors/javascript.ts`.
+fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8], depth: usize) -> bool {
+    if depth >= MAX_WALK_DEPTH {
+        return false;
+    }
+    match param_node.kind() {
+        "identifier" => node_text(param_node, source) == name,
+        "assignment_pattern" | "object_assignment_pattern" => {
+            match param_node.child_by_field_name("left") {
+                Some(left) => pattern_binds_name(&left, name, source, depth + 1),
+                None => false,
+            }
+        }
+        "rest_pattern" => {
+            for i in 0..param_node.child_count() {
+                if let Some(child) = param_node.child(i) {
+                    if child.kind() != "..." && pattern_binds_name(&child, name, source, depth + 1)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        "object_pattern" => {
+            for i in 0..param_node.child_count() {
+                let Some(child) = param_node.child(i) else {
+                    continue;
+                };
+                match child.kind() {
+                    "shorthand_property_identifier_pattern" => {
+                        if node_text(&child, source) == name {
+                            return true;
+                        }
+                    }
+                    "pair_pattern" => {
+                        if let Some(value) = child.child_by_field_name("value") {
+                            if pattern_binds_name(&value, name, source, depth + 1) {
+                                return true;
+                            }
+                        }
+                    }
+                    "rest_pattern" | "object_assignment_pattern" => {
+                        if pattern_binds_name(&child, name, source, depth + 1) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        "array_pattern" => {
+            for i in 0..param_node.child_count() {
+                if let Some(child) = param_node.child(i) {
+                    if pattern_binds_name(&child, name, source, depth + 1) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        // TS-specific parameter wrappers (type-annotated / optional params).
+        "required_parameter" | "optional_parameter" => {
+            let pattern = param_node
+                .child_by_field_name("pattern")
+                .or_else(|| param_node.child_by_field_name("name"));
+            match pattern {
+                Some(p) => pattern_binds_name(&p, name, source, depth + 1),
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Scans a binding/destructuring pattern (a `variable_declarator`'s `name`
+/// field, or an `assignment_expression`'s `left` field) for genuine READS
+/// hidden inside default-value expressions (`{ value = fn }`, `[a = fn]`) —
+/// without treating the pattern's own BOUND names as reads. `({ fn = fn } =
+/// replacement)` both writes `fn` (a binding, ignored here) and reads its
+/// previous value as the default (a real reference) — `pattern_binds_name`
+/// alone can't tell the two apart, since it only answers "is `name` bound
+/// here at all," not "where, specifically" (Greptile review, PR #2432).
+/// Delegates each default expression found to the ordinary
+/// `block_contains_identifier_excluding` scan, since a default value is a
+/// normal expression that can contain any kind of reference, not just a
+/// bare identifier. Depth-bounded for the same reason as `pattern_binds_name`.
+///
+/// Mirrors `scanPatternDefaultsForReference` in `src/extractors/javascript.ts`.
+fn scan_pattern_defaults_for_reference(
+    pattern_node: &Node,
+    name: &str,
+    exclude_id: usize,
+    source: &[u8],
+    depth: usize,
+    require_call_site: bool,
+) -> bool {
+    if depth >= MAX_WALK_DEPTH {
+        return false;
+    }
+    match pattern_node.kind() {
+        "identifier" => false,
+        "assignment_pattern" | "object_assignment_pattern" => {
+            match pattern_node.child_by_field_name("right") {
+                Some(right) => block_contains_identifier_excluding(
+                    &right,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                    require_call_site,
+                ),
+                None => false,
+            }
+        }
+        "rest_pattern" => {
+            for i in 0..pattern_node.child_count() {
+                if let Some(child) = pattern_node.child(i) {
+                    if child.kind() != "..."
+                        && scan_pattern_defaults_for_reference(
+                            &child,
+                            name,
+                            exclude_id,
+                            source,
+                            depth + 1,
+                            require_call_site,
+                        )
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        "object_pattern" => {
+            for i in 0..pattern_node.child_count() {
+                let Some(child) = pattern_node.child(i) else {
+                    continue;
+                };
+                match child.kind() {
+                    "pair_pattern" => {
+                        if let Some(value) = child.child_by_field_name("value") {
+                            if scan_pattern_defaults_for_reference(
+                                &value,
+                                name,
+                                exclude_id,
+                                source,
+                                depth + 1,
+                                require_call_site,
+                            ) {
+                                return true;
+                            }
+                        }
+                    }
+                    "rest_pattern" | "object_assignment_pattern" => {
+                        if scan_pattern_defaults_for_reference(
+                            &child,
+                            name,
+                            exclude_id,
+                            source,
+                            depth + 1,
+                            require_call_site,
+                        ) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        "array_pattern" => {
+            for i in 0..pattern_node.child_count() {
+                if let Some(child) = pattern_node.child(i) {
+                    if scan_pattern_defaults_for_reference(
+                        &child,
+                        name,
+                        exclude_id,
+                        source,
+                        depth + 1,
+                        require_call_site,
+                    ) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Recursively scans `node` for a bare identifier reference to `name`,
+/// skipping the node whose id is `exclude_id` entirely — excluding only the
+/// declarator being analyzed, not its whole enclosing statement, so a
+/// sibling declarator in the same comma-separated declaration (`const
+/// fetchFn = a || b, result = fetchFn();`) still counts as a reference
+/// (issue #2257, Greptile review) — and stops descending into any nested
+/// scope that shadows `name` (see `introduces_shadowed_binding`).
+/// Depth-bounded like every other recursive walk in this file
+/// (`MAX_WALK_DEPTH`) — stops a pathologically deep expression/statement
+/// tree (e.g. deeply nested generated JS) from overflowing the stack
+/// (Greptile review, #2257).
+///
+/// A `variable_declarator`'s `name` field is a BINDING, not a read — even
+/// for a sibling declarator in the same statement, a legal `var` rebinding
+/// (`var fn = a || b, fn = c;`) must not be mistaken for a use of `fn`
+/// (Greptile review, PR #2432). But a destructuring `name` field can ALSO
+/// contain a genuine read hidden in a default value (`const { value = fn }
+/// = input;`) — `scan_pattern_defaults_for_reference` finds those
+/// specifically, while the bound names themselves are still excluded from
+/// the `value` field's ordinary scan below.
+///
+/// Similarly, a plain `=` assignment's left side (`assignment_expression`,
+/// distinct from the tree-sitter grammar's `augmented_assignment_expression`
+/// for `+=`/`||=`/etc.) — whether a bare identifier or a destructuring
+/// pattern (`({ fn } = replacement)`, `[fn] = replacement`) — is a WRITE,
+/// not a read: it overwrites `fn` without ever consuming its current
+/// value, so it must not count as evidence the fallback assigned to `fn` is
+/// used (Greptile review, PR #2432; `pattern_binds_name` covers both
+/// shapes). The same destructuring-default exception applies here too —
+/// `({ fn = fn } = replacement)` both writes `fn` and reads its previous
+/// value as the default, and `scan_pattern_defaults_for_reference` finds
+/// that read. A compound assignment DOES read the current value before
+/// writing, so it's deliberately left to the generic scan below (its
+/// `left` is scanned like any other reference).
+///
+/// True when `node` is the `function` field of its parent `call_expression`
+/// — i.e. `node` names the callee being CALLED, not merely referenced.
+/// Used by `block_contains_identifier_excluding`'s `require_call_site` mode
+/// (issue #2260) to require call-shape evidence specifically, matching
+/// #1895's own "invoked... via member-call syntax" precision (a bare
+/// reference — e.g. `console.log(handler)` — is not invocation evidence).
+/// Mirrors `isCallCallee` in `src/extractors/javascript.ts`.
+fn is_call_callee(node: &Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    parent.kind() == "call_expression"
+        && parent
+            .child_by_field_name("function")
+            .is_some_and(|f| f.id() == node.id())
+}
+
+/// Mirrors `blockContainsIdentifierExcluding` in `src/extractors/javascript.ts`.
+fn block_contains_identifier_excluding(
+    node: &Node,
+    name: &str,
+    exclude_id: usize,
+    source: &[u8],
+    depth: usize,
+    require_call_site: bool,
+) -> bool {
+    if depth >= MAX_WALK_DEPTH {
+        return false;
+    }
+    if node.id() == exclude_id {
+        return false;
+    }
+    if node.kind() == "identifier" && node_text(node, source) == name {
+        if !require_call_site || is_call_callee(node) {
+            return true;
+        }
+    }
+    if SCOPE_NODE_TYPES.contains(&node.kind()) && introduces_shadowed_binding(node, name, source) {
+        return false;
+    }
+    // A declaration statement with MULTIPLE sibling declarators
+    // (`var result = fn(), fn = custom || fallback;`) — if the excluded
+    // (target) declarator is one of this statement's own declarators, only
+    // scan siblings AT OR AFTER it. An earlier sibling's initializer runs
+    // (and is assigned) BEFORE this declarator, so it cannot have consumed a
+    // value that hasn't been assigned yet; a LATER sibling reading this
+    // declarator's name after it's assigned is still valid evidence
+    // (Greptile review, PR #2432 — matches the same at-or-after ordering
+    // already applied at the enclosing-block level in
+    // has_later_reference_in_enclosing_block).
+    if node.kind() == "variable_declaration" || node.kind() == "lexical_declaration" {
+        let mut has_excluded_declarator = false;
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "variable_declarator" && child.id() == exclude_id {
+                    has_excluded_declarator = true;
+                    break;
+                }
+            }
+        }
+        if has_excluded_declarator {
+            let mut reached_excluded = false;
+            for i in 0..node.child_count() {
+                let Some(child) = node.child(i) else {
+                    continue;
+                };
+                if !reached_excluded {
+                    if child.id() == exclude_id {
+                        reached_excluded = true;
+                    } else {
+                        continue;
+                    }
+                }
+                if block_contains_identifier_excluding(
+                    &child,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                    require_call_site,
+                ) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    if node.kind() == "variable_declarator" {
+        let decl_name = node.child_by_field_name("name");
+        let value = node.child_by_field_name("value");
+        if let Some(decl_name) = &decl_name {
+            if scan_pattern_defaults_for_reference(
+                decl_name,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ) {
+                return true;
+            }
+        }
+        return match value {
+            Some(value) => block_contains_identifier_excluding(
+                &value,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ),
+            None => false,
+        };
+    }
+    if node.kind() == "assignment_expression" {
+        if let Some(left) = node.child_by_field_name("left") {
+            if pattern_binds_name(&left, name, source, 0) {
+                if scan_pattern_defaults_for_reference(
+                    &left,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                    require_call_site,
+                ) {
+                    return true;
+                }
+                return match node.child_by_field_name("right") {
+                    Some(right) => block_contains_identifier_excluding(
+                        &right,
+                        name,
+                        exclude_id,
+                        source,
+                        depth + 1,
+                        require_call_site,
+                    ),
+                    None => false,
+                };
+            }
+        }
+    }
+    // A `for (fn of values) {}` / `for (fn in obj) {}` loop with NO
+    // declaration keyword reassigns an EXISTING binding on every iteration —
+    // a WRITE, like assignment_expression's left side, not a read of the
+    // value `fn` held before the loop started (Greptile review, PR #2432).
+    // A declaring form (`for (let fn of values)`) is already excluded from
+    // reaching here: it shadows `name` entirely via
+    // introduces_shadowed_binding above when `left` binds `name`, or is
+    // simply unrelated otherwise — either way `pattern_binds_name` (which
+    // only recognizes bare identifiers/destructuring patterns, not
+    // declaration nodes) returns false for it, so this branch only fires
+    // for the bare-target form.
+    if node.kind() == "for_in_statement" {
+        if let Some(left) = node.child_by_field_name("left") {
+            if pattern_binds_name(&left, name, source, 0) {
+                if scan_pattern_defaults_for_reference(
+                    &left,
+                    name,
+                    exclude_id,
+                    source,
+                    depth + 1,
+                    require_call_site,
+                ) {
+                    return true;
+                }
+                if let Some(right) = node.child_by_field_name("right") {
+                    if block_contains_identifier_excluding(
+                        &right,
+                        name,
+                        exclude_id,
+                        source,
+                        depth + 1,
+                        require_call_site,
+                    ) {
+                        return true;
+                    }
+                }
+                return match node.child_by_field_name("body") {
+                    Some(body) => block_contains_identifier_excluding(
+                        &body,
+                        name,
+                        exclude_id,
+                        source,
+                        depth + 1,
+                        require_call_site,
+                    ),
+                    None => false,
+                };
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if block_contains_identifier_excluding(
+                &child,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True when `name` appears as a bare identifier reference anywhere else in
+/// `declarator_node`'s enclosing block (function body, module top level, or
+/// arrow-function body) — the local, position-scoped liveness evidence
+/// `handle_logical_or_ternary_value_ref` requires before extracting a
+/// value-ref (issue #2257).
+///
+/// Deliberately NOT the same mechanism as #1895's `invoked_property_names` (a
+/// global, name-only set matched across the whole codebase): a bare local
+/// variable name (`fetchFn`, `handler`) collides across unrelated files far
+/// more often than a dispatch-table property key does, so crediting liveness
+/// from an identically-named variable in a different file would fabricate a
+/// relationship that doesn't exist. Scoping the search to the declaration's
+/// own enclosing block avoids that risk entirely, at the cost of missing a
+/// consumer in a different function/file (accepted — matches this file's
+/// general "restrict to the simplest syntactic shape, prefer no edge over a
+/// wrong one" precedent, #1771/#1784). A NESTED scope that shadows `name`
+/// (`introduces_shadowed_binding`) is excluded from the scan entirely, so a
+/// same-named binding declared inside a nested function/block never gets
+/// mistaken for a use of the outer variable.
+///
+/// `require_call_site` (issue #2260): when true, a matching identifier
+/// only counts if it's the callee of a `call_expression` (see
+/// `is_call_callee`) — used by `handle_computed_dispatch_table_evidence`
+/// to require genuine invocation evidence (`handler(...)`), not just any
+/// reference (`console.log(handler)`), matching #1895's own "invoked...
+/// via member-call syntax" precision.
+///
+/// Mirrors `hasLaterReferenceInEnclosingBlock` in `src/extractors/javascript.ts`.
+fn has_later_reference_in_enclosing_block(
+    declarator_node: &Node,
+    name: &str,
+    source: &[u8],
+    require_call_site: bool,
+) -> bool {
+    let mut block = declarator_node.parent();
+    while let Some(n) = block {
+        if n.kind() == "statement_block" || n.kind() == "program" {
+            break;
+        }
+        block = n.parent();
+    }
+    let Some(block) = block else {
+        return false;
+    };
+
+    // Find the direct child of `block` that contains declarator_node (its
+    // enclosing statement), so earlier sibling statements can be skipped —
+    // for a hoisted `var`, a reference earlier in the block executes before
+    // the assignment and reads the pre-assignment value, not the fallback
+    // (Greptile review, PR #2432).
+    let mut decl_statement = *declarator_node;
+    while let Some(parent) = decl_statement.parent() {
+        if parent.id() == block.id() {
+            break;
+        }
+        decl_statement = parent;
+    }
+
+    // Scan the starting block's CHILDREN, not the block itself — the block
+    // necessarily contains the very declaration we're checking liveness
+    // for, so running the shadow check (`introduces_shadowed_binding`) on
+    // the block itself would always find that declaration and wrongly treat
+    // the whole block as shadowed, skipping every sibling statement.
+    let mut reached_decl_statement = false;
+    for i in 0..block.child_count() {
+        if let Some(child) = block.child(i) {
+            if !reached_decl_statement {
+                if child.id() == decl_statement.id() {
+                    reached_decl_statement = true;
+                } else {
+                    continue;
+                }
+            }
+            if block_contains_identifier_excluding(
+                &child,
+                name,
+                declarator_node.id(),
+                source,
+                0,
+                require_call_site,
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Collect a dynamic value-ref `Call` for a logical-or/nullish-coalescing
+/// fallback or ternary default assigned to a named variable — e.g.
+/// `const fetchFn = options._fetchLatest || fetchLatestVersion` or
+/// `const fn = cond ? a : b` (issue #2257). Restricted to declarations with a
+/// plain identifier name (no destructuring) whose enclosing block contains at
+/// least one other reference to that name
+/// (`has_later_reference_in_enclosing_block`) — without that check, this
+/// would fabricate a `calls` edge for a fallback value that's assigned but
+/// never actually read anywhere.
+///
+/// Only fires when the declarator's value is DIRECTLY a `binary_expression`
+/// (`||`/`??`) or `ternary_expression` — a wrapped/parenthesized or nested
+/// form (`const x = a || (b || c)`) is left unresolved rather than recursing,
+/// matching this file's "restrict to the simplest syntactic shape" precedent
+/// (#1771/#1784).
+///
+/// Mirrors `collectLogicalOrTernaryValueRefCall` in `src/extractors/javascript.ts`.
+fn handle_logical_or_ternary_value_ref(declarator: &Node, source: &[u8], calls: &mut Vec<Call>) {
+    let Some(name_n) = declarator.child_by_field_name("name") else {
+        return;
+    };
+    if name_n.kind() != "identifier" {
+        return;
+    }
+    let Some(value_n) = declarator.child_by_field_name("value") else {
+        return;
+    };
+
+    let mut candidates: Vec<Node> = Vec::new();
+    if value_n.kind() == "binary_expression" {
+        let Some(op_n) = value_n.child_by_field_name("operator") else {
+            return;
+        };
+        let op = node_text(&op_n, source);
+        if op != "||" && op != "??" {
+            return;
+        }
+        if let Some(left) = value_n.child_by_field_name("left") {
+            candidates.push(left);
+        }
+        if let Some(right) = value_n.child_by_field_name("right") {
+            candidates.push(right);
+        }
+    } else if value_n.kind() == "ternary_expression" {
+        if let Some(consequence) = value_n.child_by_field_name("consequence") {
+            candidates.push(consequence);
+        }
+        if let Some(alternative) = value_n.child_by_field_name("alternative") {
+            candidates.push(alternative);
+        }
+    } else {
+        return;
+    }
+
+    let identifier_candidates: Vec<Node> = candidates
+        .into_iter()
+        .filter(|n| n.kind() == "identifier" && !JS_BUILTIN_GLOBALS.contains(&node_text(n, source)))
+        .collect();
+    if identifier_candidates.is_empty() {
+        return;
+    }
+    let name_text = node_text(&name_n, source);
+    if !has_later_reference_in_enclosing_block(declarator, name_text, source, false) {
+        return;
+    }
+
+    for n in identifier_candidates {
+        calls.push(Call {
+            name: node_text(&n, source).to_string(),
+            line: start_line(&n),
+            dynamic: Some(true),
+            dynamic_kind: Some("value-ref".to_string()),
+            ..Default::default()
+        });
+    }
+}
+
+/// Collect computed/bracket-access dispatch-table invocation evidence (issue
+/// #2260) — extends the #1771/#1895 dot-property value-ref mechanism to the
+/// `const handler = TABLE[computedExpr]; ...; handler(...)` idiom (a
+/// `node.type`-keyed AST-dispatch table is the canonical example:
+/// `src/extractors/groovy.ts`'s `GROOVY_NODE_HANDLERS`). A computed key
+/// can't name a specific property statically the way `TABLE.key(...)` can,
+/// so — unlike #1895, which checks each property's own key individually —
+/// this credits invocation evidence for the WHOLE table once any computed
+/// access into it is confirmed to be genuinely invoked.
+///
+/// Fires only when:
+///  - the declarator's value is DIRECTLY a `subscript_expression` (matching
+///    this file's "restrict to the simplest syntactic shape" precedent,
+///    #1771/#1784 — a wrapped/parenthesized form is left unresolved);
+///  - its `object` is a bare identifier (the table's own name) — a
+///    computed/dynamic object expression has no static name to credit;
+///  - its `index` is NOT a string/template-string literal — a literal key
+///    (`TABLE['resolve']`) already resolves through the existing
+///    computed-literal call-extraction path and needs no new mechanism;
+///  - the declared name is a plain identifier (no destructuring) that is
+///    later found as the CALLEE of a call expression in its own enclosing
+///    block (`has_later_reference_in_enclosing_block` with
+///    `require_call_site`) — the same local, position-scoped liveness
+///    check #2257 established, reused here for the intermediate variable
+///    specifically because a generic local name (`handler`) collides
+///    across unrelated files/functions far more often than a
+///    dispatch-table's own constant name does.
+///
+/// Mirrors `collectComputedDispatchTableEvidence` in `src/extractors/javascript.ts`.
+fn handle_computed_dispatch_table_evidence(
+    declarator: &Node,
+    source: &[u8],
+    evidence: &mut Vec<String>,
+) {
+    let Some(name_n) = declarator.child_by_field_name("name") else {
+        return;
+    };
+    if name_n.kind() != "identifier" {
+        return;
+    }
+    let Some(value_n) = declarator.child_by_field_name("value") else {
+        return;
+    };
+    if value_n.kind() != "subscript_expression" {
+        return;
+    }
+    let Some(object_n) = value_n.child_by_field_name("object") else {
+        return;
+    };
+    if object_n.kind() != "identifier" || JS_BUILTIN_GLOBALS.contains(&node_text(&object_n, source))
+    {
+        return;
+    }
+    if let Some(index_n) = value_n.child_by_field_name("index") {
+        if index_n.kind() == "string" || index_n.kind() == "template_string" {
+            return;
+        }
+    }
+    let name_text = node_text(&name_n, source);
+    if !has_later_reference_in_enclosing_block(declarator, name_text, source, true) {
+        return;
+    }
+    let table_name = node_text(&object_n, source);
+    evidence.push(
+        match find_declaring_scope_line(declarator, table_name, source) {
+            Some(scope_line) => format!("{table_name}#{scope_line}"),
+            None => table_name.to_string(),
+        },
+    );
 }
 
 /// Extract definitions from destructured object bindings: `const { handleToken,
@@ -6117,6 +7176,23 @@ mod tests {
         assert_eq!(s.definitions[0].kind, "function");
     }
 
+    /// Issue #2265: a multi-declarator `const a = fn1, b = fn2;` statement
+    /// previously gave every declarator the SAME `line` (the whole
+    /// statement's start, not each function value's own start) — misleading
+    /// for anything keyed on line, including the JS-side complexity/CFG
+    /// matcher this mirrors (`matchResultToDef` in apply-results.ts).
+    #[test]
+    fn multi_declarator_var_fn_assignment_uses_each_functions_own_line() {
+        let s = parse_js(
+            "const a = (x) => {\n  if (x) { return 1; }\n  return 0;\n}, b = (x) => {\n  return 2;\n};\n",
+        );
+        let a = s.definitions.iter().find(|d| d.name == "a").unwrap();
+        let b = s.definitions.iter().find(|d| d.name == "b").unwrap();
+        assert_eq!(a.line, 1);
+        assert_eq!(b.line, 4);
+        assert_ne!(a.line, b.line);
+    }
+
     #[test]
     fn finds_class_with_methods() {
         let s = parse_js("class Foo { bar() {} baz() {} }");
@@ -6871,6 +7947,38 @@ mod tests {
         );
     }
 
+    /// Issue #2268: only the object-pattern require() destructure was ever
+    /// recorded as a CJS-require import artifact — `const [a, b] =
+    /// require('./mod')` was silently dropped by both engines.
+    #[test]
+    fn finds_cjs_require_with_array_pattern_destructuring() {
+        let s = parse_js("const [a, b] = require('./mod');");
+        let cjs_imports: Vec<_> = s
+            .imports
+            .iter()
+            .filter(|i| i.cjs_require == Some(true))
+            .collect();
+        assert_eq!(cjs_imports.len(), 1);
+        assert_eq!(cjs_imports[0].source, "./mod");
+        assert_eq!(cjs_imports[0].names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn finds_cjs_require_with_array_pattern_rest_destructuring() {
+        let s = parse_js("const [a, ...rest] = require('./mod');");
+        let cjs_imports: Vec<_> = s
+            .imports
+            .iter()
+            .filter(|i| i.cjs_require == Some(true))
+            .collect();
+        assert_eq!(cjs_imports.len(), 1);
+        assert_eq!(cjs_imports[0].source, "./mod");
+        assert_eq!(
+            cjs_imports[0].names,
+            vec!["a".to_string(), "rest".to_string()]
+        );
+    }
+
     #[test]
     fn finds_dynamic_import_with_shorthand_default_destructuring() {
         let s = parse_js("const { a = 1 } = await import('./mod.js');");
@@ -7112,6 +8220,509 @@ mod tests {
             .filter(|c| c.dynamic_kind.as_deref() == Some("value-ref"))
             .collect();
         assert!(value_refs.iter().any(|c| c.name == "someFunction"));
+    }
+
+    // ── #2257: logical-or/nullish-coalescing/ternary value-ref extraction ───
+
+    #[test]
+    fn extracts_value_ref_call_for_logical_or_fallback_when_variable_used_again() {
+        let s = parse_js("const fetchFn = options.custom || fetchLatestVersion;\ncall(fetchFn);");
+        let value_refs: Vec<_> = s
+            .calls
+            .iter()
+            .filter(|c| c.dynamic_kind.as_deref() == Some("value-ref"))
+            .collect();
+        assert!(value_refs.iter().any(|c| c.name == "fetchLatestVersion"));
+    }
+
+    #[test]
+    fn does_not_extract_value_ref_call_when_variable_never_used_again() {
+        let s = parse_js(
+            "const fetchFn = options.custom || fetchLatestVersion;\nconsole.log('unrelated');",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn extracts_value_ref_calls_for_both_ternary_branches_when_variable_used_again() {
+        let s = parse_js("const picked = cond ? left : right;\ncall(picked);");
+        let names: Vec<&str> = s
+            .calls
+            .iter()
+            .filter(|c| c.dynamic_kind.as_deref() == Some("value-ref"))
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(names.contains(&"left"));
+        assert!(names.contains(&"right"));
+    }
+
+    #[test]
+    fn extracts_value_ref_call_for_nullish_coalescing_fallback() {
+        let s = parse_js("const fetchFn = options.custom ?? fetchLatestVersion;\ncall(fetchFn);");
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn does_not_credit_liveness_from_a_shadowed_binding_in_a_nested_scope() {
+        let s = parse_js(
+            "function outer() {\n\
+               const fetchFn = options.custom || fetchLatestVersion;\n\
+               function helper() {\n\
+                 let fetchFn = somethingElse();\n\
+                 return fetchFn();\n\
+               }\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn extracts_value_ref_call_when_variable_used_in_same_statement_sibling_declarator() {
+        let s =
+            parse_js("const fetchFn = options.custom || fetchLatestVersion, result = fetchFn();");
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn extracts_value_ref_call_when_variable_used_inside_a_nested_non_shadowing_block() {
+        let s = parse_js(
+            "function outer() {\n\
+               const fetchFn = options.custom || fetchLatestVersion;\n\
+               try {\n\
+                 call(fetchFn);\n\
+               } catch (e) {}\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: the liveness scan's recursive walk must be
+    // depth-bounded (MAX_WALK_DEPTH), matching every other recursive walk in
+    // this file, so a pathologically deep enclosing block (e.g. deeply
+    // nested generated JS) can't overflow the stack.
+    #[test]
+    fn does_not_overflow_the_stack_on_a_pathologically_deep_enclosing_block() {
+        let depth = 300;
+        let nested = format!(
+            "{}call(fetchFn);\n{}",
+            "if (true) {\n".repeat(depth),
+            "}\n".repeat(depth)
+        );
+        let source = format!("const fetchFn = options.custom || fetchLatestVersion;\n{nested}");
+        let _ = parse_js(&source);
+    }
+
+    // Greptile review, PR #2432: a default-value expression referencing the
+    // outer fallback variable is a REFERENCE (a real use), not a shadowing
+    // parameter binding — must not be pruned from the liveness scan.
+    #[test]
+    fn does_not_treat_a_parameter_default_reference_as_a_shadowing_binding() {
+        let s = parse_js(
+            "function outer() {\n\
+               const fetchFn = options.custom || fetchLatestVersion;\n\
+               function helper(x = fetchFn) {\n\
+                 return x();\n\
+               }\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: a legal `var` sibling rebinding the SAME
+    // name in the same statement (`var fn = a, fn = b;`) is a binding, not a
+    // read — must not fabricate liveness for the first declarator's fallback.
+    #[test]
+    fn does_not_credit_liveness_from_a_var_sibling_rebinding_the_same_name() {
+        let s = parse_js("var fn = options.custom || fetchLatestVersion, fn = replacement;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: a block-local function declaration also
+    // introduces its own binding — a call to it inside that block must not
+    // be mistaken for a use of the outer fallback variable sharing its name.
+    #[test]
+    fn does_not_credit_liveness_from_a_block_local_function_declaration_sharing_the_name() {
+        let s = parse_js(
+            "const fn = options.custom || fetchLatestVersion;\n\
+             {\n\
+               function fn() {}\n\
+               fn();\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: a plain `=` reassignment overwrites the
+    // variable without ever consuming its current value — must not
+    // fabricate liveness for the fallback that was assigned to it.
+    #[test]
+    fn does_not_credit_liveness_from_a_write_only_reassignment() {
+        let s = parse_js("let fn = options.custom || fetchLatestVersion;\nfn = replacement;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // A compound assignment (`+=`, `||=`, etc. — a distinct
+    // `augmented_assignment_expression` node in this grammar) DOES read the
+    // current value before writing, so its left-hand identifier is a real
+    // reference and must still count.
+    #[test]
+    fn credits_liveness_from_a_compound_assignment_reference() {
+        let s = parse_js("let fn = options.custom || fetchLatestVersion;\nfn += 1;");
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: overwriting a fallback variable through
+    // OBJECT destructuring is still a WRITE, not a read — the same as a
+    // plain `fn = replacement`.
+    #[test]
+    fn does_not_credit_liveness_from_a_write_only_object_destructuring_reassignment() {
+        let s = parse_js("let fn = options.custom || fetchLatestVersion;\n({ fn } = replacement);");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Same as above, for ARRAY destructuring.
+    #[test]
+    fn does_not_credit_liveness_from_a_write_only_array_destructuring_reassignment() {
+        let s = parse_js("let fn = options.custom || fetchLatestVersion;\n[fn] = replacement;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: `pattern_binds_name`'s own recursive descent
+    // through nested destructuring patterns must be depth-bounded too, like
+    // every other recursive walk in this file (MAX_WALK_DEPTH) — a
+    // pathologically deep array/object pattern must not overflow the stack.
+    #[test]
+    fn does_not_overflow_the_stack_on_a_pathologically_deep_destructuring_pattern() {
+        let depth = 300;
+        let pattern = format!("{}fn{}", "[".repeat(depth), "]".repeat(depth));
+        let source =
+            format!("let fn = options.custom || fetchLatestVersion;\n{pattern} = replacement;");
+        let _ = parse_js(&source);
+    }
+
+    // Greptile review, PR #2432: a destructuring default that READS the
+    // outer fallback variable (`const { value = fn } = input;`) must not be
+    // mistaken for a binding of `fn` when deciding whether a nested block
+    // shadows it — the read must still be found.
+    #[test]
+    fn does_not_treat_a_destructuring_default_reference_as_a_shadowing_declaration() {
+        let s = parse_js(
+            "const fn = options.custom || fetchLatestVersion;\n\
+             {\n\
+               const { value = fn } = input;\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: `({ fn = fn } = replacement)` both WRITES
+    // `fn` and READS its previous value as the default — the write must not
+    // suppress the read.
+    #[test]
+    fn credits_liveness_from_a_default_read_inside_a_destructuring_write() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n({ fn = fn } = replacement);",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: a `var` is hoisted, so a reference in an
+    // earlier sibling statement executes BEFORE the fallback is assigned and
+    // reads the pre-assignment value, not the fallback — must not fabricate
+    // liveness for it.
+    #[test]
+    fn does_not_credit_liveness_from_a_reference_before_a_hoisted_var_initializer() {
+        let s = parse_js("fn();\nvar fn = options.custom || fetchLatestVersion;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // A reference in a LATER sibling statement is exactly the liveness
+    // evidence this mechanism requires — the position filter above must not
+    // suppress it too.
+    #[test]
+    fn still_credits_liveness_from_a_reference_after_the_declaration() {
+        let s = parse_js("var fn = options.custom || fetchLatestVersion;\nfn();");
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: all `case`/`default` clauses in a switch
+    // share ONE lexical scope. An UNBRACED case's own `let` declaration of
+    // the SAME name shadows the outer fallback variable for the whole
+    // switch, even though it isn't wrapped in its own block.
+    #[test]
+    fn does_not_credit_liveness_from_an_unbraced_switch_case_shadowing_the_name() {
+        let s = parse_js(
+            "const fn = options.custom || fetchLatestVersion;\n\
+             switch (x) {\n\
+               case 1:\n\
+                 let fn = 1;\n\
+                 fn();\n\
+                 break;\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: `var` is function-scoped, not switch-scoped
+    // — a `var fn` redeclaration in one case is the SAME outer binding, not
+    // a distinct shadow, so it must not suppress a genuine read in a
+    // DIFFERENT, unrelated case.
+    #[test]
+    fn still_credits_liveness_from_a_switch_case_read_when_another_case_redeclares_the_name_via_var(
+    ) {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               switch (x) {\n\
+                 case 1:\n\
+                   fn();\n\
+                   break;\n\
+                 case 2:\n\
+                   var fn = something;\n\
+                   break;\n\
+               }\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: `for (fn of values) {}` / `for (fn in obj)
+    // {}` with NO declaration keyword reassigns fn on every iteration — a
+    // WRITE, not a read of the value it held before the loop started.
+    #[test]
+    fn does_not_credit_liveness_from_a_for_of_loop_write_target() {
+        let s = parse_js("const fn = options.custom || fetchLatestVersion;\nfor (fn of values) {}");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn does_not_credit_liveness_from_a_for_in_loop_write_target() {
+        let s = parse_js("const fn = options.custom || fetchLatestVersion;\nfor (fn in obj) {}");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Using the fallback variable as the ITERABLE (not the loop target) is
+    // a genuine read and must still count.
+    #[test]
+    fn still_credits_liveness_when_the_fallback_variable_is_the_for_of_iterable() {
+        let s =
+            parse_js("const fn = options.custom || fetchLatestVersion;\nfor (const x of fn) {}");
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: with a hoisted declaration like
+    // `var result = fn(), fn = custom || fallback`, the EARLIER sibling
+    // declarator's initializer runs before this one is assigned — it
+    // cannot have consumed a value that doesn't exist yet.
+    #[test]
+    fn does_not_credit_liveness_from_an_earlier_sibling_declarator_in_the_same_statement() {
+        let s = parse_js("var result = fn(), fn = options.custom || fetchLatestVersion;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: `var` is function-scoped, so a `var`
+    // redeclaration anywhere in a nested block is the SAME binding as an
+    // outer `var` of the same name — it must not prune a genuine read
+    // elsewhere in that same block (here, one that textually precedes the
+    // redeclaration).
+    #[test]
+    fn still_credits_liveness_from_a_read_in_a_nested_block_that_also_redeclares_the_name_via_var()
+    {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               {\n\
+                 fn();\n\
+                 var fn = something;\n\
+               }\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Same principle for a C-style for-loop: a `var` in the loop's own init
+    // clause is the SAME function-scoped binding, so a read in the loop's
+    // test/update clause must still count.
+    #[test]
+    fn still_credits_liveness_from_a_for_loop_read_when_the_loop_redeclares_the_name_via_var() {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               for (var fn = 0; fn < 10; fn++) {}\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // A `let`/`const` declaring for-in loop variable IS a genuinely distinct
+    // block-scoped binding (unlike `var`) — it must still shadow correctly.
+    #[test]
+    fn does_not_credit_liveness_from_a_let_declared_for_in_loop_variable() {
+        let s = parse_js(
+            "function outer() {\n\
+               const fn = options.custom || fetchLatestVersion;\n\
+               for (let fn in obj) {\n\
+                 doSomething(fn);\n\
+               }\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // This mechanism's Call extraction is UNCONDITIONAL (like #1771/#1895 —
+    // every bare-identifier object-literal property value always produces a
+    // value-ref Call, regardless of liveness); only the RESOLVER (build_edges.rs)
+    // later gates whether that Call becomes a real edge, consulting
+    // invoked_property_names/computed_dispatch_table_evidence at that point —
+    // NOT here. So the correct thing to assert at the extractor level is
+    // computed_dispatch_table_evidence's own contents, not the calls array.
+
+    // The confirmed real-world case: an AST-node-type-keyed dispatch table
+    // (src/extractors/groovy.rs's GROOVY_NODE_HANDLERS), consumed via a
+    // computed lookup stored in an intermediate variable, then called.
+    #[test]
+    fn records_the_table_name_when_the_intermediate_variable_is_later_called() {
+        let s = parse_js(
+            "const NODE_HANDLERS = {\n\
+               interface_definition: handleInterfaceDecl,\n\
+             };\n\
+             function walkNode(node, ctx) {\n\
+               const handler = NODE_HANDLERS[node.type];\n\
+               if (handler) handler(node, ctx);\n\
+             }",
+        );
+        assert_eq!(s.computed_dispatch_table_evidence, vec!["NODE_HANDLERS"]);
+    }
+
+    #[test]
+    fn does_not_record_the_table_name_when_the_intermediate_variable_is_only_referenced_never_called(
+    ) {
+        let s = parse_js(
+            "const NODE_HANDLERS = {\n\
+               interface_definition: handleInterfaceDecl,\n\
+             };\n\
+             function walkNode(node, ctx) {\n\
+               const handler = NODE_HANDLERS[node.type];\n\
+               console.log(handler);\n\
+             }",
+        );
+        assert!(s.computed_dispatch_table_evidence.is_empty());
+    }
+
+    #[test]
+    fn does_not_fire_for_a_string_literal_key() {
+        let s = parse_js(
+            "const NODE_HANDLERS = {\n\
+               interface_definition: handleInterfaceDecl,\n\
+             };\n\
+             function walkNode() {\n\
+               const handler = NODE_HANDLERS['interface_definition'];\n\
+               handler();\n\
+             }",
+        );
+        assert!(s.computed_dispatch_table_evidence.is_empty());
+    }
+
+    #[test]
+    fn does_not_record_the_table_name_when_the_call_is_inside_a_shadowing_nested_scope() {
+        let s = parse_js(
+            "const NODE_HANDLERS = {\n\
+               interface_definition: handleInterfaceDecl,\n\
+             };\n\
+             function walkNode(node, ctx) {\n\
+               const handler = NODE_HANDLERS[node.type];\n\
+               {\n\
+                 let handler = unrelatedFn;\n\
+                 handler();\n\
+               }\n\
+             }",
+        );
+        assert!(s.computed_dispatch_table_evidence.is_empty());
+    }
+
+    #[test]
+    fn only_records_the_specific_table_that_has_its_own_computed_invocation_evidence() {
+        let s = parse_js(
+            "const HANDLERS_A = {\n\
+               interface_definition: handleA,\n\
+             };\n\
+             const HANDLERS_B = {\n\
+               interface_definition: handleB,\n\
+             };\n\
+             function walkNode(node, ctx) {\n\
+               const handler = HANDLERS_A[node.type];\n\
+               handler();\n\
+             }",
+        );
+        assert_eq!(s.computed_dispatch_table_evidence, vec!["HANDLERS_A"]);
+    }
+
+    #[test]
+    fn does_not_overflow_the_stack_on_a_pathologically_deep_enclosing_block_2260() {
+        let depth = 300;
+        let nested = format!(
+            "{}handler();\n{}",
+            "if (true) {\n".repeat(depth),
+            "}\n".repeat(depth)
+        );
+        let source = format!(
+            "const NODE_HANDLERS = {{ interface_definition: handleInterfaceDecl }};\n\
+             function walkNode(node) {{\n\
+               const handler = NODE_HANDLERS[node.type];\n\
+               {nested}\n\
+             }}"
+        );
+        let _ = parse_js(&source);
     }
 
     // #1895: key_expr capture — the property key, distinct from the

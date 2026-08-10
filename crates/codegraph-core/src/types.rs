@@ -570,6 +570,12 @@ pub struct FileSymbols {
     /// Phase 8.3f: object-property bindings from `const obj = { fn }`.
     #[napi(js_name = "objectPropBindings")]
     pub object_prop_bindings: Vec<ObjectPropBinding>,
+    /// Table names (issue #2260) with confirmed LOCAL computed-invocation
+    /// evidence: `const handler = TABLE[computedExpr]; ...; handler(...)`.
+    /// Mirrors `ExtractorOutput.computedDispatchTableEvidence` in
+    /// `src/types.ts`.
+    #[napi(js_name = "computedDispatchTableEvidence")]
+    pub computed_dispatch_table_evidence: Vec<String>,
 }
 
 impl FileSymbols {
@@ -596,6 +602,7 @@ impl FileSymbols {
             array_callback_bindings: Vec::new(),
             object_rest_param_bindings: Vec::new(),
             object_prop_bindings: Vec::new(),
+            computed_dispatch_table_evidence: Vec::new(),
         }
     }
 }
@@ -607,6 +614,17 @@ impl FileSymbols {
 pub struct FunctionComplexityResult {
     pub name: String,
     pub line: u32,
+    /// 0-based source column of this function node's own start position —
+    /// mirrors tree-sitter's own convention directly (unlike `line`, never
+    /// `+1`-adjusted for display), since this is purely an internal
+    /// disambiguation key for `matchNativeResult` (issue #2265), never
+    /// rendered to users. Lets the JS engine's line-keyed match fall back to
+    /// an exact line+column match when a `Definition`'s own column is known
+    /// (currently only for JS/TS var/const-assigned anonymous function
+    /// values, where two such functions can share a `Definition.line` but
+    /// never share a column) — the same-line ambiguity a name-only
+    /// disambiguator can never resolve for an anonymous function.
+    pub column: Option<u32>,
     #[napi(js_name = "endLine")]
     pub end_line: Option<u32>,
     pub complexity: ComplexityMetrics,
@@ -617,6 +635,8 @@ pub struct FunctionComplexityResult {
 pub struct FunctionCfgResult {
     pub name: String,
     pub line: u32,
+    /// See `FunctionComplexityResult.column`'s doc comment.
+    pub column: Option<u32>,
     #[napi(js_name = "endLine")]
     pub end_line: Option<u32>,
     pub cfg: CfgData,

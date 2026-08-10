@@ -134,15 +134,27 @@ function handleFnCapture(c: Record<string, TreeSitterNode>, definitions: Definit
   });
 }
 
-/** Handle variable_declarator with arrow_function / function_expression capture. */
+/**
+ * Handle variable_declarator with arrow_function / function_expression capture.
+ *
+ * Uses the function VALUE's own start position — not the enclosing
+ * declaration statement's — for `line`/`column` (issue #2265): a
+ * `const a = fn1, b = fn2;` multi-declarator statement previously gave
+ * every declarator the identical statement-start line, so any declarator
+ * but the first collided with a sibling's real complexity/CFG result once
+ * `matchResultToDef` (apply-results.ts) indexed by each function node's own
+ * (correct) line. `column` additionally survives even a genuine same-line
+ * collision (two anonymous closures both starting on one physical line),
+ * which `name`-based disambiguation can never resolve for an anonymous
+ * function/arrow value.
+ */
 function handleVarFnCapture(c: Record<string, TreeSitterNode>, definitions: Definition[]): void {
-  const declNode = c.varfn_name!.parent?.parent;
-  const line = declNode ? nodeStartLine(declNode) : nodeStartLine(c.varfn_name!);
   const varFnChildren = extractParameters(c.varfn_value!);
   definitions.push({
     name: c.varfn_name!.text,
     kind: 'function',
-    line,
+    line: nodeStartLine(c.varfn_value!),
+    column: c.varfn_value!.startPosition.column,
     endLine: nodeEndLine(c.varfn_value!),
     children: varFnChildren.length > 0 ? varFnChildren : undefined,
   });
@@ -508,6 +520,7 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
   // walk below so bare property reads can be recognized regardless of
   // whether the accessing code appears before or after the class declaration.
   const localAccessors = collectLocalAccessors(tree.rootNode);
+  const computedDispatchTableEvidence: string[] = [];
   runCollectorWalk(tree.rootNode, {
     definitions,
     typeMap,
@@ -517,6 +530,7 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
     newExpressions,
     definePropertyReceivers,
     valueRefCalls: calls,
+    computedDispatchTableEvidence,
     localAccessors,
     imports,
     calls,
@@ -558,6 +572,7 @@ function extractSymbolsQuery(tree: TreeSitterTree, query: TreeSitterQuery): Extr
     newExpressions,
     ...(definePropertyReceivers.size > 0 ? { definePropertyReceivers } : {}),
     ...(cjsRequireBindings.length > 0 ? { cjsRequireBindings } : {}),
+    ...(computedDispatchTableEvidence.length > 0 ? { computedDispatchTableEvidence } : {}),
   };
 }
 
@@ -1142,17 +1157,35 @@ function extractDestructuredDeclarators(
         nodeEndLine(declNode),
         definitions,
       );
+      // Record CJS require bindings so importedNames can classify these names
+      // as import artifacts, preventing false local-definition blocking (#1661) —
+      // mirrors the object_pattern branch above; array-pattern requires
+      // (`const [a, b] = require('./mod')`) were never recorded at all (#2268).
+      if (cjsRequireBindings) {
+        const valueN = declarator.childForFieldName('value');
+        const binding = extractCjsRequireBinding(nameN, valueN);
+        if (binding) cjsRequireBindings.push(binding);
+      }
     }
   }
 }
 
 /**
- * Compute a `const { X } = require('./path')` CJS binding record from a destructured
- * object-pattern name node and its declarator's value node, for import-artifact
- * classification (#1661). Returns null when the value isn't a static require() call or
- * no destructured names could be extracted. Shared by the walk-based
- * (extractDestructuredDeclarators) and query-based (handleVariableDecl) const-destructuring
- * paths, which independently need the identical extraction.
+ * Compute a `const { X } = require('./path')` (or `const [a, b] = require(...)`)
+ * CJS binding record from a destructured object- or array-pattern name node and
+ * its declarator's value node, for import-artifact classification (#1661).
+ * Returns null when the value isn't a static require() call or no destructured
+ * names could be extracted. Shared by the walk-based (extractDestructuredDeclarators)
+ * and query-based (handleVariableDecl) const-destructuring paths, which
+ * independently need the identical extraction.
+ *
+ * Delegates name collection to `collectObjectPatternNames`/`collectArrayPatternNames`
+ * — the same shared, declaration-order-correct helpers `extractDestructuredBindings`/
+ * `extractArrayPatternBindings` and `collectExportedDeclarations` already use — rather
+ * than maintaining a third, partial reimplementation. Previously this had its own
+ * inline object-pattern-only loop (missing e.g. a renamed binding's own default
+ * value) and no array-pattern case at all, so a `const [a, b] = require('./mod')`
+ * never got classified as import-sourced by either engine (issue #2268).
  */
 function extractCjsRequireBinding(
   nameN: TreeSitterNode,
@@ -1165,29 +1198,10 @@ function extractCjsRequireBinding(
   const strArg = args && findChild(args, 'string');
   if (!strArg) return null;
   const modPath = strArg.text.replace(/['"]/g, '');
-  const names: string[] = [];
-  for (let k = 0; k < nameN.childCount; k++) {
-    const prop = nameN.child(k);
-    if (!prop) continue;
-    if (
-      prop.type === 'shorthand_property_identifier_pattern' ||
-      prop.type === 'shorthand_property_identifier'
-    ) {
-      names.push(prop.text);
-    } else if (prop.type === 'pair_pattern' || prop.type === 'pair') {
-      const val = prop.childForFieldName('value');
-      if (val?.type === 'identifier' || val?.type === 'shorthand_property_identifier_pattern') {
-        names.push(val.text);
-      }
-    } else if (prop.type === 'rest_pattern' || prop.type === 'rest_element') {
-      // { a, ...rest } = require(...) — without this branch the rest binding
-      // was silently dropped from the CJS-require import-artifact classification
-      // (issue #2037), a parity gap with Rust's collect_object_pattern_names
-      // (which the native require() path already reuses correctly).
-      const inner = extractRestPatternIdentifier(prop);
-      if (inner) names.push(inner);
-    }
-  }
+  const names =
+    nameN.type === 'array_pattern'
+      ? collectArrayPatternNames(nameN)
+      : collectObjectPatternNames(nameN);
   if (names.length === 0) return null;
   return { names, source: modPath };
 }
@@ -1412,6 +1426,7 @@ function extractSymbolsWalk(tree: TreeSitterTree): ExtractorOutput {
   // #1893: same-file get/set accessor registry — see the query-path call site
   // of collectLocalAccessors for why this must be computed up front.
   const localAccessors = collectLocalAccessors(tree.rootNode);
+  const computedDispatchTableEvidence: string[] = [];
   runCollectorWalk(tree.rootNode, {
     definitions: ctx.definitions,
     typeMap: ctx.typeMap!,
@@ -1421,11 +1436,15 @@ function extractSymbolsWalk(tree: TreeSitterTree): ExtractorOutput {
     newExpressions,
     definePropertyReceivers,
     valueRefCalls: ctx.calls,
+    computedDispatchTableEvidence,
     localAccessors,
     funcPropDefs: ctx.definitions,
   });
   ctx.newExpressions = newExpressions;
   if (definePropertyReceivers.size > 0) ctx.definePropertyReceivers = definePropertyReceivers;
+  if (computedDispatchTableEvidence.length > 0) {
+    ctx.computedDispatchTableEvidence = computedDispatchTableEvidence;
+  }
   return ctx;
 }
 
@@ -1840,7 +1859,7 @@ function handleVariableDeclarator(
     valType === 'function' ||
     valType === 'generator_function'
   ) {
-    handleVarFnAssignment(node, nameN, valueN, ctx);
+    handleVarFnAssignment(nameN, valueN, ctx);
   } else if (isConst && nameN.type === 'identifier' && !hasFunctionScopeAncestor(node)) {
     // Any other initializer shape becomes a 'constant' Definition, regardless of
     // complexity (call/member/parenthesized expressions, etc.) — mirroring how
@@ -1861,15 +1880,24 @@ function handleVariableDeclarator(
   } else if (isConst && nameN.type === 'object_pattern' && !hasFunctionScopeAncestor(node)) {
     handleConstObjectPatternAssignment(node, nameN, valueN, ctx);
   } else if (isConst && nameN.type === 'array_pattern' && !hasFunctionScopeAncestor(node)) {
-    // Array destructuring: `const [x, y] = ...` — one constant Definition per
-    // bound identifier (#1901). Scope guard mirrors the object_pattern branch above.
-    extractArrayPatternBindings(nameN, nodeStartLine(node), nodeEndLine(node), ctx.definitions);
+    handleConstArrayPatternAssignment(node, nameN, valueN, ctx);
   }
 }
 
-/** Handle `const/let fn = (...) => {...}` — a function/arrow value assigned to a variable. */
+/**
+ * Handle `const/let fn = (...) => {...}` — a function/arrow value assigned
+ * to a variable.
+ *
+ * Uses `valueN`'s (the function itself) own start position, not `node`'s
+ * (the enclosing declaration statement) — issue #2265: `node` spans the
+ * whole `const a = fn1, b = fn2;` statement, so every declarator got the
+ * identical statement-start line, colliding with a sibling declarator's
+ * real complexity/CFG result once `matchResultToDef` (apply-results.ts)
+ * indexed by each function node's own (correct) line. See
+ * `handleVarFnCapture`'s fuller comment (query path) for the rest of the
+ * rationale — `column` mirrors the same fix there.
+ */
 function handleVarFnAssignment(
-  node: TreeSitterNode,
   nameN: TreeSitterNode,
   valueN: TreeSitterNode,
   ctx: ExtractorOutput,
@@ -1878,7 +1906,8 @@ function handleVarFnAssignment(
   ctx.definitions.push({
     name: nameN.text,
     kind: 'function',
-    line: nodeStartLine(node),
+    line: nodeStartLine(valueN),
+    column: valueN.startPosition.column,
     endLine: nodeEndLine(valueN),
     children: varFnChildren.length > 0 ? varFnChildren : undefined,
   });
@@ -1926,6 +1955,28 @@ function handleConstObjectPatternAssignment(
   // handle_var_decl (Rust path) — skips bindings inside function bodies.
   extractDestructuredBindings(nameN, nodeStartLine(node), nodeEndLine(node), ctx.definitions);
   // Record CJS require bindings for import-artifact classification (#1661).
+  const binding = extractCjsRequireBinding(nameN, valueN);
+  if (binding) {
+    if (!ctx.cjsRequireBindings) ctx.cjsRequireBindings = [];
+    ctx.cjsRequireBindings.push(binding);
+  }
+}
+
+/**
+ * Handle `const [a, b] = value` — destructured array-pattern const bindings.
+ * Mirrors `handleConstObjectPatternAssignment` above, including the CJS
+ * require-binding recording — `const [a, b] = require('./mod')` never got
+ * classified as import-sourced by either engine (#2268).
+ */
+function handleConstArrayPatternAssignment(
+  node: TreeSitterNode,
+  nameN: TreeSitterNode,
+  valueN: TreeSitterNode,
+  ctx: ExtractorOutput,
+): void {
+  // Array destructuring: `const [x, y] = ...` — one constant Definition per
+  // bound identifier (#1901). Scope guard mirrors the object_pattern branch above.
+  extractArrayPatternBindings(nameN, nodeStartLine(node), nodeEndLine(node), ctx.definitions);
   const binding = extractCjsRequireBinding(nameN, valueN);
   if (binding) {
     if (!ctx.cjsRequireBindings) ctx.cjsRequireBindings = [];
@@ -4181,6 +4232,82 @@ function collectObjectPropBindings(node: TreeSitterNode, bindings: ObjectPropBin
   }
 }
 
+/** Node types `findEnclosingTableName` passes through on its way up to a `variable_declarator`. */
+const TABLE_NAME_PASSTHROUGH_TYPES: ReadonlySet<string> = new Set([
+  'object',
+  'parenthesized_expression',
+  'as_expression',
+  'satisfies_expression',
+  'non_null_expression',
+]);
+
+/**
+ * Walk outward from `node` through EVERY enclosing scope-introducing
+ * ancestor — not just function scopes — returning the start line of the
+ * nearest one that directly declares/shadows `name` itself
+ * (`introducesShadowedBinding`, the same hardened shadow-detection #2257
+ * built out, already handles function-likes, `catch`, `for`/`for-in`,
+ * `statement_block`, and `switch_body`). `undefined` when no enclosing
+ * scope redeclares it, i.e. it comes from module scope.
+ *
+ * Shared by both sides of issue #2260's computed-dispatch-table
+ * disambiguation (Greptile review, PR #2445, rounds 2 and 3): a file-scoped
+ * evidence key alone let two different FUNCTIONS in one file, each
+ * declaring their own same-named local table, share one entry; scoping by
+ * enclosing FUNCTION alone (round 2's fix) still let two sibling BLOCKS
+ * inside the SAME function do the same (e.g. an `if`/`else` each declaring
+ * their own same-named table). Walking every scope level, not just
+ * function boundaries, and identifying the match by its own line — not a
+ * human-readable qualifier, since a bare block has no name — disambiguates
+ * any two distinct lexical bindings of the same name anywhere in the file,
+ * regardless of nesting shape.
+ */
+function findDeclaringScopeLine(node: TreeSitterNode, name: string): number | undefined {
+  let current: TreeSitterNode | null = node.parent;
+  while (current) {
+    if (introducesShadowedBinding(current, name)) return current.startPosition.row;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+/**
+ * Walk up from a dispatch-table object-literal's `pair`/shorthand-property
+ * node to find the name of the variable it's assigned to (e.g.
+ * `GROOVY_NODE_HANDLERS` for `const GROOVY_NODE_HANDLERS = { ... }`) — used
+ * to key the computed-access liveness pathway (issue #2260) on the TABLE's
+ * own name, set as the value-ref Call's `receiver`. Bounded to a small
+ * number of hops through common TS wrapper shapes (`as`/`satisfies`
+ * expressions, parenthesization, non-null assertion) so a deeply-nested or
+ * non-declarator-assigned object literal (e.g. passed directly as a call
+ * argument) simply yields no table name — the computed-access pathway then
+ * requires the dot/#1895 evidence instead, matching this file's "prefer no
+ * edge over a wrong one" precedent.
+ *
+ * When the table's own declaration is scoped inside any block (not
+ * module-level), the returned name carries a `#${line}` suffix identifying
+ * that declaring scope (`findDeclaringScopeLine`) — `#` can never appear in
+ * a real identifier, so this can't collide with an actual table name, and a
+ * module-scope table (the common case) is returned bare, unchanged from
+ * before this suffix existed.
+ */
+function findEnclosingTableName(node: TreeSitterNode): string | undefined {
+  let current: TreeSitterNode | null = node.parent;
+  let hops = 0;
+  while (current && hops < 6) {
+    if (current.type === 'variable_declarator') {
+      const nameNode = current.childForFieldName('name');
+      if (nameNode?.type !== 'identifier') return undefined;
+      const scopeLine = findDeclaringScopeLine(current, nameNode.text);
+      return scopeLine === undefined ? nameNode.text : `${nameNode.text}#${scopeLine}`;
+    }
+    if (!TABLE_NAME_PASSTHROUGH_TYPES.has(current.type)) return undefined;
+    current = current.parent;
+    hops++;
+  }
+  return undefined;
+}
+
 /**
  * Collect a dynamic value-ref `Call` for an object-literal `pair` node whose
  * value is a bare identifier — e.g. `{ resolve: someFunction }`, the
@@ -4201,6 +4328,12 @@ function collectObjectPropBindings(node: TreeSitterNode, bindings: ObjectPropBin
  * downstream "is this property ever invoked" liveness check (#1895) needs the
  * key, since that's the name a dispatch consumer would actually call
  * (`table.resolve(...)`), not the function's own declared name.
+ *
+ * `receiver` (issue #2260) carries the TABLE's own variable name, when
+ * resolvable — the computed-access liveness pathway
+ * (`computedDispatchTableEvidence`) is keyed on this, since a computed key
+ * (`TABLE[node.type]`) can't name a specific property statically the way a
+ * dot access can.
  */
 function collectObjectLiteralValueRefCall(pairNode: TreeSitterNode, calls: Call[]): void {
   const valueNode = pairNode.childForFieldName('value');
@@ -4213,6 +4346,7 @@ function collectObjectLiteralValueRefCall(pairNode: TreeSitterNode, calls: Call[
     dynamic: true,
     dynamicKind: 'value-ref',
     keyExpr,
+    receiver: findEnclosingTableName(pairNode),
   });
 }
 
@@ -4245,6 +4379,701 @@ function collectInstanceofValueRefCall(binaryNode: TreeSitterNode, calls: Call[]
     dynamic: true,
     dynamicKind: 'value-ref',
   });
+}
+
+/**
+ * Node types that introduce their own lexical scope — checked for shadowing
+ * by `introducesShadowedBinding` before `blockContainsIdentifierExcluding`
+ * recurses into them, so a same-named binding declared in a NESTED scope
+ * doesn't get mistaken for a reference to the outer fallback variable being
+ * checked (issue #2257, Greptile review).
+ */
+const SCOPE_NODE_TYPES: ReadonlySet<string> = new Set([
+  'statement_block',
+  'function_declaration',
+  'function_expression',
+  'generator_function_declaration',
+  'generator_function',
+  'arrow_function',
+  'method_definition',
+  'catch_clause',
+  'for_statement',
+  'for_in_statement',
+  'switch_body',
+]);
+
+/**
+ * True when `node` (one of `SCOPE_NODE_TYPES`) declares its OWN binding
+ * named `name` at this scope's own level — a function/method parameter or
+ * own name, a catch clause's exception binding, a for-loop's own loop
+ * variable, or a `let`/`const` declared directly inside this block (not a
+ * deeper nested block, which gets its own independent shadow check when the
+ * recursive scan reaches it). Deliberately NOT `var` (Greptile review, PR
+ * #2432): `var` is function-scoped, so a `var` anywhere below this node is
+ * always the SAME binding as an outer `var` of the same name, never a
+ * distinct shadow — treating it as one would wrongly prune a genuine read
+ * elsewhere in this subtree for a redeclaration that isn't actually a
+ * different variable.
+ */
+function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean {
+  switch (node.type) {
+    case 'function_declaration':
+    case 'function_expression':
+    case 'generator_function_declaration':
+    case 'generator_function':
+    case 'arrow_function':
+    case 'method_definition': {
+      if (node.childForFieldName('name')?.text === name) return true;
+      const params = node.childForFieldName('parameters');
+      if (!params) return false;
+      for (let i = 0; i < params.childCount; i++) {
+        const param = params.child(i);
+        if (param && patternBindsName(param, name)) return true;
+      }
+      return false;
+    }
+    case 'catch_clause': {
+      const param = node.childForFieldName('parameter');
+      return param ? patternBindsName(param, name) : false;
+    }
+    case 'for_statement':
+    case 'for_in_statement': {
+      // A C-style for-loop's init clause (`for (let/const x = ...; ...)`)
+      // wraps its declaration in a `lexical_declaration` child node. `var`,
+      // deliberately EXCLUDED (Greptile review, PR #2432): it's
+      // function-scoped, not scoped to this loop, so a `var` init here is
+      // the SAME binding as the outer variable, never a distinct shadow —
+      // treating it as one would wrongly prune a genuine read anywhere in
+      // this loop's body (matches the same reasoning already applied to
+      // `switch_body`, below, and to the `statement_block` case).
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (child && child.type === 'lexical_declaration' && declarationDeclaresName(child, name)) {
+          return true;
+        }
+      }
+      // A for-in/for-of loop's DECLARING form (`for (let/const x of/in
+      // y)`), by contrast, does NOT wrap its loop variable in a
+      // `lexical_declaration` node at all — `kind` (the let/const/var
+      // keyword) and `left` (the bare identifier/pattern) are separate
+      // direct fields instead (discovered while verifying the `var`
+      // exclusion above — Greptile review, PR #2432 — this specific check
+      // had never actually matched a for-in/for-of declaring form's real
+      // AST shape). A `let`/`const` loop variable genuinely IS a new
+      // binding scoped to just this loop (unlike `var`, whose bare `left`
+      // here is the SAME function-scoped binding as an outer `var` and is
+      // therefore excluded, matching the var-never-shadows principle above).
+      if (node.type === 'for_in_statement') {
+        const kind = node.childForFieldName('kind')?.text;
+        const left = node.childForFieldName('left');
+        if ((kind === 'let' || kind === 'const') && left && patternBindsName(left, name)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case 'statement_block': {
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (!child) continue;
+        // `var`, deliberately EXCLUDED (Greptile review, PR #2432): it's
+        // function-scoped, not block-scoped, so a `var` declared directly
+        // in this block is the SAME binding as the outer variable, never a
+        // distinct shadow — treating it as one would wrongly prune a
+        // genuine read anywhere in this block (e.g. a read before the `var`
+        // redeclaration, in the same block).
+        if (child.type === 'lexical_declaration' && declarationDeclaresName(child, name)) {
+          return true;
+        }
+        // A block-local function/class declaration also introduces its own
+        // binding at this block's level (Greptile review, PR #2432) — e.g.
+        // `const fn = custom || fallback; { function fn() {} fn(); }` calls
+        // the INNER fn, not the outer fallback variable.
+        if (
+          (child.type === 'function_declaration' ||
+            child.type === 'generator_function_declaration' ||
+            child.type === 'class_declaration') &&
+          child.childForFieldName('name')?.text === name
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case 'switch_body': {
+      // All `case`/`default` clauses in a switch share ONE lexical scope
+      // (unlike a function's separate statement blocks) — an UNBRACED
+      // case's own `let`/`const`/function/class declaration shadows the
+      // outer variable for the whole switch, even though it isn't wrapped
+      // in its own `statement_block` (Greptile review, PR #2432). A BRACED
+      // case (`case 1: { let fn = 1; }`) creates its own independent block
+      // scope instead, already handled when the recursive scan reaches that
+      // nested `statement_block`.
+      //
+      // Deliberately EXCLUDES `variable_declaration` (`var`), unlike the
+      // `statement_block` case above (Greptile review, PR #2432): `var` is
+      // function-scoped, not block-scoped, so a `var fn` in one case is
+      // never a genuinely NEW binding — it's the SAME outer `fn` (or, if the
+      // outer `fn` is `let`/`const`, redeclaring it is a SyntaxError, so a
+      // valid parse can't reach this with a real shadow anyway). Treating it
+      // as a shadow here would skip the ENTIRE switch — including a
+      // genuine read in a DIFFERENT, unrelated case — for a redeclaration
+      // that isn't actually a distinct binding. (The `statement_block` case
+      // above doesn't have this problem: each `{}` is checked independently,
+      // so a `var` in one sibling block never affects a different sibling's
+      // shadow check the way one shared switch scope does here.)
+      for (let i = 0; i < node.childCount; i++) {
+        const switchCase = node.child(i);
+        if (!switchCase) continue;
+        if (switchCase.type !== 'switch_case' && switchCase.type !== 'switch_default') continue;
+        for (let j = 0; j < switchCase.childCount; j++) {
+          const stmt = switchCase.child(j);
+          if (!stmt) continue;
+          if (stmt.type === 'lexical_declaration' && declarationDeclaresName(stmt, name)) {
+            return true;
+          }
+          if (
+            (stmt.type === 'function_declaration' ||
+              stmt.type === 'generator_function_declaration' ||
+              stmt.type === 'class_declaration') &&
+            stmt.childForFieldName('name')?.text === name
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Uses `patternBindsName`, not a blanket text scan — a destructuring
+ * default that READS the outer variable (`const { value = fn } = input;`)
+ * must not be mistaken for a declaration that BINDS it (Greptile review, PR
+ * #2432): `patternBindsName` already knows a default's `right` side is a
+ * reference, not a binding.
+ */
+function declarationDeclaresName(declarationNode: TreeSitterNode, name: string): boolean {
+  for (let i = 0; i < declarationNode.childCount; i++) {
+    const declarator = declarationNode.child(i);
+    if (declarator?.type !== 'variable_declarator') continue;
+    const declName = declarator.childForFieldName('name');
+    if (declName && patternBindsName(declName, name)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when `paramNode` BINDS `name` — i.e. `name` is the pattern being
+ * declared/written to, not a reference appearing inside a nested
+ * expression. Two callers reuse this same pattern-shape logic:
+ *
+ * - A function/method's `parameters` list, or a `catch` clause's exception
+ *   binding: `function helper(x = fetchFn) {}` does NOT bind `fetchFn` —
+ *   `fetchFn` there is a REFERENCE (a real use of the outer variable), and
+ *   `introducesShadowedBinding`'s old blanket "does the whole parameters
+ *   subtree contain this text anywhere" check wrongly treated that
+ *   reference as a binding, incorrectly pruning the function body from the
+ *   liveness scan and losing a real edge (Greptile review, PR #2432).
+ * - An assignment expression's `left` side, INCLUDING destructuring targets
+ *   (`({ fn } = replacement)`, `[fn] = replacement`) — those are WRITES, not
+ *   reads, the same as a plain `fn = replacement` (Greptile review, PR
+ *   #2432): overwriting a fallback variable through destructuring doesn't
+ *   consume its previous value either.
+ *
+ * Only the BOUND side of an `assignment_pattern`/`object_assignment_pattern`
+ * (`left`) is checked — the default-value side (`right`) is deliberately
+ * left for the ordinary reference scan to find.
+ *
+ * Depth-bounded like every other recursive walk in this file
+ * (`MAX_WALK_DEPTH`) — stops a pathologically deep destructuring/parameter
+ * pattern from overflowing the stack (Greptile review, PR #2432).
+ */
+function patternBindsName(paramNode: TreeSitterNode, name: string, depth = 0): boolean {
+  if (depth >= MAX_WALK_DEPTH) return false;
+  switch (paramNode.type) {
+    case 'identifier':
+      return paramNode.text === name;
+    case 'assignment_pattern':
+    case 'object_assignment_pattern': {
+      const left = paramNode.childForFieldName('left');
+      return left ? patternBindsName(left, name, depth + 1) : false;
+    }
+    case 'rest_pattern': {
+      for (let i = 0; i < paramNode.childCount; i++) {
+        const child = paramNode.child(i);
+        if (child && child.type !== '...' && patternBindsName(child, name, depth + 1)) return true;
+      }
+      return false;
+    }
+    case 'object_pattern': {
+      for (let i = 0; i < paramNode.childCount; i++) {
+        const child = paramNode.child(i);
+        if (!child) continue;
+        if (child.type === 'shorthand_property_identifier_pattern') {
+          if (child.text === name) return true;
+        } else if (child.type === 'pair_pattern') {
+          const value = child.childForFieldName('value');
+          if (value && patternBindsName(value, name, depth + 1)) return true;
+        } else if (child.type === 'rest_pattern' || child.type === 'object_assignment_pattern') {
+          if (patternBindsName(child, name, depth + 1)) return true;
+        }
+      }
+      return false;
+    }
+    case 'array_pattern': {
+      for (let i = 0; i < paramNode.childCount; i++) {
+        const child = paramNode.child(i);
+        if (child && patternBindsName(child, name, depth + 1)) return true;
+      }
+      return false;
+    }
+    // TS-specific parameter wrappers (type-annotated / optional params).
+    case 'required_parameter':
+    case 'optional_parameter': {
+      const pattern = paramNode.childForFieldName('pattern') ?? paramNode.childForFieldName('name');
+      return pattern ? patternBindsName(pattern, name, depth + 1) : false;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Scans a binding/destructuring pattern (a `variable_declarator`'s `name`
+ * field, or an `assignment_expression`'s `left` field) for genuine READS
+ * hidden inside default-value expressions (`{ value = fn }`, `[a = fn]`) —
+ * without treating the pattern's own BOUND names as reads. `({ fn = fn } =
+ * replacement)` both writes `fn` (a binding, ignored here) and reads its
+ * previous value as the default (a real reference) — `patternBindsName`
+ * alone can't tell the two apart, since it only answers "is `name` bound
+ * here at all," not "where, specifically" (Greptile review, PR #2432).
+ * Delegates each default expression found to the ordinary
+ * `blockContainsIdentifierExcluding` scan, since a default value is a
+ * normal expression that can contain any kind of reference, not just a
+ * bare identifier. Depth-bounded for the same reason as `patternBindsName`.
+ */
+function scanPatternDefaultsForReference(
+  patternNode: TreeSitterNode,
+  name: string,
+  excludeId: number,
+  depth: number,
+  requireCallSite = false,
+): boolean {
+  if (depth >= MAX_WALK_DEPTH) return false;
+  switch (patternNode.type) {
+    case 'identifier':
+      return false;
+    case 'assignment_pattern':
+    case 'object_assignment_pattern': {
+      const right = patternNode.childForFieldName('right');
+      return right
+        ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1, requireCallSite)
+        : false;
+    }
+    case 'rest_pattern': {
+      for (let i = 0; i < patternNode.childCount; i++) {
+        const child = patternNode.child(i);
+        if (
+          child &&
+          child.type !== '...' &&
+          scanPatternDefaultsForReference(child, name, excludeId, depth + 1, requireCallSite)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case 'object_pattern': {
+      for (let i = 0; i < patternNode.childCount; i++) {
+        const child = patternNode.child(i);
+        if (!child) continue;
+        if (child.type === 'pair_pattern') {
+          const value = child.childForFieldName('value');
+          if (
+            value &&
+            scanPatternDefaultsForReference(value, name, excludeId, depth + 1, requireCallSite)
+          ) {
+            return true;
+          }
+        } else if (child.type === 'rest_pattern' || child.type === 'object_assignment_pattern') {
+          if (scanPatternDefaultsForReference(child, name, excludeId, depth + 1, requireCallSite)) {
+            return true;
+          }
+        }
+        // shorthand_property_identifier_pattern has no default to scan.
+      }
+      return false;
+    }
+    case 'array_pattern': {
+      for (let i = 0; i < patternNode.childCount; i++) {
+        const child = patternNode.child(i);
+        if (
+          child &&
+          scanPatternDefaultsForReference(child, name, excludeId, depth + 1, requireCallSite)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Recursively scans `node` for a bare identifier reference to `name`,
+ * skipping the node whose id is `excludeId` entirely — excluding only the
+ * declarator being analyzed, not its whole enclosing statement, so a
+ * sibling declarator in the same comma-separated declaration (`const
+ * fetchFn = a || b, result = fetchFn();`) still counts as a reference
+ * (issue #2257, Greptile review) — and stops descending into any nested
+ * scope that shadows `name` (see `introducesShadowedBinding`). Depth-bounded
+ * like every other recursive walk in this file (`MAX_WALK_DEPTH`) — stops a
+ * pathologically deep expression/statement tree (e.g. deeply nested
+ * generated JS) from overflowing the stack (Greptile review, #2257).
+ *
+ * A `variable_declarator`'s `name` field is a BINDING, not a read — even
+ * for a sibling declarator in the same statement, a legal `var` rebinding
+ * (`var fn = a || b, fn = c;`) must not be mistaken for a use of `fn`
+ * (Greptile review, PR #2432). But a destructuring `name` field can ALSO
+ * contain a genuine read hidden in a default value (`const { value = fn } =
+ * input;`) — `scanPatternDefaultsForReference` finds those specifically,
+ * while the bound names themselves are still excluded from the `value`
+ * field's ordinary scan below.
+ *
+ * Similarly, a plain `=` assignment's left side (`assignment_expression`,
+ * distinct from the tree-sitter grammar's `augmented_assignment_expression`
+ * for `+=`/`||=`/etc.) — whether a bare identifier or a destructuring
+ * pattern (`({ fn } = replacement)`, `[fn] = replacement`) — is a WRITE, not
+ * a read: it overwrites `fn` without ever consuming its current value, so
+ * it must not count as evidence the fallback assigned to `fn` is used
+ * (Greptile review, PR #2432; `patternBindsName` covers both shapes). The
+ * same destructuring-default exception applies here too — `({ fn = fn } =
+ * replacement)` both writes `fn` and reads its previous value as the
+ * default, and `scanPatternDefaultsForReference` finds that read. A
+ * compound assignment DOES read the current value before writing, so it's
+ * deliberately left to the generic scan below (its `left` is scanned like
+ * any other reference).
+ */
+/**
+ * True when `node` is the `function` field of its parent `call_expression`
+ * — i.e. `node` names the callee being CALLED, not merely referenced.
+ * Used by `blockContainsIdentifierExcluding`'s `requireCallSite` mode
+ * (issue #2260) to require call-shape evidence specifically, matching
+ * #1895's own "invoked... via member-call syntax" precision (a bare
+ * reference — e.g. `console.log(handler)` — is not invocation evidence).
+ */
+function isCallCallee(node: TreeSitterNode): boolean {
+  const parent = node.parent;
+  return (
+    !!parent &&
+    parent.type === 'call_expression' &&
+    parent.childForFieldName('function')?.id === node.id
+  );
+}
+
+function blockContainsIdentifierExcluding(
+  node: TreeSitterNode,
+  name: string,
+  excludeId: number,
+  depth = 0,
+  requireCallSite = false,
+): boolean {
+  if (depth >= MAX_WALK_DEPTH) return false;
+  if (node.id === excludeId) return false;
+  if (node.type === 'identifier' && node.text === name) {
+    if (!requireCallSite || isCallCallee(node)) return true;
+  }
+  if (SCOPE_NODE_TYPES.has(node.type) && introducesShadowedBinding(node, name)) return false;
+  // A declaration statement with MULTIPLE sibling declarators
+  // (`var result = fn(), fn = custom || fallback;`) — if the excluded
+  // (target) declarator is one of this statement's own declarators, only
+  // scan siblings AT OR AFTER it. An earlier sibling's initializer runs (and
+  // is assigned) BEFORE this declarator, so it cannot have consumed a value
+  // that hasn't been assigned yet; a LATER sibling reading this declarator's
+  // name after it's assigned is still valid evidence (Greptile review, PR
+  // #2432 — matches the same at-or-after ordering already applied at the
+  // enclosing-block level in hasLaterReferenceInEnclosingBlock).
+  if (node.type === 'variable_declaration' || node.type === 'lexical_declaration') {
+    let hasExcludedDeclarator = false;
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child?.type === 'variable_declarator' && child.id === excludeId) {
+        hasExcludedDeclarator = true;
+        break;
+      }
+    }
+    if (hasExcludedDeclarator) {
+      let reachedExcluded = false;
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (!child) continue;
+        if (!reachedExcluded) {
+          if (child.id === excludeId) {
+            reachedExcluded = true;
+          } else {
+            continue;
+          }
+        }
+        if (blockContainsIdentifierExcluding(child, name, excludeId, depth + 1, requireCallSite)) {
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+  if (node.type === 'variable_declarator') {
+    const declName = node.childForFieldName('name');
+    const value = node.childForFieldName('value');
+    if (
+      declName &&
+      scanPatternDefaultsForReference(declName, name, excludeId, depth + 1, requireCallSite)
+    ) {
+      return true;
+    }
+    return value
+      ? blockContainsIdentifierExcluding(value, name, excludeId, depth + 1, requireCallSite)
+      : false;
+  }
+  if (node.type === 'assignment_expression') {
+    const left = node.childForFieldName('left');
+    const right = node.childForFieldName('right');
+    if (left && patternBindsName(left, name)) {
+      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1, requireCallSite)) {
+        return true;
+      }
+      return right
+        ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1, requireCallSite)
+        : false;
+    }
+  }
+  // A `for (fn of values) {}` / `for (fn in obj) {}` loop with NO
+  // declaration keyword reassigns an EXISTING binding on every iteration —
+  // a WRITE, like assignment_expression's left side, not a read of the
+  // value `fn` held before the loop started (Greptile review, PR #2432). A
+  // declaring form (`for (let fn of values)`) is already excluded from
+  // reaching here: it shadows `name` entirely via introducesShadowedBinding
+  // above when `left` binds `name`, or is simply unrelated otherwise —
+  // either way `patternBindsName` (which only recognizes bare
+  // identifiers/destructuring patterns, not declaration nodes) returns
+  // false for it, so this branch only fires for the bare-target form.
+  if (node.type === 'for_in_statement') {
+    const left = node.childForFieldName('left');
+    if (left && patternBindsName(left, name)) {
+      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1, requireCallSite)) {
+        return true;
+      }
+      const right = node.childForFieldName('right');
+      const body = node.childForFieldName('body');
+      if (
+        right &&
+        blockContainsIdentifierExcluding(right, name, excludeId, depth + 1, requireCallSite)
+      ) {
+        return true;
+      }
+      return body
+        ? blockContainsIdentifierExcluding(body, name, excludeId, depth + 1, requireCallSite)
+        : false;
+    }
+  }
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (
+      child &&
+      blockContainsIdentifierExcluding(child, name, excludeId, depth + 1, requireCallSite)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when `name` appears as a bare identifier reference anywhere else in
+ * `declaratorNode`'s enclosing block (function body, module top level, or
+ * arrow-function body) — the local, position-scoped liveness evidence
+ * `collectLogicalOrTernaryValueRefCall` requires before extracting a value-ref
+ * (issue #2257).
+ *
+ * Deliberately NOT the same mechanism as #1895's `invokedPropertyNames` (a
+ * global, name-only set matched across the whole codebase): a bare local
+ * variable name (`fetchFn`, `handler`) collides across unrelated files far
+ * more often than a dispatch-table property key does, so crediting liveness
+ * from an identically-named variable in a different file would fabricate a
+ * relationship that doesn't exist. Scoping the search to the declaration's
+ * own enclosing block avoids that risk entirely, at the cost of missing a
+ * consumer in a different function/file (accepted — matches this file's
+ * general "restrict to the simplest syntactic shape, prefer no edge over a
+ * wrong one" precedent, #1771/#1784). A NESTED scope that shadows `name`
+ * (`introducesShadowedBinding`) is excluded from the scan entirely, so a
+ * same-named binding declared inside a nested function/block never gets
+ * mistaken for a use of the outer variable.
+ *
+ * Sibling statements strictly BEFORE the declaration's own statement are
+ * skipped entirely (Greptile review, PR #2432): for a hoisted `var`, a
+ * reference earlier in the block (`fn(); var fn = custom || fallback;`)
+ * executes before the assignment and reads the pre-assignment value, not the
+ * fallback — crediting it as liveness evidence would fabricate an edge for
+ * code that never actually consumes the fallback. The declaration's own
+ * statement IS still scanned in full (not just from the declarator onward),
+ * since a sibling declarator earlier in the same statement legitimately reads
+ * a later one (`const a = x(), b = y || fallback;` — `a`'s initializer runs
+ * first but that's a same-statement forward reference, not a hoisting hazard).
+ *
+ * `requireCallSite` (issue #2260): when true, a matching identifier only
+ * counts if it's the callee of a `call_expression` (see `isCallCallee`) —
+ * used by `collectComputedDispatchTableEvidence` to require genuine
+ * invocation evidence (`handler(...)`), not just any reference
+ * (`console.log(handler)`), matching #1895's own "invoked... via
+ * member-call syntax" precision.
+ */
+function hasLaterReferenceInEnclosingBlock(
+  declaratorNode: TreeSitterNode,
+  name: string,
+  requireCallSite = false,
+): boolean {
+  let block: TreeSitterNode | null = declaratorNode.parent;
+  while (block && block.type !== 'statement_block' && block.type !== 'program') {
+    block = block.parent;
+  }
+  if (!block) return false;
+
+  // Find the direct child of `block` that contains declaratorNode (its
+  // enclosing statement), so earlier sibling statements can be skipped.
+  let declStatement = declaratorNode;
+  while (declStatement.parent && declStatement.parent.id !== block.id) {
+    declStatement = declStatement.parent;
+  }
+
+  // Scan the starting block's CHILDREN, not the block itself — the block
+  // necessarily contains the very declaration we're checking liveness for,
+  // so running the shadow check (introducesShadowedBinding) on the block
+  // itself would always find that declaration and wrongly treat the whole
+  // block as shadowed, skipping every sibling statement.
+  let reachedDeclStatement = false;
+  for (let i = 0; i < block.childCount; i++) {
+    const child = block.child(i);
+    if (!child) continue;
+    if (!reachedDeclStatement) {
+      if (child.id === declStatement.id) {
+        reachedDeclStatement = true;
+      } else {
+        continue;
+      }
+    }
+    if (blockContainsIdentifierExcluding(child, name, declaratorNode.id, 0, requireCallSite)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Collect dynamic value-ref `Call`s for a logical-or/nullish-coalescing
+ * fallback or ternary default assigned to a named variable — e.g.
+ * `const fetchFn = options._fetchLatest || fetchLatestVersion` or
+ * `const fn = cond ? a : b` (issue #2257). Restricted to declarations with a
+ * plain identifier name (no destructuring) whose enclosing block contains at
+ * least one other reference to that name (`hasLaterReferenceInEnclosingBlock`)
+ * — without that check, this would fabricate a `calls` edge for a fallback
+ * value that's assigned but never actually read anywhere.
+ *
+ * Only fires when the declarator's value is DIRECTLY a `binary_expression`
+ * (`||`/`??`) or `ternary_expression` — a wrapped/parenthesized or nested
+ * form (`const x = a || (b || c)`) is left unresolved rather than recursing,
+ * matching this file's "restrict to the simplest syntactic shape" precedent
+ * (#1771/#1784).
+ */
+function collectLogicalOrTernaryValueRefCall(declaratorNode: TreeSitterNode, calls: Call[]): void {
+  const nameNode = declaratorNode.childForFieldName('name');
+  if (nameNode?.type !== 'identifier') return;
+  const valueNode = declaratorNode.childForFieldName('value');
+  if (!valueNode) return;
+
+  const candidates: TreeSitterNode[] = [];
+  if (valueNode.type === 'binary_expression') {
+    const op = valueNode.childForFieldName('operator')?.text;
+    if (op !== '||' && op !== '??') return;
+    const left = valueNode.childForFieldName('left');
+    const right = valueNode.childForFieldName('right');
+    if (left) candidates.push(left);
+    if (right) candidates.push(right);
+  } else if (valueNode.type === 'ternary_expression') {
+    const consequence = valueNode.childForFieldName('consequence');
+    const alternative = valueNode.childForFieldName('alternative');
+    if (consequence) candidates.push(consequence);
+    if (alternative) candidates.push(alternative);
+  } else {
+    return;
+  }
+
+  const identifierCandidates = candidates.filter(
+    (n) => n.type === 'identifier' && !BUILTIN_GLOBALS.has(n.text),
+  );
+  if (identifierCandidates.length === 0) return;
+  if (!hasLaterReferenceInEnclosingBlock(declaratorNode, nameNode.text)) return;
+
+  for (const n of identifierCandidates) {
+    calls.push({
+      name: n.text,
+      line: nodeStartLine(n),
+      dynamic: true,
+      dynamicKind: 'value-ref',
+    });
+  }
+}
+
+/**
+ * Collect computed/bracket-access dispatch-table invocation evidence (issue
+ * #2260) — extends the #1771/#1895 dot-property value-ref mechanism to the
+ * `const handler = TABLE[computedExpr]; ...; handler(...)` idiom (a
+ * `node.type`-keyed AST-dispatch table is the canonical example:
+ * `src/extractors/groovy.ts`'s `GROOVY_NODE_HANDLERS`). A computed key
+ * can't name a specific property statically the way `TABLE.key(...)` can,
+ * so — unlike #1895, which checks each property's own key individually —
+ * this credits invocation evidence for the WHOLE table once any computed
+ * access into it is confirmed to be genuinely invoked.
+ *
+ * Fires only when:
+ *  - the declarator's value is DIRECTLY a `subscript_expression` (matching
+ *    this file's "restrict to the simplest syntactic shape" precedent,
+ *    #1771/#1784 — a wrapped/parenthesized form is left unresolved);
+ *  - its `object` is a bare identifier (the table's own name) — a
+ *    computed/dynamic object expression has no static name to credit;
+ *  - its `index` is NOT a string/template-string literal — a literal key
+ *    (`TABLE['resolve']`) already resolves through the existing
+ *    computed-literal call-extraction path and needs no new mechanism;
+ *  - the declared name is a plain identifier (no destructuring) that is
+ *    later found as the CALLEE of a call expression in its own enclosing
+ *    block (`hasLaterReferenceInEnclosingBlock` with `requireCallSite`) —
+ *    the same local, position-scoped liveness check #2257 established,
+ *    reused here for the intermediate variable specifically because a
+ *    generic local name (`handler`) collides across unrelated
+ *    files/functions far more often than a dispatch-table's own constant
+ *    name does (see `computedDispatchTableEvidence`'s doc comment in
+ *    types.ts for the file+scope qualification that makes crediting the
+ *    table name safe to aggregate graph-wide).
+ */
+function collectComputedDispatchTableEvidence(
+  declaratorNode: TreeSitterNode,
+  evidence: string[],
+): void {
+  const nameNode = declaratorNode.childForFieldName('name');
+  if (nameNode?.type !== 'identifier') return;
+  const valueNode = declaratorNode.childForFieldName('value');
+  if (valueNode?.type !== 'subscript_expression') return;
+  const objectNode = valueNode.childForFieldName('object');
+  if (objectNode?.type !== 'identifier' || BUILTIN_GLOBALS.has(objectNode.text)) return;
+  const indexNode = valueNode.childForFieldName('index');
+  if (indexNode?.type === 'string' || indexNode?.type === 'template_string') return;
+  if (!hasLaterReferenceInEnclosingBlock(declaratorNode, nameNode.text, true)) return;
+  const scopeLine = findDeclaringScopeLine(declaratorNode, objectNode.text);
+  evidence.push(scopeLine === undefined ? objectNode.text : `${objectNode.text}#${scopeLine}`);
 }
 
 function extractReceiverName(objNode: TreeSitterNode | null): string | undefined {
@@ -5133,6 +5962,8 @@ interface CollectorWalkTargets {
   newExpressions: string[];
   definePropertyReceivers: Map<string, string>;
   valueRefCalls: Call[];
+  /** #2260: table names with confirmed computed-access invocation evidence. */
+  computedDispatchTableEvidence: string[];
   /** #1893: same-file `ClassName.propName` → declared get/set accessor kinds. */
   localAccessors: LocalAccessorRegistry;
   imports?: Import[];
@@ -5184,6 +6015,12 @@ function runCollectorWalk(rootNode: TreeSitterNode, targets: CollectorWalkTarget
       case 'variable_declarator':
         collectArrayElemBindings(node, targets.arrayElemBindings);
         collectObjectPropBindings(node, targets.objectPropBindings);
+        // #2257: logical-or/nullish-coalescing/ternary default assigned to a
+        // named variable, e.g. `const fetchFn = options._fetchLatest || fetchLatestVersion`.
+        collectLogicalOrTernaryValueRefCall(node, targets.valueRefCalls);
+        // #2260: computed dispatch-table access assigned to a named variable,
+        // e.g. `const handler = TABLE[node.type]; ...; handler(...)`.
+        collectComputedDispatchTableEvidence(node, targets.computedDispatchTableEvidence);
         break;
       case 'expression_statement': {
         const expr = node.child(0);
@@ -5229,6 +6066,7 @@ function runCollectorWalk(rootNode: TreeSitterNode, targets: CollectorWalkTarget
             dynamic: true,
             dynamicKind: 'value-ref',
             keyExpr: node.text,
+            receiver: findEnclosingTableName(node),
           });
         }
         break;
