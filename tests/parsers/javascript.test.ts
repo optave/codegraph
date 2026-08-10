@@ -2154,6 +2154,32 @@ function runDemo(reporter: Reporter, users: string[]): void {
         symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
       ).toBe(false);
     });
+
+    // Greptile review, PR #2432: a plain `=` reassignment overwrites the
+    // variable without ever consuming its current value — must not
+    // fabricate liveness for the fallback that was assigned to it.
+    it('does not credit liveness from a write-only reassignment', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        fn = replacement;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // A compound assignment (`+=`, `||=`, etc.) DOES read the current value
+    // before writing, so its left-hand identifier is a real reference and
+    // must still count.
+    it('credits liveness from a compound assignment reference', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        fn += 1;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {

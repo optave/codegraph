@@ -4477,6 +4477,15 @@ fn block_contains_identifier(node: &Node, name: &str, source: &[u8], depth: usiz
 /// use of `fn` (Greptile review, PR #2432), so only its `value` field is
 /// scanned.
 ///
+/// Similarly, a plain `=` assignment's left-hand identifier
+/// (`assignment_expression`, distinct from the tree-sitter grammar's
+/// `augmented_assignment_expression` for `+=`/`||=`/etc.) is a WRITE, not a
+/// read: `fn = replacement;` overwrites `fn` without ever consuming its
+/// current value, so it must not count as evidence the fallback assigned to
+/// `fn` is used (Greptile review, PR #2432). A compound assignment DOES read
+/// the current value before writing, so it's deliberately left to the
+/// generic scan below (its `left` is scanned like any other reference).
+///
 /// Mirrors `blockContainsIdentifierExcluding` in `src/extractors/javascript.ts`.
 fn block_contains_identifier_excluding(
     node: &Node,
@@ -4504,6 +4513,22 @@ fn block_contains_identifier_excluding(
             }
             None => false,
         };
+    }
+    if node.kind() == "assignment_expression" {
+        if let Some(left) = node.child_by_field_name("left") {
+            if left.kind() == "identifier" && node_text(&left, source) == name {
+                return match node.child_by_field_name("right") {
+                    Some(right) => block_contains_identifier_excluding(
+                        &right,
+                        name,
+                        exclude_id,
+                        source,
+                        depth + 1,
+                    ),
+                    None => false,
+                };
+            }
+        }
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -7668,6 +7693,29 @@ mod tests {
              }",
         );
         assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: a plain `=` reassignment overwrites the
+    // variable without ever consuming its current value — must not
+    // fabricate liveness for the fallback that was assigned to it.
+    #[test]
+    fn does_not_credit_liveness_from_a_write_only_reassignment() {
+        let s = parse_js("let fn = options.custom || fetchLatestVersion;\nfn = replacement;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // A compound assignment (`+=`, `||=`, etc. — a distinct
+    // `augmented_assignment_expression` node in this grammar) DOES read the
+    // current value before writing, so its left-hand identifier is a real
+    // reference and must still count.
+    #[test]
+    fn credits_liveness_from_a_compound_assignment_reference() {
+        let s = parse_js("let fn = options.custom || fetchLatestVersion;\nfn += 1;");
+        assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
     }

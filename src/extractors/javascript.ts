@@ -4439,6 +4439,15 @@ function blockContainsIdentifier(node: TreeSitterNode, name: string, depth = 0):
  * even for a sibling declarator in the same statement, a legal `var`
  * rebinding (`var fn = a || b, fn = c;`) must not be mistaken for a use of
  * `fn` (Greptile review, PR #2432), so only its `value` field is scanned.
+ *
+ * Similarly, a plain `=` assignment's left-hand identifier
+ * (`assignment_expression`, distinct from the tree-sitter grammar's
+ * `augmented_assignment_expression` for `+=`/`||=`/etc.) is a WRITE, not a
+ * read: `fn = replacement;` overwrites `fn` without ever consuming its
+ * current value, so it must not count as evidence the fallback assigned to
+ * `fn` is used (Greptile review, PR #2432). A compound assignment DOES read
+ * the current value before writing, so it's deliberately left to the
+ * generic scan below (its `left` is scanned like any other reference).
  */
 function blockContainsIdentifierExcluding(
   node: TreeSitterNode,
@@ -4453,6 +4462,13 @@ function blockContainsIdentifierExcluding(
   if (node.type === 'variable_declarator') {
     const value = node.childForFieldName('value');
     return value ? blockContainsIdentifierExcluding(value, name, excludeId, depth + 1) : false;
+  }
+  if (node.type === 'assignment_expression') {
+    const left = node.childForFieldName('left');
+    const right = node.childForFieldName('right');
+    if (left?.type === 'identifier' && left.text === name) {
+      return right ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1) : false;
+    }
   }
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
