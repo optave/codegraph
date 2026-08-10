@@ -22,6 +22,7 @@
 //! | `domain/graph/journal.rs`            | `src/domain/graph/journal.ts`                   |
 //! | `domain/graph/builder/pipeline.rs`   | `src/domain/graph/builder/pipeline.ts`          |
 //! | `domain/graph/builder/incremental.rs`| `src/domain/graph/builder/incremental.ts`       |
+//! | `domain/graph/builder/entrypoints.rs`| `src/domain/graph/builder/entrypoints.ts`       |
 //! | `domain/graph/builder/stages/*`      | `src/domain/graph/builder/stages/*`             |
 //! | `ast_analysis/*`                     | `src/ast-analysis/*`                            |
 //! | `graph/algorithms/*`                 | `src/graph/algorithms/*`                        |

@@ -1157,17 +1157,35 @@ function extractDestructuredDeclarators(
         nodeEndLine(declNode),
         definitions,
       );
+      // Record CJS require bindings so importedNames can classify these names
+      // as import artifacts, preventing false local-definition blocking (#1661) —
+      // mirrors the object_pattern branch above; array-pattern requires
+      // (`const [a, b] = require('./mod')`) were never recorded at all (#2268).
+      if (cjsRequireBindings) {
+        const valueN = declarator.childForFieldName('value');
+        const binding = extractCjsRequireBinding(nameN, valueN);
+        if (binding) cjsRequireBindings.push(binding);
+      }
     }
   }
 }
 
 /**
- * Compute a `const { X } = require('./path')` CJS binding record from a destructured
- * object-pattern name node and its declarator's value node, for import-artifact
- * classification (#1661). Returns null when the value isn't a static require() call or
- * no destructured names could be extracted. Shared by the walk-based
- * (extractDestructuredDeclarators) and query-based (handleVariableDecl) const-destructuring
- * paths, which independently need the identical extraction.
+ * Compute a `const { X } = require('./path')` (or `const [a, b] = require(...)`)
+ * CJS binding record from a destructured object- or array-pattern name node and
+ * its declarator's value node, for import-artifact classification (#1661).
+ * Returns null when the value isn't a static require() call or no destructured
+ * names could be extracted. Shared by the walk-based (extractDestructuredDeclarators)
+ * and query-based (handleVariableDecl) const-destructuring paths, which
+ * independently need the identical extraction.
+ *
+ * Delegates name collection to `collectObjectPatternNames`/`collectArrayPatternNames`
+ * — the same shared, declaration-order-correct helpers `extractDestructuredBindings`/
+ * `extractArrayPatternBindings` and `collectExportedDeclarations` already use — rather
+ * than maintaining a third, partial reimplementation. Previously this had its own
+ * inline object-pattern-only loop (missing e.g. a renamed binding's own default
+ * value) and no array-pattern case at all, so a `const [a, b] = require('./mod')`
+ * never got classified as import-sourced by either engine (issue #2268).
  */
 function extractCjsRequireBinding(
   nameN: TreeSitterNode,
@@ -1180,29 +1198,10 @@ function extractCjsRequireBinding(
   const strArg = args && findChild(args, 'string');
   if (!strArg) return null;
   const modPath = strArg.text.replace(/['"]/g, '');
-  const names: string[] = [];
-  for (let k = 0; k < nameN.childCount; k++) {
-    const prop = nameN.child(k);
-    if (!prop) continue;
-    if (
-      prop.type === 'shorthand_property_identifier_pattern' ||
-      prop.type === 'shorthand_property_identifier'
-    ) {
-      names.push(prop.text);
-    } else if (prop.type === 'pair_pattern' || prop.type === 'pair') {
-      const val = prop.childForFieldName('value');
-      if (val?.type === 'identifier' || val?.type === 'shorthand_property_identifier_pattern') {
-        names.push(val.text);
-      }
-    } else if (prop.type === 'rest_pattern' || prop.type === 'rest_element') {
-      // { a, ...rest } = require(...) — without this branch the rest binding
-      // was silently dropped from the CJS-require import-artifact classification
-      // (issue #2037), a parity gap with Rust's collect_object_pattern_names
-      // (which the native require() path already reuses correctly).
-      const inner = extractRestPatternIdentifier(prop);
-      if (inner) names.push(inner);
-    }
-  }
+  const names =
+    nameN.type === 'array_pattern'
+      ? collectArrayPatternNames(nameN)
+      : collectObjectPatternNames(nameN);
   if (names.length === 0) return null;
   return { names, source: modPath };
 }
@@ -1881,9 +1880,7 @@ function handleVariableDeclarator(
   } else if (isConst && nameN.type === 'object_pattern' && !hasFunctionScopeAncestor(node)) {
     handleConstObjectPatternAssignment(node, nameN, valueN, ctx);
   } else if (isConst && nameN.type === 'array_pattern' && !hasFunctionScopeAncestor(node)) {
-    // Array destructuring: `const [x, y] = ...` — one constant Definition per
-    // bound identifier (#1901). Scope guard mirrors the object_pattern branch above.
-    extractArrayPatternBindings(nameN, nodeStartLine(node), nodeEndLine(node), ctx.definitions);
+    handleConstArrayPatternAssignment(node, nameN, valueN, ctx);
   }
 }
 
@@ -1958,6 +1955,28 @@ function handleConstObjectPatternAssignment(
   // handle_var_decl (Rust path) — skips bindings inside function bodies.
   extractDestructuredBindings(nameN, nodeStartLine(node), nodeEndLine(node), ctx.definitions);
   // Record CJS require bindings for import-artifact classification (#1661).
+  const binding = extractCjsRequireBinding(nameN, valueN);
+  if (binding) {
+    if (!ctx.cjsRequireBindings) ctx.cjsRequireBindings = [];
+    ctx.cjsRequireBindings.push(binding);
+  }
+}
+
+/**
+ * Handle `const [a, b] = value` — destructured array-pattern const bindings.
+ * Mirrors `handleConstObjectPatternAssignment` above, including the CJS
+ * require-binding recording — `const [a, b] = require('./mod')` never got
+ * classified as import-sourced by either engine (#2268).
+ */
+function handleConstArrayPatternAssignment(
+  node: TreeSitterNode,
+  nameN: TreeSitterNode,
+  valueN: TreeSitterNode,
+  ctx: ExtractorOutput,
+): void {
+  // Array destructuring: `const [x, y] = ...` — one constant Definition per
+  // bound identifier (#1901). Scope guard mirrors the object_pattern branch above.
+  extractArrayPatternBindings(nameN, nodeStartLine(node), nodeEndLine(node), ctx.definitions);
   const binding = extractCjsRequireBinding(nameN, valueN);
   if (binding) {
     if (!ctx.cjsRequireBindings) ctx.cjsRequireBindings = [];

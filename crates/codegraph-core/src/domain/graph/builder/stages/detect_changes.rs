@@ -881,55 +881,6 @@ pub fn capture_removed_file_neighbors(conn: &Connection, removed_files: &[String
     neighbors.into_iter().collect()
 }
 
-/// Clears `nodes.entrypoint`/`entrypoint_source_file` attribution owned by
-/// files about to be removed, BEFORE `purge_changed_files` deletes the
-/// `nodes` rows those files own — and returns the *targets'* files, so the
-/// caller can fold them into incremental role reclassification the same way
-/// `removal_reverse_deps` already is.
-///
-/// `mark_entrypoint_targets` (pipeline.rs) only iterates `file_symbols` — the
-/// files actually reparsed this build — to clear a stale entrypoint flag when
-/// its attributing call is edited or removed from an existing file. A file
-/// that is deleted outright is never a member of `file_symbols` in any build,
-/// so that clear never runs for it: a cross-file target attributed to a
-/// deleted guard file would keep `entrypoint = 1` and `role = "entry"`
-/// indefinitely (review finding on #2411, tracked as #2425 before Greptile
-/// flagged it independently in the same review round). Reading and clearing
-/// here, one step earlier in the pipeline — mirroring
-/// `capture_removed_file_neighbors` immediately above — closes that gap the
-/// same way it closes the analogous one for directory metrics. Mirrors
-/// `clearEntrypointAttributionForRemovedFiles` in `detect-changes.ts`.
-pub fn clear_entrypoint_attribution_for_removed_files(
-    conn: &Connection,
-    removed_files: &[String],
-) -> Vec<String> {
-    if removed_files.is_empty() {
-        return Vec::new();
-    }
-
-    let mut touched_files: HashSet<String> = HashSet::new();
-    let Ok(mut find_stmt) =
-        conn.prepare("SELECT file FROM nodes WHERE entrypoint_source_file = ?1")
-    else {
-        return Vec::new();
-    };
-    let Ok(mut clear_stmt) = conn.prepare(
-        "UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL
-         WHERE entrypoint_source_file = ?1",
-    ) else {
-        return Vec::new();
-    };
-
-    for f in removed_files {
-        if let Ok(rows) = find_stmt.query_map([f], |row| row.get::<_, String>(0)) {
-            touched_files.extend(rows.flatten());
-        }
-        let _ = clear_stmt.execute([f]);
-    }
-
-    touched_files.into_iter().collect()
-}
-
 /// True if `table` can be queried without error. Used for
 /// `deleted_export_advisories` (added in migration v21), which an older,
 /// not-yet-migrated schema may not have.
@@ -1176,6 +1127,13 @@ pub fn purge_changed_files(
         // changed) file never leaves stale rows behind for cross-file
         // return-type propagation to read on a later incremental build.
         ("DELETE FROM return_types WHERE file = ?1", false),
+        // #2428: per-file Python entrypoint-call evidence. Dropping it here is
+        // what makes deleting or editing away a guard clear its target's
+        // `nodes.entrypoint` — the next projection simply finds no evidence to
+        // re-mark it from. Replaces #2411's separate pre-purge clear step,
+        // which had to run before this one precisely because it read the flag
+        // off the target instead of off the guard.
+        ("DELETE FROM entrypoint_calls WHERE file = ?1", false),
         // Core tables (errors logged)
         ("DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?1) OR target_id IN (SELECT id FROM nodes WHERE file = ?1)", true),
         ("DELETE FROM nodes WHERE file = ?1", true),
@@ -1222,7 +1180,7 @@ pub fn clear_all_graph_data(conn: &Connection, has_embeddings: bool) {
          DELETE FROM cfg_edges; DELETE FROM cfg_blocks; DELETE FROM node_metrics; \
          DELETE FROM edges; DELETE FROM function_complexity; DELETE FROM dataflow; \
          DELETE FROM ast_nodes; DELETE FROM reexport_renames; DELETE FROM invoked_property_names; \
-         DELETE FROM return_types; \
+         DELETE FROM return_types; DELETE FROM entrypoint_calls; \
          DELETE FROM nodes; DELETE FROM file_hashes;",
     );
     if has_embeddings {
@@ -2031,69 +1989,6 @@ mod tests {
             &["src/pkgA/a1.js".to_string(), "src/pkgA/a2.js".to_string()],
         );
         assert!(neighbors.is_empty());
-    }
-
-    // ── clear_entrypoint_attribution_for_removed_files (#2425) ──────────
-
-    #[test]
-    fn clears_entrypoint_attribution_owned_by_a_removed_file() {
-        // shared_main lives in lib.py but is attributed to run.py's guard —
-        // deleting run.py must clear shared_main's flag even though the
-        // target itself is untouched.
-        let conn = test_conn();
-        let target = insert_node(&conn, "shared_main", "function", "lib.py", 1);
-        conn.execute(
-            "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'run.py' WHERE id = ?1",
-            [target],
-        )
-        .unwrap();
-
-        let touched =
-            clear_entrypoint_attribution_for_removed_files(&conn, &["run.py".to_string()]);
-        assert_eq!(touched, vec!["lib.py".to_string()]);
-
-        let (entrypoint, source_file): (i64, Option<String>) = conn
-            .query_row(
-                "SELECT entrypoint, entrypoint_source_file FROM nodes WHERE id = ?1",
-                [target],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(entrypoint, 0);
-        assert_eq!(source_file, None);
-    }
-
-    #[test]
-    fn does_not_touch_attribution_owned_by_a_file_that_is_not_removed() {
-        let conn = test_conn();
-        let target = insert_node(&conn, "shared_main", "function", "lib.py", 1);
-        conn.execute(
-            "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'run.py' WHERE id = ?1",
-            [target],
-        )
-        .unwrap();
-
-        let touched =
-            clear_entrypoint_attribution_for_removed_files(&conn, &["unrelated.py".to_string()]);
-        assert!(touched.is_empty());
-
-        let entrypoint: i64 = conn
-            .query_row(
-                "SELECT entrypoint FROM nodes WHERE id = ?1",
-                [target],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            entrypoint, 1,
-            "unrelated removal must not clear a live attribution"
-        );
-    }
-
-    #[test]
-    fn clear_entrypoint_attribution_empty_for_no_removed_files() {
-        let conn = test_conn();
-        assert!(clear_entrypoint_attribution_for_removed_files(&conn, &[]).is_empty());
     }
 
     // ── deleted-export advisories (#1938) ───────────────────────────────

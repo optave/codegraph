@@ -528,6 +528,33 @@ const MIGRATIONS: &[Migration] = &[
       CREATE INDEX IF NOT EXISTS idx_return_types_file ON return_types(file);
     "#,
     },
+    Migration {
+        // #2428: durable, per-file record of every call the Python extractor
+        // flagged as a program entrypoint — the `if __name__ == "__main__":`
+        // guard and `__main__.py` module level (#2392).
+        //
+        // This is the *evidence*; `nodes.entrypoint` is a projection of it
+        // (see domain/graph/builder/entrypoints.rs). The two have different
+        // lifecycles: the evidence belongs to the guard's file, while the
+        // flag sits on the target's node row, which is purged and
+        // re-inserted whenever the *target's* file is rebuilt. #2411 wrote
+        // the flag straight from the reparsed files' symbols, so a build
+        // that reparsed only the target had nothing to re-mark it from and
+        // silently dropped it.
+        //
+        // Deleted and re-inserted per file via the same purge path as
+        // invoked_property_names / return_types, which is what makes an
+        // edited-away or deleted guard clear its target without a dedicated
+        // pre-purge step. Mirrors src/db/migrations.ts v31.
+        version: 31,
+        up: r#"
+      CREATE TABLE IF NOT EXISTS entrypoint_calls (
+        file TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (file, name)
+      );
+    "#,
+    },
 ];
 
 // ── napi types ──────────────────────────────────────────────────────────
@@ -996,6 +1023,42 @@ impl NativeDatabase {
             }
             let _ = conn.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_edges_dynamic_kind ON edges(dynamic_kind) WHERE dynamic_kind IS NOT NULL",
+            );
+        }
+
+        // #2428: seed `entrypoint_calls` from attribution a pre-v31 build
+        // already wrote onto `nodes`, so upgrading a database does not lose
+        // it. `nodes.entrypoint` is a projection of that table; on a pre-v31
+        // graph the flags exist but the table does not, and migration v31
+        // creates it empty — at which point the next partial rebuild would
+        // project the empty table across the whole graph and clear every flag
+        // contributed by a guard file it did not happen to reparse (review
+        // finding on #2434). A full build is unaffected, since it reparses
+        // everything.
+        //
+        // Recording the *target's* name rather than the guard's original call
+        // name is deliberate and sufficient: the projection matches
+        // `tgt.name = ec.name` first, so this reproduces exactly the
+        // attribution already stored. The row is replaced with the real call
+        // name the first time that guard file is reparsed.
+        //
+        // Runs here, after the legacy-column block, because the versioned
+        // migration loop above cannot rely on `nodes.entrypoint` existing —
+        // that column is added by that block, not by a numbered migration.
+        // Guarded on the table being empty, which is both what makes it
+        // idempotent and what keeps it from ever overwriting real evidence.
+        // Mirrors `backfillEntrypointEvidence` in src/db/migrations.ts.
+        if has_table(conn, "entrypoint_calls")
+            && has_table(conn, "nodes")
+            && has_column(conn, "nodes", "entrypoint_source_file")
+            && conn
+                .query_row("SELECT 1 FROM entrypoint_calls LIMIT 1", [], |_| Ok(()))
+                .is_err()
+        {
+            let _ = conn.execute_batch(
+                "INSERT OR IGNORE INTO entrypoint_calls (file, name)
+                 SELECT entrypoint_source_file, name FROM nodes
+                 WHERE entrypoint = 1 AND entrypoint_source_file IS NOT NULL",
             );
         }
 

@@ -433,6 +433,23 @@ describe('JavaScript parser', () => {
     });
   });
 
+  describe('CJS require() array-pattern destructuring (#2268)', () => {
+    // `extractCjsRequireBinding` only ever recognized an object_pattern
+    // destructure of the require() result — `const [a, b] = require(...)`
+    // never got recorded as a CJS-require import artifact at all, in either
+    // engine, unlike the object-pattern shape.
+
+    it('records a plain array-pattern require destructure', () => {
+      const symbols: any = parseJS(`const [a, b] = require('./mod');`);
+      expect(symbols.cjsRequireBindings).toEqual([{ names: ['a', 'b'], source: './mod' }]);
+    });
+
+    it('includes a rest binding in an array-pattern require destructure', () => {
+      const symbols: any = parseJS(`const [a, ...rest] = require('./mod');`);
+      expect(symbols.cjsRequireBindings).toEqual([{ names: ['a', 'rest'], source: './mod' }]);
+    });
+  });
+
   it('extracts call expressions', () => {
     const symbols = parseJS(`import { foo } from './bar'; foo(); baz();`);
     expect(symbols.calls).toContainEqual(expect.objectContaining({ name: 'foo' }));

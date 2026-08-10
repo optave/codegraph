@@ -12,6 +12,7 @@ import path from 'node:path';
 import { bulkNodeIdsByFile, purgeFileData } from '../../../db/index.js';
 import { escapeLike } from '../../../db/query-builder.js';
 import { PROPAGATION_HOP_PENALTY } from '../../../extractors/javascript.js';
+import { classifyNodeRoles } from '../../../features/structure.js';
 import { debug, warn } from '../../../infrastructure/logger.js';
 import { getOrCreatePerDbChunkStmt } from '../../../shared/chunked-stmt-cache.js';
 import { normalizePath, TS_NATIVE_CONFIDENCE_FLOOR } from '../../../shared/constants.js';
@@ -57,6 +58,7 @@ import {
   resolveChaTargets,
   resolveThisDispatch,
 } from './cha.js';
+import { persistEntrypointCalls, projectEntrypointAttribution } from './entrypoints.js';
 import {
   BUILTIN_RECEIVERS,
   CHA_DISPATCH_PENALTY,
@@ -2248,6 +2250,49 @@ async function applyChaDispatchPostPass(
 }
 
 /**
+ * Refresh Python entrypoint attribution (#2392) after a single-file rebuild,
+ * and reclassify the roles of whatever it changed (#2428).
+ *
+ * `codegraph watch` previously never wrote `nodes.entrypoint` in any
+ * direction — this module is a standalone reimplementation of node/edge
+ * persistence that shares no code with the batch pipeline's edge stages, and
+ * the column was only ever added to the latter. So during a watch session a
+ * newly added guard was never marked, and a guard that was edited away or
+ * whose file was deleted left its cross-file target flagged `entry` — still
+ * seeding live-code reachability — until the next full build.
+ *
+ * All of those collapse into "rewrite this file's evidence, then re-project",
+ * because the projection reads persisted evidence rather than this rebuild's
+ * symbols. That also covers the case where the rebuilt file is the *target*:
+ * `purgeFileData` above deleted its node row (and with it the flag), and the
+ * untouched guard file's evidence is what puts the flag back on the new row.
+ *
+ * `pass symbols === null` for a file that no longer exists on disk: the purge
+ * already dropped its evidence, so the projection alone does the clearing.
+ *
+ * Roles are reclassified only for files whose flag actually changed, which is
+ * empty on every rebuild in a tree with no Python entrypoints — the projection
+ * itself short-circuits on two O(1) probes there.
+ */
+function refreshEntrypointAttribution(
+  db: BetterSqlite3Database,
+  relPath: string,
+  symbols: ExtractorOutput | null,
+): void {
+  // `persistEntrypointCalls` skips non-Python files itself — their evidence
+  // set is empty in this build and was empty in every earlier one.
+  if (symbols) {
+    persistEntrypointCalls(db, [[relPath, symbols.calls]]);
+  }
+  const touchedFiles = projectEntrypointAttribution(db);
+  if (touchedFiles.length === 0) return;
+  // The target's file is frequently not the file being rebuilt, so its cached
+  // `nodes.role` would otherwise stay stale at whatever the last full build
+  // computed — `entry` for a guard that has since been removed.
+  classifyNodeRoles(db, touchedFiles);
+}
+
+/**
  * Parse a single file and update the database incrementally.
  *
  * The destructive purge of the file's existing graph data runs only once a
@@ -2304,6 +2349,11 @@ export async function rebuildFile(
     // below (mirrors the full-build removed-file path in insertNodes.ts, which
     // is likewise unconditional).
     purgeFileData(db, relPath);
+    // #2428: the purge above dropped this file's entrypoint evidence, so
+    // re-projecting is what clears a target it was attributing — including
+    // one declared in a different file, which nothing else in this rebuild
+    // touches.
+    refreshEntrypointAttribution(db, relPath, null);
     return buildDeletionResult(relPath, oldNodes, edgesBefore, oldSymbols, diffSymbols);
   }
 
@@ -2338,6 +2388,9 @@ export async function rebuildFile(
 
   const fileNodeRow = stmts.getNodeId.get(relPath, 'file', relPath, 0);
   if (!fileNodeRow) {
+    // Same invariant, but the parse succeeded — so this file's fresh evidence
+    // is known and worth writing, even though no edges get built below.
+    refreshEntrypointAttribution(db, relPath, symbols);
     // Unreachable in practice (`insertFileNodes` just inserted this exact row),
     // but the purge above has already run, so bailing out here leaves the file
     // with nodes and no edges. Drop its `file_hashes` row so the next
@@ -2430,6 +2483,11 @@ export async function rebuildFile(
   // at insert time via insertCallEdgeExt — this backfill's `technique IS NULL`
   // filter correctly skips those rows.
   backfillIncrementalEdgeTechniques(db, [relPath, ...reverseDeps]);
+
+  // #2428: must follow every edge-insert path above — the projection reads
+  // targets back off the committed `calls` edges, including the ones the
+  // reverse-dep cascade just rebuilt.
+  refreshEntrypointAttribution(db, relPath, symbols);
 
   // Include pre-deletion edge counts from reverse deps so the net delta
   // (edgesAdded - edgesBefore) is correct even when the cascade re-inserts

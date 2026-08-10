@@ -68,21 +68,19 @@ export class PipelineContext {
   removedFileNeighbors: string[] = [];
   earlyExit: boolean = false;
   /**
-   * Relative file paths whose `nodes.entrypoint`/`entrypoint_source_file`
-   * columns were touched by `markEntrypointTargets` this build (#2392,
-   * review fix on #2411) — set by the `buildEdges` stage, consumed by
-   * `classifyRoles` in the `buildStructure` stage.
+   * Relative file paths whose `nodes.entrypoint` flag actually changed in
+   * this build's `projectEntrypointAttribution` pass (#2392, #2428) — set by
+   * the `buildEdges` stage, consumed by `classifyRoles` in the
+   * `buildStructure` stage.
    *
    * A touched target's own file is frequently *not* the file that was
    * reparsed (that is the whole cross-file case this exists for), and
    * `classifyNodeRolesIncremental`'s own neighbour-expansion join can't
-   * discover it either, for the identical reason `markEntrypointTargets`'s
-   * clear query couldn't find a removed guard's old target: the connecting
-   * `calls` edge may have just been deleted. Without seeding this
-   * explicitly, `nodes.entrypoint` clears correctly but the cached
-   * `nodes.role` for the same row is left stale at `"entry"` — same class of
-   * bug as `removedFileNeighbors` above (#1839) patches for directory
-   * metrics. Mirrors `entrypoint_touched_files` in
+   * discover it either: the connecting `calls` edge may have just been
+   * deleted. Without seeding this explicitly, `nodes.entrypoint` updates
+   * correctly but the cached `nodes.role` for the same row is left stale at
+   * `"entry"` — same class of bug as `removedFileNeighbors` above (#1839)
+   * patches for directory metrics. Mirrors `entrypoint_touched_files` in
    * `crates/codegraph-core/src/domain/graph/builder/pipeline.rs`.
    */
   entrypointTouchedFiles: string[] = [];

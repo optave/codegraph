@@ -130,6 +130,158 @@ describe('tracer-common.sh sed-injection helpers (#1913)', () => {
     expect(out.split('\n')[0]).toBe('public abstract class BaseService {');
   });
 
+  it('sedi_append_unless excludes a Java anonymous class instantiation but still traces its own inner method (#2272)', () => {
+    const file = path.join(tmpDir, 'RunAnon.java');
+    fs.writeFileSync(
+      file,
+      [
+        'public class RunAnon {',
+        '    public void runAnon() {',
+        '        Runnable r = new Runnable() {',
+        '            public void run() {',
+        '                System.out.println("hi");',
+        '            }',
+        '        };',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    // The exact negate pattern jvm-tracer.sh's java branch uses (post-#2272,
+    // round 3 -- the `new` fragment now requires the call's own closing
+    // paren to be followed directly by the line's `{`, not just a bare
+    // `new[[:space:]]`).
+    const out = runHelper(
+      `sedi_append_unless '/\\)[[:space:]]*\\{$/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\\/\\*[^*]*\\*\\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'        CallTracer.traceCall();' "${file}"`,
+      file,
+    );
+
+    // The enclosing real method is traced...
+    expect(out).toContain('    public void runAnon() {\n        CallTracer.traceCall();');
+    // ...the anonymous class's own opening is NOT (a bare statement directly
+    // in a class body, rather than a method body, is invalid Java)...
+    expect(out).not.toContain('new Runnable() {\n        CallTracer.traceCall();');
+    // ...but the anonymous class's own real method still is.
+    expect(out).toContain('            public void run() {\n        CallTracer.traceCall();');
+  });
+
+  it('sedi_append_unless excludes a Java anonymous class even with a comment between `new` and the type (#2272)', () => {
+    // A narrower gap Greptile flagged on PR #2449's first version: anchoring
+    // the exclusion on `new[[:space:]]+[A-Za-z_$]` (requiring an identifier
+    // character immediately after the whitespace) missed
+    // `new /* description */ Runnable() {` -- the bare `new` keyword followed
+    // by whitespace is already an unambiguous signal on its own, so the fix
+    // dropped the trailing identifier requirement entirely.
+    const file = path.join(tmpDir, 'RunAnonComment.java');
+    fs.writeFileSync(
+      file,
+      [
+        'public class RunAnonComment {',
+        '    public void runAnon() {',
+        '        Runnable r = new /* description */ Runnable() {',
+        '            public void run() {',
+        '                System.out.println("hi");',
+        '            }',
+        '        };',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    const out = runHelper(
+      `sedi_append_unless '/\\)[[:space:]]*\\{$/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\\/\\*[^*]*\\*\\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'        CallTracer.traceCall();' "${file}"`,
+      file,
+    );
+
+    expect(out).toContain('    public void runAnon() {\n        CallTracer.traceCall();');
+    expect(out).not.toContain('Runnable() {\n        CallTracer.traceCall();');
+    expect(out).toContain('            public void run() {\n        CallTracer.traceCall();');
+  });
+
+  it('sedi_append_unless excludes both qualified and unqualified Groovy trailing-closure calls but still traces a qualified-return-type method (#2272)', () => {
+    const file = path.join(tmpDir, 'RunClosures.groovy');
+    fs.writeFileSync(
+      file,
+      [
+        'class RunClosures {',
+        '    java.util.List getUsers() {',
+        '        return []',
+        '    }',
+        '    def runClosures() {',
+        '        list.findAll() {',
+        '            it > 0',
+        '        }',
+        // Greptile review, PR #2449: the first version of this fix only
+        // excluded the dot-qualified form (`list.findAll() {`) -- an
+        // unqualified trailing-closure call (no explicit receiver) shares
+        // the same false-positive risk and was still being traced.
+        '        findAll() {',
+        '            it > 0',
+        '        }',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    // The exact negate pattern jvm-tracer.sh's groovy branch uses (post-#2272,
+    // round 3).
+    const out = runHelper(
+      `sedi_append_unless '/\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\\/\\*[^*]*\\*\\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$|^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'        CallTracer.traceCall();' "${file}"`,
+      file,
+    );
+
+    // A fully-qualified return type still has a space (not a dot) directly
+    // before the method name, so it's still traced...
+    expect(out).toContain('    java.util.List getUsers() {\n        CallTracer.traceCall();');
+    // ...the enclosing real method is traced...
+    expect(out).toContain('    def runClosures() {\n        CallTracer.traceCall();');
+    // ...but neither the qualified nor the unqualified trailing-closure call
+    // is (traceCall() would land inside the closure literal, not a real
+    // method body).
+    expect(out).not.toContain('list.findAll() {\n        CallTracer.traceCall();');
+    expect(out).not.toContain('        findAll() {\n        CallTracer.traceCall();');
+  });
+
+  it('sedi_append_unless still traces a Groovy method with a `new`-valued default parameter (#2272 round 3)', () => {
+    // Greptile review, PR #2449, round 2: unlike Java, Groovy supports
+    // default parameter values, so a real method signature can itself
+    // contain the token `new` followed by whitespace. The round-1 fix's
+    // bare `new[[:space:]]` fragment wrongly excluded this line entirely,
+    // silently dropping the method from tracing.
+    const file = path.join(tmpDir, 'RunDefaultParam.groovy');
+    fs.writeFileSync(
+      file,
+      [
+        'class RunDefaultParam {',
+        '    def run(Config c = new Config()) {',
+        '        return c',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    const out = runHelper(
+      `sedi_append_unless '/\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+(\\/\\*[^*]*\\*\\/[[:space:]]*)?[A-Za-z_$][A-Za-zA-Z0-9_$.]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$|^[[:space:]]*([A-Za-z_][A-Za-zA-Z0-9_]*\\.)?[A-Za-z_][A-Za-zA-Z0-9_]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'        CallTracer.traceCall();' "${file}"`,
+      file,
+    );
+
+    expect(out).toContain(
+      '    def run(Config c = new Config()) {\n        CallTracer.traceCall();',
+    );
+  });
+
   it('rejects a regression back to the GNU-only single-line a\\/i\\ shortcut in the tracer scripts', () => {
     // Every dump()/traceCall() injection now goes through the shared helpers
     // above, so the raw sed scripts embedded directly in the language

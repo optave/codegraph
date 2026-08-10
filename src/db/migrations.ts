@@ -576,6 +576,36 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_return_types_file ON return_types(file);
     `,
   },
+  {
+    // #2428: durable, per-file record of every call flagged as a program
+    // entrypoint by the Python extractor — the `if __name__ == "__main__":`
+    // guard and `__main__.py` module level (#2392).
+    //
+    // This is the *evidence*; `nodes.entrypoint` is a projection of it (see
+    // `projectEntrypointAttribution`). Storing the evidence separately is
+    // what makes the projection survivable, because the two have different
+    // lifecycles: the evidence belongs to the guard's file, while the flag
+    // sits on the target's node row, which is purged and re-inserted whenever
+    // the *target's* file is rebuilt. #2411 wrote the flag directly from the
+    // reparsed files' symbols, so any rebuild that touched only the target
+    // (`codegraph build --incremental` after editing the callee, or
+    // `codegraph watch` doing the same) silently dropped it — the guard's
+    // file was not reparsed, so nothing re-marked it, even though the
+    // guard's `calls` edge was still right there in the graph.
+    //
+    // Deletes and re-inserts per file (via the same purge path as
+    // `invoked_property_names` / `return_types`) so a file whose guard was
+    // edited away, or removed from disk entirely, leaves no stale evidence —
+    // which is also what retires #2411's separate pre-purge clear step.
+    version: 31,
+    up: `
+      CREATE TABLE IF NOT EXISTS entrypoint_calls (
+        file TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (file, name)
+      );
+    `,
+  },
 ];
 
 interface PragmaColumnInfo {
@@ -706,7 +736,44 @@ function ensureEdgeColumns(db: BetterSqlite3Database): void {
     db.exec('ALTER TABLE edges ADD COLUMN dynamic INTEGER DEFAULT 0');
 }
 
+/**
+ * Seed `entrypoint_calls` (#2428) from attribution a pre-v31 build already
+ * wrote onto `nodes`, so upgrading a database does not lose it.
+ *
+ * `nodes.entrypoint` is a projection of `entrypoint_calls`. On a graph built
+ * before v31 the flags exist but the evidence table does not, and migration
+ * v31 creates it empty — at which point the very next partial rebuild would
+ * project that empty table across the whole graph and clear every flag
+ * contributed by a guard file it did not happen to reparse (review finding
+ * on #2434). A full build is unaffected, since it reparses everything.
+ *
+ * Recording the *target's* name rather than the guard's original call name is
+ * deliberate and sufficient: the projection matches `tgt.name = ec.name`
+ * first, so this reproduces exactly the attribution already in the database.
+ * The row is replaced with the real call name the first time that guard file
+ * is reparsed, so the approximation never outlives one rebuild of its file.
+ *
+ * Runs after `ensureLegacyColumns` because `applyMigrations` (which precedes
+ * it) cannot rely on `nodes.entrypoint` existing — that column is added by
+ * the idempotent ensure-columns block, not by a numbered migration. Guarded
+ * on the table being empty, which is both what makes it idempotent and what
+ * keeps it from ever overwriting real evidence.
+ *
+ * Mirrored in `crates/codegraph-core/src/db/connection.rs`.
+ */
+function backfillEntrypointEvidence(db: BetterSqlite3Database): void {
+  if (!hasTable(db, 'entrypoint_calls') || !hasTable(db, 'nodes')) return;
+  if (!hasColumn(db, 'nodes', 'entrypoint_source_file')) return;
+  if (db.prepare('SELECT 1 FROM entrypoint_calls LIMIT 1').get()) return;
+  db.exec(
+    `INSERT OR IGNORE INTO entrypoint_calls (file, name)
+     SELECT entrypoint_source_file, name FROM nodes
+     WHERE entrypoint = 1 AND entrypoint_source_file IS NOT NULL`,
+  );
+}
+
 export function initSchema(db: BetterSqlite3Database): void {
   applyMigrations(db);
   ensureLegacyColumns(db);
+  backfillEntrypointEvidence(db);
 }

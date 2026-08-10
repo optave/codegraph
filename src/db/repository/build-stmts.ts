@@ -28,6 +28,11 @@ interface PurgeStmts {
    *  changed) file never leaves stale rows behind for cross-file
    *  return-type propagation to read on a later incremental build. */
   returnTypes: SqliteStatement | null;
+  /** #2428: per-file Python entrypoint-call evidence (#2392's guard and
+   *  `__main__.py` conventions) — cleared so a guard that was edited away or
+   *  whose file was deleted stops projecting `nodes.entrypoint` onto its
+   *  target on the next build. */
+  entrypointCalls: SqliteStatement | null;
 }
 
 interface PurgeOpts {
@@ -97,6 +102,12 @@ function preparePurgeStmts(db: BetterSqlite3Database): PurgeStmts {
     reexportRenames: tryPrepare('DELETE FROM reexport_renames WHERE barrel_file = ?'),
     invokedPropertyNames: tryPrepare('DELETE FROM invoked_property_names WHERE file = ?'),
     returnTypes: tryPrepare('DELETE FROM return_types WHERE file = ?'),
+    // #2428: dropping the guard file's entrypoint evidence here is what makes
+    // deleting or editing away a guard clear its target's flag — the next
+    // projection simply finds no evidence to re-mark it from. It replaces
+    // #2411's separate pre-purge clear step, which had to run before this one
+    // precisely because it read the flag off the target instead.
+    entrypointCalls: tryPrepare('DELETE FROM entrypoint_calls WHERE file = ?'),
   };
 }
 
@@ -132,6 +143,7 @@ function runPurge(stmts: PurgeStmts, file: string, opts: PurgeOpts = {}): void {
   stmts.reexportRenames?.run(file);
   stmts.invokedPropertyNames?.run(file);
   stmts.returnTypes?.run(file);
+  stmts.entrypointCalls?.run(file);
 
   // Core tables
   stmts.edges.run({ f: file });
