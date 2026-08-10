@@ -130,6 +130,78 @@ describe('tracer-common.sh sed-injection helpers (#1913)', () => {
     expect(out.split('\n')[0]).toBe('public abstract class BaseService {');
   });
 
+  it('sedi_append_unless excludes a Java anonymous class instantiation but still traces its own inner method (#2272)', () => {
+    const file = path.join(tmpDir, 'RunAnon.java');
+    fs.writeFileSync(
+      file,
+      [
+        'public class RunAnon {',
+        '    public void runAnon() {',
+        '        Runnable r = new Runnable() {',
+        '            public void run() {',
+        '                System.out.println("hi");',
+        '            }',
+        '        };',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    // The exact negate pattern jvm-tracer.sh's java branch uses (post-#2272).
+    const out = runHelper(
+      `sedi_append_unless '/\\)[[:space:]]*\\{$/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+[A-Za-z_$]/' ` +
+        `'        CallTracer.traceCall();' "${file}"`,
+      file,
+    );
+
+    // The enclosing real method is traced...
+    expect(out).toContain('    public void runAnon() {\n        CallTracer.traceCall();');
+    // ...the anonymous class's own opening is NOT (a bare statement directly
+    // in a class body, rather than a method body, is invalid Java)...
+    expect(out).not.toContain('new Runnable() {\n        CallTracer.traceCall();');
+    // ...but the anonymous class's own real method still is.
+    expect(out).toContain('            public void run() {\n        CallTracer.traceCall();');
+  });
+
+  it('sedi_append_unless excludes a Groovy trailing-closure call but still traces a qualified-return-type method (#2272)', () => {
+    const file = path.join(tmpDir, 'RunClosures.groovy');
+    fs.writeFileSync(
+      file,
+      [
+        'class RunClosures {',
+        '    java.util.List getUsers() {',
+        '        return []',
+        '    }',
+        '    def runClosures() {',
+        '        list.findAll() {',
+        '            it > 0',
+        '        }',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    // The exact negate pattern jvm-tracer.sh's groovy branch uses (post-#2272).
+    const out = runHelper(
+      `sedi_append_unless '/\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'/class[[:space:]]|interface[[:space:]]|if[[:space:]]|while[[:space:]]|for[[:space:]]|switch[[:space:]]|catch[[:space:]]|synchronized[[:space:]]|try[[:space:]]|new[[:space:]]+[A-Za-z_$]|\\.[A-Za-z_][A-Za-zA-Z0-9_]*\\([^()]*\\)[[:space:]]*\\{[[:space:]]*$/' ` +
+        `'        CallTracer.traceCall();' "${file}"`,
+      file,
+    );
+
+    // A fully-qualified return type still has a space (not a dot) directly
+    // before the method name, so it's still traced...
+    expect(out).toContain('    java.util.List getUsers() {\n        CallTracer.traceCall();');
+    // ...the enclosing real method is traced...
+    expect(out).toContain('    def runClosures() {\n        CallTracer.traceCall();');
+    // ...but the trailing-closure call is NOT (traceCall() would land inside
+    // the closure literal, not a real method body).
+    expect(out).not.toContain('list.findAll() {\n        CallTracer.traceCall();');
+  });
+
   it('rejects a regression back to the GNU-only single-line a\\/i\\ shortcut in the tracer scripts', () => {
     // Every dump()/traceCall() injection now goes through the shared helpers
     // above, so the raw sed scripts embedded directly in the language
