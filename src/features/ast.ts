@@ -9,7 +9,7 @@ import { buildExtensionSet } from '../ast-analysis/shared.js';
 import { walkWithVisitors } from '../ast-analysis/visitor.js';
 import { createAstStoreVisitor } from '../ast-analysis/visitors/ast-store-visitor.js';
 import { bulkNodeIdsByFile, openReadonlyOrFail, resolveBusyTimeoutMs } from '../db/index.js';
-import { buildFileConditionSQL } from '../db/query-builder.js';
+import { buildFileConditionSQL, testFilterSQL } from '../db/query-builder.js';
 import { debug } from '../infrastructure/logger.js';
 import { outputResult } from '../infrastructure/result-formatter.js';
 import { paginateResult } from '../shared/paginate.js';
@@ -327,13 +327,7 @@ export function astQueryData(
     params.push(...fc.params);
   }
 
-  if (noTests) {
-    where += ` AND a.file NOT LIKE '%.test.%'
-       AND a.file NOT LIKE '%.spec.%'
-       AND a.file NOT LIKE '%__test__%'
-       AND a.file NOT LIKE '%__tests__%'
-       AND a.file NOT LIKE '%.stories.%'`;
-  }
+  where += ` ${testFilterSQL('a.file', noTests ?? false)}`;
 
   const sql = `
     SELECT a.kind, a.name, a.file, a.line, a.text, a.receiver, a.parent_node_id,

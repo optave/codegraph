@@ -6,7 +6,7 @@
  */
 
 import { openReadonlyOrFail, resolveDbConfig } from '../db/index.js';
-import { buildFileConditionSQL } from '../db/query-builder.js';
+import { buildFileConditionSQL, testFilterSQL } from '../db/query-builder.js';
 import { DEFAULTS } from '../infrastructure/config.js';
 import { debug } from '../infrastructure/logger.js';
 import { isTestFile } from '../infrastructure/test-filter.js';
@@ -100,13 +100,7 @@ function buildComplexityWhere(opts: {
   let where = "WHERE n.kind IN ('function','method')";
   const params: unknown[] = [];
 
-  if (opts.noTests) {
-    where += ` AND n.file NOT LIKE '%.test.%'
-       AND n.file NOT LIKE '%.spec.%'
-       AND n.file NOT LIKE '%__test__%'
-       AND n.file NOT LIKE '%__tests__%'
-       AND n.file NOT LIKE '%.stories.%'`;
-  }
+  where += ` ${testFilterSQL('n.file', opts.noTests)}`;
   if (opts.target) {
     where += ' AND n.name LIKE ?';
     params.push(`%${opts.target}%`);

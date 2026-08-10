@@ -1,3 +1,4 @@
+import { isTestFile } from '../../infrastructure/test-filter.js';
 import { ConfigError } from '../../shared/errors.js';
 import {
   CORE_SYMBOL_KINDS,
@@ -304,14 +305,7 @@ export class InMemoryRepository extends Repository {
     let nodes = [...this.#nodes.values()].filter((n) => kindsToUse.includes(n.kind));
 
     if (opts.noTests) {
-      nodes = nodes.filter(
-        (n) =>
-          !n.file.includes('.test.') &&
-          !n.file.includes('.spec.') &&
-          !n.file.includes('__test__') &&
-          !n.file.includes('__tests__') &&
-          !n.file.includes('.stories.'),
-      );
+      nodes = nodes.filter((n) => !isTestFile(n.file));
     }
     {
       const fileFn = buildFileFilterFn(opts.file);
@@ -640,14 +634,7 @@ export class InMemoryRepository extends Repository {
       nodes = nodes.filter((n) => patternRe.test(n.name));
     }
     if (opts.noTests) {
-      nodes = nodes.filter(
-        (n) =>
-          !n.file.includes('.test.') &&
-          !n.file.includes('.spec.') &&
-          !n.file.includes('__test__') &&
-          !n.file.includes('__tests__') &&
-          !n.file.includes('.stories.'),
-      );
+      nodes = nodes.filter((n) => !isTestFile(n.file));
     }
 
     nodes.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);

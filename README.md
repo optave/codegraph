@@ -94,7 +94,7 @@ No config files, no Docker, no JVM, no API keys, no accounts. Point your agent a
 | Architecture rules + CI gate | **Yes** | Partial (risk-gate, no boundary rules) | Partial (layer model, no CI gate) | — | — | — |
 | Security scanning (SAST / vuln detection) | Intentionally out of scope¹⁵ | — | **Yes** | — | — | Partial (opt-in taint, `--pdg` only) |
 | Zero config, `npm install` | **Yes** | — (pip) | **Yes** | **Yes** | No¹⁶ | **Yes** |
-| Runtime dependencies (direct packages)¹⁷ | **3** | 7 | **0**¹⁸ | 10 | 23¹⁹ | 36 |
+| Runtime dependencies (direct packages)¹⁷ | **4** | 7 | **0**¹⁸ | 10 | 23¹⁹ | 36 |
 | Graph export (GraphML / Neo4j / DOT) | **Yes** | **Yes**²⁰ | Partial²¹ | — | — | — |
 | Open source + commercial use | **Yes** (Apache-2.0) | **Yes** (MIT) | **Yes** (Apache-2.0/MIT) | **Yes** (MIT) | **Yes** (MIT) | Non-commercial²² |
 
@@ -742,12 +742,13 @@ Metrics are normalized per file for cross-version comparability. Times above are
 
 <a href="https://www.npmjs.com/package/@optave/codegraph"><img src="https://img.shields.io/npm/unpacked-size/@optave/codegraph?style=flat-square&label=unpacked%20size" alt="npm unpacked size" /></a>
 
-Only **3 runtime dependencies** — everything else is optional or a devDependency:
+Only **4 runtime dependencies** — everything else is optional or a devDependency:
 
 | Dependency | What it does | | |
 |---|---|---|---|
 | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | SQLite driver (WASM engine; lazy-loaded, not used for native-engine reads) | ![GitHub stars](https://img.shields.io/github/stars/WiseLibs/better-sqlite3?style=flat-square&label=%E2%AD%90) | ![npm downloads](https://img.shields.io/npm/dw/better-sqlite3?style=flat-square&label=%F0%9F%93%A5%2Fwk) |
 | [commander](https://github.com/tj/commander.js) | CLI argument parsing | ![GitHub stars](https://img.shields.io/github/stars/tj/commander.js?style=flat-square&label=%E2%AD%90) | ![npm downloads](https://img.shields.io/npm/dw/commander?style=flat-square&label=%F0%9F%93%A5%2Fwk) |
+| [smol-toml](https://github.com/squirrelchat/smol-toml) | TOML parsing — reads `Cargo.toml` for Rust `crate::` target overrides and `pyproject.toml` for Python import roots | ![GitHub stars](https://img.shields.io/github/stars/squirrelchat/smol-toml?style=flat-square&label=%E2%AD%90) | ![npm downloads](https://img.shields.io/npm/dw/smol-toml?style=flat-square&label=%F0%9F%93%A5%2Fwk) |
 | [web-tree-sitter](https://github.com/tree-sitter/tree-sitter) | WASM tree-sitter bindings | ![GitHub stars](https://img.shields.io/github/stars/tree-sitter/tree-sitter?style=flat-square&label=%E2%AD%90) | ![npm downloads](https://img.shields.io/npm/dw/web-tree-sitter?style=flat-square&label=%F0%9F%93%A5%2Fwk) |
 
 Optional: `@huggingface/transformers` (semantic search), `@modelcontextprotocol/sdk` (MCP server) — lazy-loaded only when needed.
