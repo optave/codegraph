@@ -1203,15 +1203,17 @@ function buildImportedNamesForNative(
  * second target to legitimately share an entrypoint call name, which is
  * unusual enough not to hold up this fix.
  *
- * Also records every touched target's file on `ctx.entrypointTouchedFiles`,
- * so `classifyRoles` (buildStructure stage) can seed incremental role
- * reclassification for it: the target's file is frequently not the file
- * being rebuilt (the cross-file case above), and
- * `classifyNodeRolesIncremental`'s own neighbour-expansion join can't
- * discover it either, for the same live-edge-only reason the clear query
- * above can't — the connecting edge may have just been deleted. Without this,
- * `nodes.entrypoint` clears correctly but the cached `nodes.role` for the
- * same row is left stale at `"entry"`.
+ * Also appends every touched target's file onto `ctx.entrypointTouchedFiles`
+ * (the detect-changes stage may have already added to it earlier this
+ * build, for files removed outright — see `clearEntrypointAttributionFor
+ * RemovedFiles` in detect-changes.ts, #2425), so `classifyRoles`
+ * (buildStructure stage) can seed incremental role reclassification for it:
+ * the target's file is frequently not the file being rebuilt (the cross-file
+ * case above), and `classifyNodeRolesIncremental`'s own neighbour-expansion
+ * join can't discover it either, for the same live-edge-only reason the
+ * clear query above can't — the connecting edge may have just been deleted.
+ * Without this, `nodes.entrypoint` clears correctly but the cached
+ * `nodes.role` for the same row is left stale at `"entry"`.
  */
 function markEntrypointTargets(ctx: PipelineContext): void {
   const { db, fileSymbols } = ctx;
@@ -1266,7 +1268,12 @@ function markEntrypointTargets(ctx: PipelineContext): void {
     }
   });
   tx();
-  ctx.entrypointTouchedFiles = [...touchedFiles];
+  // Appends rather than overwrites: the detect-changes stage may already
+  // have recorded touched files here for entrypoint attribution owned by
+  // files removed outright this build (#2425) — see
+  // `clearEntrypointAttributionForRemovedFiles` in detect-changes.ts, which
+  // runs earlier in the pipeline than this stage does.
+  ctx.entrypointTouchedFiles.push(...touchedFiles);
 }
 
 /**

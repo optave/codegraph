@@ -274,6 +274,22 @@ fn save_and_purge_changed(
     let removed_file_neighbors =
         detect_changes::capture_removed_file_neighbors(conn, &change_result.removed);
 
+    // Clear entrypoint attribution owned by files about to be removed, for
+    // the identical reason and at the identical point as the neighbor
+    // capture just above — a deleted file's own `nodes` rows (source of the
+    // `entrypoint_source_file` value on its targets) are gone once
+    // `purge_changed_files` runs below, and `mark_entrypoint_targets` never
+    // revisits a deleted file (#2425). Folded into `removal_reverse_deps`
+    // since both exist purely to seed Stage 8's incremental role
+    // reclassification with files that can no longer be found by that
+    // stage's own live-edge neighbour discovery.
+    removal_reverse_deps.extend(
+        detect_changes::clear_entrypoint_attribution_for_removed_files(
+            conn,
+            &change_result.removed,
+        ),
+    );
+
     // A file about to be (re)inserted can no longer be "deleted" — clear any
     // stale advisory left over from a prior removal at this same path before
     // capturing this build's actual removals, and before purging deletes the
