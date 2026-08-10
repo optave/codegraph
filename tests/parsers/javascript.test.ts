@@ -2291,6 +2291,29 @@ function runDemo(reporter: Reporter, users: string[]): void {
       ).toBe(false);
     });
 
+    // Greptile review, PR #2432: `var` is function-scoped, not switch-scoped
+    // — a `var fn` redeclaration in one case is the SAME outer binding, not
+    // a distinct shadow, so it must not suppress a genuine read in a
+    // DIFFERENT, unrelated case.
+    it('still credits liveness from a switch-case read when another case redeclares the name via var', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          switch (x) {
+            case 1:
+              fn();
+              break;
+            case 2:
+              var fn = something;
+              break;
+          }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
     // Greptile review, PR #2432: `for (fn of values) {}` / `for (fn in obj)
     // {}` with NO declaration keyword reassigns fn on every iteration — a
     // WRITE, not a read of the value it held before the loop started.

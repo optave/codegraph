@@ -4338,12 +4338,26 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
         }
         // All `case`/`default` clauses in a switch share ONE lexical scope
         // (unlike a function's separate statement blocks) — an UNBRACED
-        // case's own `let`/`const`/`var`/function/class declaration shadows
-        // the outer variable for the whole switch, even though it isn't
-        // wrapped in its own `statement_block` (Greptile review, PR #2432).
-        // A BRACED case (`case 1: { let fn = 1; }`) creates its own
+        // case's own `let`/`const`/function/class declaration shadows the
+        // outer variable for the whole switch, even though it isn't wrapped
+        // in its own `statement_block` (Greptile review, PR #2432). A
+        // BRACED case (`case 1: { let fn = 1; }`) creates its own
         // independent block scope instead, already handled when the
         // recursive scan reaches that nested `statement_block`.
+        //
+        // Deliberately EXCLUDES `variable_declaration` (`var`), unlike the
+        // `statement_block` case above (Greptile review, PR #2432): `var`
+        // is function-scoped, not block-scoped, so a `var fn` in one case
+        // is never a genuinely NEW binding — it's the SAME outer `fn` (or,
+        // if the outer `fn` is `let`/`const`, redeclaring it is a
+        // SyntaxError, so a valid parse can't reach this with a real shadow
+        // anyway). Treating it as a shadow here would skip the ENTIRE
+        // switch — including a genuine read in a DIFFERENT, unrelated
+        // case — for a redeclaration that isn't actually a distinct
+        // binding. (The `statement_block` case above doesn't have this
+        // problem: each `{}` is checked independently, so a `var` in one
+        // sibling block never affects a different sibling's shadow check
+        // the way one shared switch scope does here.)
         "switch_body" => {
             for i in 0..node.child_count() {
                 let Some(switch_case) = node.child(i) else {
@@ -4356,8 +4370,7 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
                     let Some(stmt) = switch_case.child(j) else {
                         continue;
                     };
-                    if (stmt.kind() == "lexical_declaration"
-                        || stmt.kind() == "variable_declaration")
+                    if stmt.kind() == "lexical_declaration"
                         && declaration_declares_name(&stmt, name, source)
                     {
                         return true;
@@ -8095,6 +8108,31 @@ mod tests {
              }",
         );
         assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: `var` is function-scoped, not switch-scoped
+    // — a `var fn` redeclaration in one case is the SAME outer binding, not
+    // a distinct shadow, so it must not suppress a genuine read in a
+    // DIFFERENT, unrelated case.
+    #[test]
+    fn still_credits_liveness_from_a_switch_case_read_when_another_case_redeclares_the_name_via_var(
+    ) {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               switch (x) {\n\
+                 case 1:\n\
+                   fn();\n\
+                   break;\n\
+                 case 2:\n\
+                   var fn = something;\n\
+                   break;\n\
+               }\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
     }

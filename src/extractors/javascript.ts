@@ -4339,12 +4339,25 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
     case 'switch_body': {
       // All `case`/`default` clauses in a switch share ONE lexical scope
       // (unlike a function's separate statement blocks) — an UNBRACED
-      // case's own `let`/`const`/`var`/function/class declaration shadows
-      // the outer variable for the whole switch, even though it isn't
-      // wrapped in its own `statement_block` (Greptile review, PR #2432). A
-      // BRACED case (`case 1: { let fn = 1; }`) creates its own independent
-      // block scope instead, already handled when the recursive scan
-      // reaches that nested `statement_block`.
+      // case's own `let`/`const`/function/class declaration shadows the
+      // outer variable for the whole switch, even though it isn't wrapped
+      // in its own `statement_block` (Greptile review, PR #2432). A BRACED
+      // case (`case 1: { let fn = 1; }`) creates its own independent block
+      // scope instead, already handled when the recursive scan reaches that
+      // nested `statement_block`.
+      //
+      // Deliberately EXCLUDES `variable_declaration` (`var`), unlike the
+      // `statement_block` case above (Greptile review, PR #2432): `var` is
+      // function-scoped, not block-scoped, so a `var fn` in one case is
+      // never a genuinely NEW binding — it's the SAME outer `fn` (or, if the
+      // outer `fn` is `let`/`const`, redeclaring it is a SyntaxError, so a
+      // valid parse can't reach this with a real shadow anyway). Treating it
+      // as a shadow here would skip the ENTIRE switch — including a
+      // genuine read in a DIFFERENT, unrelated case — for a redeclaration
+      // that isn't actually a distinct binding. (The `statement_block` case
+      // above doesn't have this problem: each `{}` is checked independently,
+      // so a `var` in one sibling block never affects a different sibling's
+      // shadow check the way one shared switch scope does here.)
       for (let i = 0; i < node.childCount; i++) {
         const switchCase = node.child(i);
         if (!switchCase) continue;
@@ -4352,10 +4365,7 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
         for (let j = 0; j < switchCase.childCount; j++) {
           const stmt = switchCase.child(j);
           if (!stmt) continue;
-          if (
-            (stmt.type === 'lexical_declaration' || stmt.type === 'variable_declaration') &&
-            declarationDeclaresName(stmt, name)
-          ) {
+          if (stmt.type === 'lexical_declaration' && declarationDeclaresName(stmt, name)) {
             return true;
           }
           if (
