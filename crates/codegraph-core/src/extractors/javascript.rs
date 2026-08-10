@@ -4235,8 +4235,153 @@ fn handle_instanceof_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>
     });
 }
 
+/// Node types that introduce their own lexical scope — checked for shadowing
+/// by `introduces_shadowed_binding` before `block_contains_identifier_excluding`
+/// recurses into them, so a same-named binding declared in a NESTED scope
+/// doesn't get mistaken for a reference to the outer fallback variable being
+/// checked (issue #2257, Greptile review).
+///
+/// Mirrors `SCOPE_NODE_TYPES` in `src/extractors/javascript.ts`.
+const SCOPE_NODE_TYPES: &[&str] = &[
+    "statement_block",
+    "function_declaration",
+    "function_expression",
+    "generator_function_declaration",
+    "generator_function",
+    "arrow_function",
+    "method_definition",
+    "catch_clause",
+    "for_statement",
+    "for_in_statement",
+];
+
+/// True when `node` (one of `SCOPE_NODE_TYPES`) declares its OWN binding
+/// named `name` at this scope's own level — a function/method parameter or
+/// own name, a catch clause's exception binding, a for-loop's own loop
+/// variable, or a `let`/`const`/`var` declared directly inside this block
+/// (not a deeper nested block, which gets its own independent shadow check
+/// when the recursive scan reaches it).
+///
+/// Mirrors `introducesShadowedBinding` in `src/extractors/javascript.ts`.
+fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
+    match node.kind() {
+        "function_declaration"
+        | "function_expression"
+        | "generator_function_declaration"
+        | "generator_function"
+        | "arrow_function"
+        | "method_definition" => {
+            if let Some(name_n) = node.child_by_field_name("name") {
+                if node_text(&name_n, source) == name {
+                    return true;
+                }
+            }
+            match node.child_by_field_name("parameters") {
+                Some(params) => block_contains_identifier(&params, name, source),
+                None => false,
+            }
+        }
+        "catch_clause" => match node.child_by_field_name("parameter") {
+            Some(param) => block_contains_identifier(&param, name, source),
+            None => false,
+        },
+        "for_statement" | "for_in_statement" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if (child.kind() == "lexical_declaration"
+                        || child.kind() == "variable_declaration")
+                        && declaration_declares_name(&child, name, source)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        "statement_block" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if (child.kind() == "lexical_declaration"
+                        || child.kind() == "variable_declaration")
+                        && declaration_declares_name(&child, name, source)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8]) -> bool {
+    for i in 0..declaration_node.child_count() {
+        let Some(declarator) = declaration_node.child(i) else {
+            continue;
+        };
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+        if let Some(decl_name) = declarator.child_by_field_name("name") {
+            if block_contains_identifier(&decl_name, name, source) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn block_contains_identifier(node: &Node, name: &str, source: &[u8]) -> bool {
+    if node.kind() == "identifier" && node_text(node, source) == name {
+        return true;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if block_contains_identifier(&child, name, source) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Like `block_contains_identifier`, but skips the node whose id is
+/// `exclude_id` entirely — excluding only the declarator being analyzed, not
+/// its whole enclosing statement, so a sibling declarator in the same
+/// comma-separated declaration (`const fetchFn = a || b, result =
+/// fetchFn();`) still counts as a reference (issue #2257, Greptile review) —
+/// and stops descending into any nested scope that shadows `name` (see
+/// `introduces_shadowed_binding`).
+///
+/// Mirrors `blockContainsIdentifierExcluding` in `src/extractors/javascript.ts`.
+fn block_contains_identifier_excluding(
+    node: &Node,
+    name: &str,
+    exclude_id: usize,
+    source: &[u8],
+) -> bool {
+    if node.id() == exclude_id {
+        return false;
+    }
+    if node.kind() == "identifier" && node_text(node, source) == name {
+        return true;
+    }
+    if SCOPE_NODE_TYPES.contains(&node.kind()) && introduces_shadowed_binding(node, name, source) {
+        return false;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if block_contains_identifier_excluding(&child, name, exclude_id, source) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// True when `name` appears as a bare identifier reference anywhere else in
-/// `declaration_node`'s enclosing block (function body, module top level, or
+/// `declarator_node`'s enclosing block (function body, module top level, or
 /// arrow-function body) — the local, position-scoped liveness evidence
 /// `handle_logical_or_ternary_value_ref` requires before extracting a
 /// value-ref (issue #2257).
@@ -4250,49 +4395,35 @@ fn handle_instanceof_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>
 /// own enclosing block avoids that risk entirely, at the cost of missing a
 /// consumer in a different function/file (accepted — matches this file's
 /// general "restrict to the simplest syntactic shape, prefer no edge over a
-/// wrong one" precedent, #1771/#1784).
+/// wrong one" precedent, #1771/#1784). A NESTED scope that shadows `name`
+/// (`introduces_shadowed_binding`) is excluded from the scan entirely, so a
+/// same-named binding declared inside a nested function/block never gets
+/// mistaken for a use of the outer variable.
 ///
 /// Mirrors `hasLaterReferenceInEnclosingBlock` in `src/extractors/javascript.ts`.
 fn has_later_reference_in_enclosing_block(
-    declaration_node: &Node,
+    declarator_node: &Node,
     name: &str,
     source: &[u8],
 ) -> bool {
-    let mut statement = Some(*declaration_node);
-    while let Some(n) = statement {
-        if n.kind() == "lexical_declaration" || n.kind() == "variable_declaration" {
+    let mut block = declarator_node.parent();
+    while let Some(n) = block {
+        if n.kind() == "statement_block" || n.kind() == "program" {
             break;
         }
-        statement = n.parent();
+        block = n.parent();
     }
-    let Some(statement) = statement else {
+    let Some(block) = block else {
         return false;
     };
-    let Some(block) = statement.parent() else {
-        return false;
-    };
-
+    // Scan the starting block's CHILDREN, not the block itself — the block
+    // necessarily contains the very declaration we're checking liveness
+    // for, so running the shadow check (`introduces_shadowed_binding`) on
+    // the block itself would always find that declaration and wrongly treat
+    // the whole block as shadowed, skipping every sibling statement.
     for i in 0..block.child_count() {
-        let Some(sibling) = block.child(i) else {
-            continue;
-        };
-        if sibling.id() == statement.id() {
-            continue;
-        }
-        if block_contains_identifier(&sibling, name, source) {
-            return true;
-        }
-    }
-    false
-}
-
-fn block_contains_identifier(node: &Node, name: &str, source: &[u8]) -> bool {
-    if node.kind() == "identifier" && node_text(node, source) == name {
-        return true;
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if block_contains_identifier(&child, name, source) {
+        if let Some(child) = block.child(i) {
+            if block_contains_identifier_excluding(&child, name, declarator_node.id(), source) {
                 return true;
             }
         }
@@ -7299,6 +7430,46 @@ mod tests {
     #[test]
     fn extracts_value_ref_call_for_nullish_coalescing_fallback() {
         let s = parse_js("const fetchFn = options.custom ?? fetchLatestVersion;\ncall(fetchFn);");
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn does_not_credit_liveness_from_a_shadowed_binding_in_a_nested_scope() {
+        let s = parse_js(
+            "function outer() {\n\
+               const fetchFn = options.custom || fetchLatestVersion;\n\
+               function helper() {\n\
+                 let fetchFn = somethingElse();\n\
+                 return fetchFn();\n\
+               }\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn extracts_value_ref_call_when_variable_used_in_same_statement_sibling_declarator() {
+        let s =
+            parse_js("const fetchFn = options.custom || fetchLatestVersion, result = fetchFn();");
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    #[test]
+    fn extracts_value_ref_call_when_variable_used_inside_a_nested_non_shadowing_block() {
+        let s = parse_js(
+            "function outer() {\n\
+               const fetchFn = options.custom || fetchLatestVersion;\n\
+               try {\n\
+                 call(fetchFn);\n\
+               } catch (e) {}\n\
+             }",
+        );
         assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));

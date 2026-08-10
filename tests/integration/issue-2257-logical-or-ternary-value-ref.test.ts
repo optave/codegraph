@@ -41,11 +41,25 @@ function ternaryRight() { return 2; }
 
 function useCallback(fn) { return fn(1); }
 
+function shadowedFallback(x) { return x + 3; }
+function unrelatedShadower() { return 99; }
+
+function siblingUsed(x) { return x + 4; }
+
 export function run(opts, cond) {
   const fetchFn = opts.custom || reachedViaFallback;
   const neverUsedAgain = opts.other || deadViaUnusedFallback;
   const picked = cond ? ternaryLeft : ternaryRight;
-  return useCallback(fetchFn) + useCallback(picked);
+
+  const shadowTest = opts.x || shadowedFallback;
+  function helper() {
+    let shadowTest = unrelatedShadower();
+    return shadowTest();
+  }
+
+  const siblingTest = opts.y || siblingUsed, siblingResult = siblingTest();
+
+  return useCallback(fetchFn) + useCallback(picked) + helper() + siblingResult;
 }
 `,
 };
@@ -108,6 +122,14 @@ function runShared(getDbPath: () => string) {
     const dead = nodes.find((n) => n.name === 'deadViaUnusedFallback' && n.kind === 'function');
     expect(dead, 'deadViaUnusedFallback node not found').toBeDefined();
     expect(DEAD_ROLES.has(dead!.role ?? '')).toBe(true);
+  });
+
+  it('does not credit liveness from a same-named binding shadowed in a nested scope', () => {
+    expect(countCallEdgesTo(getDbPath(), 'shadowedFallback')).toBe(0);
+  });
+
+  it('creates a value-ref edge when the variable is used by a sibling declarator in the same statement', () => {
+    expect(countCallEdgesTo(getDbPath(), 'siblingUsed')).toBeGreaterThan(0);
   });
 }
 

@@ -4248,8 +4248,126 @@ function collectInstanceofValueRefCall(binaryNode: TreeSitterNode, calls: Call[]
 }
 
 /**
+ * Node types that introduce their own lexical scope — checked for shadowing
+ * by `introducesShadowedBinding` before `blockContainsIdentifierExcluding`
+ * recurses into them, so a same-named binding declared in a NESTED scope
+ * doesn't get mistaken for a reference to the outer fallback variable being
+ * checked (issue #2257, Greptile review).
+ */
+const SCOPE_NODE_TYPES: ReadonlySet<string> = new Set([
+  'statement_block',
+  'function_declaration',
+  'function_expression',
+  'generator_function_declaration',
+  'generator_function',
+  'arrow_function',
+  'method_definition',
+  'catch_clause',
+  'for_statement',
+  'for_in_statement',
+]);
+
+/**
+ * True when `node` (one of `SCOPE_NODE_TYPES`) declares its OWN binding
+ * named `name` at this scope's own level — a function/method parameter or
+ * own name, a catch clause's exception binding, a for-loop's own loop
+ * variable, or a `let`/`const`/`var` declared directly inside this block
+ * (not a deeper nested block, which gets its own independent shadow check
+ * when the recursive scan reaches it).
+ */
+function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean {
+  switch (node.type) {
+    case 'function_declaration':
+    case 'function_expression':
+    case 'generator_function_declaration':
+    case 'generator_function':
+    case 'arrow_function':
+    case 'method_definition': {
+      if (node.childForFieldName('name')?.text === name) return true;
+      const params = node.childForFieldName('parameters');
+      return params ? blockContainsIdentifier(params, name) : false;
+    }
+    case 'catch_clause': {
+      const param = node.childForFieldName('parameter');
+      return param ? blockContainsIdentifier(param, name) : false;
+    }
+    case 'for_statement':
+    case 'for_in_statement': {
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (
+          child &&
+          (child.type === 'lexical_declaration' || child.type === 'variable_declaration') &&
+          declarationDeclaresName(child, name)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case 'statement_block': {
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (
+          child &&
+          (child.type === 'lexical_declaration' || child.type === 'variable_declaration') &&
+          declarationDeclaresName(child, name)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+function declarationDeclaresName(declarationNode: TreeSitterNode, name: string): boolean {
+  for (let i = 0; i < declarationNode.childCount; i++) {
+    const declarator = declarationNode.child(i);
+    if (declarator?.type !== 'variable_declarator') continue;
+    const declName = declarator.childForFieldName('name');
+    if (declName && blockContainsIdentifier(declName, name)) return true;
+  }
+  return false;
+}
+
+function blockContainsIdentifier(node: TreeSitterNode, name: string): boolean {
+  if (node.type === 'identifier' && node.text === name) return true;
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && blockContainsIdentifier(child, name)) return true;
+  }
+  return false;
+}
+
+/**
+ * Like `blockContainsIdentifier`, but skips the node whose id is `excludeId`
+ * entirely — excluding only the declarator being analyzed, not its whole
+ * enclosing statement, so a sibling declarator in the same comma-separated
+ * declaration (`const fetchFn = a || b, result = fetchFn();`) still counts
+ * as a reference (issue #2257, Greptile review) — and stops descending into
+ * any nested scope that shadows `name` (see `introducesShadowedBinding`).
+ */
+function blockContainsIdentifierExcluding(
+  node: TreeSitterNode,
+  name: string,
+  excludeId: number,
+): boolean {
+  if (node.id === excludeId) return false;
+  if (node.type === 'identifier' && node.text === name) return true;
+  if (SCOPE_NODE_TYPES.has(node.type) && introducesShadowedBinding(node, name)) return false;
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && blockContainsIdentifierExcluding(child, name, excludeId)) return true;
+  }
+  return false;
+}
+
+/**
  * True when `name` appears as a bare identifier reference anywhere else in
- * `declarationNode`'s enclosing block (function body, module top level, or
+ * `declaratorNode`'s enclosing block (function body, module top level, or
  * arrow-function body) — the local, position-scoped liveness evidence
  * `collectLogicalOrTernaryValueRefCall` requires before extracting a value-ref
  * (issue #2257).
@@ -4263,40 +4381,25 @@ function collectInstanceofValueRefCall(binaryNode: TreeSitterNode, calls: Call[]
  * own enclosing block avoids that risk entirely, at the cost of missing a
  * consumer in a different function/file (accepted — matches this file's
  * general "restrict to the simplest syntactic shape, prefer no edge over a
- * wrong one" precedent, #1771/#1784).
+ * wrong one" precedent, #1771/#1784). A NESTED scope that shadows `name`
+ * (`introducesShadowedBinding`) is excluded from the scan entirely, so a
+ * same-named binding declared inside a nested function/block never gets
+ * mistaken for a use of the outer variable.
  */
-function hasLaterReferenceInEnclosingBlock(declarationNode: TreeSitterNode, name: string): boolean {
-  let statement: TreeSitterNode | null = declarationNode;
-  while (
-    statement &&
-    statement.type !== 'lexical_declaration' &&
-    statement.type !== 'variable_declaration'
-  ) {
-    statement = statement.parent;
+function hasLaterReferenceInEnclosingBlock(declaratorNode: TreeSitterNode, name: string): boolean {
+  let block: TreeSitterNode | null = declaratorNode.parent;
+  while (block && block.type !== 'statement_block' && block.type !== 'program') {
+    block = block.parent;
   }
-  if (!statement) return false;
-  const block = statement.parent;
   if (!block) return false;
-  const statementId = statement.id;
-
+  // Scan the starting block's CHILDREN, not the block itself — the block
+  // necessarily contains the very declaration we're checking liveness for,
+  // so running the shadow check (introducesShadowedBinding) on the block
+  // itself would always find that declaration and wrongly treat the whole
+  // block as shadowed, skipping every sibling statement.
   for (let i = 0; i < block.childCount; i++) {
-    const sibling = block.child(i);
-    // Compare `.id`, not `===` — tree-sitter WASM node wrappers are not
-    // reference-stable across repeated `.child(i)` calls, so `sibling ===
-    // statement` would never exclude the declaration itself here, making
-    // every declared name trivially "reference" itself via its own `name`
-    // field.
-    if (!sibling || sibling.id === statementId) continue;
-    if (blockContainsIdentifier(sibling, name)) return true;
-  }
-  return false;
-}
-
-function blockContainsIdentifier(node: TreeSitterNode, name: string): boolean {
-  if (node.type === 'identifier' && node.text === name) return true;
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child && blockContainsIdentifier(child, name)) return true;
+    const child = block.child(i);
+    if (child && blockContainsIdentifierExcluding(child, name, declaratorNode.id)) return true;
   }
   return false;
 }
