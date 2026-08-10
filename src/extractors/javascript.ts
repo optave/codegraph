@@ -4199,6 +4199,36 @@ const TABLE_NAME_PASSTHROUGH_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Walk outward from `node` through EVERY enclosing scope-introducing
+ * ancestor — not just function scopes — returning the start line of the
+ * nearest one that directly declares/shadows `name` itself
+ * (`introducesShadowedBinding`, the same hardened shadow-detection #2257
+ * built out, already handles function-likes, `catch`, `for`/`for-in`,
+ * `statement_block`, and `switch_body`). `undefined` when no enclosing
+ * scope redeclares it, i.e. it comes from module scope.
+ *
+ * Shared by both sides of issue #2260's computed-dispatch-table
+ * disambiguation (Greptile review, PR #2445, rounds 2 and 3): a file-scoped
+ * evidence key alone let two different FUNCTIONS in one file, each
+ * declaring their own same-named local table, share one entry; scoping by
+ * enclosing FUNCTION alone (round 2's fix) still let two sibling BLOCKS
+ * inside the SAME function do the same (e.g. an `if`/`else` each declaring
+ * their own same-named table). Walking every scope level, not just
+ * function boundaries, and identifying the match by its own line — not a
+ * human-readable qualifier, since a bare block has no name — disambiguates
+ * any two distinct lexical bindings of the same name anywhere in the file,
+ * regardless of nesting shape.
+ */
+function findDeclaringScopeLine(node: TreeSitterNode, name: string): number | undefined {
+  let current: TreeSitterNode | null = node.parent;
+  while (current) {
+    if (introducesShadowedBinding(current, name)) return current.startPosition.row;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+/**
  * Walk up from a dispatch-table object-literal's `pair`/shorthand-property
  * node to find the name of the variable it's assigned to (e.g.
  * `GROOVY_NODE_HANDLERS` for `const GROOVY_NODE_HANDLERS = { ... }`) — used
@@ -4211,18 +4241,12 @@ const TABLE_NAME_PASSTHROUGH_TYPES: ReadonlySet<string> = new Set([
  * requires the dot/#1895 evidence instead, matching this file's "prefer no
  * edge over a wrong one" precedent.
  *
- * When the table's own declaration is function-scoped (not module-level),
- * the returned name carries a `#${qualifier}` suffix naming that enclosing
- * function (`findEnclosingFunctionQualifier`, the same FUNCTION_SCOPE_TYPES
- * walk `extractObjectLiteralFunctions` already uses for qualified
- * definitions, #2033) — `#` can never appear in a real identifier, so this
- * can't collide with an actual table name, and a module-scope table (the
- * common case) is returned bare, unchanged from before this suffix existed.
- * Disambiguates two different functions in the same file that each declare
- * their own same-named local dispatch table (Greptile review, PR #2445):
- * without it, both bindings would produce the identical `receiver` string
- * and share one evidence-set entry, wrongly crediting each other's
- * computed-invocation evidence.
+ * When the table's own declaration is scoped inside any block (not
+ * module-level), the returned name carries a `#${line}` suffix identifying
+ * that declaring scope (`findDeclaringScopeLine`) — `#` can never appear in
+ * a real identifier, so this can't collide with an actual table name, and a
+ * module-scope table (the common case) is returned bare, unchanged from
+ * before this suffix existed.
  */
 function findEnclosingTableName(node: TreeSitterNode): string | undefined {
   let current: TreeSitterNode | null = node.parent;
@@ -4231,8 +4255,8 @@ function findEnclosingTableName(node: TreeSitterNode): string | undefined {
     if (current.type === 'variable_declarator') {
       const nameNode = current.childForFieldName('name');
       if (nameNode?.type !== 'identifier') return undefined;
-      const scopeQualifier = findEnclosingFunctionQualifier(current);
-      return scopeQualifier === null ? nameNode.text : `${nameNode.text}#${scopeQualifier}`;
+      const scopeLine = findDeclaringScopeLine(current, nameNode.text);
+      return scopeLine === undefined ? nameNode.text : `${nameNode.text}#${scopeLine}`;
     }
     if (!TABLE_NAME_PASSTHROUGH_TYPES.has(current.type)) return undefined;
     current = current.parent;
@@ -4962,43 +4986,6 @@ function collectLogicalOrTernaryValueRefCall(declaratorNode: TreeSitterNode, cal
 }
 
 /**
- * Walk outward from a `TABLE[computedExpr]` reference through every
- * enclosing function scope, returning the qualifier name
- * (`findEnclosingFunctionQualifier`'s `qualifierForFunctionScopeNode`) of
- * the nearest one that locally declares `tableName` itself (via
- * `introducesShadowedBinding`, the same hardened shadow-detection #2257
- * built out) — i.e. the table is a function-local binding, not a
- * module-level one. `undefined` when no enclosing function locally
- * redeclares it (the common case: a module-level table referenced from
- * inside a function), matching the bare, unsuffixed name
- * `findEnclosingTableName` produces for that same module-level declaration
- * on the value-ref side.
- *
- * Without this, two different functions each declaring their own
- * same-named local table (Greptile review, PR #2445) would both reduce to
- * the identical bare `tableName` and share one evidence-set entry — this
- * makes the consumer side agree with `findEnclosingTableName`'s
- * declaration-side scoping so the two can only match when they really are
- * the same lexical binding.
- */
-function findConsumerTableScopeQualifier(
-  node: TreeSitterNode,
-  tableName: string,
-): string | undefined {
-  let current: TreeSitterNode | null = node.parent;
-  while (current) {
-    if (FUNCTION_SCOPE_TYPES.has(current.type)) {
-      const body = current.childForFieldName('body');
-      if (body && introducesShadowedBinding(body, tableName)) {
-        return qualifierForFunctionScopeNode(current) ?? undefined;
-      }
-    }
-    current = current.parent;
-  }
-  return undefined;
-}
-
-/**
  * Collect computed/bracket-access dispatch-table invocation evidence (issue
  * #2260) — extends the #1771/#1895 dot-property value-ref mechanism to the
  * `const handler = TABLE[computedExpr]; ...; handler(...)` idiom (a
@@ -5042,10 +5029,8 @@ function collectComputedDispatchTableEvidence(
   const indexNode = valueNode.childForFieldName('index');
   if (indexNode?.type === 'string' || indexNode?.type === 'template_string') return;
   if (!hasLaterReferenceInEnclosingBlock(declaratorNode, nameNode.text, true)) return;
-  const scopeQualifier = findConsumerTableScopeQualifier(declaratorNode, objectNode.text);
-  evidence.push(
-    scopeQualifier === undefined ? objectNode.text : `${objectNode.text}#${scopeQualifier}`,
-  );
+  const scopeLine = findDeclaringScopeLine(declaratorNode, objectNode.text);
+  evidence.push(scopeLine === undefined ? objectNode.text : `${objectNode.text}#${scopeLine}`);
 }
 
 function extractReceiverName(objNode: TreeSitterNode | null): string | undefined {

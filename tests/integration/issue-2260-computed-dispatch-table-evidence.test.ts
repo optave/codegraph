@@ -32,6 +32,14 @@
  * same-named local table. `sameFileScopes.js` below regression-tests that —
  * `scopeA`'s locally-scoped `HANDLERS` earns computed-access evidence,
  * `scopeB`'s unrelated, separately-scoped `HANDLERS` must not inherit it.
+ *
+ * Scoping by enclosing FUNCTION alone still wasn't fine-grained enough for a
+ * third review round: two SIBLING BLOCKS inside the SAME function (an
+ * `if`/`else`), each declaring their own same-named table, reduced to the
+ * identical function-qualified key. `siblingBlocks.js` below regression-tests
+ * that — the `if` branch's locally-scoped `TABLE` earns computed-access
+ * evidence, the `else` branch's separately-scoped, same-named `TABLE` must
+ * not inherit it, even though both live in the same enclosing function.
  */
 
 import fs from 'node:fs';
@@ -92,6 +100,25 @@ function scopeA(node) {
 
 function scopeB() {
   const HANDLERS = { other: scopeBHandler };
+}
+`,
+  'siblingBlocks.js': `
+function ifBranchHandler(node) {
+  return node;
+}
+
+function elseBranchHandler(node) {
+  return node;
+}
+
+function dispatch(node) {
+  if (node.useIfBranch) {
+    const TABLE = { compute: ifBranchHandler };
+    const handler = TABLE[node.type];
+    if (handler) handler(node);
+  } else {
+    const TABLE = { other: elseBranchHandler };
+  }
 }
 `,
 };
@@ -179,6 +206,17 @@ function runShared(getDbPath: () => string) {
     // evidence of its own and must not inherit scopeA's.
     expect(countCallEdges(getDbPath(), 'scopeA', 'scopeAHandler')).toBeGreaterThan(0);
     expect(countIncomingCallEdges(getDbPath(), 'scopeBHandler')).toBe(0);
+  });
+
+  it('does not credit a same-named table in a sibling block, same function (Greptile review, PR #2445)', () => {
+    // siblingBlocks.js: the `if` branch's locally-scoped TABLE earns
+    // computed-access evidence (attributed to `dispatch`, the enclosing
+    // function, since the table is block-local) and its own handler gets an
+    // edge. The `else` branch's separately-scoped, same-named TABLE never
+    // earns any evidence of its own and must not inherit the if-branch's,
+    // even though both live in the same enclosing function.
+    expect(countCallEdges(getDbPath(), 'dispatch', 'ifBranchHandler')).toBeGreaterThan(0);
+    expect(countIncomingCallEdges(getDbPath(), 'elseBranchHandler')).toBe(0);
   });
 }
 

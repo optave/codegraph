@@ -4156,6 +4156,37 @@ const TABLE_NAME_PASSTHROUGH_KINDS: &[&str] = &[
     "non_null_expression",
 ];
 
+/// Walk outward from `node` through EVERY enclosing scope-introducing
+/// ancestor — not just function scopes — returning the start line of the
+/// nearest one that directly declares/shadows `name` itself
+/// (`introduces_shadowed_binding`, the same hardened shadow-detection #2257
+/// built out, already handles function-likes, `catch`, `for`/`for-in`,
+/// `statement_block`, and `switch_body`). `None` when no enclosing scope
+/// redeclares it, i.e. it comes from module scope.
+///
+/// Shared by both sides of issue #2260's computed-dispatch-table
+/// disambiguation (Greptile review, PR #2445, rounds 2 and 3): a file-scoped
+/// evidence key alone let two different FUNCTIONS in one file, each
+/// declaring their own same-named local table, share one entry; scoping by
+/// enclosing FUNCTION alone (round 2's fix) still let two sibling BLOCKS
+/// inside the SAME function do the same (e.g. an `if`/`else` each declaring
+/// their own same-named table). Walking every scope level, not just
+/// function boundaries, and identifying the match by its own line — not a
+/// human-readable qualifier, since a bare block has no name — disambiguates
+/// any two distinct lexical bindings of the same name anywhere in the file,
+/// regardless of nesting shape. Mirrors `findDeclaringScopeLine` in
+/// `src/extractors/javascript.ts`.
+fn find_declaring_scope_line(node: &Node, name: &str, source: &[u8]) -> Option<u32> {
+    let mut current = node.parent();
+    while let Some(cur) = current {
+        if introduces_shadowed_binding(&cur, name, source) {
+            return Some(cur.start_position().row as u32);
+        }
+        current = cur.parent();
+    }
+    None
+}
+
 /// Walk up from a dispatch-table object-literal's `pair`/shorthand-property
 /// node to find the name of the variable it's assigned to (e.g.
 /// `GROOVY_NODE_HANDLERS` for `const GROOVY_NODE_HANDLERS = { ... }`) — used
@@ -4164,18 +4195,12 @@ const TABLE_NAME_PASSTHROUGH_KINDS: &[&str] = &[
 /// number of hops through common TS wrapper shapes so a deeply-nested or
 /// non-declarator-assigned object literal simply yields no table name.
 ///
-/// When the table's own declaration is function-scoped (not module-level),
-/// the returned name carries a `#${qualifier}` suffix naming that enclosing
-/// function (`find_enclosing_function_qualifier`, the same
-/// `VAR_DECL_FN_SCOPE_TYPES` walk `extract_object_literal_functions` already
-/// uses for qualified definitions, #2033) — `#` can never appear in a real
-/// identifier, so this can't collide with an actual table name, and a
-/// module-scope table (the common case) is returned bare, unchanged from
-/// before this suffix existed. Disambiguates two different functions in the
-/// same file that each declare their own same-named local dispatch table
-/// (Greptile review, PR #2445): without it, both bindings would produce the
-/// identical `receiver` string and share one evidence-set entry, wrongly
-/// crediting each other's computed-invocation evidence. Mirrors
+/// When the table's own declaration is scoped inside any block (not
+/// module-level), the returned name carries a `#${line}` suffix identifying
+/// that declaring scope (`find_declaring_scope_line`) — `#` can never
+/// appear in a real identifier, so this can't collide with an actual table
+/// name, and a module-scope table (the common case) is returned bare,
+/// unchanged from before this suffix existed. Mirrors
 /// `findEnclosingTableName` in `src/extractors/javascript.ts`.
 fn find_enclosing_table_name(node: &Node, source: &[u8]) -> Option<String> {
     let mut current = node.parent();
@@ -4190,8 +4215,8 @@ fn find_enclosing_table_name(node: &Node, source: &[u8]) -> Option<String> {
                 return None;
             }
             let name = node_text(&name_n, source);
-            return Some(match find_enclosing_function_qualifier(&cur, source) {
-                Some(qualifier) => format!("{name}#{qualifier}"),
+            return Some(match find_declaring_scope_line(&cur, name, source) {
+                Some(scope_line) => format!("{name}#{scope_line}"),
                 None => name.to_string(),
             });
         }
@@ -5155,43 +5180,6 @@ fn handle_logical_or_ternary_value_ref(declarator: &Node, source: &[u8], calls: 
     }
 }
 
-/// Walk outward from a `TABLE[computedExpr]` reference through every
-/// enclosing function scope, returning the qualifier name
-/// (`qualifier_for_function_scope_node`) of the nearest one that locally
-/// declares `table_name` itself (via `introduces_shadowed_binding`, the
-/// same hardened shadow-detection #2257 built out) — i.e. the table is a
-/// function-local binding, not a module-level one. `None` when no enclosing
-/// function locally redeclares it (the common case: a module-level table
-/// referenced from inside a function), matching the bare, unsuffixed name
-/// `find_enclosing_table_name` produces for that same module-level
-/// declaration on the value-ref side.
-///
-/// Without this, two different functions each declaring their own
-/// same-named local table (Greptile review, PR #2445) would both reduce to
-/// the identical bare `table_name` and share one evidence-set entry — this
-/// makes the consumer side agree with `find_enclosing_table_name`'s
-/// declaration-side scoping so the two can only match when they really are
-/// the same lexical binding. Mirrors `findConsumerTableScopeQualifier` in
-/// `src/extractors/javascript.ts`.
-fn find_consumer_table_scope_qualifier(
-    node: &Node,
-    table_name: &str,
-    source: &[u8],
-) -> Option<String> {
-    let mut current = node.parent();
-    while let Some(cur) = current {
-        if VAR_DECL_FN_SCOPE_TYPES.contains(&cur.kind()) {
-            if let Some(body) = cur.child_by_field_name("body") {
-                if introduces_shadowed_binding(&body, table_name, source) {
-                    return qualifier_for_function_scope_node(&cur, source);
-                }
-            }
-        }
-        current = cur.parent();
-    }
-    None
-}
-
 /// Collect computed/bracket-access dispatch-table invocation evidence (issue
 /// #2260) — extends the #1771/#1895 dot-property value-ref mechanism to the
 /// `const handler = TABLE[computedExpr]; ...; handler(...)` idiom (a
@@ -5256,8 +5244,8 @@ fn handle_computed_dispatch_table_evidence(
     }
     let table_name = node_text(&object_n, source);
     evidence.push(
-        match find_consumer_table_scope_qualifier(declarator, table_name, source) {
-            Some(qualifier) => format!("{table_name}#{qualifier}"),
+        match find_declaring_scope_line(declarator, table_name, source) {
+            Some(scope_line) => format!("{table_name}#{scope_line}"),
             None => table_name.to_string(),
         },
     );
