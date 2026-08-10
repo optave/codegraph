@@ -191,6 +191,73 @@ describe.each(ENGINES)(
 );
 
 describe.each(ENGINES)(
+  'schema upgrade preserves existing entrypoint attribution (#2434 review) — engine: %s',
+  (engine) => {
+    it('backfills evidence from a pre-v31 graph instead of clearing its flags', async () => {
+      // `nodes.entrypoint` is a projection of `entrypoint_calls`. A graph
+      // built before that table existed has the flags but no evidence, and
+      // creating the table empty would make the next partial rebuild project
+      // it across the whole graph and clear every flag whose guard file it
+      // did not happen to reparse.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2434-upgrade-${engine}-`));
+      try {
+        fs.writeFileSync(path.join(dir, 'lib.py'), 'def shared_main():\n    return 1\n');
+        fs.writeFileSync(path.join(dir, 'run.py'), GUARD_SOURCE);
+        fs.writeFileSync(path.join(dir, 'other.py'), 'def other():\n    return 9\n');
+        await buildGraph(dir, { incremental: false, skipRegistry: true, engine });
+        expect(readSymbol(dir, 'shared_main')?.entrypoint).toBe(1);
+
+        // Rewind to a v30 graph: the flags #2411 wrote, no evidence table.
+        const raw = new Database(path.join(dir, '.codegraph', 'graph.db'));
+        raw.exec('DROP TABLE entrypoint_calls');
+        raw.prepare('UPDATE schema_version SET version = 30').run();
+        raw.close();
+
+        // Rebuild a file with nothing to do with the guard — the projection
+        // still runs graph-wide.
+        await watchRebuild(dir, 'other.py', engine);
+
+        const after = readSymbol(dir, 'shared_main');
+        expect(after?.entrypoint).toBe(1);
+        expect(after?.entrypointSourceFile).toBe('run.py');
+        expect(after?.role).toBe('entry');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('backfills on an incremental build that reparses only an unrelated file', async () => {
+      // Same upgrade, reached through the batch pipeline — which on the
+      // native engine opens the graph through the Rust `init_schema`, so this
+      // is what exercises that engine's own copy of the backfill.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2434-upgrade-batch-${engine}-`));
+      try {
+        fs.writeFileSync(path.join(dir, 'lib.py'), 'def shared_main():\n    return 1\n');
+        fs.writeFileSync(path.join(dir, 'run.py'), GUARD_SOURCE);
+        fs.writeFileSync(path.join(dir, 'other.py'), 'def other():\n    return 9\n');
+        await buildGraph(dir, { incremental: false, skipRegistry: true, engine });
+        expect(readSymbol(dir, 'shared_main')?.entrypoint).toBe(1);
+
+        const raw = new Database(path.join(dir, '.codegraph', 'graph.db'));
+        raw.exec('DROP TABLE entrypoint_calls');
+        raw.prepare('UPDATE schema_version SET version = 30').run();
+        raw.close();
+
+        fs.writeFileSync(path.join(dir, 'other.py'), 'def other():\n    return 10\n');
+        await buildGraph(dir, { incremental: true, skipRegistry: true, engine });
+
+        const after = readSymbol(dir, 'shared_main');
+        expect(after?.entrypoint).toBe(1);
+        expect(after?.entrypointSourceFile).toBe('run.py');
+        expect(after?.role).toBe('entry');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  },
+);
+
+describe.each(ENGINES)(
   'codegraph build --incremental: Python entrypoint attribution (#2428) — engine: %s',
   (engine) => {
     // The same defect, reached through the batch pipeline rather than the

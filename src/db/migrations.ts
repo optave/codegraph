@@ -736,7 +736,44 @@ function ensureEdgeColumns(db: BetterSqlite3Database): void {
     db.exec('ALTER TABLE edges ADD COLUMN dynamic INTEGER DEFAULT 0');
 }
 
+/**
+ * Seed `entrypoint_calls` (#2428) from attribution a pre-v31 build already
+ * wrote onto `nodes`, so upgrading a database does not lose it.
+ *
+ * `nodes.entrypoint` is a projection of `entrypoint_calls`. On a graph built
+ * before v31 the flags exist but the evidence table does not, and migration
+ * v31 creates it empty — at which point the very next partial rebuild would
+ * project that empty table across the whole graph and clear every flag
+ * contributed by a guard file it did not happen to reparse (review finding
+ * on #2434). A full build is unaffected, since it reparses everything.
+ *
+ * Recording the *target's* name rather than the guard's original call name is
+ * deliberate and sufficient: the projection matches `tgt.name = ec.name`
+ * first, so this reproduces exactly the attribution already in the database.
+ * The row is replaced with the real call name the first time that guard file
+ * is reparsed, so the approximation never outlives one rebuild of its file.
+ *
+ * Runs after `ensureLegacyColumns` because `applyMigrations` (which precedes
+ * it) cannot rely on `nodes.entrypoint` existing — that column is added by
+ * the idempotent ensure-columns block, not by a numbered migration. Guarded
+ * on the table being empty, which is both what makes it idempotent and what
+ * keeps it from ever overwriting real evidence.
+ *
+ * Mirrored in `crates/codegraph-core/src/db/connection.rs`.
+ */
+function backfillEntrypointEvidence(db: BetterSqlite3Database): void {
+  if (!hasTable(db, 'entrypoint_calls') || !hasTable(db, 'nodes')) return;
+  if (!hasColumn(db, 'nodes', 'entrypoint_source_file')) return;
+  if (db.prepare('SELECT 1 FROM entrypoint_calls LIMIT 1').get()) return;
+  db.exec(
+    `INSERT OR IGNORE INTO entrypoint_calls (file, name)
+     SELECT entrypoint_source_file, name FROM nodes
+     WHERE entrypoint = 1 AND entrypoint_source_file IS NOT NULL`,
+  );
+}
+
 export function initSchema(db: BetterSqlite3Database): void {
   applyMigrations(db);
   ensureLegacyColumns(db);
+  backfillEntrypointEvidence(db);
 }
