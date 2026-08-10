@@ -2481,6 +2481,50 @@ const VAR_DECL_FN_SCOPE_TYPES: [&str; 6] = [
     "generator_function",
 ];
 
+/// Detect `<destructured pattern> = require('./path')` and, if so, push a
+/// CJS-require `Import` so the receiver-edge resolver treats the destructured
+/// names as import artifacts, not local definitions (mirrors the WASM
+/// `cjsRequireBindings` mechanism, #1678). `names` is the pattern's
+/// already-collected bound names — `collect_object_pattern_names` for
+/// `const { a, b } = require(...)`, `collect_array_pattern_names` for
+/// `const [a, b] = require(...)` (issue #2268 added the array-pattern case;
+/// it was never recorded at all before, only the object-pattern shape was).
+fn record_cjs_require_import(
+    value_n: &Node,
+    source: &[u8],
+    names: Vec<String>,
+    node_line: u32,
+    imports: &mut Vec<Import>,
+) {
+    if names.is_empty() || value_n.kind() != "call_expression" {
+        return;
+    }
+    let Some(fn_node) = value_n.child_by_field_name("function") else {
+        return;
+    };
+    if node_text(&fn_node, source) != "require" {
+        return;
+    }
+    let args = value_n
+        .child_by_field_name("arguments")
+        .or_else(|| find_child(value_n, "arguments"));
+    let Some(args) = args else {
+        return;
+    };
+    let Some(str_arg) = find_child(&args, "string") else {
+        return;
+    };
+    let mod_path = node_text(&str_arg, source).replace(&['\'', '"'][..], "");
+    // CJS require bindings never populate renamed_imports — resolve_call_targets
+    // deliberately ignores the original name for these (empty target_file forces
+    // a same-file fallback match, matching WASM's importedNamesMap exclusion,
+    // #1678) — so any rename pairs the caller collected are discarded before
+    // reaching here (see the object-pattern call site's own comment).
+    let mut imp = Import::new(mod_path, names, node_line);
+    imp.cjs_require = Some(true);
+    imports.push(imp);
+}
+
 fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let is_const = node
         .child(0)
@@ -2550,34 +2594,14 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             // If the RHS is a CJS require() call, also add to imports so the
             // receiver-edge resolver treats the names as import artifacts, not
             // local definitions — mirroring the WASM cjsRequireBindings fix (#1678).
-            if value_n.kind() == "call_expression" {
-                if let Some(fn_node) = value_n.child_by_field_name("function") {
-                    if node_text(&fn_node, source) == "require" {
-                        let args = value_n
-                            .child_by_field_name("arguments")
-                            .or_else(|| find_child(&value_n, "arguments"));
-                        if let Some(args) = args {
-                            if let Some(str_arg) = find_child(&args, "string") {
-                                let mod_path =
-                                    node_text(&str_arg, source).replace(&['\'', '"'][..], "");
-                                // CJS require bindings never populate renamed_imports —
-                                // resolve_call_targets deliberately ignores the original
-                                // name for these (empty target_file forces a same-file
-                                // fallback match, matching WASM's importedNamesMap
-                                // exclusion, #1678) — so the rename pairs collected here
-                                // are discarded.
-                                let names =
-                                    collect_object_pattern_names(&name_n, source, &mut Vec::new());
-                                if !names.is_empty() {
-                                    let mut imp = Import::new(mod_path, names, start_line(node));
-                                    imp.cjs_require = Some(true);
-                                    symbols.imports.push(imp);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            let names = collect_object_pattern_names(&name_n, source, &mut Vec::new());
+            record_cjs_require_import(
+                &value_n,
+                source,
+                names,
+                start_line(node),
+                &mut symbols.imports,
+            );
         } else if is_const && name_n.kind() == "identifier" && !in_function_scope {
             // Any other initializer shape becomes a "constant" Definition, regardless of
             // complexity (call/member/parenthesized expressions, etc.) — mirroring how
@@ -2612,6 +2636,16 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 start_line(node),
                 end_line(node),
                 &mut symbols.definitions,
+            );
+            // Mirrors the object_pattern branch above: `const [a, b] = require('./mod')`
+            // never got recorded as a CJS-require import artifact by either engine (#2268).
+            let names = collect_array_pattern_names(&name_n, source);
+            record_cjs_require_import(
+                &value_n,
+                source,
+                names,
+                start_line(node),
+                &mut symbols.imports,
             );
         } else if !is_const
             && value_n.kind() == "object"
@@ -7900,6 +7934,38 @@ mod tests {
     #[test]
     fn finds_cjs_require_with_object_rest_destructuring() {
         let s = parse_js("const { a, ...rest } = require('./mod');");
+        let cjs_imports: Vec<_> = s
+            .imports
+            .iter()
+            .filter(|i| i.cjs_require == Some(true))
+            .collect();
+        assert_eq!(cjs_imports.len(), 1);
+        assert_eq!(cjs_imports[0].source, "./mod");
+        assert_eq!(
+            cjs_imports[0].names,
+            vec!["a".to_string(), "rest".to_string()]
+        );
+    }
+
+    /// Issue #2268: only the object-pattern require() destructure was ever
+    /// recorded as a CJS-require import artifact — `const [a, b] =
+    /// require('./mod')` was silently dropped by both engines.
+    #[test]
+    fn finds_cjs_require_with_array_pattern_destructuring() {
+        let s = parse_js("const [a, b] = require('./mod');");
+        let cjs_imports: Vec<_> = s
+            .imports
+            .iter()
+            .filter(|i| i.cjs_require == Some(true))
+            .collect();
+        assert_eq!(cjs_imports.len(), 1);
+        assert_eq!(cjs_imports[0].source, "./mod");
+        assert_eq!(cjs_imports[0].names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn finds_cjs_require_with_array_pattern_rest_destructuring() {
+        let s = parse_js("const [a, ...rest] = require('./mod');");
         let cjs_imports: Vec<_> = s
             .imports
             .iter()
