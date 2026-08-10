@@ -243,8 +243,30 @@ const SKIP_VERSIONS = new Set(['3.8.0']);
  * NOTE: WASM *timing* noise no longer needs per-version entries here — it is
  * handled structurally by WASM_TIMING_THRESHOLD (see above); native keeps the
  * strict thresholds and is the canary for real algorithmic regressions.
+ *
+ * v3.16.0 was released 2026-07-20 and no stable release has landed since.
+ * The same growth/runner-variance drift documented for 3.15.0 above (#2081)
+ * has recurred against this baseline on both metrics — tracked in #2412
+ * (Full build) and #2436 (both metrics). Evidence this is drift/noise, not a
+ * PR-introduced regression:
+ * - #2412: a docs-only PR touching only two Markdown files hit
+ *   `Full build: 4844 → 6063 (+25%)`; a second docs-only PR (#2382) hit the
+ *   identical failure and was merged anyway.
+ * - #2436: the same PR's gate failed three times on the same commit across
+ *   two different metrics (`Full build` +26%, then `1-file rebuild` +103% on
+ *   a re-run of the identical commit). Local benchmarking (6 runs/tree,
+ *   interleaved to control for thermal drift) showed the PR under test was
+ *   the *fastest* of PR/base/main on both metrics — CI's own numbers agreed,
+ *   with the base branch already reading +23%/+26% before any of the PR's
+ *   commits existed. The environment, not the code, accounts for the
+ *   swing: local `dev` measured faster than the recorded 3.16.0 baseline,
+ *   while CI measured 26-103% slower.
+ * Exemption clears itself: prune both entries once the next stable release
+ * folds current repo size and runner conditions into a fresh baseline (same
+ * pattern as the 3.12.0/3.13.0 prune at 3.15.0, and the 3.15.0 prune at
+ * 3.16.0, documented above).
  */
-const KNOWN_REGRESSIONS = new Set<string>([]);
+const KNOWN_REGRESSIONS = new Set<string>(['3.16.0:Full build', '3.16.0:1-file rebuild']);
 
 /**
  * Maximum minor-version gap allowed for comparison. When the nearest
