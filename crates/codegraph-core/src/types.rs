@@ -140,6 +140,14 @@ pub struct Call {
     /// field's doc comment for the full rationale.
     #[napi(js_name = "accessorRead")]
     pub accessor_read: Option<String>,
+    /// True when this call site is a program entrypoint invocation — the
+    /// callee is started by the runtime rather than by other code in the repo.
+    /// Set for Python's two canonical conventions: a call inside an
+    /// `if __name__ == "__main__":` guard, and a module-level call in a
+    /// `__main__.py`. Carried on the call rather than the definition because
+    /// the guard frequently invokes a `main` imported from another module.
+    /// Mirrors TS `Call.entrypoint` (#2392).
+    pub entrypoint: Option<bool>,
 }
 
 /// `import { X as Y }`: the local binding name (Y) paired with the original

@@ -24,7 +24,140 @@ impl SymbolExtractor for PythonExtractor {
             match_python_type_map,
         );
         dedup_type_map(&mut symbols.type_map);
+        mark_entrypoint_calls(&tree.root_node(), source, file_path, &mut symbols);
         symbols
+    }
+}
+
+/// Flag every call that starts the program rather than being invoked by other
+/// code in the repo, covering Python's two canonical conventions (#2392):
+///
+///  - a call inside an `if __name__ == "__main__":` guard, wherever the guard
+///    appears — the convention `data-ingestion-pipe` uses at `app/oio.py:1786`;
+///  - a module-level call in a `__main__.py`, whose module-level code is what
+///    `python -m pkg` runs.
+///
+/// Mirrors `markEntrypointCalls` in src/extractors/python.ts, including its
+/// keying on line: both engines collect the same qualifying call lines from
+/// the same AST and mark the same calls, leaving no room to disagree about a
+/// given call site.
+fn mark_entrypoint_calls(root: &Node, source: &[u8], file_path: &str, symbols: &mut FileSymbols) {
+    let lines = collect_entrypoint_call_lines(root, source, file_path);
+    if lines.is_empty() {
+        return;
+    }
+    for call in &mut symbols.calls {
+        if lines.contains(&call.line) {
+            call.entrypoint = Some(true);
+        }
+    }
+}
+
+/// True for the `__name__ == "__main__"` test of an `if` statement.
+fn is_main_guard_condition(condition: Option<Node>, source: &[u8]) -> bool {
+    let Some(condition) = condition else {
+        return false;
+    };
+    if condition.kind() != "comparison_operator" {
+        return false;
+    }
+    let text: String = node_text(&condition, source)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    text == "__name__==\"__main__\"" || text == "\"__main__\"==__name__"
+}
+
+/// Lines of the call sites that qualify as program-entrypoint invocations.
+///
+/// `guarded` propagates down the tree and is reset at every *function*
+/// definition: code below a `def` is invoked when that function is called,
+/// not by the runtime, so neither the `__main__.py` module-level context nor
+/// an enclosing guard carries into it. A class definition does NOT reset it —
+/// unlike a function body, a class body is a normal statement sequence Python
+/// executes immediately while evaluating the `class` statement, so a guard
+/// directly inside a class body runs exactly when the enclosing scope does
+/// (review finding on #2411: a guard nested in a module-level class body was
+/// wrongly excluded before this). A `__main__.py` therefore starts guarded at
+/// the root, and a guard's *consequence* turns it on anywhere it appears — but
+/// not the guard's `else:` branch, which is the imported-as-a-module path.
+///
+/// `at_module_level` tracks a second, independent thing: whether we have
+/// crossed *any* function boundary at all since the root, regardless of guard
+/// status, and — unlike `guarded` — never turns back on once it's off. A guard
+/// is only recognized while this holds. Without it, a guard syntactically
+/// nested inside a function (never executed by the runtime — only when/if
+/// that function is later called) would still flip `guarded` on for its
+/// consequence, because at the point the guard is seen, `guarded` itself is
+/// `false` either way — the guard sets it, it doesn't read it — so the two
+/// situations ("truly at module level" vs. "nested inside a def, coincidentally
+/// `false` too") are indistinguishable without this separate flag (review
+/// finding on #2411). Like `guarded`, entering a class does not turn this off
+/// either, for the same immediate-execution reason.
+fn collect_entrypoint_call_lines(
+    root: &Node,
+    source: &[u8],
+    file_path: &str,
+) -> std::collections::HashSet<u32> {
+    let mut lines = std::collections::HashSet::new();
+    visit_entrypoint_calls(
+        root,
+        source,
+        0,
+        file_path.ends_with("__main__.py"),
+        true,
+        &mut lines,
+    );
+    lines
+}
+
+fn visit_entrypoint_calls(
+    node: &Node,
+    source: &[u8],
+    depth: usize,
+    guarded: bool,
+    at_module_level: bool,
+    lines: &mut std::collections::HashSet<u32>,
+) {
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
+    if node.kind() == "call" && guarded {
+        lines.insert(start_line(node));
+    }
+
+    // Only a function defers its body — a class body is a normal statement
+    // sequence that Python executes immediately while evaluating the `class`
+    // statement, so a guard (or any call) directly inside a class body runs
+    // at the same time the enclosing scope does (review finding on #2411: a
+    // guard nested in a module-level class body was wrongly excluded here).
+    // A method defined inside the class is a `function_definition` in its
+    // own right and still resets scope normally on its own recursive step.
+    let leaves_runtime_scope = node.kind() == "function_definition";
+    let child_guarded = if leaves_runtime_scope { false } else { guarded };
+    let child_at_module_level = at_module_level && !leaves_runtime_scope;
+    let guard_consequence = if at_module_level
+        && node.kind() == "if_statement"
+        && is_main_guard_condition(node.child_by_field_name("condition"), source)
+    {
+        node.child_by_field_name("consequence")
+            .or_else(|| find_child(node, "block"))
+    } else {
+        None
+    };
+    let guard_start = guard_consequence.map(|c| c.start_position());
+
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        let is_guard_body = guard_start.is_some_and(|p| child.start_position() == p);
+        visit_entrypoint_calls(
+            &child,
+            source,
+            depth + 1,
+            if is_guard_body { true } else { child_guarded },
+            child_at_module_level,
+            lines,
+        );
     }
 }
 
@@ -597,6 +730,17 @@ mod tests {
         PythonExtractor.extract(&tree, code.as_bytes(), "test.py")
     }
 
+    /// Same as `parse_py` but with a caller-chosen path, so the
+    /// `__main__.py` entrypoint convention (#2392) can be exercised.
+    fn parse_py_as(code: &str, file_path: &str) -> FileSymbols {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        PythonExtractor.extract(&tree, code.as_bytes(), file_path)
+    }
+
     #[test]
     fn finds_function() {
         let s = parse_py("def greet(name):\n    return name\n");
@@ -682,6 +826,94 @@ mod tests {
         assert_eq!(s.imports[0].source, "lib");
         assert_eq!(s.imports[0].names, vec!["helper".to_string()]);
         assert_eq!(s.imports[0].namespace_bindings, None);
+    }
+
+    #[test]
+    fn marks_calls_inside_a_main_guard_as_entrypoints() {
+        // #2392: the `if __name__ == "__main__":` convention.
+        let s = parse_py("def main():\n    return 1\n\nif __name__ == \"__main__\":\n    main()\n");
+        let main_call = s
+            .calls
+            .iter()
+            .find(|c| c.name == "main")
+            .expect("main() call should be extracted");
+        assert_eq!(main_call.entrypoint, Some(true));
+    }
+
+    #[test]
+    fn does_not_mark_calls_outside_the_guard() {
+        let s = parse_py("def helper():\n    return 1\n\nhelper()\n");
+        let call = s.calls.iter().find(|c| c.name == "helper").unwrap();
+        assert_eq!(call.entrypoint, None);
+    }
+
+    #[test]
+    fn does_not_mark_a_call_nested_in_a_function_defined_under_the_guard() {
+        // Reached via the guard-invoked function, not started by the runtime.
+        let s = parse_py(
+            "def inner():\n    return 1\n\ndef main():\n    return inner()\n\nif __name__ == \"__main__\":\n    main()\n",
+        );
+        let inner = s.calls.iter().find(|c| c.name == "inner").unwrap();
+        assert_eq!(inner.entrypoint, None);
+        let main_call = s.calls.iter().find(|c| c.name == "main").unwrap();
+        assert_eq!(main_call.entrypoint, Some(true));
+    }
+
+    #[test]
+    fn marks_module_level_calls_in_a_dunder_main_module() {
+        // The `python -m pkg` convention.
+        let symbols = parse_py_as("def run():\n    return 1\n\nrun()\n", "pkg/__main__.py");
+        let call = symbols.calls.iter().find(|c| c.name == "run").unwrap();
+        assert_eq!(call.entrypoint, Some(true));
+    }
+
+    #[test]
+    fn does_not_mark_a_nested_call_in_a_dunder_main_module() {
+        let src = "def outer():\n    return inner()\n\ndef inner():\n    return 1\n\nouter()\n";
+        let symbols = parse_py_as(src, "pkg/__main__.py");
+        let inner = symbols.calls.iter().find(|c| c.name == "inner").unwrap();
+        assert_eq!(
+            inner.entrypoint, None,
+            "invoked by outer(), not by the runtime"
+        );
+        let outer = symbols.calls.iter().find(|c| c.name == "outer").unwrap();
+        assert_eq!(outer.entrypoint, Some(true));
+    }
+
+    #[test]
+    fn does_not_mark_a_guard_nested_inside_a_function() {
+        // Review finding on #2411: a `__main__` guard syntactically nested
+        // inside a function is only run if and when that function is called
+        // — never automatically by the runtime — so it must not be treated
+        // as module level just because `guarded` also happens to read
+        // `false` at that point for the ordinary "inside a def" reason.
+        let s = parse_py("def maybe_run():\n    if __name__ == \"__main__\":\n        do_it()\n");
+        let call = s.calls.iter().find(|c| c.name == "do_it").unwrap();
+        assert_eq!(call.entrypoint, None);
+    }
+
+    #[test]
+    fn marks_a_guard_nested_inside_a_module_level_class_as_entrypoint() {
+        // Review finding on #2411: a class body, unlike a function body, is
+        // a normal statement sequence Python executes immediately while
+        // evaluating the `class` statement — so a guard directly inside a
+        // module-level class body runs exactly when the module does, and
+        // must be treated the same as a guard directly at module level.
+        let s = parse_py("class Config:\n    if __name__ == \"__main__\":\n        do_it()\n");
+        let call = s.calls.iter().find(|c| c.name == "do_it").unwrap();
+        assert_eq!(call.entrypoint, Some(true));
+    }
+
+    #[test]
+    fn does_not_mark_a_guard_nested_inside_a_class_defined_inside_a_function() {
+        // A class's body only runs once *its* enclosing function is called —
+        // the class-body-executes-immediately reasoning above only holds
+        // when the class itself is reached without an intervening def.
+        let s = parse_py(
+            "def factory():\n    class Config:\n        if __name__ == \"__main__\":\n            do_it()\n",
+        );
+        let call = s.calls.iter().find(|c| c.name == "do_it").unwrap();
+        assert_eq!(call.entrypoint, None);
     }
 
     /// Found in review of #2387: `from pkg import submod as alias` must

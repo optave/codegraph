@@ -629,6 +629,8 @@ interface CallableNodeRow {
   file: string;
   fan_in: number;
   fan_out: number;
+  /** 1 when a program-entrypoint call resolves here (#2392). */
+  entrypoint: number;
 }
 
 /**
@@ -696,6 +698,7 @@ function buildClassifierInput(
   productionFanIn: number;
   hasActiveFileSiblings: boolean | undefined;
   isPublicSurface: boolean;
+  isEntrypoint: boolean;
 }> {
   return rows.map((r) => ({
     id: String(r.id),
@@ -705,6 +708,7 @@ function buildClassifierInput(
     fanIn: r.fan_in,
     fanOut: r.fan_out,
     isExported: exportedIds.has(r.id),
+    isEntrypoint: r.entrypoint === 1,
     productionFanIn: prodFanInMap.get(r.id) || 0,
     // Set hasActiveFileSiblings for annotation-only kinds (constants, type defs)
     // AND for method/function — the latter two can have fanIn === 0 due to
@@ -872,6 +876,7 @@ function classifyNodeRolesFull(db: BetterSqlite3Database, emptySummary: RoleSumm
   const rows = db
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file,
+        COALESCE(n.entrypoint, 0) AS entrypoint,
         COALESCE(fi.cnt, 0) AS fan_in,
         COALESCE(fo.cnt, 0) AS fan_out
       FROM nodes n
@@ -1213,6 +1218,7 @@ function runIncrementalReachabilityDowngrade(
   const outsideRows = db
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file, n.exported,
+        COALESCE(n.entrypoint, 0) AS entrypoint,
         COALESCE(fi.cnt, 0) AS fan_in,
         COALESCE(fo.cnt, 0) AS fan_out
       FROM nodes n
@@ -1231,6 +1237,7 @@ function runIncrementalReachabilityDowngrade(
     kind: string;
     file: string;
     exported: number;
+    entrypoint: number;
     fan_in: number;
     fan_out: number;
   }>;
@@ -1244,6 +1251,7 @@ function runIncrementalReachabilityDowngrade(
     fanOut: r.fan_out,
     isExported: r.exported === 1,
     isPublicSurface: r.exported === 1,
+    isEntrypoint: r.entrypoint === 1,
     hasActiveFileSiblings: true,
   }));
 
@@ -1351,6 +1359,7 @@ function classifyNodeRolesIncremental(
   const rows = db
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file,
+        COALESCE(n.entrypoint, 0) AS entrypoint,
         (SELECT COUNT(*) FROM edges WHERE kind IN ('calls', 'imports-type') AND target_id = n.id) AS fan_in,
         (SELECT COUNT(*) FROM edges WHERE kind = 'calls' AND source_id = n.id) AS fan_out
       FROM nodes n

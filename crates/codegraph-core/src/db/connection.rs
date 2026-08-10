@@ -921,6 +921,37 @@ impl NativeDatabase {
             if !has_column(conn, "nodes", "accessor_kind") {
                 let _ = conn.execute_batch("ALTER TABLE nodes ADD COLUMN accessor_kind TEXT");
             }
+            // #2392: added here rather than as a numbered migration because a
+            // bare `ALTER TABLE ... ADD COLUMN` is not replay-safe — a DB
+            // stamped back to an earlier schema_version (as
+            // `migration_v28_deletes_pre_existing_duplicate_edges_before_indexing`
+            // does) would re-run it against a table that already has the
+            // column and abort the whole upgrade. This block is idempotent by
+            // construction and runs on every open, so it covers fresh and
+            // legacy databases alike.
+            if !has_column(conn, "nodes", "entrypoint") {
+                let _ =
+                    conn.execute_batch("ALTER TABLE nodes ADD COLUMN entrypoint INTEGER DEFAULT 0");
+            }
+            let _ = conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_nodes_entrypoint ON nodes(entrypoint) WHERE entrypoint = 1",
+            );
+            // #2411 (review fix): the file whose call site attributed the
+            // current `entrypoint` flag. A rebuild needs this to clear a
+            // stale flag when the attributing call is deleted or renamed —
+            // re-deriving from live `calls` edges doesn't work for a target
+            // declared in a *different* file than the guard, because that
+            // edge is already purged (as part of reprocessing the changed
+            // file) by the time the clear query would run. Reading this
+            // column instead makes the clear correct regardless of the
+            // edge's lifecycle.
+            if !has_column(conn, "nodes", "entrypoint_source_file") {
+                let _ =
+                    conn.execute_batch("ALTER TABLE nodes ADD COLUMN entrypoint_source_file TEXT");
+            }
+            let _ = conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_nodes_entrypoint_source_file ON nodes(entrypoint_source_file)",
+            );
             let _ = conn.execute_batch(
                 "UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL",
             );

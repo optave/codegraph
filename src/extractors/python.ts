@@ -61,7 +61,7 @@ const BUILTIN_GLOBALS_PY: Set<string> = new Set([
 /**
  * Extract symbols from Python files.
  */
-export function extractPythonSymbols(tree: TreeSitterTree, _filePath: string): ExtractorOutput {
+export function extractPythonSymbols(tree: TreeSitterTree, filePath: string): ExtractorOutput {
   const ctx: ExtractorOutput = {
     definitions: [],
     calls: [],
@@ -73,7 +73,117 @@ export function extractPythonSymbols(tree: TreeSitterTree, _filePath: string): E
 
   walkPythonNode(tree.rootNode, ctx);
   extractPythonTypeMap(tree.rootNode, ctx);
+  markEntrypointCalls(tree.rootNode, filePath, ctx);
   return ctx;
+}
+
+/**
+ * Flag every call that starts the program rather than being invoked by other
+ * code in the repo, covering Python's two canonical conventions (#2392):
+ *
+ *  - a call inside an `if __name__ == "__main__":` guard, wherever the guard
+ *    appears — the convention `data-ingestion-pipe` uses at `app/oio.py:1786`;
+ *  - a module-level call in a `__main__.py`, whose module-level code is what
+ *    `python -m pkg` runs — the documented container entrypoint on
+ *    `data-retrieval-storage-svc`.
+ *
+ * Both cases additionally require module level: a call nested inside a
+ * function that a `__main__.py` happens to define is invoked by that function,
+ * not by the runtime.
+ *
+ * Implemented as a separate pass keyed on line, rather than a flag set during
+ * the main walk, so the native extractor can mirror it exactly — it collects
+ * the same qualifying-call lines from the same AST and marks the same calls,
+ * leaving no room for the two engines to disagree about a given call site.
+ */
+function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: ExtractorOutput): void {
+  const lines = collectEntrypointCallLines(root, filePath);
+  if (lines.size === 0) return;
+  for (const call of ctx.calls) {
+    if (lines.has(call.line)) call.entrypoint = true;
+  }
+}
+
+/**
+ * Lines of the call sites that qualify as program-entrypoint invocations.
+ *
+ * `guarded` propagates down the tree and is reset at every *function*
+ * definition: code below a `def` is invoked when that function is called,
+ * not by the runtime, so neither the `__main__.py` module-level context nor
+ * an enclosing guard carries into it. A class definition does NOT reset it —
+ * unlike a function body, a class body is a normal statement sequence Python
+ * executes immediately while evaluating the `class` statement, so a guard
+ * directly inside a class body runs exactly when the enclosing scope does
+ * (review finding on #2411: a guard nested in a module-level class body was
+ * wrongly excluded before this). A `__main__.py` therefore starts guarded at
+ * the root, and a guard's *consequence* turns it on anywhere it appears — but
+ * not the guard's `else:` branch, which is the imported-as-a-module path.
+ *
+ * `atModuleLevel` tracks a second, independent thing: whether we have crossed
+ * *any* function boundary at all since the root, regardless of guard status,
+ * and — unlike `guarded` — never turns back on once it's off. A guard is only
+ * recognized while this holds. Without it, a guard syntactically nested inside
+ * a function (never executed by the runtime — only when/if that function is
+ * later called) would still flip `guarded` on for its consequence, because at
+ * the point the guard is seen, `guarded` itself is `false` either way — the
+ * guard sets it, it doesn't read it — so the two situations ("truly at module
+ * level" vs. "nested inside a def, coincidentally `false` too") are
+ * indistinguishable without this separate flag (review finding on #2411).
+ * Like `guarded`, entering a class does not turn this off either, for the
+ * same immediate-execution reason.
+ */
+function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set<number> {
+  const lines = new Set<number>();
+
+  const visit = (
+    node: TreeSitterNode,
+    depth: number,
+    guarded: boolean,
+    atModuleLevel: boolean,
+  ): void => {
+    if (depth >= MAX_WALK_DEPTH) return;
+    if (node.type === 'call' && guarded) lines.add(node.startPosition.row + 1);
+
+    // Only a function defers its body — a class body is executed immediately
+    // while evaluating the `class` statement, so it must not be treated the
+    // same as a function for either flag. A method inside the class is a
+    // `function_definition` in its own right and still resets scope normally
+    // on its own recursive step.
+    const leavesRuntimeScope = node.type === 'function_definition';
+    const childGuarded = leavesRuntimeScope ? false : guarded;
+    const childAtModuleLevel = atModuleLevel && !leavesRuntimeScope;
+    const guardConsequence =
+      atModuleLevel &&
+      node.type === 'if_statement' &&
+      isMainGuardCondition(node.childForFieldName('condition'))
+        ? node.childForFieldName('consequence') || findChild(node, 'block')
+        : null;
+    // Matched by source position, not object identity: the tree-sitter
+    // bindings hand back a fresh wrapper object per accessor call, so
+    // `child === guardConsequence` is never true even for the same node.
+    const guardStart = guardConsequence
+      ? `${guardConsequence.startPosition.row}:${guardConsequence.startPosition.column}`
+      : null;
+
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (!child) continue;
+      const isGuardBody =
+        guardStart !== null &&
+        `${child.startPosition.row}:${child.startPosition.column}` === guardStart;
+      visit(child, depth + 1, isGuardBody ? true : childGuarded, childAtModuleLevel);
+    }
+  };
+
+  visit(root, 0, filePath.endsWith('__main__.py'), true);
+  return lines;
+}
+
+/** True for the `__name__ == "__main__"` test of an `if` statement. */
+function isMainGuardCondition(condition: TreeSitterNode | null): boolean {
+  if (condition?.type !== 'comparison_operator') return false;
+  const text = condition.text.replace(/\s+/g, '');
+  return text === '__name__=="__main__"' || text === '"__main__"==__name__';
 }
 
 function walkPythonNode(node: TreeSitterNode, ctx: ExtractorOutput): void {
