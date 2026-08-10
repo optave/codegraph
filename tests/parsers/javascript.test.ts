@@ -2138,6 +2138,22 @@ function runDemo(reporter: Reporter, users: string[]): void {
         symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
       ).toBe(false);
     });
+
+    // Greptile review, PR #2432: a block-local function declaration also
+    // introduces its own binding — a call to it inside that block must not
+    // be mistaken for a use of the outer fallback variable sharing its name.
+    it('does not credit liveness from a block-local function declaration sharing the name', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        {
+          function fn() {}
+          fn();
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {

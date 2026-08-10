@@ -4313,10 +4313,22 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
     case 'statement_block': {
       for (let i = 0; i < node.childCount; i++) {
         const child = node.child(i);
+        if (!child) continue;
         if (
-          child &&
           (child.type === 'lexical_declaration' || child.type === 'variable_declaration') &&
           declarationDeclaresName(child, name)
+        ) {
+          return true;
+        }
+        // A block-local function/class declaration also introduces its own
+        // binding at this block's level (Greptile review, PR #2432) — e.g.
+        // `const fn = custom || fallback; { function fn() {} fn(); }` calls
+        // the INNER fn, not the outer fallback variable.
+        if (
+          (child.type === 'function_declaration' ||
+            child.type === 'generator_function_declaration' ||
+            child.type === 'class_declaration') &&
+          child.childForFieldName('name')?.text === name
         ) {
           return true;
         }

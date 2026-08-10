@@ -4309,12 +4309,27 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
         }
         "statement_block" => {
             for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if (child.kind() == "lexical_declaration"
-                        || child.kind() == "variable_declaration")
-                        && declaration_declares_name(&child, name, source)
-                    {
-                        return true;
+                let Some(child) = node.child(i) else {
+                    continue;
+                };
+                if (child.kind() == "lexical_declaration" || child.kind() == "variable_declaration")
+                    && declaration_declares_name(&child, name, source)
+                {
+                    return true;
+                }
+                // A block-local function/class declaration also introduces
+                // its own binding at this block's level (Greptile review,
+                // PR #2432) — e.g. `const fn = custom || fallback; { function
+                // fn() {} fn(); }` calls the INNER fn, not the outer
+                // fallback variable.
+                if child.kind() == "function_declaration"
+                    || child.kind() == "generator_function_declaration"
+                    || child.kind() == "class_declaration"
+                {
+                    if let Some(name_n) = child.child_by_field_name("name") {
+                        if node_text(&name_n, source) == name {
+                            return true;
+                        }
                     }
                 }
             }
@@ -7635,6 +7650,23 @@ mod tests {
     #[test]
     fn does_not_credit_liveness_from_a_var_sibling_rebinding_the_same_name() {
         let s = parse_js("var fn = options.custom || fetchLatestVersion, fn = replacement;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: a block-local function declaration also
+    // introduces its own binding — a call to it inside that block must not
+    // be mistaken for a use of the outer fallback variable sharing its name.
+    #[test]
+    fn does_not_credit_liveness_from_a_block_local_function_declaration_sharing_the_name() {
+        let s = parse_js(
+            "const fn = options.custom || fetchLatestVersion;\n\
+             {\n\
+               function fn() {}\n\
+               fn();\n\
+             }",
+        );
         assert!(!s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
