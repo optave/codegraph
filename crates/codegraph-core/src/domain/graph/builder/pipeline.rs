@@ -441,27 +441,81 @@ fn run_structure_phase(
 /// resolved to (#2392) — Python's `if __name__ == "__main__":` guard and
 /// `__main__.py` module level.
 ///
-/// Reads the committed `calls` edges back rather than re-resolving: an
-/// entrypoint call is module-level by construction (see
-/// `collect_entrypoint_call_lines`), so its edge is always sourced from the
-/// file node, and matching that edge's target by the called name identifies
-/// it. Cleared per file first, so a guard that is deleted or renamed doesn't
-/// leave a stale flag behind on an incremental rebuild.
+/// Identifies targets from the committed `calls` edges: an entrypoint call is
+/// module-level by construction (see `collect_entrypoint_call_lines`), so its
+/// edge is always sourced from the file node, and matching that edge's target
+/// by the called name identifies it.
+///
+/// Cleared per file first via `entrypoint_source_file` — the file whose call
+/// site last attributed the flag — rather than by re-querying the file's
+/// current outgoing `calls` edges: when a guard's target is declared in a
+/// *different* file and the guard is later deleted or renamed, the old edge
+/// is already purged (as part of reprocessing the changed file) by the time
+/// this runs, so a query keyed on live edges can never find it again to
+/// clear it (review finding on #2411). The attribution column has no such
+/// lifecycle dependency — it is set directly on the target and only ever
+/// read back for the exact file that set it.
+///
+/// Scoped to `.py` files: `call.entrypoint` is only ever set by the Python
+/// extractor (`mark_entrypoint_calls`), so a non-Python file can never have
+/// contributed an entrypoint attribution in this build or any earlier one —
+/// running the clear/mark queries for it is always a guaranteed no-op.
+/// Skipping them is what keeps this stage O(python files) instead of O(all
+/// files); running an UPDATE per file unconditionally showed up as a 66%
+/// full-build regression on a 954-file, effectively-Python-free tree (#2411
+/// CI).
+///
+/// Note: attribution is single-owner (one `entrypoint_source_file` per
+/// target). If two different files both legitimately call the same target as
+/// their entrypoint, whichever marks it last wins the attribution, and the
+/// other file's later removal won't clear it (harmless — the target simply
+/// stays correctly flagged) but its own removal will. Tracked as a follow-up
+/// (#2419) rather than solved here with a many-to-many table, since it needs
+/// a second target to legitimately share an entrypoint call name, which is
+/// unusual enough not to hold up this fix.
+///
+/// Returns the files any touched target lives in, so the caller can fold them
+/// into the incremental role-classification scope (see the call site in
+/// `run_role_classification`): a target's own file is frequently *not* the
+/// file being rebuilt (that's the whole cross-file case above), and
+/// `find_neighbour_files`'s live-edge join can't discover it either, for the
+/// identical reason the clear query couldn't — the edge that would connect
+/// them may have just been deleted. Without this, `nodes.entrypoint` clears
+/// correctly but the cached `nodes.role` for the same row is left stale at
+/// `"entry"`, same class of bug as #1027's removal-reverse-deps seeding.
 ///
 /// Mirrors `markEntrypointTargets` in stages/build-edges.ts.
-fn mark_entrypoint_targets(conn: &Connection, file_symbols: &BTreeMap<String, FileSymbols>) {
+fn mark_entrypoint_targets(
+    conn: &Connection,
+    file_symbols: &BTreeMap<String, FileSymbols>,
+) -> HashSet<String> {
+    let mut touched_files: HashSet<String> = HashSet::new();
+    if !file_symbols.keys().any(|f| f.ends_with(".py")) {
+        return touched_files;
+    }
+
+    let Ok(mut find_stale) =
+        conn.prepare("SELECT file FROM nodes WHERE entrypoint_source_file = ?1")
+    else {
+        return touched_files;
+    };
     let Ok(mut clear) = conn.prepare(
-        "UPDATE nodes SET entrypoint = 0
-         WHERE entrypoint = 1 AND id IN (
-           SELECT e.target_id FROM edges e
-           JOIN nodes src ON e.source_id = src.id
-           WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = ?1
-         )",
+        "UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL
+         WHERE entrypoint_source_file = ?1",
     ) else {
-        return;
+        return touched_files;
+    };
+    let Ok(mut find_targets) = conn.prepare(
+        "SELECT tgt.file FROM edges e
+         JOIN nodes src ON e.source_id = src.id
+         JOIN nodes tgt ON e.target_id = tgt.id
+         WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = ?1
+           AND (tgt.name = ?2 OR tgt.name LIKE ?3)",
+    ) else {
+        return touched_files;
     };
     let Ok(mut mark) = conn.prepare(
-        "UPDATE nodes SET entrypoint = 1
+        "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = ?1
          WHERE id IN (
            SELECT e.target_id FROM edges e
            JOIN nodes src ON e.source_id = src.id
@@ -470,11 +524,21 @@ fn mark_entrypoint_targets(conn: &Connection, file_symbols: &BTreeMap<String, Fi
              AND (tgt.name = ?2 OR tgt.name LIKE ?3)
          )",
     ) else {
-        return;
+        return touched_files;
     };
 
     for (rel_path, symbols) in file_symbols {
+        if !rel_path.ends_with(".py") {
+            continue;
+        }
+
+        if let Ok(rows) =
+            find_stale.query_map(rusqlite::params![rel_path], |row| row.get::<_, String>(0))
+        {
+            touched_files.extend(rows.filter_map(|r| r.ok()));
+        }
         let _ = clear.execute(rusqlite::params![rel_path]);
+
         let mut seen: HashSet<&str> = HashSet::new();
         for call in &symbols.calls {
             if !call.entrypoint.unwrap_or(false) || !seen.insert(call.name.as_str()) {
@@ -483,9 +547,17 @@ fn mark_entrypoint_targets(conn: &Connection, file_symbols: &BTreeMap<String, Fi
             // A method entrypoint (`Runner().start()`) is declared as
             // `Owner.start`, so match the bare name or any `*.name` form.
             let suffix = format!("%.{}", call.name);
+            if let Ok(rows) = find_targets
+                .query_map(rusqlite::params![rel_path, call.name, &suffix], |row| {
+                    row.get::<_, String>(0)
+                })
+            {
+                touched_files.extend(rows.filter_map(|r| r.ok()));
+            }
             let _ = mark.execute(rusqlite::params![rel_path, call.name, suffix]);
         }
     }
+    touched_files
 }
 
 /// Stage 8 (roles): classify roles for the affected file set. Removal
@@ -501,19 +573,23 @@ fn run_role_classification(
     // Program-entrypoint flags must be current before roles are computed, and
     // the edges they are derived from are complete by this stage — the same
     // position the TS path uses (end of `buildEdges`, before `buildStructure`).
-    mark_entrypoint_targets(conn, file_symbols);
+    // The returned files are folded in below alongside `removal_reverse_deps`
+    // — same reason: a touched target's role can't be trusted to be
+    // rediscovered by neighbour expansion.
+    let entrypoint_touched_files = mark_entrypoint_targets(conn, file_symbols);
 
     let changed_files: Vec<String> = file_symbols.keys().cloned().collect();
     let changed_file_list: Option<Vec<String>> = if is_full_build {
         None
     } else {
         let mut files = changed_files;
-        if !removal_reverse_deps.is_empty() {
-            let existing: HashSet<String> = files.iter().cloned().collect();
-            for f in removal_reverse_deps {
-                if !existing.contains(&f) {
-                    files.push(f);
-                }
+        let mut seen: HashSet<String> = files.iter().cloned().collect();
+        for f in removal_reverse_deps
+            .into_iter()
+            .chain(entrypoint_touched_files)
+        {
+            if seen.insert(f.clone()) {
+                files.push(f);
             }
         }
         Some(files)

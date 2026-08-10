@@ -930,11 +930,27 @@ impl NativeDatabase {
             // construction and runs on every open, so it covers fresh and
             // legacy databases alike.
             if !has_column(conn, "nodes", "entrypoint") {
-                let _ = conn
-                    .execute_batch("ALTER TABLE nodes ADD COLUMN entrypoint INTEGER DEFAULT 0");
+                let _ =
+                    conn.execute_batch("ALTER TABLE nodes ADD COLUMN entrypoint INTEGER DEFAULT 0");
             }
             let _ = conn.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_nodes_entrypoint ON nodes(entrypoint) WHERE entrypoint = 1",
+            );
+            // #2411 (review fix): the file whose call site attributed the
+            // current `entrypoint` flag. A rebuild needs this to clear a
+            // stale flag when the attributing call is deleted or renamed —
+            // re-deriving from live `calls` edges doesn't work for a target
+            // declared in a *different* file than the guard, because that
+            // edge is already purged (as part of reprocessing the changed
+            // file) by the time the clear query would run. Reading this
+            // column instead makes the clear correct regardless of the
+            // edge's lifecycle.
+            if !has_column(conn, "nodes", "entrypoint_source_file") {
+                let _ =
+                    conn.execute_batch("ALTER TABLE nodes ADD COLUMN entrypoint_source_file TEXT");
+            }
+            let _ = conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_nodes_entrypoint_source_file ON nodes(entrypoint_source_file)",
             );
             let _ = conn.execute_batch(
                 "UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL",
