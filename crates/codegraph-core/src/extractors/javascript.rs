@@ -4339,6 +4339,11 @@ fn introduces_shadowed_binding(node: &Node, name: &str, source: &[u8]) -> bool {
     }
 }
 
+/// Uses `pattern_binds_name`, not a blanket text scan — a destructuring
+/// default that READS the outer variable (`const { value = fn } = input;`)
+/// must not be mistaken for a declaration that BINDS it (Greptile review, PR
+/// #2432): `pattern_binds_name` already knows a default's `right` side is a
+/// reference, not a binding.
 fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8]) -> bool {
     for i in 0..declaration_node.child_count() {
         let Some(declarator) = declaration_node.child(i) else {
@@ -4348,7 +4353,7 @@ fn declaration_declares_name(declaration_node: &Node, name: &str, source: &[u8])
             continue;
         }
         if let Some(decl_name) = declarator.child_by_field_name("name") {
-            if block_contains_identifier(&decl_name, name, source, 0) {
+            if pattern_binds_name(&decl_name, name, source, 0) {
                 return true;
             }
         }
@@ -4457,41 +4462,133 @@ fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8], depth: usize
     }
 }
 
-/// Depth-bounded like every other recursive walk in this file
-/// (`MAX_WALK_DEPTH`) — stops a pathologically deep expression/statement tree
-/// (e.g. deeply nested generated JS) from overflowing the stack (Greptile
-/// review, #2257).
-fn block_contains_identifier(node: &Node, name: &str, source: &[u8], depth: usize) -> bool {
+/// Scans a binding/destructuring pattern (a `variable_declarator`'s `name`
+/// field, or an `assignment_expression`'s `left` field) for genuine READS
+/// hidden inside default-value expressions (`{ value = fn }`, `[a = fn]`) —
+/// without treating the pattern's own BOUND names as reads. `({ fn = fn } =
+/// replacement)` both writes `fn` (a binding, ignored here) and reads its
+/// previous value as the default (a real reference) — `pattern_binds_name`
+/// alone can't tell the two apart, since it only answers "is `name` bound
+/// here at all," not "where, specifically" (Greptile review, PR #2432).
+/// Delegates each default expression found to the ordinary
+/// `block_contains_identifier_excluding` scan, since a default value is a
+/// normal expression that can contain any kind of reference, not just a
+/// bare identifier. Depth-bounded for the same reason as `pattern_binds_name`.
+///
+/// Mirrors `scanPatternDefaultsForReference` in `src/extractors/javascript.ts`.
+fn scan_pattern_defaults_for_reference(
+    pattern_node: &Node,
+    name: &str,
+    exclude_id: usize,
+    source: &[u8],
+    depth: usize,
+) -> bool {
     if depth >= MAX_WALK_DEPTH {
         return false;
     }
-    if node.kind() == "identifier" && node_text(node, source) == name {
-        return true;
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if block_contains_identifier(&child, name, source, depth + 1) {
-                return true;
+    match pattern_node.kind() {
+        "identifier" => false,
+        "assignment_pattern" | "object_assignment_pattern" => {
+            match pattern_node.child_by_field_name("right") {
+                Some(right) => {
+                    block_contains_identifier_excluding(&right, name, exclude_id, source, depth + 1)
+                }
+                None => false,
             }
         }
+        "rest_pattern" => {
+            for i in 0..pattern_node.child_count() {
+                if let Some(child) = pattern_node.child(i) {
+                    if child.kind() != "..."
+                        && scan_pattern_defaults_for_reference(
+                            &child,
+                            name,
+                            exclude_id,
+                            source,
+                            depth + 1,
+                        )
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        "object_pattern" => {
+            for i in 0..pattern_node.child_count() {
+                let Some(child) = pattern_node.child(i) else {
+                    continue;
+                };
+                match child.kind() {
+                    "pair_pattern" => {
+                        if let Some(value) = child.child_by_field_name("value") {
+                            if scan_pattern_defaults_for_reference(
+                                &value,
+                                name,
+                                exclude_id,
+                                source,
+                                depth + 1,
+                            ) {
+                                return true;
+                            }
+                        }
+                    }
+                    "rest_pattern" | "object_assignment_pattern" => {
+                        if scan_pattern_defaults_for_reference(
+                            &child,
+                            name,
+                            exclude_id,
+                            source,
+                            depth + 1,
+                        ) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        "array_pattern" => {
+            for i in 0..pattern_node.child_count() {
+                if let Some(child) = pattern_node.child(i) {
+                    if scan_pattern_defaults_for_reference(
+                        &child,
+                        name,
+                        exclude_id,
+                        source,
+                        depth + 1,
+                    ) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
     }
-    false
 }
 
-/// Like `block_contains_identifier`, but skips the node whose id is
-/// `exclude_id` entirely — excluding only the declarator being analyzed, not
-/// its whole enclosing statement, so a sibling declarator in the same
-/// comma-separated declaration (`const fetchFn = a || b, result =
-/// fetchFn();`) still counts as a reference (issue #2257, Greptile review) —
-/// and stops descending into any nested scope that shadows `name` (see
-/// `introduces_shadowed_binding`). Depth-bounded for the same reason as
-/// `block_contains_identifier`.
+/// Recursively scans `node` for a bare identifier reference to `name`,
+/// skipping the node whose id is `exclude_id` entirely — excluding only the
+/// declarator being analyzed, not its whole enclosing statement, so a
+/// sibling declarator in the same comma-separated declaration (`const
+/// fetchFn = a || b, result = fetchFn();`) still counts as a reference
+/// (issue #2257, Greptile review) — and stops descending into any nested
+/// scope that shadows `name` (see `introduces_shadowed_binding`).
+/// Depth-bounded like every other recursive walk in this file
+/// (`MAX_WALK_DEPTH`) — stops a pathologically deep expression/statement
+/// tree (e.g. deeply nested generated JS) from overflowing the stack
+/// (Greptile review, #2257).
 ///
-/// A `variable_declarator`'s `name` field is always a BINDING, never a
-/// read — even for a sibling declarator in the same statement, a legal
-/// `var` rebinding (`var fn = a || b, fn = c;`) must not be mistaken for a
-/// use of `fn` (Greptile review, PR #2432), so only its `value` field is
-/// scanned.
+/// A `variable_declarator`'s `name` field is a BINDING, not a read — even
+/// for a sibling declarator in the same statement, a legal `var` rebinding
+/// (`var fn = a || b, fn = c;`) must not be mistaken for a use of `fn`
+/// (Greptile review, PR #2432). But a destructuring `name` field can ALSO
+/// contain a genuine read hidden in a default value (`const { value = fn }
+/// = input;`) — `scan_pattern_defaults_for_reference` finds those
+/// specifically, while the bound names themselves are still excluded from
+/// the `value` field's ordinary scan below.
 ///
 /// Similarly, a plain `=` assignment's left side (`assignment_expression`,
 /// distinct from the tree-sitter grammar's `augmented_assignment_expression`
@@ -4500,7 +4597,10 @@ fn block_contains_identifier(node: &Node, name: &str, source: &[u8], depth: usiz
 /// not a read: it overwrites `fn` without ever consuming its current
 /// value, so it must not count as evidence the fallback assigned to `fn` is
 /// used (Greptile review, PR #2432; `pattern_binds_name` covers both
-/// shapes). A compound assignment DOES read the current value before
+/// shapes). The same destructuring-default exception applies here too —
+/// `({ fn = fn } = replacement)` both writes `fn` and reads its previous
+/// value as the default, and `scan_pattern_defaults_for_reference` finds
+/// that read. A compound assignment DOES read the current value before
 /// writing, so it's deliberately left to the generic scan below (its
 /// `left` is scanned like any other reference).
 ///
@@ -4525,7 +4625,14 @@ fn block_contains_identifier_excluding(
         return false;
     }
     if node.kind() == "variable_declarator" {
-        return match node.child_by_field_name("value") {
+        let decl_name = node.child_by_field_name("name");
+        let value = node.child_by_field_name("value");
+        if let Some(decl_name) = &decl_name {
+            if scan_pattern_defaults_for_reference(decl_name, name, exclude_id, source, depth + 1) {
+                return true;
+            }
+        }
+        return match value {
             Some(value) => {
                 block_contains_identifier_excluding(&value, name, exclude_id, source, depth + 1)
             }
@@ -4535,6 +4642,9 @@ fn block_contains_identifier_excluding(
     if node.kind() == "assignment_expression" {
         if let Some(left) = node.child_by_field_name("left") {
             if pattern_binds_name(&left, name, source, 0) {
+                if scan_pattern_defaults_for_reference(&left, name, exclude_id, source, depth + 1) {
+                    return true;
+                }
                 return match node.child_by_field_name("right") {
                     Some(right) => block_contains_identifier_excluding(
                         &right,
@@ -7769,6 +7879,36 @@ mod tests {
         let source =
             format!("let fn = options.custom || fetchLatestVersion;\n{pattern} = replacement;");
         let _ = parse_js(&source);
+    }
+
+    // Greptile review, PR #2432: a destructuring default that READS the
+    // outer fallback variable (`const { value = fn } = input;`) must not be
+    // mistaken for a binding of `fn` when deciding whether a nested block
+    // shadows it — the read must still be found.
+    #[test]
+    fn does_not_treat_a_destructuring_default_reference_as_a_shadowing_declaration() {
+        let s = parse_js(
+            "const fn = options.custom || fetchLatestVersion;\n\
+             {\n\
+               const { value = fn } = input;\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: `({ fn = fn } = replacement)` both WRITES
+    // `fn` and READS its previous value as the default — the write must not
+    // suppress the read.
+    #[test]
+    fn credits_liveness_from_a_default_read_inside_a_destructuring_write() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n({ fn = fn } = replacement);",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
     }
 
     // #1895: key_expr capture — the property key, distinct from the

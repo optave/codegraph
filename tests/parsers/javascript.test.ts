@@ -2215,6 +2215,35 @@ function runDemo(reporter: Reporter, users: string[]): void {
       const source = `let fn = options.custom || fetchLatestVersion;\n${pattern} = replacement;`;
       expect(() => parseJS(source)).not.toThrow();
     });
+
+    // Greptile review, PR #2432: a destructuring default that READS the
+    // outer fallback variable (`const { value = fn } = input;`) must not be
+    // mistaken for a binding of `fn` when deciding whether a nested block
+    // shadows it — the read must still be found.
+    it('does not treat a destructuring default reference as a shadowing declaration', () => {
+      const symbols = parseJS(`
+        const fn = options.custom || fetchLatestVersion;
+        {
+          const { value = fn } = input;
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
+
+    // Greptile review, PR #2432: `({ fn = fn } = replacement)` both WRITES
+    // `fn` and READS its previous value as the default — the write must not
+    // suppress the read.
+    it('credits liveness from a default read inside a destructuring write', () => {
+      const symbols = parseJS(`
+        let fn = options.custom || fetchLatestVersion;
+        ({ fn = fn } = replacement);
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {

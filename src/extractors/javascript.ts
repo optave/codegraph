@@ -4340,12 +4340,19 @@ function introducesShadowedBinding(node: TreeSitterNode, name: string): boolean 
   }
 }
 
+/**
+ * Uses `patternBindsName`, not a blanket text scan — a destructuring
+ * default that READS the outer variable (`const { value = fn } = input;`)
+ * must not be mistaken for a declaration that BINDS it (Greptile review, PR
+ * #2432): `patternBindsName` already knows a default's `right` side is a
+ * reference, not a binding.
+ */
 function declarationDeclaresName(declarationNode: TreeSitterNode, name: string): boolean {
   for (let i = 0; i < declarationNode.childCount; i++) {
     const declarator = declarationNode.child(i);
     if (declarator?.type !== 'variable_declarator') continue;
     const declName = declarator.childForFieldName('name');
-    if (declName && blockContainsIdentifier(declName, name)) return true;
+    if (declName && patternBindsName(declName, name)) return true;
   }
   return false;
 }
@@ -4426,32 +4433,98 @@ function patternBindsName(paramNode: TreeSitterNode, name: string, depth = 0): b
   }
 }
 
-/** Depth-bounded like every other recursive walk in this file (MAX_WALK_DEPTH) — stops a
- * pathologically deep expression/statement tree (e.g. deeply nested generated JS) from
- * overflowing the stack (Greptile review, #2257). */
-function blockContainsIdentifier(node: TreeSitterNode, name: string, depth = 0): boolean {
+/**
+ * Scans a binding/destructuring pattern (a `variable_declarator`'s `name`
+ * field, or an `assignment_expression`'s `left` field) for genuine READS
+ * hidden inside default-value expressions (`{ value = fn }`, `[a = fn]`) —
+ * without treating the pattern's own BOUND names as reads. `({ fn = fn } =
+ * replacement)` both writes `fn` (a binding, ignored here) and reads its
+ * previous value as the default (a real reference) — `patternBindsName`
+ * alone can't tell the two apart, since it only answers "is `name` bound
+ * here at all," not "where, specifically" (Greptile review, PR #2432).
+ * Delegates each default expression found to the ordinary
+ * `blockContainsIdentifierExcluding` scan, since a default value is a
+ * normal expression that can contain any kind of reference, not just a
+ * bare identifier. Depth-bounded for the same reason as `patternBindsName`.
+ */
+function scanPatternDefaultsForReference(
+  patternNode: TreeSitterNode,
+  name: string,
+  excludeId: number,
+  depth: number,
+): boolean {
   if (depth >= MAX_WALK_DEPTH) return false;
-  if (node.type === 'identifier' && node.text === name) return true;
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child && blockContainsIdentifier(child, name, depth + 1)) return true;
+  switch (patternNode.type) {
+    case 'identifier':
+      return false;
+    case 'assignment_pattern':
+    case 'object_assignment_pattern': {
+      const right = patternNode.childForFieldName('right');
+      return right ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1) : false;
+    }
+    case 'rest_pattern': {
+      for (let i = 0; i < patternNode.childCount; i++) {
+        const child = patternNode.child(i);
+        if (
+          child &&
+          child.type !== '...' &&
+          scanPatternDefaultsForReference(child, name, excludeId, depth + 1)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case 'object_pattern': {
+      for (let i = 0; i < patternNode.childCount; i++) {
+        const child = patternNode.child(i);
+        if (!child) continue;
+        if (child.type === 'pair_pattern') {
+          const value = child.childForFieldName('value');
+          if (value && scanPatternDefaultsForReference(value, name, excludeId, depth + 1)) {
+            return true;
+          }
+        } else if (child.type === 'rest_pattern' || child.type === 'object_assignment_pattern') {
+          if (scanPatternDefaultsForReference(child, name, excludeId, depth + 1)) return true;
+        }
+        // shorthand_property_identifier_pattern has no default to scan.
+      }
+      return false;
+    }
+    case 'array_pattern': {
+      for (let i = 0; i < patternNode.childCount; i++) {
+        const child = patternNode.child(i);
+        if (child && scanPatternDefaultsForReference(child, name, excludeId, depth + 1)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    default:
+      return false;
   }
-  return false;
 }
 
 /**
- * Like `blockContainsIdentifier`, but skips the node whose id is `excludeId`
- * entirely — excluding only the declarator being analyzed, not its whole
- * enclosing statement, so a sibling declarator in the same comma-separated
- * declaration (`const fetchFn = a || b, result = fetchFn();`) still counts
- * as a reference (issue #2257, Greptile review) — and stops descending into
- * any nested scope that shadows `name` (see `introducesShadowedBinding`).
- * Depth-bounded for the same reason as `blockContainsIdentifier`.
+ * Recursively scans `node` for a bare identifier reference to `name`,
+ * skipping the node whose id is `excludeId` entirely — excluding only the
+ * declarator being analyzed, not its whole enclosing statement, so a
+ * sibling declarator in the same comma-separated declaration (`const
+ * fetchFn = a || b, result = fetchFn();`) still counts as a reference
+ * (issue #2257, Greptile review) — and stops descending into any nested
+ * scope that shadows `name` (see `introducesShadowedBinding`). Depth-bounded
+ * like every other recursive walk in this file (`MAX_WALK_DEPTH`) — stops a
+ * pathologically deep expression/statement tree (e.g. deeply nested
+ * generated JS) from overflowing the stack (Greptile review, #2257).
  *
- * A `variable_declarator`'s `name` field is always a BINDING, never a read —
- * even for a sibling declarator in the same statement, a legal `var`
- * rebinding (`var fn = a || b, fn = c;`) must not be mistaken for a use of
- * `fn` (Greptile review, PR #2432), so only its `value` field is scanned.
+ * A `variable_declarator`'s `name` field is a BINDING, not a read — even
+ * for a sibling declarator in the same statement, a legal `var` rebinding
+ * (`var fn = a || b, fn = c;`) must not be mistaken for a use of `fn`
+ * (Greptile review, PR #2432). But a destructuring `name` field can ALSO
+ * contain a genuine read hidden in a default value (`const { value = fn } =
+ * input;`) — `scanPatternDefaultsForReference` finds those specifically,
+ * while the bound names themselves are still excluded from the `value`
+ * field's ordinary scan below.
  *
  * Similarly, a plain `=` assignment's left side (`assignment_expression`,
  * distinct from the tree-sitter grammar's `augmented_assignment_expression`
@@ -4459,7 +4532,10 @@ function blockContainsIdentifier(node: TreeSitterNode, name: string, depth = 0):
  * pattern (`({ fn } = replacement)`, `[fn] = replacement`) — is a WRITE, not
  * a read: it overwrites `fn` without ever consuming its current value, so
  * it must not count as evidence the fallback assigned to `fn` is used
- * (Greptile review, PR #2432; `patternBindsName` covers both shapes). A
+ * (Greptile review, PR #2432; `patternBindsName` covers both shapes). The
+ * same destructuring-default exception applies here too — `({ fn = fn } =
+ * replacement)` both writes `fn` and reads its previous value as the
+ * default, and `scanPatternDefaultsForReference` finds that read. A
  * compound assignment DOES read the current value before writing, so it's
  * deliberately left to the generic scan below (its `left` is scanned like
  * any other reference).
@@ -4475,13 +4551,18 @@ function blockContainsIdentifierExcluding(
   if (node.type === 'identifier' && node.text === name) return true;
   if (SCOPE_NODE_TYPES.has(node.type) && introducesShadowedBinding(node, name)) return false;
   if (node.type === 'variable_declarator') {
+    const declName = node.childForFieldName('name');
     const value = node.childForFieldName('value');
+    if (declName && scanPatternDefaultsForReference(declName, name, excludeId, depth + 1)) {
+      return true;
+    }
     return value ? blockContainsIdentifierExcluding(value, name, excludeId, depth + 1) : false;
   }
   if (node.type === 'assignment_expression') {
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
     if (left && patternBindsName(left, name)) {
+      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1)) return true;
       return right ? blockContainsIdentifierExcluding(right, name, excludeId, depth + 1) : false;
     }
   }
