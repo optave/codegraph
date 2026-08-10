@@ -2618,6 +2618,45 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('var/const-assigned function Definition.line/column (#2265)', () => {
+    it('gives each declarator in a multi-declarator statement its own function-node line, not the statement start', () => {
+      const symbols = parseJS(`
+        const a = (x) => {
+          if (x) { return 1; }
+          return 0;
+        }, b = (x) => {
+          return 2;
+        };
+        a(1); b(2);
+      `);
+      const a = symbols.definitions.find((d) => d.name === 'a');
+      const b = symbols.definitions.find((d) => d.name === 'b');
+      expect(a?.line).toBe(2);
+      expect(b?.line).toBe(5);
+      expect(a?.line).not.toBe(b?.line);
+    });
+
+    it('records each declarator its own start column, distinct even on a shared line', () => {
+      const symbols = parseJS(
+        `const a = (y) => { return y; }, b = (y) => { if (y) { return 1; } return 0; };`,
+      );
+      const a = symbols.definitions.find((d) => d.name === 'a');
+      const b = symbols.definitions.find((d) => d.name === 'b');
+      expect(a?.line).toBe(b?.line);
+      expect(a?.column).toBeDefined();
+      expect(b?.column).toBeDefined();
+      expect(a?.column).not.toBe(b?.column);
+    });
+
+    it('uses the function-expression value node line for a single named/anonymous function-expression declarator too', () => {
+      const symbols = parseJS(`const solo = function (x) { return x; };`);
+      const solo = symbols.definitions.find((d) => d.name === 'solo');
+      // Single-declarator statement: statement start and value-node start
+      // coincide here, so this must keep passing unchanged by the #2265 fix.
+      expect(solo?.line).toBe(1);
+    });
+  });
+
   describe('instanceof value-ref extraction (#1784)', () => {
     it('extracts a value-ref call for `instanceof ClassName`', () => {
       const symbols = parseJS(`

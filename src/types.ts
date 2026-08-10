@@ -464,6 +464,20 @@ export interface Definition {
   name: string;
   kind: SymbolKind;
   line: number;
+  /**
+   * 0-based source column of this Definition's own node — mirrors
+   * tree-sitter's own convention directly (unlike `line`, never
+   * `+1`-adjusted for display), since this is purely an internal
+   * disambiguation key for `matchResultToDef`/`matchNativeResult` (issue
+   * #2265), never rendered to users. Only populated for var/const-assigned
+   * anonymous function values (`handleVarFnAssignment`/`handleVarFnCapture`
+   * in extractors/javascript.ts) — the one Definition category where two
+   * distinct functions can legitimately share `line` (a multi-declarator
+   * statement, or two genuinely same-line closures) and where `name`
+   * (the variable bound, not the function's own — usually absent —
+   * internal name) can never disambiguate them.
+   */
+  column?: number;
   endLine?: number;
   children?: SubDeclaration[];
   visibility?: 'public' | 'private' | 'protected';
@@ -2692,6 +2706,8 @@ export interface NativeAddon {
 export interface NativeFunctionComplexityResult {
   name: string;
   line: number;
+  /** See `Definition.column`'s doc comment (issue #2265). */
+  column?: number | null;
   endLine: number | null;
   complexity: {
     cognitive: number;
@@ -2718,6 +2734,8 @@ export interface NativeFunctionComplexityResult {
 export interface NativeFunctionCfgResult {
   name: string;
   line: number;
+  /** See `Definition.column`'s doc comment (issue #2265). */
+  column?: number | null;
   endLine: number | null;
   cfg: { blocks: CfgBlock[]; edges: CfgEdge[] };
 }

@@ -72,13 +72,32 @@ export function indexByLine<T extends { funcNode: TreeSitterNode }>(
   return byLine;
 }
 
-/** Find the best matching result for a definition by line + name. */
+/**
+ * Find the best matching result for a definition by line + name, preferring
+ * an exact column match when available.
+ *
+ * `name` can only disambiguate a *named* function/method Definition — an
+ * arrow function has no name field at all, and a function *expression*'s
+ * own internal name (if any) is not the variable it was assigned to, so
+ * `name` never disambiguates a var/const-assigned closure (issue #2265).
+ * `defColumn` (only populated for exactly that Definition category — see
+ * `Definition.column`'s doc comment) closes that gap: two functions can
+ * share a `line` — a multi-declarator statement collapsed onto one
+ * (now-fixed) line, or two genuinely same-line closures — but never share
+ * both line AND column. Checked before the name fallback since it's a
+ * strictly more precise signal whenever it's available on both sides.
+ */
 export function matchResultToDef<T extends { funcNode: TreeSitterNode }>(
   candidates: T[] | undefined,
   defName: string,
+  defColumn?: number,
 ): T | undefined {
   if (!candidates) return undefined;
   if (candidates.length === 1) return candidates[0];
+  if (defColumn != null) {
+    const byColumn = candidates.find((r) => r.funcNode.startPosition.column === defColumn);
+    if (byColumn) return byColumn;
+  }
   return (
     candidates.find((r) => {
       const n = r.funcNode.childForFieldName('name');
@@ -111,7 +130,7 @@ export function storeComplexityResults(
       !def.complexity &&
       def.bodyless !== true
     ) {
-      const funcResult = matchResultToDef(byLine.get(def.line), def.name);
+      const funcResult = matchResultToDef(byLine.get(def.line), def.name, def.column);
       if (!funcResult) continue;
       const { metrics } = funcResult;
       const loc = computeLOCMetrics(funcResult.funcNode, langId);
@@ -155,7 +174,7 @@ export function storeCfgResults(results: WalkResults, defs: Definition[]): void 
       !def.cfg?.blocks?.length &&
       def.bodyless !== true
     ) {
-      const cfgResult = matchResultToDef(byLine.get(def.line), def.name);
+      const cfgResult = matchResultToDef(byLine.get(def.line), def.name, def.column);
       if (!cfgResult) continue;
       def.cfg = { blocks: cfgResult.blocks, edges: cfgResult.edges };
     }

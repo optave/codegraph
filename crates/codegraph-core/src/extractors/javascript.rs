@@ -2521,7 +2521,12 @@ fn handle_var_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
             symbols.definitions.push(Definition {
                 name: node_text(&name_n, source).to_string(),
                 kind: "function".to_string(),
-                line: start_line(node),
+                // #2265: the function VALUE's own start line, not the
+                // enclosing statement's — `node` spans the whole
+                // `const a = fn1, b = fn2;` declaration, so every declarator
+                // in a multi-binding statement previously got the identical
+                // (wrong, for every declarator but the first) line.
+                line: start_line(&value_n),
                 end_line: Some(end_line(&value_n)),
                 decorators: None,
                 complexity: compute_all_metrics(&value_n, source, "javascript"),
@@ -7135,6 +7140,23 @@ mod tests {
         assert_eq!(s.definitions.len(), 1);
         assert_eq!(s.definitions[0].name, "add");
         assert_eq!(s.definitions[0].kind, "function");
+    }
+
+    /// Issue #2265: a multi-declarator `const a = fn1, b = fn2;` statement
+    /// previously gave every declarator the SAME `line` (the whole
+    /// statement's start, not each function value's own start) — misleading
+    /// for anything keyed on line, including the JS-side complexity/CFG
+    /// matcher this mirrors (`matchResultToDef` in apply-results.ts).
+    #[test]
+    fn multi_declarator_var_fn_assignment_uses_each_functions_own_line() {
+        let s = parse_js(
+            "const a = (x) => {\n  if (x) { return 1; }\n  return 0;\n}, b = (x) => {\n  return 2;\n};\n",
+        );
+        let a = s.definitions.iter().find(|d| d.name == "a").unwrap();
+        let b = s.definitions.iter().find(|d| d.name == "b").unwrap();
+        assert_eq!(a.line, 1);
+        assert_eq!(b.line, 4);
+        assert_ne!(a.line, b.line);
     }
 
     #[test]

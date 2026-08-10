@@ -134,15 +134,27 @@ function handleFnCapture(c: Record<string, TreeSitterNode>, definitions: Definit
   });
 }
 
-/** Handle variable_declarator with arrow_function / function_expression capture. */
+/**
+ * Handle variable_declarator with arrow_function / function_expression capture.
+ *
+ * Uses the function VALUE's own start position — not the enclosing
+ * declaration statement's — for `line`/`column` (issue #2265): a
+ * `const a = fn1, b = fn2;` multi-declarator statement previously gave
+ * every declarator the identical statement-start line, so any declarator
+ * but the first collided with a sibling's real complexity/CFG result once
+ * `matchResultToDef` (apply-results.ts) indexed by each function node's own
+ * (correct) line. `column` additionally survives even a genuine same-line
+ * collision (two anonymous closures both starting on one physical line),
+ * which `name`-based disambiguation can never resolve for an anonymous
+ * function/arrow value.
+ */
 function handleVarFnCapture(c: Record<string, TreeSitterNode>, definitions: Definition[]): void {
-  const declNode = c.varfn_name!.parent?.parent;
-  const line = declNode ? nodeStartLine(declNode) : nodeStartLine(c.varfn_name!);
   const varFnChildren = extractParameters(c.varfn_value!);
   definitions.push({
     name: c.varfn_name!.text,
     kind: 'function',
-    line,
+    line: nodeStartLine(c.varfn_value!),
+    column: c.varfn_value!.startPosition.column,
     endLine: nodeEndLine(c.varfn_value!),
     children: varFnChildren.length > 0 ? varFnChildren : undefined,
   });
@@ -1848,7 +1860,7 @@ function handleVariableDeclarator(
     valType === 'function' ||
     valType === 'generator_function'
   ) {
-    handleVarFnAssignment(node, nameN, valueN, ctx);
+    handleVarFnAssignment(nameN, valueN, ctx);
   } else if (isConst && nameN.type === 'identifier' && !hasFunctionScopeAncestor(node)) {
     // Any other initializer shape becomes a 'constant' Definition, regardless of
     // complexity (call/member/parenthesized expressions, etc.) — mirroring how
@@ -1875,9 +1887,20 @@ function handleVariableDeclarator(
   }
 }
 
-/** Handle `const/let fn = (...) => {...}` — a function/arrow value assigned to a variable. */
+/**
+ * Handle `const/let fn = (...) => {...}` — a function/arrow value assigned
+ * to a variable.
+ *
+ * Uses `valueN`'s (the function itself) own start position, not `node`'s
+ * (the enclosing declaration statement) — issue #2265: `node` spans the
+ * whole `const a = fn1, b = fn2;` statement, so every declarator got the
+ * identical statement-start line, colliding with a sibling declarator's
+ * real complexity/CFG result once `matchResultToDef` (apply-results.ts)
+ * indexed by each function node's own (correct) line. See
+ * `handleVarFnCapture`'s fuller comment (query path) for the rest of the
+ * rationale — `column` mirrors the same fix there.
+ */
 function handleVarFnAssignment(
-  node: TreeSitterNode,
   nameN: TreeSitterNode,
   valueN: TreeSitterNode,
   ctx: ExtractorOutput,
@@ -1886,7 +1909,8 @@ function handleVarFnAssignment(
   ctx.definitions.push({
     name: nameN.text,
     kind: 'function',
-    line: nodeStartLine(node),
+    line: nodeStartLine(valueN),
+    column: valueN.startPosition.column,
     endLine: nodeEndLine(valueN),
     children: varFnChildren.length > 0 ? varFnChildren : undefined,
   });
