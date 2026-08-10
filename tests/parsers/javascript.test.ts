@@ -2244,6 +2244,33 @@ function runDemo(reporter: Reporter, users: string[]): void {
         symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
       ).toBe(true);
     });
+
+    // Greptile review, PR #2432: a `var` is hoisted, so a reference in an
+    // earlier sibling statement executes BEFORE the fallback is assigned and
+    // reads the pre-assignment value, not the fallback — must not fabricate
+    // liveness for it.
+    it('does not credit liveness from a reference before a hoisted var initializer', () => {
+      const symbols = parseJS(`
+        fn();
+        var fn = options.custom || fetchLatestVersion;
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // A reference in a LATER sibling statement is exactly the liveness
+    // evidence this mechanism requires — the position filter above must not
+    // suppress it too.
+    it('still credits liveness from a reference after the declaration', () => {
+      const symbols = parseJS(`
+        var fn = options.custom || fetchLatestVersion;
+        fn();
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
   });
 
   describe('inline object-literal dispatch table extraction (RES-2, #1897)', () => {

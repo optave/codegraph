@@ -4704,13 +4704,35 @@ fn has_later_reference_in_enclosing_block(
     let Some(block) = block else {
         return false;
     };
+
+    // Find the direct child of `block` that contains declarator_node (its
+    // enclosing statement), so earlier sibling statements can be skipped —
+    // for a hoisted `var`, a reference earlier in the block executes before
+    // the assignment and reads the pre-assignment value, not the fallback
+    // (Greptile review, PR #2432).
+    let mut decl_statement = *declarator_node;
+    while let Some(parent) = decl_statement.parent() {
+        if parent.id() == block.id() {
+            break;
+        }
+        decl_statement = parent;
+    }
+
     // Scan the starting block's CHILDREN, not the block itself — the block
     // necessarily contains the very declaration we're checking liveness
     // for, so running the shadow check (`introduces_shadowed_binding`) on
     // the block itself would always find that declaration and wrongly treat
     // the whole block as shadowed, skipping every sibling statement.
+    let mut reached_decl_statement = false;
     for i in 0..block.child_count() {
         if let Some(child) = block.child(i) {
+            if !reached_decl_statement {
+                if child.id() == decl_statement.id() {
+                    reached_decl_statement = true;
+                } else {
+                    continue;
+                }
+            }
             if block_contains_identifier_excluding(&child, name, declarator_node.id(), source, 0) {
                 return true;
             }
@@ -7906,6 +7928,29 @@ mod tests {
         let s = parse_js(
             "let fn = options.custom || fetchLatestVersion;\n({ fn = fn } = replacement);",
         );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2432: a `var` is hoisted, so a reference in an
+    // earlier sibling statement executes BEFORE the fallback is assigned and
+    // reads the pre-assignment value, not the fallback — must not fabricate
+    // liveness for it.
+    #[test]
+    fn does_not_credit_liveness_from_a_reference_before_a_hoisted_var_initializer() {
+        let s = parse_js("fn();\nvar fn = options.custom || fetchLatestVersion;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // A reference in a LATER sibling statement is exactly the liveness
+    // evidence this mechanism requires — the position filter above must not
+    // suppress it too.
+    #[test]
+    fn still_credits_liveness_from_a_reference_after_the_declaration() {
+        let s = parse_js("var fn = options.custom || fetchLatestVersion;\nfn();");
         assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));

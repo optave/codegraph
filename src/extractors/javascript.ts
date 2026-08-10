@@ -4593,6 +4593,17 @@ function blockContainsIdentifierExcluding(
  * (`introducesShadowedBinding`) is excluded from the scan entirely, so a
  * same-named binding declared inside a nested function/block never gets
  * mistaken for a use of the outer variable.
+ *
+ * Sibling statements strictly BEFORE the declaration's own statement are
+ * skipped entirely (Greptile review, PR #2432): for a hoisted `var`, a
+ * reference earlier in the block (`fn(); var fn = custom || fallback;`)
+ * executes before the assignment and reads the pre-assignment value, not the
+ * fallback — crediting it as liveness evidence would fabricate an edge for
+ * code that never actually consumes the fallback. The declaration's own
+ * statement IS still scanned in full (not just from the declarator onward),
+ * since a sibling declarator earlier in the same statement legitimately reads
+ * a later one (`const a = x(), b = y || fallback;` — `a`'s initializer runs
+ * first but that's a same-statement forward reference, not a hoisting hazard).
  */
 function hasLaterReferenceInEnclosingBlock(declaratorNode: TreeSitterNode, name: string): boolean {
   let block: TreeSitterNode | null = declaratorNode.parent;
@@ -4600,14 +4611,31 @@ function hasLaterReferenceInEnclosingBlock(declaratorNode: TreeSitterNode, name:
     block = block.parent;
   }
   if (!block) return false;
+
+  // Find the direct child of `block` that contains declaratorNode (its
+  // enclosing statement), so earlier sibling statements can be skipped.
+  let declStatement = declaratorNode;
+  while (declStatement.parent && declStatement.parent.id !== block.id) {
+    declStatement = declStatement.parent;
+  }
+
   // Scan the starting block's CHILDREN, not the block itself — the block
   // necessarily contains the very declaration we're checking liveness for,
   // so running the shadow check (introducesShadowedBinding) on the block
   // itself would always find that declaration and wrongly treat the whole
   // block as shadowed, skipping every sibling statement.
+  let reachedDeclStatement = false;
   for (let i = 0; i < block.childCount; i++) {
     const child = block.child(i);
-    if (child && blockContainsIdentifierExcluding(child, name, declaratorNode.id)) return true;
+    if (!child) continue;
+    if (!reachedDeclStatement) {
+      if (child.id === declStatement.id) {
+        reachedDeclStatement = true;
+      } else {
+        continue;
+      }
+    }
+    if (blockContainsIdentifierExcluding(child, name, declaratorNode.id)) return true;
   }
   return false;
 }
