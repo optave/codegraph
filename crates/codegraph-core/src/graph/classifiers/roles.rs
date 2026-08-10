@@ -655,17 +655,21 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
         median_fan_out,
     );
 
-    // 6b. Transitive-reachability dead-code downgrade (#2032). Only the
-    // full-classification path runs this: it needs the FULL graph's
-    // `calls`-edge adjacency (not just `rows`, which already spans every
-    // callable node on this path) to compute reachability correctly — a
-    // single indexed full-table scan, consistent with the other full-graph
-    // scans this function already performs. `do_classify_incremental`
-    // deliberately skips it: reachability is a whole-graph property that a
-    // changed-files-plus-one-hop-neighbour window cannot answer correctly,
-    // and re-running a full scan on every incremental build would reintroduce
-    // exactly the cost this path's neighbour-scoping was built to avoid
-    // (#1855). See #2032's follow-up issue for incremental parity.
+    // 6b. Transitive-reachability dead-code downgrade (#2032). This path
+    // needs the FULL graph's `calls`-edge adjacency (not just `rows`, which
+    // already spans every callable node on this path) to compute reachability
+    // correctly — a single indexed full-table scan, consistent with the other
+    // full-graph scans this function already performs.
+    //
+    // `do_classify_incremental` runs its own version of this
+    // (`run_incremental_reachability_downgrade`, issue #2255) rather than
+    // reusing this exact call: reachability is a whole-graph property that a
+    // changed-files-plus-one-hop-neighbour window cannot answer correctly by
+    // just widening `rows`, and re-running a full scan on every incremental
+    // build the way this path does would reintroduce exactly the cost this
+    // path's neighbour-scoping was built to avoid (#1855) — see that
+    // function's doc comment for the conservative-approximation design that
+    // avoids it.
     let call_edges: Vec<(i64, i64)> = {
         let mut stmt = tx.prepare("SELECT source_id, target_id FROM edges WHERE kind = 'calls'")?;
         let mapped =
@@ -1374,6 +1378,108 @@ fn query_nodes_for_files(
     Ok((leaf_rows, rows))
 }
 
+/// Mirrors TS `runIncrementalReachabilityDowngrade` (`src/features/structure.ts`)
+/// — see its doc comment for the full safety rationale (issue #2255).
+/// `do_classify_incremental` only classifies nodes in `all_affected` (changed
+/// files plus their one-hop neighbours), but #2032's reachability downgrade is
+/// a whole-graph property: a window node can be reachable only through a root
+/// that lives entirely outside the window. This widens the node set used for
+/// the downgrade's root/BFS computation only — `role_by_id` (already keyed by
+/// window-node ids from `classify_rows`) is never widened, and
+/// `apply_reachability_downgrade`'s own `role_by_id.get(id)` lookup silently
+/// no-ops for every outside-window id, so only nodes already in the window can
+/// ever be mutated by this pass.
+///
+/// Outside-window nodes use the plain `exported` column as a deliberately
+/// OVER-INCLUSIVE approximation of "public surface" (real fan-in/fan-out are
+/// still read per node, since those matter for `is_interface_dispatch_method_root`)
+/// instead of `do_classify_full`'s expensive whole-graph `prod_reachable`
+/// recursive CTE, and every outside file is unconditionally added to the
+/// active-siblings set. This is safe in only one direction: more roots can
+/// only make the reachable set bigger, which can only prevent a downgrade,
+/// never cause a wrong one — a node that would have been correctly downgraded
+/// with the exact computation might be missed here (matching the pre-#2032
+/// status quo for such nodes until the next full build), but a live node can
+/// never be wrongly marked dead by this approximation. Window nodes reuse the
+/// EXACT `public_surface_ids`/`called_active_files` already computed by the
+/// caller (the backward-scoped barrel check `do_classify_full` cannot
+/// exploit, since it has no smaller scope to restrict to).
+fn run_incremental_reachability_downgrade(
+    tx: &rusqlite::Transaction,
+    all_affected: &[&str],
+    affected_ph: &str,
+    window_rows: &[(i64, String, String, String, u32, u32)],
+    window_public_surface_ids: &std::collections::HashSet<i64>,
+    window_called_active_files: &std::collections::HashSet<String>,
+    entrypoint_ids: &std::collections::HashSet<i64>,
+    role_by_id: &mut HashMap<i64, &'static str>,
+) -> rusqlite::Result<()> {
+    let outside_sql = format!(
+        "SELECT n.id, n.name, n.kind, n.file, n.exported,
+            COALESCE(fi.cnt, 0) AS fan_in,
+            COALESCE(fo.cnt, 0) AS fan_out
+         FROM nodes n
+         LEFT JOIN (
+           SELECT target_id, COUNT(*) AS cnt FROM edges WHERE kind IN ('calls', 'imports-type') GROUP BY target_id
+         ) fi ON n.id = fi.target_id
+         LEFT JOIN (
+           SELECT source_id, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source_id
+         ) fo ON n.id = fo.source_id
+         WHERE n.kind NOT IN ('file', 'directory', 'parameter', 'property')
+           AND n.file NOT IN ({affected_ph})"
+    );
+
+    let mut outside_rows: Vec<(i64, String, String, String, u32, u32)> = Vec::new();
+    let mut public_surface_ids = window_public_surface_ids.clone();
+    let mut called_active_files_wide = window_called_active_files.clone();
+    {
+        let mut stmt = tx.prepare(&outside_sql)?;
+        for (i, f) in all_affected.iter().enumerate() {
+            stmt.raw_bind_parameter(i + 1, *f)?;
+        }
+        let mut rows_iter = stmt.raw_query();
+        while let Some(row) = rows_iter.next()? {
+            let id: i64 = row.get(0)?;
+            let name: String = row.get(1)?;
+            let kind: String = row.get(2)?;
+            let file: String = row.get(3)?;
+            let exported: i64 = row.get(4)?;
+            let fan_in: i64 = row.get(5)?;
+            let fan_out: i64 = row.get(6)?;
+            if exported == 1 {
+                public_surface_ids.insert(id);
+            }
+            called_active_files_wide.insert(file.clone());
+            outside_rows.push((id, name, kind, file, fan_in as u32, fan_out as u32));
+        }
+    }
+
+    let mut wider_rows: Vec<(i64, String, String, String, u32, u32)> =
+        Vec::with_capacity(window_rows.len() + outside_rows.len());
+    wider_rows.extend_from_slice(window_rows);
+    wider_rows.extend(outside_rows);
+
+    let type_def_names_by_file = compute_type_def_names_by_file(&wider_rows);
+
+    let call_edges: Vec<(i64, i64)> = {
+        let mut stmt = tx.prepare("SELECT source_id, target_id FROM edges WHERE kind = 'calls'")?;
+        let mapped =
+            stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+        mapped.filter_map(|r| r.ok()).collect()
+    };
+
+    apply_reachability_downgrade(
+        &wider_rows,
+        &public_surface_ids,
+        &called_active_files_wide,
+        &type_def_names_by_file,
+        entrypoint_ids,
+        &call_edges,
+        role_by_id,
+    );
+    Ok(())
+}
+
 // ── Incremental classification ───────────────────────────────────────
 
 pub(crate) fn do_classify_incremental(
@@ -1439,6 +1545,14 @@ pub(crate) fn do_classify_incremental(
     // whole-graph forward closure (see `is_barrel_prod_reachable`).
     //
     // `method` is excluded (#1780) — see the full-classify path for rationale.
+    //
+    // `public_surface_ids` mirrors TS `runIncrementalReachabilityDowngrade`'s
+    // narrower "genuinely public" set for #2032's reachability roots (issue
+    // #2255) — explicit `export` + confirmed reexport chains only, excluding
+    // `exported_ids`'s broader cross-file-caller/whole-file-reexport
+    // components. See `do_classify_full`'s own `public_surface_ids` block for
+    // why a named reexport must not mark every OTHER symbol in that file too.
+    let mut public_surface_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     {
         let barrels = find_direct_reexport_barrels(&tx, &affected_ph, &all_affected)?;
         let mut reachable_barrels: Vec<&str> = Vec::with_capacity(barrels.len());
@@ -1478,6 +1592,54 @@ pub(crate) fn do_classify_incremental(
             while let Some(row) = rrows.next()? {
                 exported_ids.insert(row.get::<_, i64>(0)?);
             }
+
+            let named_sql = format!(
+                "SELECT DISTINCT e.target_id AS id
+                 FROM edges e
+                 JOIN nodes n ON n.id = e.target_id
+                 JOIN nodes b ON b.id = e.source_id
+                 WHERE e.kind = 'reexports' AND n.kind != 'file' AND b.file IN ({barrel_ph})
+                   AND n.file IN ({affected_ph})"
+            );
+            let mut stmt = tx.prepare(&named_sql)?;
+            let mut idx = 1;
+            for b in &reachable_barrels {
+                stmt.raw_bind_parameter(idx, *b)?;
+                idx += 1;
+            }
+            for f in &all_affected {
+                stmt.raw_bind_parameter(idx, *f)?;
+                idx += 1;
+            }
+            let mut nrows = stmt.raw_query();
+            while let Some(row) = nrows.next()? {
+                public_surface_ids.insert(row.get::<_, i64>(0)?);
+            }
+
+            let wildcard_sql = format!(
+                "SELECT DISTINCT n.id AS id
+                 FROM nodes n
+                 JOIN nodes f ON f.file = n.file AND f.kind = 'file'
+                 JOIN edges e ON e.target_id = f.id
+                 JOIN nodes b ON e.source_id = b.id
+                 WHERE e.kind = 'reexports-wildcard' AND b.file IN ({barrel_ph})
+                   AND n.kind NOT IN ('file', 'directory', 'parameter', 'property', 'method')
+                   AND n.file IN ({affected_ph})"
+            );
+            let mut stmt = tx.prepare(&wildcard_sql)?;
+            let mut idx = 1;
+            for b in &reachable_barrels {
+                stmt.raw_bind_parameter(idx, *b)?;
+                idx += 1;
+            }
+            for f in &all_affected {
+                stmt.raw_bind_parameter(idx, *f)?;
+                idx += 1;
+            }
+            let mut wrows = stmt.raw_query();
+            while let Some(row) = wrows.next()? {
+                public_surface_ids.insert(row.get::<_, i64>(0)?);
+            }
         }
     }
 
@@ -1498,7 +1660,9 @@ pub(crate) fn do_classify_incremental(
         }
         let mut erows = stmt.raw_query();
         while let Some(row) = erows.next()? {
-            exported_ids.insert(row.get::<_, i64>(0)?);
+            let id = row.get::<_, i64>(0)?;
+            exported_ids.insert(id);
+            public_surface_ids.insert(id);
         }
     }
 
@@ -1535,10 +1699,7 @@ pub(crate) fn do_classify_incremental(
             .extend(type_member_leaf_ids);
     }
 
-    // No transitive-reachability downgrade here (#2032) — see the doc comment
-    // on the `apply_reachability_downgrade` call in `do_classify_full` for why
-    // the incremental path deliberately doesn't run it.
-    let role_by_id = classify_rows(
+    let mut role_by_id = classify_rows(
         &rows,
         &exported_ids,
         &entrypoint_ids,
@@ -1549,6 +1710,22 @@ pub(crate) fn do_classify_incremental(
         median_fan_in,
         median_fan_out,
     );
+
+    // Transitive-reachability dead-code downgrade (#2032) — issue #2255
+    // closes the incremental path's gap here. See
+    // `run_incremental_reachability_downgrade`'s doc comment for why this
+    // needs its own root/BFS computation distinct from `do_classify_full`'s.
+    run_incremental_reachability_downgrade(
+        &tx,
+        &all_affected,
+        &affected_ph,
+        &rows,
+        &public_surface_ids,
+        &called_active_files,
+        &entrypoint_ids,
+        &mut role_by_id,
+    )?;
+
     finalize_roles(&role_by_id, &mut ids_by_role, &mut summary);
 
     // Reset roles for affected files only, then update
@@ -1864,12 +2041,14 @@ mod tests {
     }
 
     #[test]
-    fn incremental_path_does_not_run_the_reachability_downgrade() {
-        // Documents the deliberate full-vs-incremental asymmetry (see the doc
-        // comment on `apply_reachability_downgrade`'s call site in
-        // `do_classify_full`): the incremental path can't safely compute
-        // whole-graph reachability from a changed-files-scoped window, so it
-        // must keep classifying via direct fan-in only, same as before #2032.
+    fn incremental_path_applies_the_reachability_downgrade() {
+        // Issue #2255: the incremental path used to classify via direct
+        // fan-in only, missing #2032's reachability downgrade entirely — a
+        // node whose only caller is itself unreachable stayed at its
+        // fan-shape verdict instead of being downgraded to dead. Same
+        // fixture shape as `downgrades_function_whose_only_caller_is_itself_unreachable`
+        // above, run through `do_classify_incremental` instead of
+        // `do_classify_full`.
         let db = setup_db();
         let conn = db.conn().expect("connection should still be open");
 
@@ -1880,6 +2059,34 @@ mod tests {
         do_classify_incremental(conn, &["a.ts".to_string()])
             .expect("do_classify_incremental should succeed");
 
-        assert_ne!(role_of(conn, 1).as_deref(), Some("dead-unresolved"));
+        assert_eq!(role_of(conn, 1).as_deref(), Some("dead-unresolved"));
+    }
+
+    #[test]
+    fn incremental_reachability_downgrade_is_safe_across_the_affected_files_window_boundary() {
+        // Issue #2255: `run_incremental_reachability_downgrade` widens the
+        // node set for the downgrade's root/BFS computation beyond the
+        // changed-files-plus-one-hop-neighbour window, using the plain
+        // `exported` column as an over-inclusive root approximation for
+        // nodes outside that window. This test proves that approximation
+        // never wrongly downgrades a live window node: `publicEntry` (in
+        // entry.ts, exported) calls `helperA` (in helpers.ts, the one-hop
+        // neighbour and thus inside the window), which calls `helperB` (in
+        // deep.ts, the only file actually passed as "changed"). entry.ts
+        // itself stays OUTSIDE the window, yet must still count as a root.
+        let db = setup_db();
+        let conn = db.conn().expect("connection should still be open");
+
+        insert_node(conn, 1, "publicEntry", "function", "entry.ts", 1);
+        insert_node(conn, 2, "helperA", "function", "helpers.ts", 0);
+        insert_node(conn, 3, "helperB", "function", "deep.ts", 0);
+        insert_edge(conn, 1, 2, "calls", 0);
+        insert_edge(conn, 2, 3, "calls", 0);
+
+        do_classify_incremental(conn, &["deep.ts".to_string()])
+            .expect("do_classify_incremental should succeed");
+
+        assert_ne!(role_of(conn, 2).as_deref(), Some("dead-unresolved"));
+        assert_ne!(role_of(conn, 3).as_deref(), Some("dead-unresolved"));
     }
 }

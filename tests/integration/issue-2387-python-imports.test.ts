@@ -28,6 +28,15 @@
  * Two same-named `shared_helper` functions would not disambiguate anything
  * here — instead the assertions pin each edge to a specific target *file*, so
  * a resolver that fell back to a global same-name lookup could not pass.
+ *
+ * A third defect surfaced in review of this fix: `from pkg import submod as
+ * alias` recorded the *pre-alias* name (`submod`) as the local binding, so
+ * `alias.f()` had no local name to key `namespaceImports` off of and resolved
+ * to nothing — the alias analogue of defect 2 above, but for the `from …
+ * import` form rather than `import … as …`. `tr.run_transform([])` below
+ * exercises exactly that: `run_transform` is declared nowhere else, so a
+ * resolver that dropped the alias would leave this call unresolved rather
+ * than accidentally matching something else.
  */
 
 import fs from 'node:fs';
@@ -56,6 +65,10 @@ def shared_helper():
 def run_extract(data):
     return data
 `,
+  'src/pipeline/stages/transform.py': `
+def run_transform(data):
+    return data
+`,
   'src/pipeline/stages/load.py': `
 from .extract import run_extract
 from ..util import shared_helper
@@ -67,11 +80,13 @@ def run_load(data):
   'src/pipeline/main.py': `
 import pipeline.util as U
 from pipeline.stages import extract
+from pipeline.stages import transform as tr
 from pipeline.stages.load import run_load
 
 def main():
     U.shared_helper()
     extract.run_extract([])
+    tr.run_transform([])
     return run_load([])
 `,
 };
@@ -162,6 +177,14 @@ describe.each(ENGINES)('Python import resolution (#2387) — engine: %s', (engin
     );
   });
 
+  it('points an aliased `from pkg import submod as alias` at the submodule too', () => {
+    // `from pipeline.stages import transform as tr` — the alias must not
+    // prevent the submodule-vs-package-symbol distinction from applying.
+    expect(hasEdge(importEdges, 'src/pipeline/main.py', 'src/pipeline/stages/transform.py')).toBe(
+      true,
+    );
+  });
+
   it('resolves a call through an aliased module binding (import x as y; y.f())', () => {
     // The headline defect: U.shared_helper() previously produced no edge and
     // left shared_helper classified dead.
@@ -170,6 +193,16 @@ describe.each(ENGINES)('Python import resolution (#2387) — engine: %s', (engin
 
   it('resolves a call through a submodule binding (from pkg import submod; submod.f())', () => {
     expect(hasCall(callEdges, 'main', 'run_extract', 'src/pipeline/stages/extract.py')).toBe(true);
+  });
+
+  it('resolves a call through an aliased submodule binding (from pkg import submod as alias; alias.f())', () => {
+    // `from pipeline.stages import transform as tr; tr.run_transform([])` —
+    // the extractor previously recorded the pre-alias name `transform` as
+    // the local binding, so `tr` had no entry in namespaceImports and this
+    // call resolved to nothing (found in review of #2387).
+    expect(hasCall(callEdges, 'main', 'run_transform', 'src/pipeline/stages/transform.py')).toBe(
+      true,
+    );
   });
 
   it('still resolves the plain `from mod import name` form', () => {

@@ -900,7 +900,15 @@ function buildCallEdgesNative(
       e.kind,
       e.confidence,
       e.dynamic,
-      e.kind === 'calls' ? (e.technique ?? 'ts-native') : null,
+      // A flag-only dynamic-call sink edge (eval/computed-key/unresolved-
+      // dynamic — confidence=0, dynamic=1, dynamic_kind set) must get
+      // technique=null, matching the WASM/JS inline path and the native
+      // orchestrator's own intent (#1995) — not the 'ts-native' fallback,
+      // which `e.technique ?? 'ts-native'` would otherwise apply even when
+      // Rust correctly returns technique=null for exactly this case, since
+      // `??` can't distinguish "null because it's a sink edge" from "null
+      // because it's an ordinary direct-resolution edge" (issue #2245).
+      e.kind === 'calls' && e.dynamic_kind == null ? (e.technique ?? 'ts-native') : null,
       e.dynamic_kind ?? null,
     ]);
   }

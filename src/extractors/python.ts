@@ -337,9 +337,31 @@ function handlePyExpressionStmt(node: TreeSitterNode, ctx: ExtractorOutput): voi
   }
 }
 
+/**
+ * `from pkg import submod`, `from pkg import submod as alias`, `from pkg
+ * import a, b as c` — the symbol/submodule-binding form.
+ *
+ * `names` must carry the *local* binding (the alias, when there is one) —
+ * call sites write `alias.f()`, not `submod.f()`, and every downstream
+ * consumer (`importNamePairs`, the namespace/submodule maps in
+ * `buildImportedNamesMap`/`buildImportedNamesForNative`) keys off the local
+ * name. Previously this took the `aliased_import`'s pre-alias `name` field
+ * unconditionally, so an aliased specifier's local binding was silently
+ * dropped: `from pkg import submod as alias` recorded `submod`, and a call
+ * through `alias` resolved to nothing in both engines (#2387).
+ *
+ * The pre-alias name doesn't disappear — it's the name actually declared in
+ * `source` (whether that turns out to be a symbol in `pkg`'s file or, per
+ * `resolvePythonSubmodule`, a submodule `pkg/submod.py`), so it is recorded
+ * in `renamedImports` exactly like a renamed JS specifier (`import { X as Y
+ * }`, #1730). `importNamePairs` already recovers it from there for barrel
+ * tracing, submodule probing, and namespace-import mapping — mirrors
+ * `extractImportNames`'s `import_specifier` handling in extractors/javascript.ts.
+ */
 function handlePyImportFrom(node: TreeSitterNode, ctx: ExtractorOutput): void {
   let source = '';
   const names: string[] = [];
+  const renamedImports: Array<{ local: string; imported: string }> = [];
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (!child) continue;
@@ -348,13 +370,26 @@ function handlePyImportFrom(node: TreeSitterNode, ctx: ExtractorOutput): void {
       else names.push(child.text);
     }
     if (child.type === 'aliased_import') {
-      const n = child.childForFieldName('name') || child.child(0);
-      if (n) names.push(n.text);
+      const sourceNameNode = child.childForFieldName('name');
+      const aliasNode = child.childForFieldName('alias');
+      const localNode = aliasNode ?? sourceNameNode ?? child.child(0);
+      if (localNode) {
+        names.push(localNode.text);
+        if (aliasNode && sourceNameNode && aliasNode.text !== sourceNameNode.text) {
+          renamedImports.push({ local: aliasNode.text, imported: sourceNameNode.text });
+        }
+      }
     }
     if (child.type === 'wildcard_import') names.push('*');
   }
   if (source)
-    ctx.imports.push({ source, names, line: node.startPosition.row + 1, pythonImport: true });
+    ctx.imports.push({
+      source,
+      names,
+      line: node.startPosition.row + 1,
+      pythonImport: true,
+      ...(renamedImports.length > 0 ? { renamedImports } : {}),
+    });
 }
 
 // ── Python-specific helpers ─────────────────────────────────────────────────
