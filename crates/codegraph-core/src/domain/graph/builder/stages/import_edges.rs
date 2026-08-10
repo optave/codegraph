@@ -699,6 +699,33 @@ fn emit_edges_for_import(
         return;
     }
     let resolved_path = ctx.get_resolved(abs_str, &imp.source);
+
+    // `from pkg import submod` depends on `pkg/submod.py`, not merely on
+    // `pkg/__init__.py` — emitting only the latter would report the package
+    // barrel as the dependency and leave the module that actually changed
+    // invisible to `deps`/`impact` (#2387). Mirrors emitEdgesForImport in
+    // stages/build-edges.ts.
+    for (_local, original, _type_only) in import_name_pairs(imp) {
+        let Some(submodule) = crate::domain::graph::resolve::resolve_python_submodule(
+            abs_str,
+            &imp.source,
+            &original,
+            &ctx.root_dir,
+            Some(&ctx.known_files),
+        ) else {
+            continue;
+        };
+        if let Some(&submodule_id) = file_node_ids.get(&submodule) {
+            edges.push(EdgeRow {
+                source_id: file_node_id,
+                target_id: submodule_id,
+                kind: "imports".to_string(),
+                confidence: 1.0,
+                dynamic: 0,
+            });
+        }
+    }
+
     let target_id = match file_node_ids.get(&resolved_path) {
         Some(&id) => id,
         None => return,

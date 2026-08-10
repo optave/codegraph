@@ -173,27 +173,48 @@ fn handle_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     }
 }
 
+/// `import a.b`, `import a.b as ab`, `import a, b` — the module-binding form.
+///
+/// Each module in the statement becomes its own `Import`, whose `source` is
+/// the module path and whose single name is the local binding it introduces.
+/// That split matters twice over: `source` previously carried the *alias* for
+/// `import lib as L`, which can never resolve to a file, and a multi-module
+/// `import a, b` collapsed into one record naming only `a` as its source
+/// (#2387).
+///
+/// The binding names a module object rather than a symbol, so it is also
+/// recorded in `namespace_bindings` — that is what lets `L.strip_block()`
+/// resolve `strip_block` inside the module `L` refers to. For the unaliased
+/// dotted form the binding is recorded under its full dotted spelling (`a.b`),
+/// because that is the receiver text a call site writes (`a.b.func()`).
+///
+/// Mirrors `handlePyImport` in src/extractors/python.ts.
 fn handle_import_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
-    let mut names = Vec::new();
+    let line = start_line(node);
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
-        if child.kind() != "dotted_name" && child.kind() != "aliased_import" {
-            continue;
-        }
-        let name = if child.kind() == "aliased_import" {
-            child
-                .child_by_field_name("alias")
-                .or_else(|| child.child_by_field_name("name"))
-                .map(|n| node_text(&n, source).to_string())
-        } else {
-            Some(node_text(&child, source).to_string())
+        let (module, local) = match child.kind() {
+            "dotted_name" => {
+                let text = node_text(&child, source).to_string();
+                (Some(text.clone()), Some(text))
+            }
+            "aliased_import" => {
+                let module = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(&n, source).to_string());
+                let local = child
+                    .child_by_field_name("alias")
+                    .map(|n| node_text(&n, source).to_string())
+                    .or_else(|| module.clone());
+                (module, local)
+            }
+            _ => continue,
         };
-        if let Some(name) = name {
-            names.push(name);
-        }
-    }
-    if !names.is_empty() {
-        let mut imp = Import::new(names[0].clone(), names, start_line(node));
+        let (Some(module), Some(local)) = (module, local) else {
+            continue;
+        };
+        let mut imp = Import::new(module, vec![local.clone()], line);
+        imp.namespace_bindings = Some(vec![local]);
         imp.python_import = Some(true);
         symbols.imports.push(imp);
     }
@@ -561,6 +582,69 @@ mod tests {
         assert_eq!(s.imports.len(), 1);
         assert_eq!(s.imports[0].source, "os.path");
         assert!(s.imports[0].names.contains(&"join".to_string()));
+    }
+
+    #[test]
+    fn plain_import_records_the_module_as_source_and_a_namespace_binding() {
+        // #2387: `source` must be the module, not the binding name — a binding
+        // name can never resolve to a file.
+        let s = parse_py("import lib\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "lib");
+        assert_eq!(s.imports[0].names, vec!["lib".to_string()]);
+        assert_eq!(
+            s.imports[0].namespace_bindings,
+            Some(vec!["lib".to_string()])
+        );
+    }
+
+    #[test]
+    fn aliased_import_keeps_the_module_as_source_and_the_alias_as_the_binding() {
+        // #2387: this previously stored the alias ("L") as `source`, which is
+        // why `import lib as L` produced no imports edge and `L.f()` resolved
+        // to nothing.
+        let s = parse_py("import lib as L\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "lib");
+        assert_eq!(s.imports[0].names, vec!["L".to_string()]);
+        assert_eq!(s.imports[0].namespace_bindings, Some(vec!["L".to_string()]));
+    }
+
+    #[test]
+    fn dotted_import_binds_under_its_full_dotted_spelling() {
+        // `import a.b.c` is written `a.b.c.func()` at the call site, so the
+        // binding is recorded under the dotted text a receiver would carry.
+        let s = parse_py("import a.b.c\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "a.b.c");
+        assert_eq!(
+            s.imports[0].namespace_bindings,
+            Some(vec!["a.b.c".to_string()])
+        );
+    }
+
+    #[test]
+    fn multi_module_import_produces_one_record_per_module() {
+        // #2387: `import a, b` used to collapse into a single record whose
+        // source was "a", silently losing b entirely.
+        let s = parse_py("import alpha, beta as B\n");
+        assert_eq!(s.imports.len(), 2);
+        let sources: Vec<&str> = s.imports.iter().map(|i| i.source.as_str()).collect();
+        assert!(sources.contains(&"alpha"));
+        assert!(sources.contains(&"beta"));
+        let beta = s.imports.iter().find(|i| i.source == "beta").unwrap();
+        assert_eq!(beta.names, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn from_import_names_are_not_namespace_bindings() {
+        // `from mod import name` binds a symbol; whether `name` is actually a
+        // submodule is decided at resolution time, not here.
+        let s = parse_py("from lib import helper\n");
+        assert_eq!(s.imports.len(), 1);
+        assert_eq!(s.imports[0].source, "lib");
+        assert_eq!(s.imports[0].names, vec!["helper".to_string()]);
+        assert_eq!(s.imports[0].namespace_bindings, None);
     }
 
     #[test]

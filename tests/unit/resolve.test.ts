@@ -12,6 +12,7 @@ import {
   clearCargoTargetOverridesCache,
   clearExportsCache,
   clearJsToTsCache,
+  clearPythonImportRootsCache,
   clearWorkspaceCache,
   computeConfidence,
   computeConfidenceJS,
@@ -21,6 +22,7 @@ import {
   parseBareSpecifier,
   resolveImportPathJS,
   resolveImportsBatch,
+  resolvePythonSubmodule,
   resolveViaExports,
   resolveViaWorkspace,
   setWorkspaces,
@@ -1170,5 +1172,175 @@ path = "custom/location/tool.rs"
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('resolveImportPathJS - Python module paths (#2387)', () => {
+  // PyPA "src layout": the package root is `src/`, but imports are written
+  // `from pipeline…` — the exact shape that resolved zero imports on
+  // data-analytics-pipeline-svc.
+  let pyDir: string;
+  const knownFiles = [
+    'src/pipeline/__init__.py',
+    'src/pipeline/util.py',
+    'src/pipeline/main.py',
+    'src/pipeline/stages/__init__.py',
+    'src/pipeline/stages/extract.py',
+    'src/pipeline/stages/load.py',
+    'scripts/tool.py',
+    'flat.py',
+  ];
+
+  beforeAll(() => {
+    pyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-py-'));
+    for (const rel of knownFiles) {
+      fs.mkdirSync(path.join(pyDir, path.dirname(rel)), { recursive: true });
+      fs.writeFileSync(path.join(pyDir, rel), '');
+    }
+    clearPythonImportRootsCache();
+  });
+
+  afterAll(() => {
+    if (pyDir) fs.rmSync(pyDir, { recursive: true, force: true });
+    clearPythonImportRootsCache();
+  });
+
+  const resolveFrom = (relFrom: string, source: string): string =>
+    resolveImportPathJS(path.join(pyDir, relFrom), source, pyDir, null, knownFiles);
+
+  it('resolves an absolute dotted import against the layout-derived package root (src layout)', () => {
+    expect(resolveFrom('src/pipeline/main.py', 'pipeline.util')).toBe('src/pipeline/util.py');
+  });
+
+  it('resolves a dotted import to a nested module', () => {
+    expect(resolveFrom('src/pipeline/main.py', 'pipeline.stages.extract')).toBe(
+      'src/pipeline/stages/extract.py',
+    );
+  });
+
+  it('resolves a package import to its __init__.py', () => {
+    expect(resolveFrom('src/pipeline/main.py', 'pipeline.stages')).toBe(
+      'src/pipeline/stages/__init__.py',
+    );
+  });
+
+  it('resolves a single-dot relative import to a sibling module', () => {
+    expect(resolveFrom('src/pipeline/stages/load.py', '.extract')).toBe(
+      'src/pipeline/stages/extract.py',
+    );
+  });
+
+  it('resolves a double-dot relative import to the parent package', () => {
+    expect(resolveFrom('src/pipeline/stages/load.py', '..util')).toBe('src/pipeline/util.py');
+  });
+
+  it('resolves a bare-dot relative import to the current package __init__.py', () => {
+    expect(resolveFrom('src/pipeline/stages/load.py', '.')).toBe('src/pipeline/stages/__init__.py');
+  });
+
+  it('resolves an import from a file outside the package tree via the src/ convention', () => {
+    expect(resolveFrom('scripts/tool.py', 'pipeline.util')).toBe('src/pipeline/util.py');
+  });
+
+  it('resolves a flat-layout import against the repo root', () => {
+    expect(resolveFrom('flat.py', 'flat')).toBe('flat.py');
+  });
+
+  it('leaves a stdlib/third-party module unresolved so it is treated as external', () => {
+    // Falls through to the bare-specifier fallback, which echoes the specifier.
+    expect(resolveFrom('src/pipeline/main.py', 'os.path')).toBe('os.path');
+    expect(resolveFrom('src/pipeline/main.py', 'numpy')).toBe('numpy');
+  });
+
+  it('does not escape the repo root when a relative import climbs past the package', () => {
+    // `...` from src/pipeline/stages/ would land above pyDir — must not resolve.
+    const result = resolveFrom('src/pipeline/stages/load.py', '...escape');
+    expect(result.startsWith('..')).toBe(false);
+  });
+
+  it('honours a pyproject.toml pythonpath entry that no layout convention implies', () => {
+    const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-pycfg-'));
+    try {
+      const cfgFiles = ['lib/vendored/helper.py', 'app/run.py'];
+      for (const rel of cfgFiles) {
+        fs.mkdirSync(path.join(cfgDir, path.dirname(rel)), { recursive: true });
+        fs.writeFileSync(path.join(cfgDir, rel), '');
+      }
+      fs.writeFileSync(
+        path.join(cfgDir, 'pyproject.toml'),
+        '[tool.pytest.ini_options]\npythonpath = ["lib"]\n',
+      );
+      clearPythonImportRootsCache();
+
+      const result = resolveImportPathJS(
+        path.join(cfgDir, 'app/run.py'),
+        'vendored.helper',
+        cfgDir,
+        null,
+        cfgFiles,
+      );
+      expect(result).toBe('lib/vendored/helper.py');
+    } finally {
+      fs.rmSync(cfgDir, { recursive: true, force: true });
+      clearPythonImportRootsCache();
+    }
+  });
+});
+
+describe('resolvePythonSubmodule (#2387)', () => {
+  let subDir: string;
+  const knownFiles = [
+    'pkg/__init__.py',
+    'pkg/stages/__init__.py',
+    'pkg/stages/extract.py',
+    'pkg/util.py',
+    'pkg/main.py',
+  ];
+
+  beforeAll(() => {
+    subDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-pysub-'));
+    for (const rel of knownFiles) {
+      fs.mkdirSync(path.join(subDir, path.dirname(rel)), { recursive: true });
+      fs.writeFileSync(path.join(subDir, rel), '');
+    }
+    clearPythonImportRootsCache();
+  });
+
+  afterAll(() => {
+    if (subDir) fs.rmSync(subDir, { recursive: true, force: true });
+    clearPythonImportRootsCache();
+  });
+
+  it('resolves `from pkg.stages import extract` to the submodule file', () => {
+    expect(
+      resolvePythonSubmodule(
+        path.join(subDir, 'pkg/main.py'),
+        'pkg.stages',
+        'extract',
+        subDir,
+        knownFiles,
+      ),
+    ).toBe('pkg/stages/extract.py');
+  });
+
+  it('returns null when the imported name is an ordinary symbol, not a submodule', () => {
+    expect(
+      resolvePythonSubmodule(
+        path.join(subDir, 'pkg/main.py'),
+        'pkg.util',
+        'shared_helper',
+        subDir,
+        knownFiles,
+      ),
+    ).toBeNull();
+  });
+
+  it('returns null for a wildcard import and for non-Python callers', () => {
+    expect(
+      resolvePythonSubmodule(path.join(subDir, 'pkg/main.py'), 'pkg', '*', subDir, knownFiles),
+    ).toBeNull();
+    expect(
+      resolvePythonSubmodule(path.join(subDir, 'main.ts'), 'pkg', 'stages', subDir, knownFiles),
+    ).toBeNull();
   });
 });

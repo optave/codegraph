@@ -179,25 +179,45 @@ function handlePyCall(node: TreeSitterNode, ctx: ExtractorOutput): void {
   }
 }
 
+/**
+ * `import a.b`, `import a.b as ab`, `import a, b` — the module-binding form.
+ *
+ * Each module in the statement becomes its own `Import`, whose `source` is the
+ * module path and whose single name is the local binding it introduces. That
+ * split matters twice over: `source` previously carried the *alias* for
+ * `import lib as L`, which can never resolve to a file, and a multi-module
+ * `import a, b` collapsed into one record that named only `a` as its source
+ * (#2387).
+ *
+ * The binding names a module object rather than a symbol, so it is also
+ * recorded in `namespaceBindings` — that is what lets `L.strip_block()` resolve
+ * `strip_block` inside the module `L` refers to. For the unaliased dotted form
+ * the binding is recorded under its full dotted spelling (`a.b`), because that
+ * is the receiver text a call site writes (`a.b.func()`).
+ */
 function handlePyImport(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const names: string[] = [];
+  const line = node.startPosition.row + 1;
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    if (child && (child.type === 'dotted_name' || child.type === 'aliased_import')) {
-      const name =
-        child.type === 'aliased_import'
-          ? (child.childForFieldName('alias') || child.childForFieldName('name'))?.text
-          : child.text;
-      if (name) names.push(name);
+    if (!child) continue;
+    let source: string | undefined;
+    let local: string | undefined;
+    if (child.type === 'dotted_name') {
+      source = child.text;
+      local = child.text;
+    } else if (child.type === 'aliased_import') {
+      source = child.childForFieldName('name')?.text;
+      local = child.childForFieldName('alias')?.text ?? source;
     }
-  }
-  if (names.length > 0)
+    if (!source || !local) continue;
     ctx.imports.push({
-      source: names[0] ?? '',
-      names,
-      line: node.startPosition.row + 1,
+      source,
+      names: [local],
+      namespaceBindings: [local],
+      line,
       pythonImport: true,
     });
+  }
 }
 
 function handlePyExpressionStmt(node: TreeSitterNode, ctx: ExtractorOutput): void {

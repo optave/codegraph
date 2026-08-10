@@ -150,6 +150,7 @@ pub fn resolve_imports(
     domain::graph::resolve::reset_workspace_resolved_paths();
     domain::graph::resolve::clear_exports_cache();
     domain::graph::resolve::clear_cargo_target_overrides_cache();
+    domain::graph::resolve::clear_python_import_roots_cache();
     domain::graph::resolve::resolve_imports_batch(
         &inputs,
         &root_dir,
@@ -169,6 +170,16 @@ pub fn resolve_imports(
 #[napi]
 pub fn clear_cargo_target_overrides_cache() {
     domain::graph::resolve::clear_cargo_target_overrides_cache();
+}
+
+/// Clear the native Python import-root caches (pyproject-declared roots and
+/// layout-derived package roots, issue #2387) — called from the JS-side
+/// `clearPythonImportRootsCache()` (`resolve.ts`) for the same reason as the
+/// Cargo one above: watch mode's `rebuildFile` goes through `resolve_import`,
+/// the single-import entry point, which does not self-clear per build.
+#[napi]
+pub fn clear_python_import_roots_cache() {
+    domain::graph::resolve::clear_python_import_roots_cache();
 }
 
 /// Compute proximity-based confidence for call resolution.

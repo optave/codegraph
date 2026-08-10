@@ -668,6 +668,20 @@ export interface Import {
    * with a symbol-level `imports-type` edge (#1813).
    */
   typeOnlyNames?: string[];
+  /**
+   * Local binding names (subset of `names`) bound to the imported *module*
+   * itself rather than to a symbol inside it — Python's `import lib as L` and
+   * JavaScript's `import * as ns from 'lib'`.
+   *
+   * Call resolution needs the distinction: for a namespace binding, a call
+   * written `L.strip_block()` means "the symbol `strip_block` declared in the
+   * module `L` refers to", whereas for an ordinary symbol binding the same
+   * shape means "a member of the value `L`". Resolving the two identically
+   * would either miss every aliased module call (#2387) or invent edges to
+   * unrelated same-named top-level functions. Sparsely populated, mirroring
+   * `renamedImports`/`typeOnlyNames`.
+   */
+  namespaceBindings?: string[];
   // Language-specific flags (mutually exclusive at runtime)
   pythonImport?: boolean;
   goImport?: boolean;
@@ -2531,6 +2545,12 @@ export interface NativeAddon {
    * export, so callers must feature-detect via `?.()`.
    */
   clearCargoTargetOverridesCache?(): void;
+  /**
+   * Clear the native Python import-root cache (pyproject-declared roots and
+   * layout-derived package roots, #2387) — optional for the same reason as
+   * `clearCargoTargetOverridesCache`: older published addons predate it.
+   */
+  clearPythonImportRootsCache?(): void;
   computeConfidence(callerFile: string, targetFile: string, importedFrom: string | null): number;
   detectCycles(edges: Array<{ source: string; target: string }>): string[][];
   bfsTraversal(

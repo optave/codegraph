@@ -441,6 +441,7 @@ export function resolveCallTargets(
   typeMap: Map<string, unknown>,
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
+  namespaceImports?: ReadonlyMap<string, string>,
 ): {
   targets: Array<ResolvedCandidate>;
   importedFrom: string | undefined;
@@ -500,6 +501,25 @@ export function resolveCallTargets(
     }
     const targets = lookup.byName(qualified).filter((n) => n.accessorKind === call.accessorRead);
     return { targets: [...targets], importedFrom: undefined };
+  }
+
+  // A call through a module namespace binding (`import lib as L; L.f()`,
+  // `from pkg import submod; submod.f()`) names a module, not a value, so the
+  // target is simply `call.name` as declared in that module's file. Resolved
+  // ahead of the general cascade because the cascade has nothing to work with
+  // here: `call.name` is not itself an imported binding, and the receiver has
+  // no type to look up — which is why every such call previously resolved to
+  // nothing and left the callee reported as dead (#2387).
+  //
+  // Scoped to the module's own file and authoritative: a miss means the module
+  // does not declare that name, not "keep looking". Falling through would let
+  // an unrelated same-named function elsewhere in the project claim the call.
+  const namespaceFile = call.receiver ? namespaceImports?.get(call.receiver) : undefined;
+  if (namespaceFile) {
+    return {
+      targets: [...lookup.byNameAndFile(call.name, namespaceFile)],
+      importedFrom: undefined,
+    };
   }
 
   const importedFrom = importedNames.get(call.name);
