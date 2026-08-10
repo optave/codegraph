@@ -1168,21 +1168,62 @@ function buildImportedNamesForNative(
  * one implementation — the native path and the JS path both arrive with their
  * edges already written.
  *
- * Cleared per file first, so a guard that is deleted or renamed doesn't leave
- * a stale entrypoint flag behind on an incremental rebuild.
+ * Cleared per file first via `entrypoint_source_file` — the file whose call
+ * site last attributed the flag — rather than by re-querying the file's
+ * current outgoing `calls` edges: when a guard's target is declared in a
+ * *different* file and the guard is later deleted or renamed, the old edge is
+ * already purged (as part of reprocessing the changed file) by the time this
+ * runs, so a query keyed on live edges can never find it again to clear it
+ * (review finding on #2411). The attribution column has no such lifecycle
+ * dependency — it is set directly on the target and only ever read back for
+ * the exact file that set it.
+ *
+ * Scoped to `.py` files: `call.entrypoint` is only ever set by the Python
+ * extractor, so a non-Python file can never have contributed an entrypoint
+ * attribution in this build or any earlier one — running the clear/mark
+ * statements for it is always a guaranteed no-op. Skipping them is what keeps
+ * this stage O(python files) instead of O(all files); running an
+ * UPDATE-with-JOIN per file unconditionally showed up as a 66% full-build
+ * regression on a 954-file, effectively-Python-free tree (#2411 CI).
+ *
+ * Note: attribution is single-owner (one `entrypoint_source_file` per
+ * target). If two different files both legitimately call the same target as
+ * their entrypoint, whichever marks it last wins the attribution, and the
+ * other file's later removal won't clear it (harmless — the target simply
+ * stays correctly flagged) but its own removal will. Tracked as a follow-up
+ * (#2419) rather than solved here with a many-to-many table, since it needs a
+ * second target to legitimately share an entrypoint call name, which is
+ * unusual enough not to hold up this fix.
+ *
+ * Also records every touched target's file on `ctx.entrypointTouchedFiles`,
+ * so `classifyRoles` (buildStructure stage) can seed incremental role
+ * reclassification for it: the target's file is frequently not the file
+ * being rebuilt (the cross-file case above), and
+ * `classifyNodeRolesIncremental`'s own neighbour-expansion join can't
+ * discover it either, for the same live-edge-only reason the clear query
+ * above can't — the connecting edge may have just been deleted. Without this,
+ * `nodes.entrypoint` clears correctly but the cached `nodes.role` for the
+ * same row is left stale at `"entry"`.
  */
 function markEntrypointTargets(ctx: PipelineContext): void {
   const { db, fileSymbols } = ctx;
+  const pyFiles = [...fileSymbols.keys()].filter((f) => f.endsWith('.py'));
+  if (pyFiles.length === 0) return;
+
+  const findStaleStmt = db.prepare(`SELECT file FROM nodes WHERE entrypoint_source_file = @file`);
   const clearStmt = db.prepare(
-    `UPDATE nodes SET entrypoint = 0
-     WHERE entrypoint = 1 AND id IN (
-       SELECT e.target_id FROM edges e
-       JOIN nodes src ON e.source_id = src.id
-       WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = @file
-     )`,
+    `UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL
+     WHERE entrypoint_source_file = @file`,
+  );
+  const findTargetsStmt = db.prepare(
+    `SELECT tgt.file AS file FROM edges e
+     JOIN nodes src ON e.source_id = src.id
+     JOIN nodes tgt ON e.target_id = tgt.id
+     WHERE e.kind = 'calls' AND src.kind = 'file' AND src.file = @file
+       AND (tgt.name = @name OR tgt.name LIKE @suffix)`,
   );
   const markStmt = db.prepare(
-    `UPDATE nodes SET entrypoint = 1
+    `UPDATE nodes SET entrypoint = 1, entrypoint_source_file = @file
      WHERE id IN (
        SELECT e.target_id FROM edges e
        JOIN nodes src ON e.source_id = src.id
@@ -1192,18 +1233,32 @@ function markEntrypointTargets(ctx: PipelineContext): void {
      )`,
   );
 
+  const touchedFiles = new Set<string>();
   const tx = db.transaction(() => {
-    for (const [relPath, symbols] of fileSymbols) {
+    for (const relPath of pyFiles) {
+      const symbols = fileSymbols.get(relPath);
+      if (!symbols) continue;
       const entrypointNames = new Set(symbols.calls.filter((c) => c.entrypoint).map((c) => c.name));
+
+      for (const row of findStaleStmt.all({ file: relPath }) as Array<{ file: string }>) {
+        touchedFiles.add(row.file);
+      }
       clearStmt.run({ file: relPath });
       for (const name of entrypointNames) {
         // A method entrypoint (`Runner().start()`) is declared as
         // `Owner.start`, so match the bare name or any `*.name` qualification.
-        markStmt.run({ file: relPath, name, suffix: `%.${name}` });
+        const suffix = `%.${name}`;
+        for (const row of findTargetsStmt.all({ file: relPath, name, suffix }) as Array<{
+          file: string;
+        }>) {
+          touchedFiles.add(row.file);
+        }
+        markStmt.run({ file: relPath, name, suffix });
       }
     }
   });
   tx();
+  ctx.entrypointTouchedFiles = [...touchedFiles];
 }
 
 /**

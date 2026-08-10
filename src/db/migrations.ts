@@ -681,6 +681,19 @@ function ensureNodeColumns(db: BetterSqlite3Database): void {
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_nodes_entrypoint ON nodes(entrypoint) WHERE entrypoint = 1',
   );
+  // #2411 (review fix): the file whose call site attributed the current
+  // `entrypoint` flag. A rebuild needs this to clear a stale flag when the
+  // attributing call is deleted or renamed — re-deriving from live `calls`
+  // edges doesn't work for a target declared in a *different* file than the
+  // guard, because that edge is already purged (as part of reprocessing the
+  // changed file) by the time the clear query would run. Reading this column
+  // instead makes the clear correct regardless of the edge's lifecycle.
+  // Mirrored in crates/codegraph-core/src/db/connection.rs.
+  if (missing('entrypoint_source_file'))
+    db.exec('ALTER TABLE nodes ADD COLUMN entrypoint_source_file TEXT');
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_nodes_entrypoint_source_file ON nodes(entrypoint_source_file)',
+  );
   db.exec('UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_scope ON nodes(scope)');

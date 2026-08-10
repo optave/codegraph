@@ -118,13 +118,28 @@ async function classifyRoles(
   try {
     let roleSummary: Record<string, number> | null = null;
 
+    // Fold in files `markEntrypointTargets` touched this build (#2392, review
+    // fix on #2411): a touched target's file is frequently not one of the
+    // reparsed `changedFileList` files (the cross-file case), and the
+    // neighbour-expansion join inside classifyRolesIncremental/
+    // classifyNodeRolesIncremental can't discover it either — the `calls`
+    // edge that would connect them may have just been deleted. Without this,
+    // `nodes.entrypoint` clears correctly but the cached `nodes.role` for the
+    // same row is left stale. A full build (`changedFileList === null`)
+    // already re-examines every node, so no merge is needed there. Mirrors
+    // the `entrypoint_touched_files` merge in Rust's `run_role_classification`.
+    const effectiveFileList =
+      changedFileList && ctx.entrypointTouchedFiles.length > 0
+        ? [...new Set([...changedFileList, ...ctx.entrypointTouchedFiles])]
+        : changedFileList;
+
     // Use NativeDatabase persistent connection (Phase 6.15+).
     // Standalone napi functions were removed in 6.17 — falls through to JS if nativeDb unavailable.
     // Note: classifyRoles* both read (fan-in/fan-out) and write (UPDATE nodes SET role).
     if (useNativeReads && ctx.nativeDb?.classifyRolesFull) {
       const nativeResult =
-        changedFileList && changedFileList.length > 0
-          ? ctx.nativeDb.classifyRolesIncremental(changedFileList)
+        effectiveFileList && effectiveFileList.length > 0
+          ? ctx.nativeDb.classifyRolesIncremental(effectiveFileList)
           : ctx.nativeDb.classifyRolesFull();
       if (nativeResult) roleSummary = nativeRoleSummaryToRecord(nativeResult);
     }
@@ -136,11 +151,11 @@ async function classifyRoles(
           changedFiles?: string[] | null,
         ) => Record<string, number>;
       };
-      roleSummary = classifyNodeRoles(ctx.db, changedFileList);
+      roleSummary = classifyNodeRoles(ctx.db, effectiveFileList);
     }
 
     debug(
-      `Roles${changedFileList ? ` (incremental, ${changedFileList.length} files)` : ''}: ${Object.entries(
+      `Roles${effectiveFileList ? ` (incremental, ${effectiveFileList.length} files)` : ''}: ${Object.entries(
         roleSummary,
       )
         .map(([r, c]) => `${r}=${c}`)
