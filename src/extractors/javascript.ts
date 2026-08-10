@@ -4775,11 +4775,7 @@ function blockContainsIdentifierExcluding(
         const declarator = decl.child(j);
         if (declarator?.type !== 'variable_declarator') continue;
         const declName = declarator.childForFieldName('name');
-        if (
-          declName &&
-          patternBindsName(declName, name) &&
-          declarator.childForFieldName('value')
-        ) {
+        if (declName && patternBindsName(declName, name) && declarator.childForFieldName('value')) {
           killIndex = j;
           break;
         }
