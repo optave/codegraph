@@ -35,6 +35,17 @@ export interface CallNodeLookup {
    */
   resolveBarrel(barrelFile: string, symbolName: string): { file: string; name: string } | null;
   nodeId(name: string, kind: string, file: string, line: number): { id: number } | undefined;
+  /**
+   * True when `file` declares a function/method-kind node, other than
+   * `excludeId`, whose line span encloses `line` — i.e. the node at
+   * `excludeId` is nested inside another callable rather than declared at
+   * module/class scope. Used by `resolveThisDispatch` (cha.ts) to tell a
+   * genuine heritage-capable function declaration (#2238) apart from an
+   * unrelated nested function that merely shares a base class's bare name
+   * (Greptile finding on PR #2400) — a nested function can never legitimately
+   * be an `extends`/prototype heritage target.
+   */
+  hasEnclosingCallable(file: string, line: number, excludeId: number): boolean;
 }
 
 export const RECEIVER_KINDS = new Set(['class', 'struct', 'interface', 'type', 'module']);
@@ -348,6 +359,28 @@ export function findCaller(
  * (#1825). `resolveByGlobal` has no receiver-qualifier lookups, so it does
  * not need it.
  */
+/**
+ * True when `callerName`'s class-name prefix is a real class/struct/
+ * interface/etc.-kind declaration in the same file — i.e. a `super` call
+ * inside it is syntactically guaranteed to have a real `extends` target
+ * `resolveThisDispatch`'s CHA ancestor walk (cha.ts) can verify (issue
+ * #2244). False for an object-literal method using dynamic prototype
+ * linkage (`Object.setPrototypeOf`, `obj.__proto__ = ...`) — those have no
+ * static `extends` clause for CHA to check at all, so the bare/global
+ * fallback below remains the only signal available and must still apply.
+ */
+function callerHasRealClassAncestor(
+  callerName: string | null | undefined,
+  relPath: string,
+  lookup: CallNodeLookup,
+): boolean {
+  if (!callerName) return false;
+  const dotIdx = callerName.lastIndexOf('.');
+  if (dotIdx <= 0) return false;
+  const callerClass = callerName.slice(0, dotIdx);
+  return lookup.byNameAndFile(callerClass, relPath).some((n) => RECEIVER_KINDS.has(n.kind ?? ''));
+}
+
 export function resolveByMethodOrGlobal(
   lookup: CallNodeLookup,
   call: { name: string; receiver?: string | null },
@@ -356,6 +389,24 @@ export function resolveByMethodOrGlobal(
   callerName?: string | null,
   importedOriginalNames?: ReadonlyMap<string, string>,
 ): ReadonlyArray<ResolvedCandidate> {
+  // `super`/`super.method()` inside a REAL class is never resolvable by a
+  // same-name/global lookup (resolveByGlobal): unlike `this`, where a
+  // same-file or best-confidence same-named declaration is often genuinely
+  // correct, `super` specifically means "the caller's real ancestor's
+  // method" — a coincidentally same-named declaration anywhere else has no
+  // static relationship to that ancestor and must never win. Only
+  // `resolveThisDispatch`'s CHA-aware ancestor walk (cha.ts, run as a
+  // post-pass) can verify that relationship, so super is deferred to it
+  // entirely rather than resolved (possibly wrongly) here (issue #2244).
+  //
+  // This does NOT apply when the caller isn't a real class at all (an
+  // object-literal method linked to its "ancestor" via
+  // `Object.setPrototypeOf`/`__proto__ =`, jelly-micro's super/super3
+  // fixtures) — CHA has no static `extends` clause to walk there, so the
+  // fallback below is the only heuristic available and must still run.
+  if (call.receiver === 'super' && callerHasRealClassAncestor(callerName, relPath, lookup)) {
+    return [];
+  }
   if (
     call.receiver &&
     call.receiver !== 'this' &&
@@ -489,7 +540,15 @@ export function resolveCallTargets(
     // ClassName()` constructor invocation, which legitimately targets a
     // class-kind definition — kind-filtering it would break constructor-call
     // resolution (#1888).
-    const bareMatches = lookup.byNameAndFile(call.name, relPath);
+    // `super` inside a REAL class is excluded from the bare same-file lookup
+    // entirely (issue #2244) — see resolveByMethodOrGlobal's matching
+    // comment for why a coincidentally same-named same-file declaration
+    // must never satisfy it there, and for why that exclusion does NOT
+    // apply to a non-class caller (object-literal dynamic prototype linkage).
+    const bareMatches =
+      call.receiver === 'super' && callerHasRealClassAncestor(callerName, relPath, lookup)
+        ? []
+        : lookup.byNameAndFile(call.name, relPath);
     const kindFilteredBare = call.receiver
       ? bareMatches.filter((n) => CALLABLE_SYMBOL_KINDS.has(n.kind ?? ''))
       : bareMatches;
@@ -614,13 +673,19 @@ export function resolveCallTargets(
 export function resolveReceiverEdge(
   lookup: CallNodeLookup,
   call: { name: string; receiver: string },
-  caller: { id: number },
+  caller: { id: number; callerName?: string | null },
   relPath: string,
   typeMap: Map<string, unknown>,
   seenCallEdges: Set<string>,
   importedNames: ReadonlyMap<string, unknown>,
 ): { callerId: number; receiverId: number; confidence: number } | null {
-  const typeEntry = typeMap.get(call.receiver);
+  // Function-scoped key (`callerName::receiver`) checked before the bare key
+  // so a same-named local/parameter in a DIFFERENT function in this file
+  // can't shadow the entry seeded for the function actually making this call
+  // (#2235; mirrors resolveReceiverTypeName in resolver/strategy.ts).
+  const typeEntry =
+    (caller.callerName ? typeMap.get(`${caller.callerName}::${call.receiver}`) : undefined) ??
+    typeMap.get(call.receiver);
   const typeName = typeEntry
     ? typeof typeEntry === 'string'
       ? typeEntry

@@ -1058,9 +1058,19 @@ PR=$(cat .codegraph/fixer/current-pr 2>/dev/null)
 # across concurrent sessions and fails outright on re-run.
 TMP_STATE=$(mktemp "${TMPDIR:-/tmp}/fixer-state.XXXXXXXXXX")
 trap 'rm -f "$TMP_STATE"' EXIT
-jq --argjson issue "$ISSUE" --arg status "$STATUS" --argjson pr "$PR" \
+# Guarded explicitly (issue #2229): queue.json must never be shifted unless this
+# write actually succeeded — an unguarded `&&` chain here still fell through to
+# the queue-shift below on failure, silently losing the issue from both files.
+if ! jq --argjson issue "$ISSUE" --arg status "$STATUS" --argjson pr "$PR" \
   '.issues += [{issue: $issue, status: $status, pr: $pr}]' \
-  .codegraph/fixer/state.json > "$TMP_STATE" && mv "$TMP_STATE" .codegraph/fixer/state.json
+  .codegraph/fixer/state.json > "$TMP_STATE"; then
+  echo "ERROR: failed to build updated state.json for issue #$ISSUE — queue.json left untouched, so this issue will be retried rather than lost."
+  exit 1
+fi
+if ! mv "$TMP_STATE" .codegraph/fixer/state.json; then
+  echo "ERROR: failed to write state.json for issue #$ISSUE — queue.json left untouched, so this issue will be retried rather than lost."
+  exit 1
+fi
 trap - EXIT
 
 if [ "$STATUS" = "parked" ] && [ "$PR" != "null" ]; then
@@ -1070,7 +1080,17 @@ fi
 
 TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
 trap 'rm -f "$TMP_QUEUE"' EXIT
-jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE" && mv "$TMP_QUEUE" .codegraph/fixer/queue.json
+# Guarded the same way: if this fails after state.json already succeeded above,
+# queue.json[0] is still this (already-resolved) issue — exactly the case Phase 2's
+# own resume-detection note (above step 2a) already filters out on the next run.
+if ! jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE"; then
+  echo "ERROR: failed to build updated queue.json — issue #$ISSUE was already recorded as $STATUS in state.json. The next run's resume-detection will filter this already-resolved queue head."
+  exit 1
+fi
+if ! mv "$TMP_QUEUE" .codegraph/fixer/queue.json; then
+  echo "ERROR: failed to write queue.json — issue #$ISSUE was already recorded as $STATUS in state.json. The next run's resume-detection will filter this already-resolved queue head."
+  exit 1
+fi
 trap - EXIT
 rm -f .codegraph/fixer/current-pr .codegraph/fixer/gate-fail .codegraph/fixer/outcome .codegraph/fixer/round \
       .codegraph/fixer/stall-count .codegraph/fixer/gate-signature .codegraph/fixer/prev-gate-signature \

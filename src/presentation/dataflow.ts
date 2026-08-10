@@ -120,7 +120,7 @@ export function dataflow(
     results: DataflowResultEntry[];
   };
 
-  if (outputResult(data, 'results', opts)) return;
+  if (outputResult(data, 'results', opts, customDbPath)) return;
 
   if (data.warning) {
     console.log(`\u26A0  ${data.warning}`);
@@ -154,7 +154,7 @@ function dataflowImpact(
     offset: opts.offset,
   }) as { warning?: string; results: DataflowImpactEntry[] };
 
-  if (outputResult(data, 'results', opts)) return;
+  if (outputResult(data, 'results', opts, customDbPath)) return;
 
   if (data.warning) {
     console.log(`\u26A0  ${data.warning}`);

@@ -57,7 +57,7 @@ function runListEntryPoints(dbPath: string | undefined, opts: FlowOpts): void {
     limit: opts.limit,
     offset: opts.offset,
   }) as { count: number; byType: Record<string, EntryPoint[]> };
-  if (outputResult(data, 'entries', opts)) return;
+  if (outputResult(data, 'entries', opts, dbPath)) return;
   if (data.count === 0) {
     console.log('No entry points found. Run "codegraph build" first.');
     return;
@@ -132,7 +132,7 @@ export function flow(
   }
 
   const data = flowData(name, dbPath, opts) as unknown as FlowResult;
-  if (outputResult(data, 'steps', opts)) return;
+  if (outputResult(data, 'steps', opts, dbPath)) return;
 
   if (!data.entry) {
     console.log(`No matching entry point or function found for "${name}".`);

@@ -129,7 +129,7 @@ export function check(customDbPath: string | undefined, opts: CheckCliOpts = {})
     throw new AnalysisError(data.error);
   }
 
-  if (outputResult(data, null, opts)) {
+  if (outputResult(data, null, opts, customDbPath)) {
     if (!data.passed) process.exitCode = 1;
     return;
   }

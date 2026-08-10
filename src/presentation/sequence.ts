@@ -18,7 +18,7 @@ interface SequenceOpts {
 export function sequence(name: string, dbPath: string | undefined, opts: SequenceOpts = {}): void {
   const data = sequenceData(name, dbPath, opts) as any;
 
-  if (outputResult(data, 'messages', opts)) return;
+  if (outputResult(data, 'messages', opts, dbPath)) return;
 
   // Default: mermaid format
   if (!data.entry) {

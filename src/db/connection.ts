@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULTS, loadConfig } from '../infrastructure/config.js';
+import { CONFIG_FILES, DEFAULTS, loadConfig } from '../infrastructure/config.js';
 import { debug, warn } from '../infrastructure/logger.js';
 import { getNative, isNativeAvailable } from '../infrastructure/native.js';
 import { DbError, toErrorMessage } from '../shared/errors.js';
@@ -406,15 +406,58 @@ interface ResolvedDbSettings {
 }
 
 /**
+ * Walk up from `startDir` looking for a project config file (any name in
+ * CONFIG_FILES), stopping at `ceiling` (the git root) if one is given —
+ * but, unlike walkUpForDbPath's search for .codegraph/graph.db (an
+ * auto-generated build artifact, where walking past an unknown boundary
+ * risks attaching to a stale one from an unrelated ancestor), an explicit,
+ * user-authored .codegraphrc.json carries no such risk: a --db file nested
+ * under a non-git project's root legitimately expects config resolution to
+ * walk all the way up to the filesystem root to find it (issue #2224).
+ */
+function walkUpForConfigDir(startDir: string, ceiling: string | null): string | null {
+  let dir = startDir;
+  while (true) {
+    if (CONFIG_FILES.some((name) => fs.existsSync(path.join(dir, name)))) return dir;
+    if (ceiling && isSameDirectory(dir, ceiling)) return null;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
  * Derive the project rootDir from a possibly-custom DB path, for loadConfig().
- * Using findDbPath (not path.resolve(customDbPath)) ensures directory inputs like
- * --db /path/to/repo are normalised to .codegraph/graph.db before we strip two levels.
- * Convention: resolvedDbPath = <rootDir>/.codegraph/graph.db
+ *
+ * Using findDbPath (not path.resolve(customDbPath)) ensures directory inputs
+ * like --db /path/to/repo are normalized through the same resolution findDbPath
+ * itself uses elsewhere. Two cases:
+ *
+ * - Convention: resolvedDbPath is exactly <rootDir>/.codegraph/<anything> (the
+ *   layout `codegraph build` creates, or a bare directory input normalized to
+ *   it) — strip the two known levels.
+ * - Non-conventional: an explicit --db pointing at a real file that isn't
+ *   inside a .codegraph/ directory at all (issue #2224 — resolveCustomDbPath
+ *   returns such a file as-is, so the "strip two levels" assumption silently
+ *   derived the file's grandparent directory as rootDir, one level too high
+ *   whenever the file sits directly in the project root). Walk up looking
+ *   for a project config file first (the more authoritative signal of "this
+ *   is the codegraph project root," even for a project outside git), falling
+ *   back to the git root, and finally to the file's own directory rather
+ *   than giving up and returning undefined — which would silently re-derive
+ *   from process.cwd() right back into this same bug.
+ *
  * Shared by resolveDbSettings() and resolveBusyTimeoutMs() so rootDir derivation can't drift.
  */
 function deriveRootDirFromDbPath(customDbPath: string | undefined): string | undefined {
   const resolvedDbPath = customDbPath ? findDbPath(customDbPath) : undefined;
-  return resolvedDbPath ? path.dirname(path.dirname(resolvedDbPath)) : undefined;
+  if (!resolvedDbPath) return undefined;
+  const dir = path.dirname(resolvedDbPath);
+  if (path.basename(dir) === '.codegraph') return path.dirname(dir);
+
+  const startDir = resolveDbSearchStartDir(dir);
+  const ceiling = resolveDbSearchCeiling(findRepoRoot(startDir));
+  return walkUpForConfigDir(startDir, ceiling) ?? findRepoRoot(startDir) ?? dir;
 }
 
 /**

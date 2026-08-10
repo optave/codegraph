@@ -1,4 +1,4 @@
-import { loadConfig } from '../infrastructure/config.js';
+import { resolveDbConfig } from '../db/index.js';
 import type { PaginationMeta } from '../shared/paginate.js';
 import { formatTable, truncEnd } from './table.js';
 
@@ -132,7 +132,12 @@ export interface OutputOpts {
   display?: DisplayOpts;
 }
 
-export function outputResult(data: object, field: string | null, opts: OutputOpts): boolean {
+export function outputResult(
+  data: object,
+  field: string | null,
+  opts: OutputOpts,
+  customDbPath?: string,
+): boolean {
   // The formatting helpers below need key/index access (NDJSON field pluck, CSV/table
   // flattening). Callers only ever hand off a concrete result shape for serialization,
   // so the cast lives here once instead of as a defensive `as unknown as Record<...>`
@@ -155,7 +160,10 @@ export function outputResult(data: object, field: string | null, opts: OutputOpt
     return printCsv(record, field) !== false;
   }
   if (opts.table) {
-    const displayOpts = opts.display ?? (loadConfig() as { display: DisplayOpts }).display;
+    // Resolves rootDir from customDbPath rather than process.cwd() — a
+    // caller invoked from an arbitrary working directory must still pick up
+    // that repo's own display config (issue #2222).
+    const displayOpts = opts.display ?? resolveDbConfig(customDbPath).display;
     return printAutoTable(record, field, displayOpts) !== false;
   }
   return false;

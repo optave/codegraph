@@ -11,8 +11,7 @@ const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../../package.json') as { version: string };
 
 import { getDatabase } from '../db/better-sqlite3.js';
-import { findDbPath } from '../db/index.js';
-import { loadConfig } from '../infrastructure/config.js';
+import { findDbPath, resolveDbConfig } from '../db/index.js';
 import { debug } from '../infrastructure/logger.js';
 import { CodegraphError, ConfigError, toErrorMessage } from '../shared/errors.js';
 import { MCP_MAX_LIMIT } from '../shared/paginate.js';
@@ -204,8 +203,10 @@ export async function startMCPServer(
   const { allowedRepos } = options;
   const multiRepo = options.multiRepo || !!allowedRepos;
 
-  // Apply config-based MCP page-size overrides
-  const config = options.config || loadConfig();
+  // Apply config-based MCP page-size overrides. Resolves rootDir from the
+  // (possibly custom) db path rather than process.cwd() — the MCP server
+  // may be invoked from an arbitrary working directory (issue #2222).
+  const config = options.config || resolveDbConfig(customDbPath);
   initMcpDefaults(config.mcp?.defaults ? { ...config.mcp.defaults } : undefined);
   const disabledTools = [...(config.mcp?.disabledTools ?? [])];
   const enabledTools = buildToolList(multiRepo, disabledTools);

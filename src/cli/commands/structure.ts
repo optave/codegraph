@@ -32,7 +32,7 @@ export const command: CommandDefinition = {
       const data = moduleBoundariesData(opts.db, {
         threshold: parsed,
       });
-      if (!ctx.outputResult(data, 'modules', opts)) {
+      if (!ctx.outputResult(data, 'modules', opts, opts.db)) {
         console.log(formatModuleBoundaries(data));
       }
       return;
@@ -48,7 +48,7 @@ export const command: CommandDefinition = {
       limit: qOpts.limit,
       offset: qOpts.offset,
     });
-    if (!ctx.outputResult(data, 'directories', opts)) {
+    if (!ctx.outputResult(data, 'directories', opts, opts.db)) {
       console.log(formatStructure(data));
     }
   },
