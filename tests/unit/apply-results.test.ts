@@ -19,9 +19,14 @@ import {
 import type { Definition, TreeSitterNode, WalkResults } from '../../src/types.js';
 
 /** Minimal fake tree-sitter node satisfying only what the merge functions read. */
-function fakeFuncNode(row: number, name: string | null, text = 'function f() {}'): TreeSitterNode {
+function fakeFuncNode(
+  row: number,
+  name: string | null,
+  text = 'function f() {}',
+  column = 0,
+): TreeSitterNode {
   return {
-    startPosition: { row, column: 0 },
+    startPosition: { row, column },
     text,
     childForFieldName: (field: string) => (field === 'name' && name ? { text: name } : null),
   } as unknown as TreeSitterNode;
@@ -85,6 +90,41 @@ describe('indexByLine / matchResultToDef', () => {
 
   it('returns undefined when there are no candidates at all', () => {
     expect(matchResultToDef(undefined, 'a')).toBeUndefined();
+  });
+
+  describe('column disambiguation (#2265)', () => {
+    // Anonymous functions (arrow functions, most function expressions) have
+    // no `name` field at all, so the name-based fallback can never
+    // disambiguate them — these regression-guard the column-based tier that
+    // now runs before it.
+    it('prefers an exact column match over the name fallback for two anonymous candidates sharing a line', () => {
+      const results = [
+        { funcNode: fakeFuncNode(2, null, 'x => x', 10) },
+        { funcNode: fakeFuncNode(2, null, 'y => y', 40) },
+      ];
+      const byLine = indexByLine(results);
+      expect(matchResultToDef(byLine.get(3), 'b', 40)).toBe(results[1]);
+      expect(matchResultToDef(byLine.get(3), 'b', 10)).toBe(results[0]);
+    });
+
+    it('falls back to the name/first-candidate tiers when defColumn is not provided', () => {
+      const results = [
+        { funcNode: fakeFuncNode(2, null, 'x => x', 10) },
+        { funcNode: fakeFuncNode(2, null, 'y => y', 40) },
+      ];
+      const byLine = indexByLine(results);
+      expect(matchResultToDef(byLine.get(3), 'nonexistent')).toBe(results[0]);
+    });
+
+    it('falls back to the name/first-candidate tiers when no candidate column matches', () => {
+      const results = [
+        { funcNode: fakeFuncNode(2, 'named', 'function named() {}', 10) },
+        { funcNode: fakeFuncNode(2, null, 'y => y', 40) },
+      ];
+      const byLine = indexByLine(results);
+      // defColumn (99) matches nothing — falls through to the name match.
+      expect(matchResultToDef(byLine.get(3), 'named', 99)).toBe(results[0]);
+    });
   });
 });
 

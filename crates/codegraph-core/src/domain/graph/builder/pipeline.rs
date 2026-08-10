@@ -2243,6 +2243,7 @@ fn build_and_insert_call_edges(
             array_callback_bindings: non_empty(&symbols.array_callback_bindings),
             object_rest_param_bindings: non_empty(&symbols.object_rest_param_bindings),
             object_prop_bindings: non_empty(&symbols.object_prop_bindings),
+            computed_dispatch_table_evidence: non_empty(&symbols.computed_dispatch_table_evidence),
         });
     }
 

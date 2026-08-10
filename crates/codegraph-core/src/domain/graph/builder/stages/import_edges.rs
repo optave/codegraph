@@ -295,6 +295,16 @@ pub fn persist_reexport_renames(
 /// has a durable, whole-graph view to query instead of only the file it is
 /// currently rebuilding — see #2087 for the false-negative this closes.
 ///
+/// Excludes `dynamic_kind: "value-ref"` calls (issue #2260), mirroring
+/// `collect_invoked_property_names`'s own exclusion in `build_edges.rs` — a
+/// value-ref call's `receiver` names its own dispatch table, not a genuine
+/// member-call-syntax invocation, so counting it here would let a
+/// value-ref's own persisted evidence satisfy its own liveness gate on a
+/// later build pass. This function has its own inline scan (rather than
+/// calling `collect_invoked_property_names`) because it iterates one file's
+/// calls at a time for per-file delete+reinsert, so the exclusion is
+/// duplicated here rather than shared — keep both in sync.
+///
 /// Deletes and re-inserts per file so a file whose invoked names changed (or
 /// were removed entirely) never leaves stale rows behind for it.
 pub fn persist_invoked_property_names(
@@ -320,7 +330,10 @@ pub fn persist_invoked_property_names(
                 .map_err(|e| e.to_string())?;
             let mut seen: HashSet<&str> = HashSet::new();
             for call in &file.calls {
-                if call.receiver.is_some() && seen.insert(call.name.as_str()) {
+                if call.receiver.is_some()
+                    && call.dynamic_kind.as_deref() != Some("value-ref")
+                    && seen.insert(call.name.as_str())
+                {
                     insert_stmt
                         .execute(rusqlite::params![file.file, call.name])
                         .map_err(|e| e.to_string())?;
@@ -975,6 +988,7 @@ mod tests {
             array_callback_bindings: vec![],
             object_rest_param_bindings: vec![],
             object_prop_bindings: vec![],
+            computed_dispatch_table_evidence: vec![],
         }
     }
 

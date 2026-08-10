@@ -17,6 +17,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CallNodeLookup } from '../../src/domain/graph/builder/call-resolver.js';
 import {
+  findCaller,
   resolveByMethodOrGlobal,
   resolveCallTargets,
   resolveDefinePropertyAccessorTarget,
@@ -1249,5 +1250,79 @@ describe('resolveCallTargets — accessor-read de-aliasing and import scoping (#
       null,
     );
     expect(targets).toEqual([]);
+  });
+});
+
+describe('findCaller — synthetic framework-entry placeholder gets a real-class resolution hint (#2259, #2444)', () => {
+  function makeCallerLookup(): CallNodeLookup {
+    return {
+      byName() {
+        return [];
+      },
+      byNameAndFile() {
+        return [];
+      },
+      isBarrel() {
+        return false;
+      },
+      resolveBarrel() {
+        return null;
+      },
+      nodeId(name) {
+        return name === 'WasmWorkerPool.ensureWorker' ? { id: 1 } : { id: 2 };
+      },
+      hasEnclosingCallable() {
+        return false;
+      },
+    };
+  }
+
+  it('still attributes the call to the synthetic event: placeholder (not the enclosing method), preserving flow/sequence traversal', () => {
+    // Greptile review, PR #2444: an earlier version of this fix made the
+    // enclosing REAL method the caller whenever it was narrower-spanned
+    // than the synthetic placeholder — but that disconnects the synthetic
+    // entry node from its own callback behavior, breaking flow/sequence
+    // traversal starting from that entry point. The synthetic placeholder
+    // must remain the attributed caller unconditionally.
+    const lookup = makeCallerLookup();
+    const definitions = [
+      { name: 'WasmWorkerPool.ensureWorker', kind: 'method', line: 5, endLine: 9 },
+      { name: 'event:message', kind: 'function', line: 8, endLine: 8 },
+    ];
+    const result = findCaller(lookup, { line: 8 }, definitions, 'pool.ts', { id: 99 });
+    expect(result.callerName).toBe('event:message');
+  });
+
+  it("supplies the nearest enclosing real method's class as a resolution-only hint when the caller is a synthetic placeholder", () => {
+    // `event:message` has no class context of its own, so a `this.onMessage()`
+    // call inside it could never resolve without this hint — even though
+    // the edge itself still sources from `event:message` (see above).
+    const lookup = makeCallerLookup();
+    const definitions = [
+      { name: 'WasmWorkerPool.ensureWorker', kind: 'method', line: 5, endLine: 9 },
+      { name: 'event:message', kind: 'function', line: 8, endLine: 8 },
+    ];
+    const result = findCaller(lookup, { line: 8 }, definitions, 'pool.ts', { id: 99 });
+    expect(result.enclosingClassHint).toBe('WasmWorkerPool');
+  });
+
+  it('does not supply a hint when the caller is a REAL method (already has its own class context)', () => {
+    const lookup = makeCallerLookup();
+    const definitions = [
+      { name: 'WasmWorkerPool.ensureWorker', kind: 'method', line: 5, endLine: 9 },
+    ];
+    const result = findCaller(lookup, { line: 6 }, definitions, 'pool.ts', { id: 99 });
+    expect(result.callerName).toBe('WasmWorkerPool.ensureWorker');
+    expect(result.enclosingClassHint).toBeFalsy();
+  });
+
+  it('does not supply a hint when the synthetic placeholder has no enclosing real method (module-scope registration)', () => {
+    // The common case: a route/event/command registered directly at module
+    // scope, with no enclosing real method to derive a class from.
+    const lookup = makeCallerLookup();
+    const definitions = [{ name: 'event:message', kind: 'function', line: 3, endLine: 3 }];
+    const result = findCaller(lookup, { line: 3 }, definitions, 'pool.ts', { id: 99 });
+    expect(result.callerName).toBe('event:message');
+    expect(result.enclosingClassHint).toBeFalsy();
   });
 });

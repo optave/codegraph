@@ -89,10 +89,12 @@ pub fn analyze_complexity_standalone(
             let metrics = compute_all_metrics(&node, source_bytes, lang_id)?;
             let name = function_name(&node, source_bytes);
             let line = node.start_position().row as u32 + 1;
+            let column = Some(node.start_position().column as u32);
             let end_line = Some(node.end_position().row as u32 + 1);
             Some(FunctionComplexityResult {
                 name,
                 line,
+                column,
                 end_line,
                 complexity: metrics,
             })
@@ -132,10 +134,12 @@ pub fn build_cfg_standalone(
             let cfg = build_function_cfg(&node, lang_id, source_bytes)?;
             let name = function_name(&node, source_bytes);
             let line = node.start_position().row as u32 + 1;
+            let column = Some(node.start_position().column as u32);
             let end_line = Some(node.end_position().row as u32 + 1);
             Some(FunctionCfgResult {
                 name,
                 line,
+                column,
                 end_line,
                 cfg,
             })
@@ -152,4 +156,39 @@ pub fn extract_dataflow_standalone(
 ) -> Option<DataflowResult> {
     let (tree, lang) = parse_source(source, file_path, lang_id)?;
     extract_dataflow(&tree, source.as_bytes(), lang.lang_id_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #2265: `matchNativeResult` (JS side, engine.ts) needs each
+    /// standalone result's own column to disambiguate two anonymous
+    /// functions that share a line — confirms the native standalone
+    /// analysis functions actually populate it.
+    #[test]
+    fn analyze_complexity_standalone_populates_column() {
+        let results = analyze_complexity_standalone(
+            "const a = (x) => x, b = (x) => x;",
+            "test.js",
+            Some("javascript"),
+        );
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].column, Some(10));
+        assert_eq!(results[1].column, Some(24));
+        assert_ne!(results[0].column, results[1].column);
+    }
+
+    #[test]
+    fn build_cfg_standalone_populates_column() {
+        let results = build_cfg_standalone(
+            "function outer() { if (true) {} }\nconst a = (x) => x, b = (x) => x;",
+            "test.js",
+            Some("javascript"),
+        );
+        let a = results.iter().find(|r| r.line == 2 && r.column == Some(10));
+        let b = results.iter().find(|r| r.line == 2 && r.column == Some(24));
+        assert!(a.is_some(), "expected a result at line 2, column 10");
+        assert!(b.is_some(), "expected a result at line 2, column 25");
+    }
 }
