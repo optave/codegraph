@@ -76,6 +76,18 @@ fn is_main_guard_condition(condition: Option<Node>, source: &[u8]) -> bool {
 /// enclosing guard carries into it. A `__main__.py` therefore starts guarded at
 /// the root, and a guard's *consequence* turns it on anywhere it appears — but
 /// not the guard's `else:` branch, which is the imported-as-a-module path.
+///
+/// `at_module_level` tracks a second, independent thing: whether we have
+/// crossed *any* function/class boundary at all since the root, regardless of
+/// guard status, and — unlike `guarded` — never turns back on once it's off.
+/// A guard is only recognized while this holds. Without it, a guard
+/// syntactically nested inside a function or class (never executed by the
+/// runtime — only when/if that function is later called) would still flip
+/// `guarded` on for its consequence, because at the point the guard is seen,
+/// `guarded` itself is `false` either way — the guard sets it, it doesn't
+/// read it — so the two situations ("truly at module level" vs. "nested
+/// inside a def, coincidentally `false` too") are indistinguishable without
+/// this separate flag (review finding on #2411).
 fn collect_entrypoint_call_lines(
     root: &Node,
     source: &[u8],
@@ -87,6 +99,7 @@ fn collect_entrypoint_call_lines(
         source,
         0,
         file_path.ends_with("__main__.py"),
+        true,
         &mut lines,
     );
     lines
@@ -97,6 +110,7 @@ fn visit_entrypoint_calls(
     source: &[u8],
     depth: usize,
     guarded: bool,
+    at_module_level: bool,
     lines: &mut std::collections::HashSet<u32>,
 ) {
     if depth >= MAX_WALK_DEPTH {
@@ -109,7 +123,9 @@ fn visit_entrypoint_calls(
     let leaves_runtime_scope =
         node.kind() == "function_definition" || node.kind() == "class_definition";
     let child_guarded = if leaves_runtime_scope { false } else { guarded };
-    let guard_consequence = if node.kind() == "if_statement"
+    let child_at_module_level = at_module_level && !leaves_runtime_scope;
+    let guard_consequence = if at_module_level
+        && node.kind() == "if_statement"
         && is_main_guard_condition(node.child_by_field_name("condition"), source)
     {
         node.child_by_field_name("consequence")
@@ -127,6 +143,7 @@ fn visit_entrypoint_calls(
             source,
             depth + 1,
             if is_guard_body { true } else { child_guarded },
+            child_at_module_level,
             lines,
         );
     }
@@ -806,9 +823,31 @@ mod tests {
         let src = "def outer():\n    return inner()\n\ndef inner():\n    return 1\n\nouter()\n";
         let symbols = parse_py_as(src, "pkg/__main__.py");
         let inner = symbols.calls.iter().find(|c| c.name == "inner").unwrap();
-        assert_eq!(inner.entrypoint, None, "invoked by outer(), not by the runtime");
+        assert_eq!(
+            inner.entrypoint, None,
+            "invoked by outer(), not by the runtime"
+        );
         let outer = symbols.calls.iter().find(|c| c.name == "outer").unwrap();
         assert_eq!(outer.entrypoint, Some(true));
+    }
+
+    #[test]
+    fn does_not_mark_a_guard_nested_inside_a_function() {
+        // Review finding on #2411: a `__main__` guard syntactically nested
+        // inside a function is only run if and when that function is called
+        // — never automatically by the runtime — so it must not be treated
+        // as module level just because `guarded` also happens to read
+        // `false` at that point for the ordinary "inside a def" reason.
+        let s = parse_py("def maybe_run():\n    if __name__ == \"__main__\":\n        do_it()\n");
+        let call = s.calls.iter().find(|c| c.name == "do_it").unwrap();
+        assert_eq!(call.entrypoint, None);
+    }
+
+    #[test]
+    fn does_not_mark_a_guard_nested_inside_a_class() {
+        let s = parse_py("class Config:\n    if __name__ == \"__main__\":\n        do_it()\n");
+        let call = s.calls.iter().find(|c| c.name == "do_it").unwrap();
+        assert_eq!(call.entrypoint, None);
     }
 
     #[test]
