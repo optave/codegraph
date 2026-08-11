@@ -237,15 +237,15 @@ const EXPORT_DECL_KIND: Record<string, string> = {
  * matching Definitions, and push one 'constant' Export per bound name.
  * Restricted to `const` for the same reason the Definition side is (#2070).
  */
-function collectExportedDeclarations(
-  decl: TreeSitterNode,
-  exportLine: number,
-  exps: Export[],
-): void {
+function collectExportedDeclarations(decl: TreeSitterNode, exps: Export[]): void {
   const kind = EXPORT_DECL_KIND[decl.type];
   if (kind) {
     const n = decl.childForFieldName('name');
-    if (n) exps.push({ name: n.text, kind: kind as Export['kind'], line: exportLine });
+    // `decl` IS the function/class/interface/type declaration node itself
+    // here — the same node its own Definition is built from — so this is
+    // never a proxy for some OTHER node's line the way the branches below
+    // are (issue #2293).
+    if (n) exps.push({ name: n.text, kind: kind as Export['kind'], line: nodeStartLine(decl) });
     return;
   }
   if (decl.type !== 'lexical_declaration' && decl.type !== 'variable_declaration') return;
@@ -264,17 +264,29 @@ function collectExportedDeclarations(
         valType === 'function' ||
         valType === 'generator_function'
       ) {
-        exps.push({ name: nameN.text, kind: 'function', line: exportLine });
+        // Matches handleVarFnAssignment/handleVarFnCapture's own Definition
+        // line (the function VALUE's start, not the declaration's — #2265),
+        // not `decl`'s line, which can differ when the value starts on a
+        // later line than `const`/`let` itself (issue #2293).
+        exps.push({ name: nameN.text, kind: 'function', line: nodeStartLine(valueN) });
       } else if (isConst) {
-        exps.push({ name: nameN.text, kind: 'constant', line: exportLine });
+        // Matches handleConstIdentifierAssignment's own Definition line
+        // (`decl`'s start — the whole `const x = ...;` statement), not the
+        // wrapping `export_statement`'s line, which can differ when `export`
+        // and the declaration are on different lines (issue #2293).
+        exps.push({ name: nameN.text, kind: 'constant', line: nodeStartLine(decl) });
       }
     } else if (isConst && nameN.type === 'object_pattern') {
+      // Matches handleConstObjectPatternAssignment's own Definition line
+      // (`decl`'s start), for the same reason as the plain-identifier
+      // branch above.
       for (const name of collectObjectPatternNames(nameN)) {
-        exps.push({ name, kind: 'constant', line: exportLine });
+        exps.push({ name, kind: 'constant', line: nodeStartLine(decl) });
       }
     } else if (isConst && nameN.type === 'array_pattern') {
+      // Matches handleConstArrayPatternAssignment's own Definition line.
       for (const name of collectArrayPatternNames(nameN)) {
-        exps.push({ name, kind: 'constant', line: exportLine });
+        exps.push({ name, kind: 'constant', line: nodeStartLine(decl) });
       }
     }
   }
@@ -286,9 +298,11 @@ function handleExportCapture(
   exps: Export[],
   imports: Import[],
 ): void {
-  const exportLine = nodeStartLine(c.exp_node!);
   const decl = c.exp_node!.childForFieldName('declaration');
-  if (decl) collectExportedDeclarations(decl, exportLine, exps);
+  if (decl) collectExportedDeclarations(decl, exps);
+  // Only used for the re-export (no `decl`) branch below — there's no
+  // declaration node to match a Definition's line against in that case.
+  const exportLine = nodeStartLine(c.exp_node!);
   const source = c.exp_node!.childForFieldName('source') || findChild(c.exp_node!, 'string');
   if (source && !decl) {
     const modPath = source.text.replace(/['"]/g, '');
@@ -2391,9 +2405,11 @@ function handleImportStmt(node: TreeSitterNode, ctx: ExtractorOutput): void {
 }
 
 function handleExportStmt(node: TreeSitterNode, ctx: ExtractorOutput): void {
-  const exportLine = nodeStartLine(node);
   const decl = node.childForFieldName('declaration');
-  if (decl) collectExportedDeclarations(decl, exportLine, ctx.exports);
+  if (decl) collectExportedDeclarations(decl, ctx.exports);
+  // Only used for the re-export (no `decl`) branch below — there's no
+  // declaration node to match a Definition's line against in that case.
+  const exportLine = nodeStartLine(node);
   const source = node.childForFieldName('source') || findChild(node, 'string');
   if (source && !decl) {
     const modPath = source.text.replace(/['"]/g, '');

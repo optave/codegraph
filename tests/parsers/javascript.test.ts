@@ -3835,6 +3835,50 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('export line matches the declaration, not the `export` keyword (#2293)', () => {
+    // Regression guard for #2293: collectExportedDeclarations computed a single
+    // `exportLine` from the wrapping `export_statement` node and applied it to
+    // every branch, so any export whose declaration didn't start on the same
+    // line as the `export` keyword got the WRONG line — mismatching the line
+    // its own Definition was recorded under, so the exported=1 UPDATE (which
+    // matches by name/kind/file/line) silently never fired.
+    // Note: a bare `export\nconst x = 5;` (the issue's own illustrative
+    // repro) doesn't actually reach this code at all — tree-sitter-javascript
+    // fails to recognize a newline-separated bare `export` followed by a
+    // declaration keyword as a single `export_statement` in the first place
+    // (confirmed by dumping the parse tree; filed separately as #2459, since
+    // it's an upstream grammar limitation, not a line-computation bug). The
+    // repros below use `export default`/`export abstract`, which the grammar
+    // *does* parse as one `export_statement` spanning multiple lines,
+    // to exercise the actual line-computation fix.
+    it("uses the function value's own line for a multi-binding exported const, not the declaration's", () => {
+      // Mirrors #2265: `export const a = fn1, b = fn2;` — each function-valued
+      // declarator's export line must match its own Definition's line (the
+      // value node's line), not a shared line derived from the statement.
+      const symbols = parseJS(`export const first = () => 1,\n  second = () => 2;`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'first', kind: 'function', line: 1 }),
+      );
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'second', kind: 'function', line: 2 }),
+      );
+    });
+
+    it('uses the declaration line, not the export keyword line, for a default-exported class', () => {
+      const symbols = parseJS(`export default\nclass Widget {}`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'Widget', kind: 'class', line: 2 }),
+      );
+    });
+
+    it('uses the declaration line, not the export keyword line, for a default-exported function', () => {
+      const symbols = parseJS(`export default\nfunction greet() {}`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'greet', kind: 'function', line: 2 }),
+      );
+    });
+  });
+
   describe('top-level const with a non-"literal-shaped" initializer (#1819)', () => {
     it('extracts a const with a parenthesized member-expression initializer as a definition (repro)', () => {
       // Repro from #1819: `(...).version` isn't one of the recognized "literal"

@@ -3003,7 +3003,7 @@ fn handle_import_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 fn handle_export_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let decl = node.child_by_field_name("declaration");
     if let Some(decl) = &decl {
-        handle_export_declaration(node, decl, source, symbols);
+        handle_export_declaration(decl, source, symbols);
     }
     let source_node = node
         .child_by_field_name("source")
@@ -3013,14 +3013,14 @@ fn handle_export_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     }
 }
 
-fn handle_export_declaration(node: &Node, decl: &Node, source: &[u8], symbols: &mut FileSymbols) {
+fn handle_export_declaration(decl: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let (kind_str, field) = match decl.kind() {
         "function_declaration" | "generator_function_declaration" => ("function", "name"),
         "class_declaration" | "abstract_class_declaration" => ("class", "name"),
         "interface_declaration" => ("interface", "name"),
         "type_alias_declaration" => ("type", "name"),
         "lexical_declaration" | "variable_declaration" => {
-            collect_exported_var_declarations(node, decl, source, symbols);
+            collect_exported_var_declarations(decl, source, symbols);
             return;
         }
         _ => return,
@@ -3029,7 +3029,11 @@ fn handle_export_declaration(node: &Node, decl: &Node, source: &[u8], symbols: &
         symbols.exports.push(ExportInfo {
             name: node_text(&n, source).to_string(),
             kind: kind_str.to_string(),
-            line: start_line(node),
+            // #2293: the declaration's own line, not the wrapping
+            // `export_statement`'s — a leading-comment or multi-line export
+            // clause otherwise pushed every export onto the `export` keyword's
+            // line instead of the declared symbol's own line.
+            line: start_line(decl),
         });
     }
 }
@@ -3056,17 +3060,11 @@ fn handle_export_declaration(node: &Node, decl: &Node, source: &[u8], symbols: &
 /// uses to build the matching Definitions, and push one "constant" ExportInfo
 /// per bound name. Restricted to `const` for the same reason the Definition
 /// side is (#2070).
-fn collect_exported_var_declarations(
-    node: &Node,
-    decl: &Node,
-    source: &[u8],
-    symbols: &mut FileSymbols,
-) {
+fn collect_exported_var_declarations(decl: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let is_const = decl
         .child(0)
         .map(|c| node_text(&c, source) == "const")
         .unwrap_or(false);
-    let line = start_line(node);
     for i in 0..decl.child_count() {
         let Some(declarator) = decl.child(i) else {
             continue;
@@ -3090,13 +3088,16 @@ fn collect_exported_var_declarations(
                     symbols.exports.push(ExportInfo {
                         name: node_text(&name_n, source).to_string(),
                         kind: "function".to_string(),
-                        line,
+                        // #2293: matches handle_var_decl's own Definition line
+                        // for this shape (#2265) — the function VALUE's start
+                        // line, not the declaration's.
+                        line: start_line(&value_n),
                     });
                 } else if is_const {
                     symbols.exports.push(ExportInfo {
                         name: node_text(&name_n, source).to_string(),
                         kind: "constant".to_string(),
-                        line,
+                        line: start_line(decl),
                     });
                 }
             }
@@ -3105,7 +3106,7 @@ fn collect_exported_var_declarations(
                     symbols.exports.push(ExportInfo {
                         name,
                         kind: "constant".to_string(),
-                        line,
+                        line: start_line(decl),
                     });
                 }
             }
@@ -3114,7 +3115,7 @@ fn collect_exported_var_declarations(
                     symbols.exports.push(ExportInfo {
                         name,
                         kind: "constant".to_string(),
-                        line,
+                        line: start_line(decl),
                     });
                 }
             }
@@ -9852,6 +9853,62 @@ mod tests {
                 s.exports
             );
         }
+    }
+
+    #[test]
+    fn export_line_uses_value_line_for_multi_binding_function_valued_const() {
+        // #2293: each function-valued declarator's export line must match its
+        // own Definition's line (the value node's line, per #2265), not a
+        // single line shared across every declarator in the statement.
+        let s = parse_js("export const first = () => 1,\n  second = () => 2;");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "first" && e.kind == "function" && e.line == 1),
+            "expected 'first' exported as function at line 1; got: {:?}",
+            s.exports
+        );
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "second" && e.kind == "function" && e.line == 2),
+            "expected 'second' exported as function at line 2; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn export_line_uses_declaration_line_not_export_keyword_line_for_default_class() {
+        // #2293: collect_exported_var_declarations / handle_export_declaration
+        // used to compute a single line from the wrapping `export_statement`
+        // node, mismatching the Definition's own line whenever `export` and
+        // the declaration weren't on the same source line — silently
+        // dropping the exported=1 UPDATE (matched by name/kind/file/line).
+        // A bare `export\nclass Widget {}` isn't a valid repro here: the
+        // grammar doesn't parse a newline-separated bare `export` followed by
+        // a declaration keyword as one `export_statement` at all (filed
+        // separately as #2459) — `export default` is parsed correctly across
+        // a newline, so it's used here to exercise the line fix itself.
+        let s = parse_js("export default\nclass Widget {}");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "Widget" && e.kind == "class" && e.line == 2),
+            "expected 'Widget' exported as class at line 2; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn export_line_uses_declaration_line_not_export_keyword_line_for_default_function() {
+        let s = parse_js("export default\nfunction greet() {}");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "greet" && e.kind == "function" && e.line == 2),
+            "expected 'greet' exported as function at line 2; got: {:?}",
+            s.exports
+        );
     }
 
     #[test]
