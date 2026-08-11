@@ -34,28 +34,30 @@ interface CfgFuncResult {
 
 /**
  * Check if a definition has a real function body (not a signature-only
- * declaration). Relies on `bodyless`, a direct signal the extractor sets
- * from the AST node's body field — not on name shape. A dotted name alone
- * (`Class.method`) does not imply "no body": that's the normal qualified
- * name for class/struct/impl methods and module-table functions (Lua's
- * `M.foo`, Go/Java/C#/PHP/Rust receiver or impl methods) in every extractor,
- * so filtering on it excluded real, bodied functions and could make an
- * entire file's `defs.some(...)` gate false when every function in it
- * happened to have a dotted name (issue #1922).
+ * declaration). Relies solely on `bodyless`, a direct signal the extractor
+ * sets from the AST node's body field — not on name shape, and not on line
+ * span:
+ * - A dotted name alone (`Class.method`) does not imply "no body": that's
+ *   the normal qualified name for class/struct/impl methods and
+ *   module-table functions (Lua's `M.foo`, Go/Java/C#/PHP/Rust receiver or
+ *   impl methods) in every extractor, so filtering on it excluded real,
+ *   bodied functions and could make an entire file's `defs.some(...)` gate
+ *   false when every function in it happened to have a dotted name
+ *   (issue #1922).
+ * - `endLine > line` (removed) was a proxy for "has a body" from before
+ *   `bodyless` existed as a reliable direct signal from every extractor.
+ *   It wrongly excluded a genuinely bodied single-line function/method — a
+ *   getter, a guard return, a C# expression-bodied member `=> expr;` — at
+ *   every "does this file/definition need a pass" call site that used it,
+ *   from the per-definition merge below up through the file-level
+ *   WASM/native gating in `ast-analysis/engine.ts`, `features/complexity.ts`,
+ *   `features/cfg.ts`, and `domain/wasm-worker-entry.ts` (issue #2285): a
+ *   file where every function happens to be single-line got zero
+ *   complexity/CFG data at all, since the gate never fired for the whole
+ *   file.
  */
-export function hasFuncBody(d: {
-  kind: string;
-  line: number;
-  endLine?: number | null;
-  bodyless?: boolean;
-}): boolean {
-  return (
-    (d.kind === 'function' || d.kind === 'method') &&
-    d.line > 0 &&
-    d.endLine != null &&
-    d.endLine > d.line &&
-    !d.bodyless
-  );
+export function hasFuncBody(d: { kind: string; line: number; bodyless?: boolean }): boolean {
+  return (d.kind === 'function' || d.kind === 'method') && d.line > 0 && !d.bodyless;
 }
 
 /** Index per-function results by start line for O(1) lookup. */
@@ -108,14 +110,6 @@ export function matchResultToDef<T extends { funcNode: TreeSitterNode }>(
 
 /**
  * Merge visitor-walk complexity results onto `defs`, matched by line + name.
- *
- * Deliberately checks `def.bodyless !== true` directly rather than calling
- * `hasFuncBody()`: that helper also requires `endLine > line`, which is a
- * fine coarse signal for "does this FILE contain anything worth a WASM
- * fallback pass" (its other call sites), but wrongly excludes a genuinely
- * bodied single-line function/method (`endLine === line`) from having an
- * already-computed visitor result attached — losing real data rather than
- * skipping a bodyless stub.
  */
 export function storeComplexityResults(
   results: WalkResults,
@@ -124,12 +118,7 @@ export function storeComplexityResults(
 ): void {
   const byLine = indexByLine((results.complexity || []) as ComplexityFuncResult[]);
   for (const def of defs) {
-    if (
-      (def.kind === 'function' || def.kind === 'method') &&
-      def.line &&
-      !def.complexity &&
-      def.bodyless !== true
-    ) {
+    if (hasFuncBody(def) && !def.complexity) {
       const funcResult = matchResultToDef(byLine.get(def.line), def.name, def.column);
       if (!funcResult) continue;
       const { metrics } = funcResult;
@@ -161,19 +150,11 @@ export function storeComplexityResults(
  * metric for any function using `&&`/`||`/`??`/`?.` or containing a closure
  * (issue #1743) — CFG blocks/edges are stored here purely for CFG
  * queries/visualization (`codegraph cfg`), not as a complexity source.
- *
- * Uses `def.bodyless !== true` directly rather than `hasFuncBody()` for the
- * same reason `storeComplexityResults` does, above.
  */
 export function storeCfgResults(results: WalkResults, defs: Definition[]): void {
   const byLine = indexByLine((results.cfg || []) as CfgFuncResult[]);
   for (const def of defs) {
-    if (
-      (def.kind === 'function' || def.kind === 'method') &&
-      def.line &&
-      !def.cfg?.blocks?.length &&
-      def.bodyless !== true
-    ) {
+    if (hasFuncBody(def) && !def.cfg?.blocks?.length) {
       const cfgResult = matchResultToDef(byLine.get(def.line), def.name, def.column);
       if (!cfgResult) continue;
       def.cfg = { blocks: cfgResult.blocks, edges: cfgResult.edges };
