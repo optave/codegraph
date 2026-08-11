@@ -1092,6 +1092,20 @@ if [ -z "$ISSUE" ] || [ "$ISSUE" = "null" ]; then
   echo "ERROR: queue is empty — nothing to record. The loop should have exited already."
   exit 1
 fi
+# Defend against a moved queue head (issue #2304): if some other writer shifted
+# queue.json past this issue while 2a-2g was still running for it, queue.json[0]
+# is no longer this issue — it's whatever comes next. Recording under that wrong
+# number would silently mark an untouched issue as done and drop it from the
+# queue. dispatching-issue was captured before this issue was ever dispatched
+# (see "Dispatching each issue to a sub-agent" above) and must still agree.
+if [ -f .codegraph/fixer/dispatching-issue ]; then
+  DISPATCHED=$(cat .codegraph/fixer/dispatching-issue)
+  if [ "$DISPATCHED" != "$ISSUE" ]; then
+    echo "ERROR: queue.json's head is #$ISSUE but this run was dispatched for #$DISPATCHED — something else moved the queue head while this issue was still in progress. Refusing to record the outcome under the wrong issue number."
+    echo "Investigate .codegraph/fixer/queue.json and state.json before proceeding — do not blindly retry."
+    exit 1
+  fi
+fi
 # STATUS comes from .codegraph/fixer/outcome, written by whichever path this issue
 # actually took: "abandoned" in 2b, "parked" once the convergence-round cap is hit in
 # 2f, or "merged" right after a successful `gh pr merge`. Never hardcode it here — that
@@ -1517,7 +1531,7 @@ All state is under `.codegraph/fixer/`:
 | `queue.json` | JSON array of `{issue, title}` | current batch's remaining work, ascending; entries are shifted off as they complete. **A present-but-empty `queue.json` means the batch loop fully completed** — Phase 0 uses this, together with `parked.txt` and `run-complete`, to decide fresh-run vs. resume |
 | `state.json` | `{"issues":[{issue, status, pr}]}` | per-issue outcome, accumulated across every batch this run has processed; reset to empty whenever Phase 0 detects a fresh run |
 | `state.json.bak` | JSON | snapshot taken immediately before each issue's sub-agent dispatch (I7); restore from this if a dispatch corrupts `state.json` |
-| `dispatching-issue` | text | the issue number captured before the current dispatch; read back by the validation/reconciliation block and by a retry dispatch, since queue.json's head is no longer reliable once 2g has shifted it |
+| `dispatching-issue` | text | the issue number captured before the current dispatch; read back by the validation/reconciliation block, by a retry dispatch, and by 2g itself (to detect a moved queue head, #2304) — queue.json's head is no longer reliable once 2g has shifted it |
 | `dispatch-retry-needed` | marker file | written only when reconciliation determines a second 2a-2g dispatch is needed for the same issue; cleared at the top of every validation-and-reconciliation run |
 | `parked.txt` | newline-separated PR numbers | accumulated across every batch; input to Phase: Drain Parked PRs; a merged PR's number is removed from this file the moment it merges. **Only ever emptied, never deleted, by a fully-merged drain** — Phase 0 treats a non-empty `parked.txt` as evidence of a resumable (mid-drain) run only if `run-complete` is absent; once Phase: Final Report has actually run and written it, the remaining entries are a closed, already-reported matter, not a resume signal |
 | `run-complete` | empty marker file | touched by Phase: Final Report as its last action, strictly after the report has been produced — the sole authoritative "this run's outcome was reported" signal Phase 0 checks, deliberately decoupled from `drain-stall`/`drain-pass` (which get written mid-Phase-4 and would otherwise race against the report actually happening); reset (removed) whenever Phase 0 starts a genuinely fresh run |
