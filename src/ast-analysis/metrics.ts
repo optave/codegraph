@@ -108,14 +108,50 @@ const LINE_COMMENT_PREFIXES = new Map<string, string[]>([
 const NO_BLOCK_COMMENT_LANGS = new Set(['python', 'ruby', 'bash', 'lua', 'zig', 'r']);
 
 /**
+ * Languages whose block comments can nest (`/* outer /* inner *\/ still
+ * outer *\/`) — Rust and Swift, unlike the other block-comment languages
+ * here, where an inner opening marker inside an already-open comment is
+ * inert text and the FIRST closing marker ends the whole thing.
+ */
+const NESTABLE_BLOCK_COMMENT_LANGS = new Set(['rust', 'swift']);
+
+/**
+ * Scan `text` for block-comment opening/closing markers, returning the
+ * nesting depth after the scan (0 = not in a comment). `startDepth` is the
+ * depth entering `text`. For a non-nestable language, depth never exceeds
+ * 1 under this scan (an inner opener while already at depth 1 is ignored,
+ * matching how those languages' own parsers treat it), so the first closer
+ * always fully closes it — nesting support only changes whether an inner
+ * opener is allowed to push depth past 1 (Greptile review, PR #2456: the
+ * original boolean-state version closed a Rust/Swift nested comment at its
+ * first, inner closing marker instead of its outer one).
+ */
+function scanBlockCommentDepth(text: string, startDepth: number, nestable: boolean): number {
+  let depth = startDepth;
+  let i = 0;
+  while (i < text.length - 1) {
+    if (text[i] === '/' && text[i + 1] === '*' && (depth === 0 || nestable)) {
+      depth++;
+      i += 2;
+    } else if (text[i] === '*' && text[i + 1] === '/' && depth > 0) {
+      depth--;
+      i += 2;
+    } else {
+      i++;
+    }
+  }
+  return depth;
+}
+
+/**
  * Compute LOC metrics from a function node's source text.
  *
- * Tracks Javadoc-style block-comment state across lines rather than
- * trusting a bare opening/continuation/closing marker unconditionally: a
- * line is only a block-comment continuation while a genuine block-opening
- * line has been seen and the block hasn't closed yet. Without this,
- * `*ptr = 5;` (a pointer-dereference assignment, valid in every
- * block-comment language here) was wrongly counted as a Javadoc-style
+ * Tracks Javadoc-style block-comment nesting depth across lines rather
+ * than trusting a bare opening/continuation/closing marker unconditionally:
+ * a line is only a block-comment continuation while a genuine
+ * block-opening line has been seen and the block hasn't closed yet.
+ * Without this, `*ptr = 5;` (a pointer-dereference assignment, valid in
+ * every block-comment language here) was wrongly counted as a Javadoc-style
  * continuation line (issue #2287).
  *
  * @param {object} functionNode - tree-sitter node
@@ -128,17 +164,18 @@ export function computeLOCMetrics(functionNode: TreeSitterNode, language?: strin
   const loc = lines.length;
   const linePrefixes = (language && LINE_COMMENT_PREFIXES.get(language)) || LINE_COMMENT_PREFIX;
   const supportsBlockComments = !language || !NO_BLOCK_COMMENT_LANGS.has(language);
+  const nestable = !!language && NESTABLE_BLOCK_COMMENT_LANGS.has(language);
 
   let commentLines = 0;
   let blankLines = 0;
-  let inBlockComment = false;
+  let blockDepth = 0;
 
   for (const line of lines) {
     const trimmed = line.trim();
 
-    if (inBlockComment) {
+    if (blockDepth > 0) {
       commentLines++;
-      if (trimmed.includes('*/')) inBlockComment = false;
+      blockDepth = scanBlockCommentDepth(trimmed, blockDepth, nestable);
       continue;
     }
 
@@ -154,9 +191,7 @@ export function computeLOCMetrics(functionNode: TreeSitterNode, language?: strin
 
     if (supportsBlockComments && trimmed.startsWith('/*')) {
       commentLines++;
-      // Search after the opening 2 chars so a 2-char close can't overlap the
-      // opening `/*` itself (e.g. "/*/" is NOT a closed empty comment).
-      if (!trimmed.slice(2).includes('*/')) inBlockComment = true;
+      blockDepth = scanBlockCommentDepth(trimmed, 0, nestable);
     }
   }
 

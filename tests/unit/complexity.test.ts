@@ -761,6 +761,24 @@ describe('Rust complexity', () => {
     );
     expect(l.commentLines).toBe(4);
   });
+
+  it('LOC: does not close a nested Rust block comment at the inner closing marker (Greptile review, PR #2456)', () => {
+    // Rust (unlike the other block-comment languages here) allows block
+    // comments to nest. A boolean in/out-of-comment state closes at the
+    // FIRST closing marker, wrongly ending the comment at the inner one and
+    // counting the remaining outer-comment lines as SLOC.
+    const l = loc(
+      'fn documented() -> i32 {\n    /* outer\n     /* inner */\n     still outer\n     */\n    1\n}\n',
+    );
+    // /* outer, /* inner */, still outer, */ — all 4 lines are comment.
+    expect(l.commentLines).toBe(4);
+  });
+
+  it('LOC: a single-line nested Rust block comment still closes fully', () => {
+    const l = loc('fn f() -> i32 {\n    /* outer /* inner */ still outer */\n    1\n}\n');
+    expect(l.commentLines).toBe(1);
+    expect(l.sloc).toBe(l.loc - l.commentLines);
+  });
 });
 
 // ─── Java ────────────────────────────────────────────────────────────────

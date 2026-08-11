@@ -2166,6 +2166,42 @@ pub fn is_block_comment_lang(lang_id: &str) -> bool {
     !matches!(lang_id, "python" | "ruby" | "r" | "bash" | "lua" | "zig")
 }
 
+/// Languages whose block comments can nest (`/* outer /* inner */ still
+/// outer */`) — Rust and Swift, unlike the other block-comment languages
+/// here, where an inner opening marker inside an already-open comment is
+/// inert text and the FIRST closing marker ends the whole thing.
+pub fn is_nestable_block_comment_lang(lang_id: &str) -> bool {
+    matches!(lang_id, "rust" | "swift")
+}
+
+/// Scan `text` for block-comment opening/closing markers, returning the
+/// nesting depth after the scan (0 = not in a comment). `start_depth` is
+/// the depth entering `text`. For a non-nestable language, depth never
+/// exceeds 1 under this scan (an inner opener while already at depth 1 is
+/// ignored, matching how those languages' own parsers treat it), so the
+/// first closer always fully closes it — nesting support only changes
+/// whether an inner opener is allowed to push depth past 1 (Greptile
+/// review, PR #2456: the original boolean-state version closed a
+/// Rust/Swift nested comment at its first, inner closing marker instead of
+/// its outer one).
+fn scan_block_comment_depth(text: &str, start_depth: u32, nestable: bool) -> u32 {
+    let bytes = text.as_bytes();
+    let mut depth = start_depth;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'/' && bytes[i + 1] == b'*' && (depth == 0 || nestable) {
+            depth += 1;
+            i += 2;
+        } else if bytes[i] == b'*' && bytes[i + 1] == b'/' && depth > 0 {
+            depth -= 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    depth
+}
+
 // ─── Merged Single-Pass: Complexity + Halstead + LOC + MI ─────────────────
 
 use crate::types::{HalsteadMetrics, LocMetrics};
@@ -2257,18 +2293,17 @@ pub fn compute_all_metrics(
     let loc_total = lines.len() as u32;
     let line_prefixes = line_comment_prefixes(lang_id);
     let supports_block_comments = is_block_comment_lang(lang_id);
+    let nestable = is_nestable_block_comment_lang(lang_id);
 
     let mut comment_lines: u32 = 0;
     let mut blank_lines: u32 = 0;
-    let mut in_block_comment = false;
+    let mut block_depth: u32 = 0;
     for line in &lines {
         let trimmed = line.trim();
 
-        if in_block_comment {
+        if block_depth > 0 {
             comment_lines += 1;
-            if trimmed.contains("*/") {
-                in_block_comment = false;
-            }
+            block_depth = scan_block_comment_depth(trimmed, block_depth, nestable);
             continue;
         }
 
@@ -2284,12 +2319,7 @@ pub fn compute_all_metrics(
 
         if supports_block_comments && trimmed.starts_with("/*") {
             comment_lines += 1;
-            // Search after the opening 2 chars so a 2-char close can't
-            // overlap the opening `/*` itself (e.g. "/*/" is NOT a closed
-            // empty comment).
-            if !trimmed[2..].contains("*/") {
-                in_block_comment = true;
-            }
+            block_depth = scan_block_comment_depth(trimmed, 0, nestable);
         }
     }
     let sloc = (loc_total
@@ -2632,6 +2662,32 @@ mod tests {
     #[test]
     fn loc_metrics_closes_a_single_line_block_comment_without_entering_block_state() {
         let metrics = compute_rust("fn f() -> i32 {\n    /* inline */\n    return 1;\n}");
+        let loc = metrics.loc.expect("loc metrics missing");
+        assert_eq!(loc.comment_lines, 1);
+        assert_eq!(loc.sloc, loc.loc - loc.comment_lines);
+    }
+
+    #[test]
+    fn loc_metrics_does_not_close_a_nested_rust_block_comment_at_the_inner_closer() {
+        // Greptile review, PR #2456: Rust (unlike the other block-comment
+        // languages here) allows /* ... */ to nest. A boolean in/out-of-comment
+        // state closes at the FIRST */, wrongly ending the comment at the
+        // inner one and counting the remaining outer-comment lines as SLOC.
+        let metrics = compute_rust(
+            "fn documented() -> i32 {\n    /* outer\n     /* inner */\n     still outer\n     */\n    1\n}",
+        );
+        let loc = metrics.loc.expect("loc metrics missing");
+        // /* outer, /* inner */, still outer, */ — all 4 lines are comment.
+        assert_eq!(
+            loc.comment_lines, 4,
+            "the whole nested comment must be counted, not just up to the inner closer"
+        );
+    }
+
+    #[test]
+    fn loc_metrics_single_line_nested_rust_block_comment_still_closes() {
+        let metrics =
+            compute_rust("fn f() -> i32 {\n    /* outer /* inner */ still outer */\n    1\n}");
         let loc = metrics.loc.expect("loc metrics missing");
         assert_eq!(loc.comment_lines, 1);
         assert_eq!(loc.sloc, loc.loc - loc.comment_lines);
