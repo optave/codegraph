@@ -1148,11 +1148,21 @@ fi
 
 TMP_QUEUE=$(mktemp "${TMPDIR:-/tmp}/fixer-queue.XXXXXXXXXX")
 trap 'rm -f "$TMP_QUEUE"' EXIT
-# Guarded the same way: if this fails after state.json already succeeded above,
-# queue.json[0] is still this (already-resolved) issue — exactly the case Phase 2's
-# own resume-detection note (above step 2a) already filters out on the next run.
-if ! jq '.[1:]' .codegraph/fixer/queue.json > "$TMP_QUEUE"; then
-  echo "ERROR: failed to build updated queue.json — issue #$ISSUE was already recorded as $STATUS in state.json. The next run's resume-detection will filter this already-resolved queue head."
+# Re-validate the head in the same jq invocation that performs the shift
+# (Greptile review, PR #2467): the moved-queue-head guard above and this
+# shift are two separate reads of queue.json, with the state.json write
+# happening in between — a writer that moves the head during that window
+# would otherwise make this unconditional `.[1:]` drop whatever untouched
+# issue is now at the head instead of the one whose outcome was just
+# recorded. Checking identity and shifting in one jq call collapses that
+# gap to the same single-read-then-atomic-rename pattern already used for
+# every other queue.json/state.json write in this skill.
+if ! jq --argjson issue "$ISSUE" '
+    if (.[0].issue // null) == $issue then .[1:]
+    else error("queue.json head changed to \(.[0].issue // "empty") — expected #\($issue)")
+    end
+  ' .codegraph/fixer/queue.json > "$TMP_QUEUE"; then
+  echo "ERROR: failed to build updated queue.json for issue #$ISSUE — either the write itself failed, or the queue's head moved away from #$ISSUE between recording the outcome and shifting the queue (see the jq error above). Issue #$ISSUE was already recorded as $STATUS in state.json — investigate queue.json before proceeding rather than retrying blind."
   exit 1
 fi
 if ! mv "$TMP_QUEUE" .codegraph/fixer/queue.json; then

@@ -44,6 +44,23 @@ function extractBashBlockAfterHeading(markdown: string, heading: string): string
   return rest.slice(bodyStart, fenceEnd);
 }
 
+/** Extract the jq program passed to `jq --argjson issue "$ISSUE" '...'` in 2g's queue-shift step. */
+function extractQueueShiftJqProgram(block: string): string {
+  const marker = 'jq --argjson issue "$ISSUE" \'';
+  const start = block.indexOf(marker);
+  if (start === -1) {
+    throw new Error('Queue-shift jq invocation not found in 2g block');
+  }
+  const programStart = start + marker.length;
+  // The program body contains only double quotes, so the next single quote
+  // is reliably the one closing bash's single-quoted argument.
+  const programEnd = block.indexOf("'", programStart);
+  if (programEnd === -1) {
+    throw new Error('Unterminated jq program in queue-shift step');
+  }
+  return block.slice(programStart, programEnd);
+}
+
 function runBlock(
   block: string,
   sandbox: string,
@@ -145,6 +162,43 @@ describe('fixer skill 2g moved-queue-head guard (#2304)', () => {
         fs.readFileSync(path.join(sandbox, '.codegraph/fixer/state.json'), 'utf-8'),
       );
       expect(state.issues).toEqual([{ issue: 100, status: 'merged', pr: 999 }]);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("the queue-shift step's own jq check refuses to shift when the head no longer matches (Greptile review, PR #2467)", () => {
+    // The full 2g block can't deterministically reproduce a write landing
+    // strictly between its own two reads of queue.json — that gap exists for
+    // an external, concurrent writer during real wall-clock execution, not
+    // something one synchronous script invocation can race against itself.
+    // This verifies the shift step's own jq program directly: given a
+    // queue.json whose head no longer matches the issue being recorded, it
+    // must refuse to shift rather than silently dropping whatever is there.
+    const jqProgram = extractQueueShiftJqProgram(block);
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'fixer-2g-shift-'));
+    try {
+      const queuePath = path.join(sandbox, 'queue.json');
+      fs.writeFileSync(queuePath, JSON.stringify([{ issue: 999, title: 'moved' }]));
+
+      expect(() =>
+        execFileSync('jq', ['--argjson', 'issue', '100', jqProgram, queuePath], {
+          encoding: 'utf8',
+        }),
+      ).toThrow();
+
+      // And it still shifts normally when the head does match.
+      fs.writeFileSync(
+        queuePath,
+        JSON.stringify([
+          { issue: 100, title: 'first' },
+          { issue: 200, title: 'second' },
+        ]),
+      );
+      const shifted = execFileSync('jq', ['--argjson', 'issue', '100', jqProgram, queuePath], {
+        encoding: 'utf8',
+      });
+      expect(JSON.parse(shifted)).toEqual([{ issue: 200, title: 'second' }]);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
