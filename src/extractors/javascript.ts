@@ -4917,10 +4917,25 @@ function blockContainsIdentifierExcluding(
   // (`var`/`let`/`const`) with `left` holding the pattern directly — there is
   // no `variable_declaration` child to detect, which is why this must be
   // handled here rather than in `introducesShadowedBinding`.
+  //
+  // A `let`/`const` target's own pattern DEFAULTS are the one place where
+  // `scanPatternDefaultsForReference` must NOT run (Greptile review, PR
+  // #2440): `let`/`const` creates a brand-new per-iteration binding for
+  // `name`, so a default inside THIS SAME pattern that mentions `name`
+  // (`for (let [fn = fn] of values)`) resolves to that new binding — in the
+  // temporal dead zone until its own position initializes it — never to the
+  // enclosing fallback. `var`/bare targets reuse the SAME pre-existing
+  // binding (no new scope), so a default reading `name` there is still a
+  // genuine read of its current, soon-to-be-overwritten value.
   if (node.type === 'for_in_statement') {
     const left = node.childForFieldName('left');
     if (left && patternBindsName(left, name)) {
-      if (scanPatternDefaultsForReference(left, name, excludeId, depth + 1, requireCallSite)) {
+      const kindText = node.childForFieldName('kind')?.text;
+      const isLexical = kindText === 'let' || kindText === 'const';
+      if (
+        !isLexical &&
+        scanPatternDefaultsForReference(left, name, excludeId, depth + 1, requireCallSite)
+      ) {
         return true;
       }
       const right = node.childForFieldName('right');

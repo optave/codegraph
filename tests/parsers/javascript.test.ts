@@ -2565,6 +2565,40 @@ function runDemo(reporter: Reporter, users: string[]): void {
         symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
       ).toBe(false);
     });
+
+    // Greptile review, PR #2440: a `let`/`const` for-of target creates a
+    // BRAND-NEW per-iteration binding for `name` — a default hidden inside
+    // that SAME destructuring pattern which mentions `name` resolves to that
+    // new binding (in the temporal dead zone until its own position
+    // initializes it), never to the enclosing fallback. Verified at runtime:
+    // `let [fn = fn] = [undefined]` throws "Cannot access 'fn' before
+    // initialization" — it never reads the outer `fn`.
+    it('does not credit liveness from a lexical destructuring default that self-references the loop target', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          for (const [fn = fn] of values) { fn(); }
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(false);
+    });
+
+    // …but a `var` target reuses the SAME pre-existing binding (no new
+    // scope), so the identical shape still reads the current,
+    // soon-to-be-overwritten value — this must stay credited.
+    it('still credits liveness from a var destructuring default that self-references the loop target', () => {
+      const symbols = parseJS(`
+        function outer() {
+          var fn = options.custom || fetchLatestVersion;
+          for (var [fn = fn] of values) {}
+        }
+      `);
+      expect(
+        symbols.calls.some((c) => c.dynamicKind === 'value-ref' && c.name === 'fetchLatestVersion'),
+      ).toBe(true);
+    });
   });
 
   describe('computed/bracket-access dispatch-table invocation evidence (#2260)', () => {

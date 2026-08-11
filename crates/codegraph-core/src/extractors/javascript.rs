@@ -5055,17 +5055,36 @@ fn block_contains_identifier_excluding(
     // (`var`/`let`/`const`) with `left` holding the pattern directly — there
     // is no `variable_declaration` child to detect, which is why this must be
     // handled here rather than in `introduces_shadowed_binding`.
+    //
+    // A `let`/`const` target's own pattern DEFAULTS are the one place where
+    // `scan_pattern_defaults_for_reference` must NOT run (Greptile review, PR
+    // #2440): `let`/`const` creates a brand-new per-iteration binding for
+    // `name`, so a default inside THIS SAME pattern that mentions `name`
+    // (`for (let [fn = fn] of values)`) resolves to that new binding — in the
+    // temporal dead zone until its own position initializes it — never to the
+    // enclosing fallback. `var`/bare targets reuse the SAME pre-existing
+    // binding (no new scope), so a default reading `name` there is still a
+    // genuine read of its current, soon-to-be-overwritten value.
     if node.kind() == "for_in_statement" {
         if let Some(left) = node.child_by_field_name("left") {
             if pattern_binds_name(&left, name, source, 0) {
-                if scan_pattern_defaults_for_reference(
-                    &left,
-                    name,
-                    exclude_id,
-                    source,
-                    depth + 1,
-                    require_call_site,
-                ) {
+                let is_lexical = node
+                    .child_by_field_name("kind")
+                    .map(|k| {
+                        let kind_text = node_text(&k, source);
+                        kind_text == "let" || kind_text == "const"
+                    })
+                    .unwrap_or(false);
+                if !is_lexical
+                    && scan_pattern_defaults_for_reference(
+                        &left,
+                        name,
+                        exclude_id,
+                        source,
+                        depth + 1,
+                        require_call_site,
+                    )
+                {
                     return true;
                 }
                 return match node.child_by_field_name("right") {
@@ -8806,6 +8825,44 @@ mod tests {
              }",
         );
         assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2440: a `let`/`const` for-of target creates a
+    // BRAND-NEW per-iteration binding for `name` — a default hidden inside
+    // that SAME destructuring pattern which mentions `name` resolves to that
+    // new binding (in the temporal dead zone until its own position
+    // initializes it), never to the enclosing fallback. Verified at runtime:
+    // `let [fn = fn] = [undefined]` throws "Cannot access 'fn' before
+    // initialization" — it never reads the outer `fn`.
+    #[test]
+    fn does_not_credit_liveness_from_a_lexical_destructuring_default_that_self_references_the_loop_target(
+    ) {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               for (const [fn = fn] of values) { fn(); }\n\
+             }",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // …but a `var` target reuses the SAME pre-existing binding (no new
+    // scope), so the identical shape still reads the current,
+    // soon-to-be-overwritten value — this must stay credited.
+    #[test]
+    fn still_credits_liveness_from_a_var_destructuring_default_that_self_references_the_loop_target(
+    ) {
+        let s = parse_js(
+            "function outer() {\n\
+               var fn = options.custom || fetchLatestVersion;\n\
+               for (var [fn = fn] of values) {}\n\
+             }",
+        );
+        assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
     }
