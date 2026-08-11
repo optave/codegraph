@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { closeDb, getNodeId as getNodeIdQuery, initSchema, openDb } from '../../db/index.js';
-import { loadConfig } from '../../infrastructure/config.js';
+import { detectWorkspaces, loadConfig } from '../../infrastructure/config.js';
 import { debug, info, warn } from '../../infrastructure/logger.js';
 import { buildIgnoreSet, isSupportedFile, normalizePath } from '../../shared/constants.js';
 import { DbError } from '../../shared/errors.js';
@@ -9,6 +9,7 @@ import { createParseTreeCache, getActiveEngine } from '../parser.js';
 import { type IncrementalStmts, rebuildFile } from './builder/incremental.js';
 import { appendChangeEvents, buildChangeEvent, diffSymbols } from './change-journal.js';
 import { appendJournalEntriesAndStampHeader } from './journal.js';
+import { clearExportsCache, setWorkspaces } from './resolve.js';
 
 function shouldIgnorePath(filePath: string, ignoreSet: ReadonlySet<string>): boolean {
   const parts = filePath.split(path.sep);
@@ -174,8 +175,19 @@ function logRebuildResults(updates: RebuildResult[]): void {
   }
 }
 
-/** Recursively collect tracked source files for stat-based polling. */
-function collectTrackedFiles(dir: string, result: string[], ignoreSet: ReadonlySet<string>): void {
+/**
+ * Recursively collect tracked source files for stat-based polling. Also
+ * collects `package.json` paths into `packageJsonResult` when provided —
+ * they're not a "supported" source file (so never added to `result`), but
+ * still need mtime-diff detection to trigger a workspace/exports cache
+ * refresh (issue #2290).
+ */
+function collectTrackedFiles(
+  dir: string,
+  result: string[],
+  ignoreSet: ReadonlySet<string>,
+  packageJsonResult?: string[],
+): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -187,9 +199,11 @@ function collectTrackedFiles(dir: string, result: string[], ignoreSet: ReadonlyS
     if (ignoreSet.has(entry.name) || entry.name.startsWith('.')) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      collectTrackedFiles(full, result, ignoreSet);
+      collectTrackedFiles(full, result, ignoreSet, packageJsonResult);
     } else if (isSupportedFile(entry.name)) {
       result.push(full);
+    } else if (packageJsonResult && entry.name === 'package.json') {
+      packageJsonResult.push(full);
     }
   }
 }
@@ -206,6 +220,42 @@ interface WatcherContext {
   debounceMs: number;
   /** Merged ignore set from IGNORE_DIRS + config.ignoreDirs + config.ignoreAdditionalDirs. */
   ignoreSet: ReadonlySet<string>;
+  /**
+   * Set when a `package.json` inside the watched tree has changed since the
+   * last debounced flush — consumed (and reset) by `scheduleDebouncedProcess`
+   * to re-detect workspace packages before the next rebuild (issue #2290).
+   * Kept separate from `pending`: `package.json` is never itself rebuildable
+   * via `rebuildFile` (it's not a supported source-language extension).
+   */
+  workspaceRefreshPending: boolean;
+}
+
+/**
+ * Re-detect workspace packages and clear the exports cache (both engines) —
+ * called once a `package.json` inside the watched tree is known to have
+ * changed, so a long-running watch session doesn't keep resolving imports
+ * against stale exports/workspace data for its whole lifetime (issue #2290).
+ *
+ * `detectWorkspaces()` re-globs and re-reads every workspace package's
+ * manifest, so — unlike the cheap, unconditional `clearExportsCache()` call
+ * in `rebuildFile` (a plain cache clear, no filesystem re-scan) — this is
+ * gated on actually observing a `package.json` change rather than run on
+ * every rebuild, to avoid a per-keystroke re-scan cost in a large monorepo.
+ *
+ * Exported for unit-testing; prefer letting the watcher call this
+ * automatically in production paths.
+ */
+export function refreshWorkspaceAndExportsCaches(rootDir: string): void {
+  const workspaces = detectWorkspaces(rootDir);
+  if (workspaces.size > 0) {
+    // setWorkspaces() also clears the exports cache as a side effect, but
+    // only on this (TypeScript) side — clearExportsCache() below covers the
+    // native side too, and must still run when there are no (or no longer
+    // any) workspaces to register.
+    setWorkspaces(rootDir, workspaces);
+    info(`Refreshed ${workspaces.size} workspace packages (package.json changed)`);
+  }
+  clearExportsCache();
 }
 
 /** Initialize DB, engine, cache, and statements for watch mode. */
@@ -258,6 +308,7 @@ function setupWatcher(rootDir: string, opts: { engine?: string; dbPath?: string 
     timer: null,
     debounceMs: 300,
     ignoreSet,
+    workspaceRefreshPending: false,
   };
 }
 
@@ -267,19 +318,70 @@ function scheduleDebouncedProcess(ctx: WatcherContext): void {
   ctx.timer = setTimeout(async () => {
     const files = [...ctx.pending];
     ctx.pending.clear();
+    // Refresh before rebuilding so any source file in this same debounced
+    // batch that imports from the changed package sees fresh data (#2290).
+    if (ctx.workspaceRefreshPending) {
+      ctx.workspaceRefreshPending = false;
+      refreshWorkspaceAndExportsCaches(ctx.rootDir);
+    }
     await processPendingFiles(files, ctx.db, ctx.rootDir, ctx.stmts, ctx.engineOpts, ctx.cache);
   }, ctx.debounceMs);
+}
+
+/**
+ * Diff `current` file paths against `mtimeMap`'s cached mtimes (added,
+ * changed, or removed since the last check), updating the map in place and
+ * invoking `onChanged` for each one. Shared by the source-file and
+ * `package.json` polling loops below — the two need different actions
+ * (queue for rebuild vs. flag a cache refresh) but the same diff mechanics.
+ *
+ * Exported for unit-testing; prefer letting the polling watcher call this
+ * automatically in production paths.
+ */
+export function diffMtimes(
+  current: string[],
+  mtimeMap: Map<string, number>,
+  onChanged: (file: string) => void,
+): void {
+  const currentSet = new Set(current);
+  for (const f of current) {
+    try {
+      const mtime = fs.statSync(f).mtimeMs;
+      const prev = mtimeMap.get(f);
+      if (prev === undefined || mtime !== prev) {
+        mtimeMap.set(f, mtime);
+        onChanged(f);
+      }
+    } catch {
+      /* deleted between collect and stat */
+    }
+  }
+  for (const f of mtimeMap.keys()) {
+    if (!currentSet.has(f)) {
+      mtimeMap.delete(f);
+      onChanged(f);
+    }
+  }
 }
 
 /** Start polling-based file watcher. Returns cleanup function. */
 function startPollingWatcher(ctx: WatcherContext, pollIntervalMs: number): () => void {
   const mtimeMap = new Map<string, number>();
+  const packageJsonMtimeMap = new Map<string, number>();
 
   const initial: string[] = [];
-  collectTrackedFiles(ctx.rootDir, initial, ctx.ignoreSet);
+  const initialPackageJson: string[] = [];
+  collectTrackedFiles(ctx.rootDir, initial, ctx.ignoreSet, initialPackageJson);
   for (const f of initial) {
     try {
       mtimeMap.set(f, fs.statSync(f).mtimeMs);
+    } catch {
+      /* deleted between collect and stat */
+    }
+  }
+  for (const f of initialPackageJson) {
+    try {
+      packageJsonMtimeMap.set(f, fs.statSync(f).mtimeMs);
     } catch {
       /* deleted between collect and stat */
     }
@@ -288,30 +390,17 @@ function startPollingWatcher(ctx: WatcherContext, pollIntervalMs: number): () =>
 
   const pollTimer = setInterval(() => {
     const current: string[] = [];
-    collectTrackedFiles(ctx.rootDir, current, ctx.ignoreSet);
-    const currentSet = new Set(current);
+    const currentPackageJson: string[] = [];
+    collectTrackedFiles(ctx.rootDir, current, ctx.ignoreSet, currentPackageJson);
 
-    for (const f of current) {
-      try {
-        const mtime = fs.statSync(f).mtimeMs;
-        const prev = mtimeMap.get(f);
-        if (prev === undefined || mtime !== prev) {
-          mtimeMap.set(f, mtime);
-          ctx.pending.add(f);
-        }
-      } catch {
-        /* deleted between collect and stat */
-      }
-    }
+    diffMtimes(current, mtimeMap, (f) => ctx.pending.add(f));
+    // package.json changes (#2290): flag a cache refresh rather than queue
+    // for rebuild — package.json is never itself rebuildable via rebuildFile.
+    diffMtimes(currentPackageJson, packageJsonMtimeMap, () => {
+      ctx.workspaceRefreshPending = true;
+    });
 
-    for (const f of mtimeMap.keys()) {
-      if (!currentSet.has(f)) {
-        mtimeMap.delete(f);
-        ctx.pending.add(f);
-      }
-    }
-
-    if (ctx.pending.size > 0) {
+    if (ctx.pending.size > 0 || ctx.workspaceRefreshPending) {
       scheduleDebouncedProcess(ctx);
     }
   }, pollIntervalMs);
@@ -324,6 +413,19 @@ function startNativeWatcher(ctx: WatcherContext): () => void {
   const watcher = fs.watch(ctx.rootDir, { recursive: true }, (_eventType, filename) => {
     if (!filename) return;
     if (shouldIgnorePath(filename, ctx.ignoreSet)) return;
+
+    // package.json changes (#2290): flag a cache refresh rather than queue
+    // for rebuild — it's never itself rebuildable via rebuildFile. Checked
+    // before isSupportedFile since package.json isn't a supported source
+    // extension. shouldIgnorePath above already scopes this to the watched
+    // tree, so a node_modules dependency's own package.json (unwatched by
+    // design) is excluded the same way source files there are.
+    if (path.basename(filename) === 'package.json') {
+      ctx.workspaceRefreshPending = true;
+      scheduleDebouncedProcess(ctx);
+      return;
+    }
+
     if (!isSupportedFile(filename)) return;
 
     ctx.pending.add(path.join(ctx.rootDir, filename));

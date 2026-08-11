@@ -28,6 +28,7 @@ import type {
 import { parseFileIncremental } from '../../parser.js';
 import {
   clearCargoTargetOverridesCache,
+  clearExportsCache,
   clearPythonImportRootsCache,
   computeConfidence,
   resolveImportPath,
@@ -2424,6 +2425,16 @@ export async function rebuildFile(
   // an `__init__.py` is added or removed — which changes where every absolute
   // import in that package tree resolves.
   clearPythonImportRootsCache();
+  // Same reasoning again for a dependency's own package.json `exports`
+  // field (#2290): unlike the workspace map (refreshed separately by the
+  // watcher itself when it detects a package.json change inside the
+  // watched tree — see watcher.ts), this cache is cheap to clear (a plain
+  // Map#clear, no filesystem re-scan) and can go stale from a change to
+  // ANY package's exports field, including a plain node_modules dependency
+  // the watcher never observes at all — so it's cleared unconditionally
+  // here, once per rebuild of any file, the same way the Cargo/Python
+  // caches above are.
+  clearExportsCache();
   // #2242: real tsconfig/jsconfig + codegraph-configured aliases, loaded
   // once per rebuild (mirrors knownFiles just above) and threaded through
   // every edge-building call below — a hardcoded empty PathAliases

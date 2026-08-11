@@ -184,6 +184,19 @@ pub fn clear_python_import_roots_cache() {
     domain::graph::resolve::clear_python_import_roots_cache();
 }
 
+/// Clear the native package.json `exports` cache (issue #2290) — called from
+/// the JS-side `clearExportsCache()` (`resolve.ts`) for the same reason as
+/// the Cargo/Python caches above: `resolve_import`, the single-import entry
+/// point `rebuildFile` uses, does not self-clear per build the way the batch
+/// `resolve_imports` entry point does. Unlike the workspace *map* (which
+/// native never caches itself — it's passed in fresh on every call from the
+/// JS side's own `_workspaceCache`), this `exports` cache is internal to the
+/// native resolver and needs its own explicit clear.
+#[napi]
+pub fn clear_exports_cache() {
+    domain::graph::resolve::clear_exports_cache();
+}
+
 /// Compute proximity-based confidence for call resolution.
 #[napi]
 pub fn compute_confidence(

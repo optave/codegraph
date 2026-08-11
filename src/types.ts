@@ -2631,6 +2631,12 @@ export interface NativeAddon {
    * `clearCargoTargetOverridesCache`: older published addons predate it.
    */
   clearPythonImportRootsCache?(): void;
+  /**
+   * Clear the native package.json `exports` cache (#2290) — optional for
+   * the same reason as `clearCargoTargetOverridesCache`: older published
+   * addons predate it.
+   */
+  clearExportsCache?(): void;
   computeConfidence(callerFile: string, targetFile: string, importedFrom: string | null): number;
   detectCycles(edges: Array<{ source: string; target: string }>): string[][];
   bfsTraversal(

@@ -222,9 +222,17 @@ export function resolveExportsViaDir(specifier: string, packageDir: string): str
   return resolveExportsInPackageDir(parsed, packageDir);
 }
 
-/** Clear the exports cache (for testing). */
+/**
+ * Clear the package.json `exports` cache, in both this (TypeScript)
+ * resolver and the native one if available — a long-lived process
+ * (`codegraph watch`, the MCP server) can outlive edits to a package's
+ * `exports` field, so watch mode's package.json-change detection calls
+ * this to force a fresh manifest read (issue #2290). Also exported
+ * directly for testing.
+ */
 export function clearExportsCache(): void {
   _exportsCache.clear();
+  loadNative()?.clearExportsCache?.();
 }
 
 // ── Monorepo workspace resolution ───────────────────────────────────
