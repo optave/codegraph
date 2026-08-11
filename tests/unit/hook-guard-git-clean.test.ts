@@ -242,6 +242,68 @@ describe('guard-git.sh mask-quoted-text.mjs', () => {
   });
 });
 
+describe('guard-git.sh checkout -- boundary requires a bare "--" token (#2280)', () => {
+  it('still blocks the real file-reverting form', () => {
+    expect(isDenied('git checkout -- file.txt')).toBe(true);
+    expect(isDenied('git checkout -- file1.txt file2.txt')).toBe(true);
+  });
+
+  it('still blocks a bare trailing -- with no pathspec (ambiguous, same as before)', () => {
+    expect(isDenied('git checkout --')).toBe(true);
+  });
+
+  it('allows --detach, which shares the "checkout --" prefix but does not revert working-tree changes', () => {
+    expect(isDenied('git checkout --detach origin/main')).toBe(false);
+    expect(isDenied('git checkout --detach')).toBe(false);
+  });
+
+  it('allows --track, --orphan, --no-track, and --guess for the same reason', () => {
+    expect(isDenied('git checkout --track origin/feature')).toBe(false);
+    expect(isDenied('git checkout --orphan new-branch')).toBe(false);
+    expect(isDenied('git checkout --no-track feature')).toBe(false);
+    expect(isDenied('git checkout --guess')).toBe(false);
+  });
+
+  it('still blocks --ours/--theirs (Greptile review, PR #2450, round 2): on an unmerged path these overwrite the working-tree file from a merge-conflict stage, the same destructive class this check exists to catch', () => {
+    expect(isDenied('git checkout --ours file.txt')).toBe(true);
+    expect(isDenied('git checkout --theirs file.txt')).toBe(true);
+    expect(isDenied('git checkout --ours')).toBe(true);
+    expect(isDenied('git checkout --theirs')).toBe(true);
+  });
+
+  it('does not over-match a hypothetical flag that merely starts with "ours"/"theirs"', () => {
+    expect(isDenied('git checkout --oursight')).toBe(false);
+  });
+
+  it('still blocks a real revert chained after an allowed --detach invocation', () => {
+    expect(isDenied('git checkout --detach && git checkout -- file.txt')).toBe(true);
+  });
+
+  it('still blocks an IFS-expansion bypass with no literal whitespace between -- and the path (Greptile review, PR #2450)', () => {
+    // `${IFS}` (unquoted) is bash's own whitespace-field-separator variable
+    // — the command TEXT has no literal space between "--" and "file.txt",
+    // but bash expands `${IFS}` to whitespace before git ever sees it, so
+    // git actually receives `checkout -- file.txt`. A check anchored on
+    // literal `[[:space:]]` after "--" misses this; the negated-letter-class
+    // form does not, since "$" is not a letter.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git checkout --${IFS}file.txt')).toBe(true);
+    expect(isDenied('git checkout --$IFS')).toBe(true);
+  });
+
+  it('still blocks the same IFS-expansion bypass applied to --ours/--theirs (Greptile review, PR #2450, round 3)', () => {
+    // Round 3's negated-letter-class boundary on the outer "--" doesn't
+    // automatically cover --ours/--theirs' OWN trailing boundary, which was
+    // still anchored on literal whitespace-or-end-of-line — so
+    // `--ours${IFS}file.txt` had no literal space right after "ours" either
+    // and slipped through the same way the outer "--" case did in round 1.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git checkout --ours${IFS}file.txt')).toBe(true);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git checkout --theirs${IFS}file.txt')).toBe(true);
+  });
+});
+
 describe('guard-git.sh docs example stays in sync (#2105)', () => {
   // docs/examples/claude-code-hooks/guard-git.sh is meant to be a working
   // copy of the live hook for users setting up their own repo — it had

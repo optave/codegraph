@@ -96,8 +96,40 @@ if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+res
   deny "BLOCKED: 'git reset' can unstage or destroy other sessions' work. To unstage your own files, use: git restore --staged <file>"
 fi
 
-# git checkout -- <file> (reverting files)
-if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--'; then
+# git checkout -- <file> (reverting files). Requires "--" to be its own
+# token, not a longer flag that merely starts with "--" (#2280) —
+# otherwise this also denied legitimate flags sharing the same
+# "checkout --" prefix, like --detach, --track, --orphan, --no-track,
+# --guess, none of which revert working-tree changes the way a bare
+# "--" pathspec separator does.
+#
+# Deliberately NOT anchored on literal whitespace-or-end-of-line after
+# "--" (i.e. NOT `--([[:space:]]|$)`): every one of those legitimate
+# flag names starts with a plain letter right after "--", so "anything
+# that isn't a letter" is the correct, safe boundary — and it must
+# reject unquoted shell expansions too, not just literal whitespace.
+# `git checkout --${IFS}file.txt` has no literal space in the command
+# TEXT between "--" and "file.txt" (so a whitespace-anchored version of
+# this check misses it), but bash expands the unquoted `${IFS}` to
+# whitespace at actual execution time — Git still receives the exact
+# dangerous `checkout -- file.txt` (Greptile review, PR #2450). `$` is
+# not a letter, so the negated-letter-class form below still denies it.
+#
+# --ours/--theirs are explicitly re-included in the denial (NOT covered
+# by "starts with a letter, so it's safe"): despite also sharing the
+# "checkout --" prefix, on an unmerged path they check the selected
+# merge-conflict stage into the WORKING TREE, overwriting that file's
+# on-disk content -- the same destructive-to-uncommitted-work class
+# this whole check exists to catch, just from a different source (a
+# merge stage instead of HEAD/the index). #2280's own suggested
+# exclusion list named these as safe; that premise was wrong (Greptile
+# review, PR #2450, round 2). Their own trailing boundary is a negated
+# letter class too, not literal whitespace-or-end-of-line, for the same
+# ${IFS}-expansion reason as the outer "--" boundary above:
+# `git checkout --ours${IFS}file.txt` has no literal space in the
+# command TEXT right after "ours" either (Greptile review, PR #2450,
+# round 3).
+if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+checkout[[:space:]]+--([^A-Za-z]|$|ours([^A-Za-z]|$)|theirs([^A-Za-z]|$))'; then
   deny "BLOCKED: 'git checkout -- <file>' reverts working tree changes and may destroy other sessions' edits. If you need to discard your own changes, be explicit about which files."
 fi
 
