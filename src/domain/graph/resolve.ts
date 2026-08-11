@@ -366,20 +366,32 @@ export function clearWorkspaceCache(): void {
 
 // ── JS → TS extension remap cache ───────────────────────────────────
 
-/** Cache: absolute .js path → remapped .ts/.tsx relative path (or null if no TS file exists). */
+/** Cache: absolute emitted-extension path → remapped TS-source relative path (or null if none exists). */
 const _jsToTsCache: Map<string, string | null> = new Map();
 
 /**
- * If `resolved` ends with `.js`, check whether a `.ts` or `.tsx` counterpart
- * exists on disk and return its relative path from `rootDir`.  Results are
- * cached for the lifetime of the process to avoid repeated stat calls in the
- * batch hot path.
+ * Extension pairs to probe when a resolved path uses TypeScript's required
+ * "emitted extension" convention in relative import specifiers: a `.ts`/
+ * `.tsx` source is imported via `.js`, a `.mts` source via `.mjs`, and a
+ * `.cts` source via `.cjs` (#2299).
+ */
+const EMIT_EXTENSION_REMAPS: ReadonlyArray<{ from: string; to: readonly string[] }> = [
+  { from: '.js', to: ['.ts', '.tsx'] },
+  { from: '.mjs', to: ['.mts'] },
+  { from: '.cjs', to: ['.cts'] },
+];
+
+/**
+ * If `resolved` ends with `.js`, `.mjs`, or `.cjs`, check whether the
+ * matching TS-source counterpart (see `EMIT_EXTENSION_REMAPS`) exists on disk
+ * and return its relative path from `rootDir`.  Results are cached for the
+ * lifetime of the process to avoid repeated stat calls in the batch hot path.
  *
- * The cache stores **absolute** `.ts`/`.tsx` paths (or `null`) so that the
- * same cached entry is correct regardless of which `rootDir` is passed — the
+ * The cache stores **absolute** remapped paths (or `null`) so that the same
+ * cached entry is correct regardless of which `rootDir` is passed — the
  * relative path is computed on every cache hit.  This is important for MCP
- * `--multi-repo` mode where the same absolute `.js` file may be resolved with
- * different `rootDir` values.
+ * `--multi-repo` mode where the same absolute emitted-extension file may be
+ * resolved with different `rootDir` values.
  *
  * Always returns a normalised relative path from `rootDir` — both the remap
  * branch and the fallback compute `path.relative(rootDir, abs)` to ensure a
@@ -387,7 +399,8 @@ const _jsToTsCache: Map<string, string | null> = new Map();
  * absolute or relative path.
  */
 function remapJsToTs(resolved: string, rootDir: string): string {
-  if (!resolved.endsWith('.js')) return resolved;
+  const remap = EMIT_EXTENSION_REMAPS.find((r) => resolved.endsWith(r.from));
+  if (!remap) return resolved;
   const abs = path.resolve(rootDir, resolved);
   if (_jsToTsCache.has(abs)) {
     const cachedAbs = _jsToTsCache.get(abs);
@@ -395,15 +408,13 @@ function remapJsToTs(resolved: string, rootDir: string): string {
       ? normalizePath(path.relative(rootDir, cachedAbs))
       : normalizePath(path.relative(rootDir, abs));
   }
-  const tsAbs = abs.replace(/\.js$/, '.ts');
-  if (fs.existsSync(tsAbs)) {
-    _jsToTsCache.set(abs, tsAbs);
-    return normalizePath(path.relative(rootDir, tsAbs));
-  }
-  const tsxAbs = abs.replace(/\.js$/, '.tsx');
-  if (fs.existsSync(tsxAbs)) {
-    _jsToTsCache.set(abs, tsxAbs);
-    return normalizePath(path.relative(rootDir, tsxAbs));
+  const stem = abs.slice(0, -remap.from.length);
+  for (const toExt of remap.to) {
+    const candidateAbs = stem + toExt;
+    if (fs.existsSync(candidateAbs)) {
+      _jsToTsCache.set(abs, candidateAbs);
+      return normalizePath(path.relative(rootDir, candidateAbs));
+    }
   }
   _jsToTsCache.set(abs, null);
   // Normalise fallback to relative to stay consistent with the remap branch —
@@ -1132,11 +1143,14 @@ function resolveImportPathJS(
   const dir = path.dirname(fromFile);
   const resolved = path.resolve(dir, importSource);
 
-  if (resolved.endsWith('.js')) {
-    const tsCandidate = resolved.replace(/\.js$/, '.ts');
-    if (fs.existsSync(tsCandidate)) return normalizePath(path.relative(rootDir, tsCandidate));
-    const tsxCandidate = resolved.replace(/\.js$/, '.tsx');
-    if (fs.existsSync(tsxCandidate)) return normalizePath(path.relative(rootDir, tsxCandidate));
+  for (const remap of EMIT_EXTENSION_REMAPS) {
+    if (!resolved.endsWith(remap.from)) continue;
+    const stem = resolved.slice(0, -remap.from.length);
+    for (const toExt of remap.to) {
+      const candidate = stem + toExt;
+      if (fs.existsSync(candidate)) return normalizePath(path.relative(rootDir, candidate));
+    }
+    break;
   }
 
   for (const ext of [

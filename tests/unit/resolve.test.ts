@@ -43,7 +43,11 @@ beforeAll(() => {
   //   src/lib/index.js (for directory index resolution)
   //   src/lib/helper.ts
   //   shared/core.ts   (for alias resolution)
+  //   src/esm/util.mts (for .mjs -> .mts remap, #2299)
+  //   src/cjs/legacy.cts (for .cjs -> .cts remap, #2299)
   fs.mkdirSync(path.join(tmpDir, 'src', 'lib'), { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'src', 'esm'), { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'src', 'cjs'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, 'shared'), { recursive: true });
 
   fs.writeFileSync(path.join(tmpDir, 'src', 'math.js'), 'export const add = (a, b) => a + b;');
@@ -58,6 +62,8 @@ beforeAll(() => {
   );
   fs.writeFileSync(path.join(tmpDir, 'src', 'lib', 'helper.ts'), 'export function helper() {}');
   fs.writeFileSync(path.join(tmpDir, 'shared', 'core.ts'), 'export const x = 1;');
+  fs.writeFileSync(path.join(tmpDir, 'src', 'esm', 'util.mts'), 'export const greet = () => "hi";');
+  fs.writeFileSync(path.join(tmpDir, 'src', 'cjs', 'legacy.cts'), 'export const x = 1;');
 });
 
 afterAll(() => {
@@ -88,6 +94,21 @@ describe('resolveImportPathJS', () => {
     const fromFile = path.join(tmpDir, 'src', 'index.js');
     const result = resolveImportPathJS(fromFile, './utils', tmpDir, null);
     expect(result).toMatch(/utils\.tsx$/);
+  });
+
+  it('resolves .mjs import to .mts file when .mts exists (#2299)', () => {
+    // TypeScript's NodeNext/Node16 module resolution requires the *emitted*
+    // extension in relative specifiers: a .mts source is imported via .mjs,
+    // not .mts — mirroring the .js -> .ts remap above for the same reason.
+    const fromFile = path.join(tmpDir, 'src', 'esm', 'index.mts');
+    const result = resolveImportPathJS(fromFile, './util.mjs', tmpDir, null);
+    expect(result).toMatch(/util\.mts$/);
+  });
+
+  it('resolves .cjs import to .cts file when .cts exists (#2299)', () => {
+    const fromFile = path.join(tmpDir, 'src', 'cjs', 'index.cts');
+    const result = resolveImportPathJS(fromFile, './legacy.cjs', tmpDir, null);
+    expect(result).toMatch(/legacy\.cts$/);
   });
 
   it('resolves directory to index.js', () => {

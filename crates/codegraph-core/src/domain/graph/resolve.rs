@@ -1345,8 +1345,18 @@ fn resolve_non_relative_import(
     import_source.to_string()
 }
 
-/// Probe the `.js → .ts/.tsx` remap candidates and return the first
-/// existing file's root-relative path, if any.
+/// Extension pairs to probe when a resolved path uses TypeScript's required
+/// "emitted extension" convention in relative import specifiers: a `.ts`/
+/// `.tsx` source is imported via `.js`, a `.mts` source via `.mjs`, and a
+/// `.cts` source via `.cjs` (#2299).
+const EMIT_EXTENSION_REMAPS: &[(&str, &[&str])] = &[
+    (".js", &[".ts", ".tsx"]),
+    (".mjs", &[".mts"]),
+    (".cjs", &[".cts"]),
+];
+
+/// Probe the emitted-extension remap candidates (see [`EMIT_EXTENSION_REMAPS`])
+/// and return the first existing file's root-relative path, if any.
 /// Skips candidates that exist but lie outside `root_dir` (strip_prefix
 /// would fail), preserving the original fall-through behaviour.
 fn probe_js_to_ts_remap(
@@ -1354,17 +1364,23 @@ fn probe_js_to_ts_remap(
     root_dir: &str,
     known_files: Option<&HashSet<String>>,
 ) -> Option<String> {
-    if !resolved_str.ends_with(".js") {
-        return None;
-    }
     let root = Path::new(root_dir);
-    for replacement in [".ts", ".tsx"] {
-        let candidate = resolved_str.replace(".js", replacement);
-        if file_exists(&candidate, known_files, root_dir) {
-            if let Ok(rel) = Path::new(&candidate).strip_prefix(root) {
-                return Some(normalize_path(&rel.display().to_string()));
+    for (from, targets) in EMIT_EXTENSION_REMAPS {
+        // strip_suffix anchors to the actual end of the string — `resolved_str.replace(from, ...)`
+        // would rewrite every occurrence of `from`, corrupting paths where an
+        // earlier segment happens to contain the same substring (e.g. a
+        // directory literally named `utils.js`).
+        let Some(stem) = resolved_str.strip_suffix(from) else {
+            continue;
+        };
+        for target in *targets {
+            let candidate = format!("{stem}{target}");
+            if file_exists(&candidate, known_files, root_dir) {
+                if let Ok(rel) = Path::new(&candidate).strip_prefix(root) {
+                    return Some(normalize_path(&rel.display().to_string()));
+                }
+                // candidate exists but is outside root_dir — keep probing
             }
-            // candidate exists but is outside root_dir — keep probing
         }
     }
     None
@@ -1781,6 +1797,67 @@ mod tests {
             None,
         );
         assert_eq!(result, "src/utils.ts");
+    }
+
+    #[test]
+    fn resolve_mjs_to_mts_remap_with_known_files() {
+        // #2299: TypeScript's NodeNext/Node16 module resolution requires the
+        // *emitted* extension in relative specifiers — a `.mts` source is
+        // imported via `.mjs`, not `.mts` — mirroring the existing `.js` →
+        // `.ts`/`.tsx` remap for the same reason.
+        let mut known = HashSet::new();
+        known.insert("src/utils.mts".to_string());
+
+        let aliases = PathAliases {
+            base_url: None,
+            paths: vec![],
+        };
+
+        let result = resolve_import_path_inner(
+            "/project/src/index.mts",
+            "./utils.mjs",
+            "/project",
+            &aliases,
+            Some(&known),
+            None,
+        );
+        assert_eq!(result, "src/utils.mts");
+    }
+
+    #[test]
+    fn resolve_cjs_to_cts_remap_with_known_files() {
+        let mut known = HashSet::new();
+        known.insert("src/legacy.cts".to_string());
+
+        let aliases = PathAliases {
+            base_url: None,
+            paths: vec![],
+        };
+
+        let result = resolve_import_path_inner(
+            "/project/src/index.cts",
+            "./legacy.cjs",
+            "/project",
+            &aliases,
+            Some(&known),
+            None,
+        );
+        assert_eq!(result, "src/legacy.cts");
+    }
+
+    #[test]
+    fn probe_js_to_ts_remap_does_not_corrupt_a_path_with_an_earlier_js_substring() {
+        // Regression guard: the previous implementation used
+        // `resolved_str.replace(".js", replacement)`, which rewrites EVERY
+        // occurrence of the substring — including one in an earlier path
+        // segment (e.g. a directory literally named `utils.js`), not just the
+        // trailing extension. `strip_suffix` anchors to the actual end.
+        let mut known = HashSet::new();
+        known.insert("src/utils.js/index.ts".to_string());
+
+        let result =
+            probe_js_to_ts_remap("/project/src/utils.js/index.js", "/project", Some(&known));
+        assert_eq!(result, Some("src/utils.js/index.ts".to_string()));
     }
 
     // Regression tests for #1769: a fixed-depth "grandparent equality" check
