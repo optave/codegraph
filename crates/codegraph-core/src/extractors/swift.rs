@@ -346,6 +346,42 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
             }
         }
 
+        // A protocol member signature is its own distinct node type — NOT
+        // `function_declaration` — confirmed via tree-sitter-swift's own
+        // node-types.json: `protocol_function_declaration` has no `body`
+        // field at all, while `function_declaration`'s `body` field is
+        // required. Without this arm, every protocol method was silently
+        // dropped from the graph entirely (issue #2285, Greptile review, PR
+        // #2452). `bodyless: Some(true)` unconditionally, since the grammar
+        // guarantees this node type never has a body; skip complexity/CFG
+        // for the same reason `handle_interface_decl` (csharp.rs) does for
+        // interface methods.
+        "protocol_function_declaration" => {
+            let name_node =
+                find_child(node, "simple_identifier").or_else(|| node.child_by_field_name("name"));
+            if let Some(name_node) = name_node {
+                let parent_proto = find_swift_parent_class(node, source);
+                let name = node_text(&name_node, source);
+                let full_name = match &parent_proto {
+                    Some(proto) => format!("{}.{}", proto, name),
+                    None => name.to_string(),
+                };
+                symbols.definitions.push(Definition {
+                    name: full_name,
+                    kind: "method".to_string(),
+                    line: start_line(node),
+                    end_line: Some(end_line(node)),
+                    decorators: None,
+                    complexity: None,
+                    cfg: None,
+                    children: None,
+                    bodyless: Some(true),
+                    content_hash: None,
+                    accessor_kind: None,
+                });
+            }
+        }
+
         "import_declaration" => {
             if let Some(id_node) = find_child(node, "identifier") {
                 let path = node_text(&id_node, source).to_string();
@@ -469,6 +505,25 @@ mod tests {
         let s = parse_swift("protocol Drawable { func draw() }");
         let proto = s.definitions.iter().find(|d| d.name == "Drawable").unwrap();
         assert_eq!(proto.kind, "interface");
+    }
+
+    #[test]
+    fn extracts_protocol_method_signature_as_bodyless_method() {
+        // Protocol member signatures parse as `protocol_function_declaration`
+        // -- a distinct node type from `function_declaration` that never has
+        // a body field. Before this fix, the extractor only matched
+        // `function_declaration`, so protocol methods were silently dropped
+        // from the graph entirely (issue #2285).
+        let s = parse_swift("protocol Drawable { func draw() }");
+        let draw = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "Drawable.draw")
+            .unwrap();
+        assert_eq!(draw.kind, "method");
+        assert_eq!(draw.bodyless, Some(true));
+        assert!(draw.complexity.is_none());
+        assert!(draw.cfg.is_none());
     }
 
     #[test]

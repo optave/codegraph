@@ -189,12 +189,24 @@ function handleSwiftProtocolDecl(node: TreeSitterNode, ctx: ExtractorOutput): vo
     endLine: nodeEndLine(node),
   });
 
-  // Methods inside protocol_body or class_body
+  // Methods inside protocol_body or class_body. A protocol member signature
+  // is its own distinct node type, `protocol_function_declaration` — NOT
+  // `function_declaration` (confirmed via tree-sitter-swift's own
+  // node-types.json: `protocol_function_declaration` has no `body` field at
+  // all, while `function_declaration`'s `body` field is required) — so this
+  // previously matched nothing here and silently dropped every protocol
+  // method from the graph entirely (issue #2285, Greptile review, PR #2452).
+  // `bodyless: true` unconditionally, since the grammar guarantees this node
+  // type never has a body — mirrors the explicit-`bodyless` pattern already
+  // used for Objective-C's own signature-only `method_declaration` (see
+  // `handleMethodDecl` in `objc.ts`) now that `hasFuncBody()` relies solely
+  // on `bodyless` rather than also treating a single-line span as a proxy
+  // for "no body".
   const body = findChild(node, 'protocol_body') || findChild(node, 'class_body');
   if (body) {
     for (let i = 0; i < body.childCount; i++) {
       const child = body.child(i);
-      if (child && child.type === 'function_declaration') {
+      if (child && child.type === 'protocol_function_declaration') {
         const methName = findChild(child, 'simple_identifier');
         if (methName) {
           ctx.definitions.push({
@@ -202,6 +214,18 @@ function handleSwiftProtocolDecl(node: TreeSitterNode, ctx: ExtractorOutput): vo
             kind: 'method',
             line: child.startPosition.row + 1,
             endLine: child.endPosition.row + 1,
+            bodyless: true,
+          });
+        }
+      } else if (child && child.type === 'function_declaration') {
+        const methName = findChild(child, 'simple_identifier');
+        if (methName) {
+          ctx.definitions.push({
+            name: `${name}.${methName.text}`,
+            kind: 'method',
+            line: child.startPosition.row + 1,
+            endLine: child.endPosition.row + 1,
+            bodyless: !child.childForFieldName('body'),
           });
         }
       }

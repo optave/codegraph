@@ -58,6 +58,18 @@ describe('Swift parser', () => {
     );
   });
 
+  it('extracts a protocol method signature as a bodyless method (issue #2285)', () => {
+    // Protocol member signatures parse as `protocol_function_declaration` --
+    // a distinct node type from `function_declaration` that never has a
+    // body field. Before this fix, the extractor only matched
+    // `function_declaration`, so protocol methods were silently dropped
+    // from the graph entirely (not merely mis-flagged as bodied).
+    const symbols = parseSwift(`protocol Drawable { func draw() }`);
+    expect(symbols.definitions).toContainEqual(
+      expect.objectContaining({ name: 'Drawable.draw', kind: 'method', bodyless: true }),
+    );
+  });
+
   it('extracts enum declarations', () => {
     const symbols = parseSwift(`enum Direction {
   case north
