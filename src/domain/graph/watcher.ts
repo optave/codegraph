@@ -242,17 +242,26 @@ interface WatcherContext {
  * gated on actually observing a `package.json` change rather than run on
  * every rebuild, to avoid a per-keystroke re-scan cost in a large monorepo.
  *
+ * `setWorkspaces()` is called unconditionally, even when `workspaces` comes
+ * back empty — unlike the full-build pipeline's own `size > 0` gate before
+ * calling it, which never has a real staleness consequence there (a full
+ * build starts from an empty `_workspaceCache` each process). This function
+ * instead runs repeatedly within one long-lived watch session: if the last
+ * workspace package is removed mid-session, an empty map must still REPLACE
+ * whatever non-empty map is currently cached, or every subsequent rebuild
+ * keeps resolving against removed workspace entries (Greptile review, PR
+ * #2458).
+ *
  * Exported for unit-testing; prefer letting the watcher call this
  * automatically in production paths.
  */
 export function refreshWorkspaceAndExportsCaches(rootDir: string): void {
   const workspaces = detectWorkspaces(rootDir);
+  // Also clears the exports cache as a side effect, but only on this
+  // (TypeScript) side — the explicit clearExportsCache() below covers the
+  // native side too.
+  setWorkspaces(rootDir, workspaces);
   if (workspaces.size > 0) {
-    // setWorkspaces() also clears the exports cache as a side effect, but
-    // only on this (TypeScript) side — clearExportsCache() below covers the
-    // native side too, and must still run when there are no (or no longer
-    // any) workspaces to register.
-    setWorkspaces(rootDir, workspaces);
     info(`Refreshed ${workspaces.size} workspace packages (package.json changed)`);
   }
   clearExportsCache();

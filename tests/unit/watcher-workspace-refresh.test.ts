@@ -94,6 +94,34 @@ describe('refreshWorkspaceAndExportsCaches (issue #2290)', () => {
     expect(resolveViaWorkspace('@myorg/newpkg', tmpDir)).toBe(path.join(newDir, 'index.js'));
   });
 
+  it('drops a workspace package removed mid-session, including the last one (Greptile review, PR #2458)', () => {
+    // detectWorkspaces() returning an empty map (the last workspace
+    // package removed, or the root `workspaces` field itself deleted)
+    // must still REPLACE the cached non-empty map — an earlier version of
+    // this fix gated setWorkspaces() on `workspaces.size > 0`, leaving the
+    // stale entries active forever once the last workspace was removed.
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+    );
+    const coreDir = path.join(tmpDir, 'packages', 'core');
+    fs.mkdirSync(coreDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(coreDir, 'package.json'),
+      JSON.stringify({ name: '@myorg/core', exports: './index.js' }),
+    );
+    fs.writeFileSync(path.join(coreDir, 'index.js'), 'export default 1;');
+
+    refreshWorkspaceAndExportsCaches(tmpDir);
+    expect(resolveViaWorkspace('@myorg/core', tmpDir)).toBe(path.join(coreDir, 'index.js'));
+
+    // Remove the only workspace package's manifest entirely.
+    fs.rmSync(coreDir, { recursive: true, force: true });
+
+    refreshWorkspaceAndExportsCaches(tmpDir);
+    expect(resolveViaWorkspace('@myorg/core', tmpDir)).toBeNull();
+  });
+
   it('clears the exports cache for a plain (non-workspace) dependency too', () => {
     // No workspaces registered at all — exercises the branch where
     // detectWorkspaces() finds nothing, which must still clear the
