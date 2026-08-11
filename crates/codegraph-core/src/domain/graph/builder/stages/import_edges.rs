@@ -612,6 +612,37 @@ fn classify_import_kind(imp: &crate::types::Import) -> &'static str {
 /// kinds are erased before runtime, so a plain `import { Foo } from 'y'` (no
 /// `type` keyword) is the only consumption signal `codegraph exports` can
 /// observe for them (#1833).
+/// Push an import/reexport edge row unless an edge with the same
+/// (source, target, kind) has already been pushed for this file. Two import
+/// statements in the same file often resolve to the same target — two
+/// `import()` calls to the same module, a named + wildcard reexport from the
+/// same source, or two reexport statements naming the same original symbol
+/// under different aliases (#2297) — so without this, the identical edge row
+/// is computed and pushed once per statement instead of once per file.
+/// `INSERT OR IGNORE` + `idx_edges_content_unique` already deduplicate the DB
+/// rows themselves at insert time; this only avoids the redundant
+/// computation and batch-insert row upstream of that. Mirrors
+/// `pushImportEdgeOnce` in stages/build-edges.ts.
+fn push_edge_once(
+    seen: &mut HashSet<(i64, i64, String)>,
+    edges: &mut Vec<EdgeRow>,
+    source_id: i64,
+    target_id: i64,
+    kind: &str,
+    confidence: f64,
+) {
+    if !seen.insert((source_id, target_id, kind.to_string())) {
+        return;
+    }
+    edges.push(EdgeRow {
+        source_id,
+        target_id,
+        kind: kind.to_string(),
+        confidence,
+        dynamic: 0,
+    });
+}
+
 fn emit_named_symbol_rows(
     edges: &mut Vec<EdgeRow>,
     file_node_id: i64,
@@ -620,6 +651,7 @@ fn emit_named_symbol_rows(
     kind: &str,
     ctx: &ImportEdgeContext,
     symbol_node_ids: &HashMap<(String, String), (i64, String)>,
+    seen_edges: &mut HashSet<(i64, i64, String)>,
 ) {
     for (_local, original, type_only) in import_name_pairs(imp) {
         let mut target_file = resolved_path.to_string();
@@ -643,13 +675,7 @@ fn emit_named_symbol_rows(
         {
             continue;
         }
-        edges.push(EdgeRow {
-            source_id: file_node_id,
-            target_id: *sym_id,
-            kind: kind.to_string(),
-            confidence: 1.0,
-            dynamic: 0,
-        });
+        push_edge_once(seen_edges, edges, file_node_id, *sym_id, kind, 1.0);
     }
 }
 
@@ -663,6 +689,7 @@ fn emit_barrel_through_rows(
     edge_kind: &str,
     ctx: &ImportEdgeContext,
     file_node_ids: &HashMap<String, i64>,
+    seen_edges: &mut HashSet<(i64, i64, String)>,
 ) {
     let is_reexport = imp.reexport.unwrap_or(false);
     if is_reexport || !ctx.is_barrel_file(resolved_path) {
@@ -685,13 +712,14 @@ fn emit_barrel_through_rows(
             continue;
         }
         if let Some(&actual_id) = file_node_ids.get(&actual_source) {
-            edges.push(EdgeRow {
-                source_id: file_node_id,
-                target_id: actual_id,
-                kind: through_kind.to_string(),
-                confidence: 0.9,
-                dynamic: 0,
-            });
+            push_edge_once(
+                seen_edges,
+                edges,
+                file_node_id,
+                actual_id,
+                through_kind,
+                0.9,
+            );
         }
     }
 }
@@ -706,6 +734,7 @@ fn emit_edges_for_import(
     ctx: &ImportEdgeContext,
     file_node_ids: &HashMap<String, i64>,
     symbol_node_ids: &HashMap<(String, String), (i64, String)>,
+    seen_edges: &mut HashSet<(i64, i64, String)>,
 ) {
     let is_reexport = imp.reexport.unwrap_or(false);
     if is_barrel_only && !is_reexport {
@@ -729,13 +758,14 @@ fn emit_edges_for_import(
             continue;
         };
         if let Some(&submodule_id) = file_node_ids.get(&submodule) {
-            edges.push(EdgeRow {
-                source_id: file_node_id,
-                target_id: submodule_id,
-                kind: "imports".to_string(),
-                confidence: 1.0,
-                dynamic: 0,
-            });
+            push_edge_once(
+                seen_edges,
+                edges,
+                file_node_id,
+                submodule_id,
+                "imports",
+                1.0,
+            );
         }
     }
 
@@ -744,13 +774,7 @@ fn emit_edges_for_import(
         None => return,
     };
     let edge_kind = classify_import_kind(imp);
-    edges.push(EdgeRow {
-        source_id: file_node_id,
-        target_id,
-        kind: edge_kind.to_string(),
-        confidence: 1.0,
-        dynamic: 0,
-    });
+    push_edge_once(seen_edges, edges, file_node_id, target_id, edge_kind, 1.0);
     // Always attempted (not just for `import type`/inline-`type` specifiers) —
     // emit_named_symbol_rows also credits plain specifiers that resolve to a
     // TypeScript interface/type-alias declaration (#1833).
@@ -763,6 +787,7 @@ fn emit_edges_for_import(
             "imports-type",
             ctx,
             symbol_node_ids,
+            seen_edges,
         );
     }
     if is_named_reexport(imp) {
@@ -774,15 +799,17 @@ fn emit_edges_for_import(
             "reexports",
             ctx,
             symbol_node_ids,
+            seen_edges,
         );
     } else if is_wildcard_reexport(imp) {
-        edges.push(EdgeRow {
-            source_id: file_node_id,
+        push_edge_once(
+            seen_edges,
+            edges,
+            file_node_id,
             target_id,
-            kind: "reexports-wildcard".to_string(),
-            confidence: 1.0,
-            dynamic: 0,
-        });
+            "reexports-wildcard",
+            1.0,
+        );
     }
     emit_barrel_through_rows(
         edges,
@@ -792,6 +819,7 @@ fn emit_edges_for_import(
         edge_kind,
         ctx,
         file_node_ids,
+        seen_edges,
     );
 }
 
@@ -815,6 +843,7 @@ pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<Edg
 
         let abs_file = Path::new(&ctx.root_dir).join(rel_path);
         let abs_str = abs_file.to_str().unwrap_or("");
+        let mut seen_edges: HashSet<(i64, i64, String)> = HashSet::new();
 
         for imp in &symbols.imports {
             // CJS require bindings feed imported_names for receiver-edge resolution
@@ -831,6 +860,7 @@ pub fn build_import_edges(conn: &Connection, ctx: &ImportEdgeContext) -> Vec<Edg
                 ctx,
                 &file_node_ids,
                 &symbol_node_ids,
+                &mut seen_edges,
             );
         }
     }
@@ -1186,6 +1216,7 @@ mod tests {
         );
 
         let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
         emit_named_symbol_rows(
             &mut edges,
             1,
@@ -1194,6 +1225,7 @@ mod tests {
             "imports-type",
             &ctx,
             &symbol_node_ids,
+            &mut seen_edges,
         );
 
         assert_eq!(edges.len(), 1);
@@ -1216,6 +1248,7 @@ mod tests {
         );
 
         let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
         emit_named_symbol_rows(
             &mut edges,
             1,
@@ -1224,6 +1257,7 @@ mod tests {
             "imports-type",
             &ctx,
             &symbol_node_ids,
+            &mut seen_edges,
         );
 
         assert!(edges.is_empty());
@@ -1244,6 +1278,7 @@ mod tests {
         );
 
         let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
         emit_named_symbol_rows(
             &mut edges,
             1,
@@ -1252,9 +1287,37 @@ mod tests {
             "imports-type",
             &ctx,
             &symbol_node_ids,
+            &mut seen_edges,
         );
 
         assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn push_edge_once_drops_a_repeat_of_the_same_source_target_kind() {
+        // #2297: two import statements in the same file resolving to the same
+        // (source, target, kind) must only push one edge row — the second
+        // push is redundant computation the DB-level unique constraint would
+        // silently discard anyway, but should never reach the batch at all.
+        let mut seen = HashSet::new();
+        let mut edges = Vec::new();
+        push_edge_once(&mut seen, &mut edges, 1, 2, "imports", 1.0);
+        push_edge_once(&mut seen, &mut edges, 1, 2, "imports", 1.0);
+
+        assert_eq!(edges.len(), 1);
+    }
+
+    #[test]
+    fn push_edge_once_keeps_rows_that_differ_only_by_kind() {
+        // Two edges kinds for the same (source, target) pair are NOT
+        // duplicates of each other — e.g. a plain `imports` edge and an
+        // `imports-type` symbol-level edge to the same file must both survive.
+        let mut seen = HashSet::new();
+        let mut edges = Vec::new();
+        push_edge_once(&mut seen, &mut edges, 1, 2, "imports", 1.0);
+        push_edge_once(&mut seen, &mut edges, 1, 2, "imports-type", 1.0);
+
+        assert_eq!(edges.len(), 2);
     }
 
     #[test]

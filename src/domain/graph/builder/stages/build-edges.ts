@@ -228,6 +228,32 @@ function importEdgeKind(imp: Import): string {
  *     so a plain `import { Foo } from 'y'` (no `type` keyword) is the only
  *     consumption signal `codegraph exports` can observe for them (#1833).
  */
+/**
+ * Push an import/reexport edge row unless an edge with the same
+ * (source, target, kind) has already been pushed for this file. Two import
+ * statements in the same file often resolve to the same target — two
+ * `import()` calls to the same module, a named + wildcard reexport from the
+ * same source, or two reexport statements naming the same original symbol
+ * under different aliases (#2297) — so without this, the identical edge row
+ * is computed and pushed once per statement instead of once per file. Both
+ * engines already deduplicate the DB rows themselves at insert time via
+ * `idx_edges_content_unique` (#2072); this only avoids the redundant
+ * computation and batch-insert row upstream of that.
+ */
+function pushImportEdgeOnce(
+  seenImportEdges: Set<string>,
+  edgeRows: EdgeRowTuple[],
+  sourceId: number,
+  targetId: number,
+  kind: string,
+  confidence: number,
+): void {
+  const key = `${sourceId}|${targetId}|${kind}`;
+  if (seenImportEdges.has(key)) return;
+  seenImportEdges.add(key);
+  edgeRows.push([sourceId, targetId, kind, confidence, 0, null, null]);
+}
+
 function emitNamedSymbolEdges(
   ctx: PipelineContext,
   imp: Import,
@@ -235,6 +261,7 @@ function emitNamedSymbolEdges(
   fileNodeId: number,
   allEdgeRows: EdgeRowTuple[],
   edgeKind: 'imports-type' | 'reexports',
+  seenImportEdges: Set<string>,
 ): void {
   if (!ctx.nodesByNameAndFile) return;
   for (const { original, typeOnly } of importNamePairs(imp)) {
@@ -249,7 +276,7 @@ function emitNamedSymbolEdges(
     ) {
       continue;
     }
-    allEdgeRows.push([fileNodeId, target.id, edgeKind, 1.0, 0, null, null]);
+    pushImportEdgeOnce(seenImportEdges, allEdgeRows, fileNodeId, target.id, edgeKind, 1.0);
   }
 }
 
@@ -264,6 +291,7 @@ function emitEdgesForImport(
   relPath: string,
   getNodeIdStmt: NodeIdStmt,
   allEdgeRows: EdgeRowTuple[],
+  seenImportEdges: Set<string>,
 ): void {
   const resolvedPath = getResolved(ctx, path.join(ctx.rootDir, relPath), imp.source);
 
@@ -281,24 +309,41 @@ function emitEdgesForImport(
     );
     if (!submodule) continue;
     const submoduleRow = getNodeIdStmt.get(submodule, 'file', submodule, 0);
-    if (submoduleRow)
-      allEdgeRows.push([fileNodeId, submoduleRow.id, 'imports', 1.0, 0, null, null]);
+    if (submoduleRow) {
+      pushImportEdgeOnce(seenImportEdges, allEdgeRows, fileNodeId, submoduleRow.id, 'imports', 1.0);
+    }
   }
 
   const targetRow = getNodeIdStmt.get(resolvedPath, 'file', resolvedPath, 0);
   if (!targetRow) return;
 
   const edgeKind = importEdgeKind(imp);
-  allEdgeRows.push([fileNodeId, targetRow.id, edgeKind, 1.0, 0, null, null]);
+  pushImportEdgeOnce(seenImportEdges, allEdgeRows, fileNodeId, targetRow.id, edgeKind, 1.0);
 
   // Always attempted (not just for `import type`/inline-`type` specifiers) —
   // emitNamedSymbolEdges also credits plain specifiers that resolve to a
   // TypeScript interface/type-alias declaration (#1833).
   if (!imp.reexport) {
-    emitNamedSymbolEdges(ctx, imp, resolvedPath, fileNodeId, allEdgeRows, 'imports-type');
+    emitNamedSymbolEdges(
+      ctx,
+      imp,
+      resolvedPath,
+      fileNodeId,
+      allEdgeRows,
+      'imports-type',
+      seenImportEdges,
+    );
   }
   if (imp.reexport && !imp.wildcardReexport) {
-    emitNamedSymbolEdges(ctx, imp, resolvedPath, fileNodeId, allEdgeRows, 'reexports');
+    emitNamedSymbolEdges(
+      ctx,
+      imp,
+      resolvedPath,
+      fileNodeId,
+      allEdgeRows,
+      'reexports',
+      seenImportEdges,
+    );
   } else if (imp.reexport && imp.wildcardReexport) {
     // A genuine wildcard needs to be distinguishable from a named reexport
     // even when a *different* statement in the same file names specific
@@ -306,11 +351,27 @@ function emitEdgesForImport(
     // "only these symbols are re-exported" apart from "everything is
     // re-exported, and these happen to also be individually named" (#1849
     // review). See `collectReexportedSymbols` in domain/analysis/exports.ts.
-    allEdgeRows.push([fileNodeId, targetRow.id, 'reexports-wildcard', 1.0, 0, null, null]);
+    pushImportEdgeOnce(
+      seenImportEdges,
+      allEdgeRows,
+      fileNodeId,
+      targetRow.id,
+      'reexports-wildcard',
+      1.0,
+    );
   }
 
   if (!imp.reexport && isBarrelFile(ctx, resolvedPath)) {
-    buildBarrelEdges(ctx, imp, resolvedPath, fileNodeId, edgeKind, getNodeIdStmt, allEdgeRows);
+    buildBarrelEdges(
+      ctx,
+      imp,
+      resolvedPath,
+      fileNodeId,
+      edgeKind,
+      getNodeIdStmt,
+      allEdgeRows,
+      seenImportEdges,
+    );
   }
 }
 
@@ -326,11 +387,20 @@ function buildImportEdges(
     const fileNodeRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
     if (!fileNodeRow) continue;
     const fileNodeId = fileNodeRow.id;
+    const seenImportEdges = new Set<string>();
 
     for (const imp of symbols.imports) {
       // Barrel-only files: only emit reexport edges, skip regular imports
       if (isBarrelOnly && !imp.reexport) continue;
-      emitEdgesForImport(ctx, imp, fileNodeId, relPath, getNodeIdStmt, allEdgeRows);
+      emitEdgesForImport(
+        ctx,
+        imp,
+        fileNodeId,
+        relPath,
+        getNodeIdStmt,
+        allEdgeRows,
+        seenImportEdges,
+      );
     }
   }
 }
@@ -343,6 +413,7 @@ function buildBarrelEdges(
   edgeKind: string,
   getNodeIdStmt: NodeIdStmt,
   edgeRows: EdgeRowTuple[],
+  seenImportEdges: Set<string>,
 ): void {
   const resolvedSources = new Set<string>();
   for (const { original } of importNamePairs(imp)) {
@@ -357,7 +428,7 @@ function buildBarrelEdges(
             : edgeKind === 'dynamic-imports'
               ? 'dynamic-imports'
               : 'imports';
-        edgeRows.push([fileNodeId, actualRow.id, kind, 0.9, 0, null, null]);
+        pushImportEdgeOnce(seenImportEdges, edgeRows, fileNodeId, actualRow.id, kind, 0.9);
       }
     }
   }
