@@ -73,12 +73,22 @@ else
   fi
 fi
 
-# Run the build
+# Run the build. Stderr is captured (not discarded) so a failure has a
+# diagnosable trail instead of silently no-oping — npx can fail for reasons
+# outside your project (no network, registry down, wrong/missing package),
+# and a bare 2>/dev/null + `|| true` used to give no signal at all that
+# graph auto-rebuild wasn't active (issue #2302, same pattern #2074 applied
+# to this repo's own copy of this hook).
 BUILD_OK=0
+BUILD_ERR=""
 if command -v codegraph &>/dev/null; then
-  codegraph build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>/dev/null && BUILD_OK=1 || true
+  BUILD_ERR=$(codegraph build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>&1 1>/dev/null) && BUILD_OK=1 || true
 else
-  npx --yes @optave/codegraph build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>/dev/null && BUILD_OK=1 || true
+  BUILD_ERR=$(npx --yes @optave/codegraph build "$PROJECT_DIR" -d "$DB_PATH" $BUILD_FLAGS 2>&1 1>/dev/null) && BUILD_OK=1 || true
+fi
+
+if [ "$BUILD_OK" -eq 0 ]; then
+  echo "[codegraph] graph rebuild failed (first line: $(printf '%s\n' "$BUILD_ERR" | head -1))" >&2
 fi
 
 # Update marker only if we did a full rebuild AND it succeeded
