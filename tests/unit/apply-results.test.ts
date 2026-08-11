@@ -52,9 +52,19 @@ describe('hasFuncBody', () => {
     expect(hasFuncBody({ kind: 'class', line: 5, endLine: 10 })).toBe(false);
   });
 
-  it('is false when endLine is missing or not after line (type signature, not a body)', () => {
-    expect(hasFuncBody({ kind: 'function', line: 5 })).toBe(false);
-    expect(hasFuncBody({ kind: 'function', line: 5, endLine: 5 })).toBe(false);
+  it('is true for a genuinely bodied single-line function/method regardless of endLine (issue #2285)', () => {
+    // A prior version required `endLine > line`, treating line span as a
+    // proxy for "has a body" — wrong for a getter, guard return, or C#
+    // expression-bodied member (`bool IsPositive(int x) => x > 0;`) whose
+    // entire body fits on one line. `endLine` is no longer part of this
+    // check at all: `bodyless` (issue #1922) is the sole, reliable signal.
+    expect(hasFuncBody({ kind: 'function', line: 5, endLine: 5 })).toBe(true);
+    expect(hasFuncBody({ kind: 'method', line: 5, endLine: 5 })).toBe(true);
+    expect(hasFuncBody({ kind: 'function', line: 5 })).toBe(true);
+  });
+
+  it('is false when line is missing/zero', () => {
+    expect(hasFuncBody({ kind: 'function', line: 0 })).toBe(false);
   });
 
   it('is true for a dotted name with a real body (Class.method, module-table function, receiver method) — issue #1922', () => {
