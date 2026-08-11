@@ -58,62 +58,105 @@ export function computeHalsteadDerived(
 
 // ─── LOC Metrics ──────────────────────────────────────────────────────────
 
-const C_STYLE_PREFIXES = ['//', '/*', '*', '*/'];
+const LINE_COMMENT_PREFIX = ['//'];
 
-// See native `comment_prefixes()` in crates/codegraph-core/src/ast_analysis/complexity.rs
-// for the source of truth this must stay byte-for-byte identical to (both
-// engines must agree on which lines count as comments for the MI calculation).
-const COMMENT_PREFIXES = new Map<string, string[]>([
-  ['javascript', C_STYLE_PREFIXES],
-  ['typescript', C_STYLE_PREFIXES],
-  ['tsx', C_STYLE_PREFIXES],
-  ['go', C_STYLE_PREFIXES],
-  ['rust', C_STYLE_PREFIXES],
-  ['java', C_STYLE_PREFIXES],
-  ['csharp', C_STYLE_PREFIXES],
+// See native `line_comment_prefixes()`/`is_block_comment_lang()` in
+// crates/codegraph-core/src/ast_analysis/complexity.rs for the source of
+// truth this must stay byte-for-byte identical to (both engines must agree
+// on which lines count as comments for the MI calculation).
+//
+// Only genuine single-line comment markers live here. `/*`/`*/`/a bare `*`
+// continuation line are NOT prefixes to trust unconditionally — a bare `*`
+// also opens a pointer-dereference assignment (`*ptr = 5;`) in every
+// language below that supports one, so treating it as a comment signal on
+// its own misclassified real code as a comment (issue #2287). Block-comment
+// lines are instead recognized via explicit `/* ... */` state tracking in
+// `computeLOCMetrics`, scoped to the languages NOT in `NO_BLOCK_COMMENT_LANGS`.
+const LINE_COMMENT_PREFIXES = new Map<string, string[]>([
+  ['javascript', LINE_COMMENT_PREFIX],
+  ['typescript', LINE_COMMENT_PREFIX],
+  ['tsx', LINE_COMMENT_PREFIX],
+  ['go', LINE_COMMENT_PREFIX],
+  ['rust', LINE_COMMENT_PREFIX],
+  ['java', LINE_COMMENT_PREFIX],
+  ['csharp', LINE_COMMENT_PREFIX],
   ['python', ['#']],
   ['ruby', ['#']],
-  ['php', ['//', '#', '/*', '*', '*/']],
-  // c/cpp/cuda/objc/kotlin/swift/scala use the same `/** ... */` block-comment
-  // style as JS/Java/C# — the old 2-entry list omitted bare `*`/`*/`
-  // continuation lines, undercounting commentLines for any multi-line
-  // Javadoc-style comment (issue #2058).
-  ['c', C_STYLE_PREFIXES],
-  ['cpp', C_STYLE_PREFIXES],
-  ['cuda', C_STYLE_PREFIXES],
-  ['objc', C_STYLE_PREFIXES],
-  ['kotlin', C_STYLE_PREFIXES],
-  ['swift', C_STYLE_PREFIXES],
-  ['scala', C_STYLE_PREFIXES],
+  ['php', ['//', '#']],
+  ['c', LINE_COMMENT_PREFIX],
+  ['cpp', LINE_COMMENT_PREFIX],
+  ['cuda', LINE_COMMENT_PREFIX],
+  ['objc', LINE_COMMENT_PREFIX],
+  ['kotlin', LINE_COMMENT_PREFIX],
+  ['swift', LINE_COMMENT_PREFIX],
+  ['scala', LINE_COMMENT_PREFIX],
   ['bash', ['#']],
   ['lua', ['--']],
-  ['zig', ['//']],
-  ['groovy', C_STYLE_PREFIXES],
+  ['zig', LINE_COMMENT_PREFIX],
+  ['groovy', LINE_COMMENT_PREFIX],
   ['r', ['#']],
 ]);
 
 /**
+ * Languages that do NOT use Javadoc-style block comments (issue #2058,
+ * #2287). Inverted (exclusion) rather than an inclusion set so an unlisted
+ * language string falls back to full C-style/block-comment support — the
+ * same fallback `computeLOCMetrics` already gives an unlisted language for
+ * its line-comment prefix (`LINE_COMMENT_PREFIX`, `//`), matching the native
+ * mirror's own pre-fix catch-all default of full C-style support.
+ */
+const NO_BLOCK_COMMENT_LANGS = new Set(['python', 'ruby', 'bash', 'lua', 'zig', 'r']);
+
+/**
  * Compute LOC metrics from a function node's source text.
  *
+ * Tracks Javadoc-style block-comment state across lines rather than
+ * trusting a bare opening/continuation/closing marker unconditionally: a
+ * line is only a block-comment continuation while a genuine block-opening
+ * line has been seen and the block hasn't closed yet. Without this,
+ * `*ptr = 5;` (a pointer-dereference assignment, valid in every
+ * block-comment language here) was wrongly counted as a Javadoc-style
+ * continuation line (issue #2287).
+ *
  * @param {object} functionNode - tree-sitter node
- * @param {string} [language] - Language ID (falls back to C-style prefixes)
+ * @param {string} [language] - Language ID (falls back to C-style, block-comment-supporting behavior)
  * @returns {{ loc: number, sloc: number, commentLines: number }}
  */
 export function computeLOCMetrics(functionNode: TreeSitterNode, language?: string): LOCMetrics {
   const text = functionNode.text;
   const lines = text.split('\n');
   const loc = lines.length;
-  const prefixes = (language && COMMENT_PREFIXES.get(language)) || C_STYLE_PREFIXES;
+  const linePrefixes = (language && LINE_COMMENT_PREFIXES.get(language)) || LINE_COMMENT_PREFIX;
+  const supportsBlockComments = !language || !NO_BLOCK_COMMENT_LANGS.has(language);
 
   let commentLines = 0;
   let blankLines = 0;
+  let inBlockComment = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
+
+    if (inBlockComment) {
+      commentLines++;
+      if (trimmed.includes('*/')) inBlockComment = false;
+      continue;
+    }
+
     if (trimmed === '') {
       blankLines++;
-    } else if (prefixes.some((p) => trimmed.startsWith(p))) {
+      continue;
+    }
+
+    if (linePrefixes.some((p) => trimmed.startsWith(p))) {
       commentLines++;
+      continue;
+    }
+
+    if (supportsBlockComments && trimmed.startsWith('/*')) {
+      commentLines++;
+      // Search after the opening 2 chars so a 2-char close can't overlap the
+      // opening `/*` itself (e.g. "/*/" is NOT a closed empty comment).
+      if (!trimmed.slice(2).includes('*/')) inBlockComment = true;
     }
   }
 

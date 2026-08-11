@@ -408,14 +408,34 @@ describe('computeLOCMetrics', () => {
     const root = parse(`
       function commented() {
         // line comment
-        /* block comment */
-        * star comment
+        /* block comment
+         * continuation line
+         */
         return 1;
       }
     `);
     const funcNode = getFunctionBody(root);
     const result = computeLOCMetrics(funcNode);
-    expect(result.commentLines).toBeGreaterThanOrEqual(3);
+    // // line comment, /* block comment, * continuation line, */ — 4 lines.
+    expect(result.commentLines).toBeGreaterThanOrEqual(4);
+  });
+
+  it('does not treat a bare "*" line as a comment unless a real block comment is open (issue #2287)', () => {
+    // A multiplication-operator continuation line is real JS code that
+    // starts with a bare "*" — with no preceding, still-open `/*`, it must
+    // not be misclassified as a Javadoc-style comment continuation. (The
+    // Rust `loc()` test below covers the issue's own pointer-dereference
+    // repro, which JS has no equivalent syntax for.)
+    const root = parse(`
+      function notAComment() {
+        const x = 5
+          * 2;
+        return x;
+      }
+    `);
+    const funcNode = getFunctionBody(root);
+    const result = computeLOCMetrics(funcNode);
+    expect(result.commentLines).toBe(0);
   });
 
   it('SLOC excludes blanks and comments', () => {
@@ -666,7 +686,7 @@ describe('Go complexity', () => {
 // ─── Rust ────────────────────────────────────────────────────────────────
 
 describe('Rust complexity', () => {
-  const { analyze, halstead } = makeHelpers('rust', sharedParsers());
+  const { analyze, halstead, loc } = makeHelpers('rust', sharedParsers());
 
   it('simple function', () => {
     const r = analyze('fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n');
@@ -721,6 +741,25 @@ describe('Rust complexity', () => {
     const h = halstead('fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n');
     expect(h).not.toBeNull();
     expect(h.volume).toBeGreaterThan(0);
+  });
+
+  it('LOC: does not misclassify pointer-dereference assignments as comment continuation lines (issue #2287)', () => {
+    // A bare `*` prefix (trusted unconditionally by the old flat
+    // comment-prefix list, to match Javadoc-style `* ...` continuation
+    // lines) also opens a pointer-dereference assignment in Rust — this is
+    // the issue's own exact repro.
+    const l = loc(
+      'fn deref_heavy(ptr: *mut i32) -> i32 {\n    unsafe {\n        *ptr = 5;\n        *ptr = *ptr + 1;\n        return *ptr;\n    }\n}\n',
+    );
+    expect(l.commentLines).toBe(0);
+    expect(l.sloc).toBe(l.loc);
+  });
+
+  it('LOC: still tracks a genuine multi-line block comment inside the function body', () => {
+    const l = loc(
+      'fn documented() -> i32 {\n    /**\n     * Doc comment.\n     * More doc.\n     */\n    1\n}\n',
+    );
+    expect(l.commentLines).toBe(4);
   });
 });
 
