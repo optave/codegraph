@@ -154,13 +154,14 @@ function resolveSubpathMap(
   return null;
 }
 
-export function resolveViaExports(specifier: string, rootDir: string): string | null {
-  const parsed = parseBareSpecifier(specifier);
-  if (!parsed) return null;
-
-  const packageDir = findPackageDir(parsed.packageName, rootDir);
-  if (!packageDir) return null;
-
+/**
+ * Resolve `parsed` through whatever `exports` field lives at `packageDir`.
+ * Shared by `resolveViaExports()` (node_modules-discovered packageDir) and
+ * `resolveExportsViaDir()` (a directory the caller already knows, e.g. a
+ * workspace package's own real directory — see that function's doc
+ * comment for why the two must not both go through `findPackageDir()`).
+ */
+function resolveExportsInPackageDir(parsed: BareSpecifier, packageDir: string): string | null {
   const exports = getPackageExports(packageDir);
   if (exports == null) return null;
 
@@ -187,6 +188,38 @@ export function resolveViaExports(specifier: string, rootDir: string): string | 
   }
 
   return resolveSubpathMap(exports as Record<string, unknown>, subpath, packageDir);
+}
+
+export function resolveViaExports(specifier: string, rootDir: string): string | null {
+  const parsed = parseBareSpecifier(specifier);
+  if (!parsed) return null;
+
+  const packageDir = findPackageDir(parsed.packageName, rootDir);
+  if (!packageDir) return null;
+
+  return resolveExportsInPackageDir(parsed, packageDir);
+}
+
+/**
+ * Resolve `specifier` through the `exports` field at a directory the
+ * caller already knows — bypassing `findPackageDir()`'s `node_modules`
+ * walk entirely. For a workspace package, `findPackageDir()` would find
+ * `node_modules/<pkg>` (a symlink workspace tools create), and resolving
+ * `exports` against THAT path string produces a `node_modules/...`-shaped
+ * absolute path — one that resolves fine on disk (Node's `fs` follows
+ * symlinks) but, once relativized against the project root, never matches
+ * the tracked file node at its real, glob-detected location
+ * (`packages/...`), since `node_modules` is itself excluded from file
+ * collection. `resolveViaWorkspace()` already knows the package's real
+ * directory (`info.dir`, from workspace *detection*, not a `node_modules`
+ * lookup) — passing it here directly is what keeps the resolved path
+ * inside the tree the graph actually tracks (issue #2288).
+ */
+export function resolveExportsViaDir(specifier: string, packageDir: string): string | null {
+  const parsed = parseBareSpecifier(specifier);
+  if (!parsed) return null;
+
+  return resolveExportsInPackageDir(parsed, packageDir);
 }
 
 /** Clear the exports cache (for testing). */
@@ -258,15 +291,17 @@ export function resolveViaWorkspace(specifier: string, rootDir: string): string 
 
   // Root import ("@myorg/utils") — use the entry point
   if (parsed.subpath === '.') {
-    // Try exports field first (reuses existing exports logic)
-    const exportsResult = resolveViaExports(specifier, rootDir);
+    // Try exports field first, resolved against the workspace-detected real
+    // directory (info.dir) rather than a node_modules walk — see
+    // resolveExportsViaDir()'s doc comment (issue #2288).
+    const exportsResult = resolveExportsViaDir(specifier, info.dir);
     if (exportsResult) return exportsResult;
     // Fall back to workspace entry
     return info.entry;
   }
 
   // Subpath import ("@myorg/utils/helpers") — try exports, then filesystem probe
-  const exportsResult = resolveViaExports(specifier, rootDir);
+  const exportsResult = resolveExportsViaDir(specifier, info.dir);
   if (exportsResult) return exportsResult;
 
   // Filesystem probe within the package directory

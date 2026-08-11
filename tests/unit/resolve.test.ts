@@ -605,6 +605,55 @@ describe('resolveViaWorkspace', () => {
   });
 });
 
+// ─── resolveViaWorkspace with exports-only packages (issue #2288) ─────
+
+describe('resolveViaWorkspace with an exports-only package (issue #2288)', () => {
+  let wsRoot: string;
+  let realPkgDir: string;
+
+  beforeAll(() => {
+    wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-ws-exports-'));
+
+    // packages/core: the real, workspace-detected directory — has only an
+    // `exports` field, no `main`.
+    realPkgDir = path.join(wsRoot, 'packages', 'core');
+    fs.mkdirSync(path.join(realPkgDir, 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(realPkgDir, 'lib', 'index.js'), 'export default 1;');
+    fs.writeFileSync(
+      path.join(realPkgDir, 'package.json'),
+      JSON.stringify({ name: '@myorg/core', exports: './lib/index.js' }),
+    );
+
+    // node_modules/@myorg/core: what a workspace tool's symlink resolves
+    // through on disk — deliberately given a DIFFERENT exports target that
+    // doesn't exist, so if resolution consulted this instead of the real
+    // workspace dir, it would either resolve the wrong file or fail
+    // entirely, not silently produce the correct result.
+    const nmPkgDir = path.join(wsRoot, 'node_modules', '@myorg', 'core');
+    fs.mkdirSync(nmPkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(nmPkgDir, 'package.json'),
+      JSON.stringify({ name: '@myorg/core', exports: './wrong-target.js' }),
+    );
+
+    setWorkspaces(wsRoot, new Map([['@myorg/core', { dir: realPkgDir, entry: null }]]));
+  });
+
+  afterAll(() => {
+    clearWorkspaceCache();
+    if (wsRoot) fs.rmSync(wsRoot, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    clearExportsCache();
+  });
+
+  it('resolves the root import via exports at the real workspace directory, not the node_modules symlink target', () => {
+    const result = resolveViaWorkspace('@myorg/core', wsRoot);
+    expect(result).toBe(path.join(realPkgDir, 'lib', 'index.js'));
+  });
+});
+
 // ─── resolveImportPathJS with workspaces ─────────────────────────────
 
 describe('resolveImportPathJS with workspace resolution', () => {

@@ -340,12 +340,14 @@ fn resolve_subpath_map(
     None
 }
 
-/// Resolve a bare specifier through the package.json `exports` field.
-/// Mirrors `resolveViaExports()` in resolve.ts.
-fn resolve_via_exports(specifier: &str, root_dir: &str) -> Option<String> {
-    let (package_name, subpath) = parse_bare_specifier(specifier)?;
-    let package_dir = find_package_dir(&package_name, root_dir)?;
-    let exports = get_package_exports(&package_dir)?;
+/// Resolve `subpath` through whatever `exports` field lives at
+/// `package_dir`. Shared by `resolve_via_exports()` (node_modules-discovered
+/// package_dir) and `resolve_exports_via_dir()` (a directory the caller
+/// already knows, e.g. a workspace package's own real directory — see that
+/// function's doc comment for why the two must not both go through
+/// `find_package_dir()`).
+fn resolve_exports_in_package_dir(subpath: &str, package_dir: &str) -> Option<String> {
+    let exports = get_package_exports(package_dir)?;
 
     match &exports {
         // Simple string exports: "exports": "./index.js"
@@ -353,14 +355,14 @@ fn resolve_via_exports(specifier: &str, root_dir: &str) -> Option<String> {
             if subpath != "." {
                 return None;
             }
-            try_resolve_export_target(Some(target), &package_dir)
+            try_resolve_export_target(Some(target), package_dir)
         }
         // Array form at top level (condition fallback list)
         serde_json::Value::Array(_) => {
             if subpath != "." {
                 return None;
             }
-            try_resolve_export_target(resolve_export_condition(&exports).as_deref(), &package_dir)
+            try_resolve_export_target(resolve_export_condition(&exports).as_deref(), package_dir)
         }
         serde_json::Value::Object(map) => {
             let is_subpath_map = map.keys().any(|k| k.starts_with('.'));
@@ -370,13 +372,40 @@ fn resolve_via_exports(specifier: &str, root_dir: &str) -> Option<String> {
                 }
                 return try_resolve_export_target(
                     resolve_export_condition(&exports).as_deref(),
-                    &package_dir,
+                    package_dir,
                 );
             }
-            resolve_subpath_map(map, &subpath, &package_dir)
+            resolve_subpath_map(map, subpath, package_dir)
         }
         _ => None,
     }
+}
+
+/// Resolve a bare specifier through the package.json `exports` field.
+/// Mirrors `resolveViaExports()` in resolve.ts.
+fn resolve_via_exports(specifier: &str, root_dir: &str) -> Option<String> {
+    let (package_name, subpath) = parse_bare_specifier(specifier)?;
+    let package_dir = find_package_dir(&package_name, root_dir)?;
+    resolve_exports_in_package_dir(&subpath, &package_dir)
+}
+
+/// Resolve `specifier` through the `exports` field at a directory the
+/// caller already knows — bypassing `find_package_dir()`'s `node_modules`
+/// walk entirely. For a workspace package, `find_package_dir()` would find
+/// `node_modules/<pkg>` (a symlink workspace tools create), and resolving
+/// `exports` against THAT path string produces a `node_modules/...`-shaped
+/// absolute path — one that resolves fine on disk (symlinks are followed)
+/// but, once relativized against the project root, never matches the
+/// tracked file node at its real, glob-detected location (`packages/...`),
+/// since `node_modules` is itself excluded from file collection.
+/// `resolve_via_workspace()` already knows the package's real directory
+/// (`info.dir`, from workspace *detection*, not a `node_modules` lookup) —
+/// passing it here directly is what keeps the resolved path inside the
+/// tree the graph actually tracks (issue #2288). Mirrors
+/// `resolveExportsViaDir()` in resolve.ts.
+fn resolve_exports_via_dir(specifier: &str, package_dir: &str) -> Option<String> {
+    let (_, subpath) = parse_bare_specifier(specifier)?;
+    resolve_exports_in_package_dir(&subpath, package_dir)
 }
 
 /// Extensions probed when resolving a workspace subpath import against the
@@ -413,16 +442,18 @@ fn resolve_via_workspace(
     let info = workspaces.get(&package_name)?;
 
     if subpath == "." {
-        // Try the exports field first (reuses existing exports logic),
-        // matching resolveViaWorkspace()'s root-import branch.
-        if let Some(exports_result) = resolve_via_exports(specifier, root_dir) {
+        // Try the exports field first, resolved against the
+        // workspace-detected real directory (info.dir) rather than a
+        // node_modules walk — see resolve_exports_via_dir()'s doc comment
+        // (issue #2288).
+        if let Some(exports_result) = resolve_exports_via_dir(specifier, &info.dir) {
             return Some(exports_result);
         }
         return info.entry.clone();
     }
 
     // Subpath import — try exports, then filesystem probe.
-    if let Some(exports_result) = resolve_via_exports(specifier, root_dir) {
+    if let Some(exports_result) = resolve_exports_via_dir(specifier, &info.dir) {
         return Some(exports_result);
     }
 
@@ -3061,16 +3092,14 @@ path = "custom/location/mod.rs"
     fn resolve_via_workspace_prefers_exports_field_over_registered_entry() {
         // A workspace package whose `exports` field points somewhere other
         // than its registered entry — exports must win, matching
-        // resolveViaWorkspace()'s root-import branch. Workspace tools
-        // (npm/yarn/pnpm workspaces) symlink workspace packages into
-        // node_modules, which is what find_package_dir()'s node_modules
-        // walk (used by resolve_via_exports) actually discovers — so only
-        // the node_modules copy needs to exist for this test; the
-        // WorkspaceEntry's own `dir`/`entry` are deliberately bogus paths to
-        // prove they're never consulted when exports resolves successfully.
+        // resolveViaWorkspace()'s root-import branch. The package.json
+        // lives at the workspace-detected real directory (info.dir), not
+        // under node_modules — see issue #2288 and the dedicated
+        // node_modules-symlink regression test below for why that
+        // distinction matters.
         let tmp = std::env::temp_dir().join("codegraph_workspace_exports_test");
         let _ = fs::remove_dir_all(&tmp);
-        let pkg_dir = tmp.join("node_modules/@myorg/core");
+        let pkg_dir = tmp.join("packages/core");
         fs::create_dir_all(&pkg_dir).unwrap();
         fs::write(
             pkg_dir.join("package.json"),
@@ -3085,7 +3114,7 @@ path = "custom/location/mod.rs"
         workspaces.insert(
             "@myorg/core".to_string(),
             WorkspaceEntry {
-                dir: "/nonexistent/packages/core".to_string(),
+                dir: pkg_dir.to_string_lossy().to_string(),
                 entry: Some("/nonexistent/packages/core/some-other-entry.js".to_string()),
             },
         );
@@ -3093,6 +3122,62 @@ path = "custom/location/mod.rs"
         let resolved =
             resolve_via_workspace("@myorg/core", &workspaces, tmp.to_str().unwrap(), None);
         assert_eq!(resolved, Some(normalized(&pkg_dir.join("dist/index.js"))));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_via_workspace_root_import_uses_workspace_dir_not_node_modules_symlink() {
+        // Issue #2288: workspace tools (npm/yarn/pnpm workspaces) symlink
+        // workspace packages into node_modules. find_package_dir()'s
+        // node_modules walk resolves fine through that symlink on disk,
+        // but the resulting path string is node_modules-shaped and never
+        // matches the tracked file node at its real, glob-detected
+        // location — since node_modules is itself excluded from file
+        // collection. Set up a node_modules copy with a DIFFERENT (and
+        // non-existent) exports target to prove resolution never consults
+        // it: if it did, this would either resolve to the wrong file or
+        // fail entirely (the node_modules copy's target file doesn't
+        // exist), not the real, correct dist/index.js under packages/core.
+        let tmp = std::env::temp_dir().join("codegraph_workspace_exports_symlink_test");
+        let _ = fs::remove_dir_all(&tmp);
+
+        let real_pkg_dir = tmp.join("packages/core");
+        fs::create_dir_all(&real_pkg_dir).unwrap();
+        fs::write(
+            real_pkg_dir.join("package.json"),
+            r#"{"name": "@myorg/core", "exports": "./dist/index.js"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(real_pkg_dir.join("dist")).unwrap();
+        fs::write(real_pkg_dir.join("dist/index.js"), "module.exports = {};").unwrap();
+
+        let nm_pkg_dir = tmp.join("node_modules/@myorg/core");
+        fs::create_dir_all(&nm_pkg_dir).unwrap();
+        fs::write(
+            nm_pkg_dir.join("package.json"),
+            r#"{"name": "@myorg/core", "exports": "./wrong-target.js"}"#,
+        )
+        .unwrap();
+        // Deliberately no wrong-target.js: if resolution went through
+        // node_modules, tryResolveTarget would fail to find it.
+        clear_exports_cache();
+
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "@myorg/core".to_string(),
+            WorkspaceEntry {
+                dir: real_pkg_dir.to_string_lossy().to_string(),
+                entry: None,
+            },
+        );
+
+        let resolved =
+            resolve_via_workspace("@myorg/core", &workspaces, tmp.to_str().unwrap(), None);
+        assert_eq!(
+            resolved,
+            Some(normalized(&real_pkg_dir.join("dist/index.js")))
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
