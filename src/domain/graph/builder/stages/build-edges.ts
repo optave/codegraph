@@ -238,15 +238,7 @@ function emitNamedSymbolEdges(
 ): void {
   if (!ctx.nodesByNameAndFile) return;
   for (const { original, typeOnly } of importNamePairs(imp)) {
-    let targetFile = resolvedPath;
-    let targetName = original;
-    if (isBarrelFile(ctx, resolvedPath)) {
-      const resolved = resolveBarrelExportCached(ctx, resolvedPath, original);
-      if (resolved) {
-        targetFile = resolved.file;
-        targetName = resolved.name;
-      }
-    }
+    const { file: targetFile, name: targetName } = traceBarrelTarget(ctx, resolvedPath, original);
     const candidates = ctx.nodesByNameAndFile.get(`${targetName}|${targetFile}`);
     if (!candidates || candidates.length === 0) continue;
     const target = candidates[0]!;
@@ -354,9 +346,8 @@ function buildBarrelEdges(
 ): void {
   const resolvedSources = new Set<string>();
   for (const { original } of importNamePairs(imp)) {
-    const resolved = resolveBarrelExportCached(ctx, resolvedPath, original);
-    const actualSource = resolved?.file;
-    if (actualSource && actualSource !== resolvedPath && !resolvedSources.has(actualSource)) {
+    const { file: actualSource } = traceBarrelTarget(ctx, resolvedPath, original);
+    if (actualSource !== resolvedPath && !resolvedSources.has(actualSource)) {
       resolvedSources.add(actualSource);
       const actualRow = getNodeIdStmt.get(actualSource, 'file', actualSource, 0);
       if (actualRow) {
@@ -1138,15 +1129,7 @@ function buildImportedNamesForNative(
         importedNames.push({ name: local, file: submodule, namespace: true });
         continue;
       }
-      let targetFile = resolvedPath;
-      let targetName = original;
-      if (isBarrelFile(ctx, resolvedPath)) {
-        const resolved = resolveBarrelExportCached(ctx, resolvedPath, original);
-        if (resolved) {
-          targetFile = resolved.file;
-          targetName = resolved.name;
-        }
-      }
+      const { file: targetFile, name: targetName } = traceBarrelTarget(ctx, resolvedPath, original);
       // `imported` carries the name actually declared in `targetFile` so the
       // native resolver can look it up there instead of the local alias
       // (which only exists in this file, #1730) or the barrel's external
