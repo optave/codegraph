@@ -167,7 +167,7 @@ git worktree prune
   git worktree remove "<path>"
   git branch -D "<branch>"
   ```
-  `-D`, not `-d`: this worktree was already classified "stale" via Phase 1c's GitHub-PR-state check, not git ancestry, so `-d`'s own ancestry test would wrongly refuse a genuinely squash/rebase-merged branch here — see Phase 4d's identical fix for why `-d` is the wrong tool once a more authoritative source already confirmed the merge (issue #2309). Phase 1c's classifier currently matches by branch name only (not name-and-SHA the way Phase 4a now does), so this inherits the same reused-branch-name gap Phase 4a closed — tracked separately in issue #2310 since the fix belongs in `gc-worktrees.sh`, not here.
+  `-D`, not `-d`: this worktree was already classified "stale" via Phase 1c's GitHub-PR-state check, not git ancestry, so `-d`'s own ancestry test would wrongly refuse a genuinely squash/rebase-merged branch here — see Phase 4d's identical fix for why `-d` is the wrong tool once a more authoritative source already confirmed the merge (issue #2309). `gc-worktrees.sh`'s own `classify()` (which Phase 1c delegates to) now requires the same name-**and**-current-tip-SHA match against a MERGED PR that Phase 4a uses before treating a branch as `-D`-safe, closing the identical reused-branch-name gap here too (issue #2310).
 
 **For bloated (non-stale) worktrees:**
 - List them with a per-artifact size breakdown
