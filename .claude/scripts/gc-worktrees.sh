@@ -152,13 +152,58 @@ classify() {
   return 1
 }
 
+# Delete a branch classify() already ruled settled, choosing -D vs -d by $3's verdict.
+# Split out of flush() so it can be extracted and unit-tested in isolation, the same way
+# classify() itself is (tests/unit/gc-worktrees-classify-2310.test.ts).
+#
+# $1 = branch name, $2 = HEAD sha captured from `git worktree list --porcelain` BEFORE this
+# call, $3 = classify()'s verdict for this branch (3 or 0 — flush() never calls this for 1/2).
+prune_branch() {
+  local branch="$1" head="$2" verdict="$3"
+  [ "$prune_branches" -eq 1 ] && [ -n "$branch" ] || return 0
+  if [ "$verdict" -eq 3 ]; then
+    # -d, not -D: this branch was classified "settled" but without an exact name+SHA
+    # match against a MERGED PR — either it's a CLOSED-without-merging PR (no landed
+    # commit exists to pin against; deleting its branch with -D could destroy real,
+    # never-merged work), a MERGED PR whose branch name has since been reused for
+    # different commits, or the git-ancestry-test fallback (no gh available, or a
+    # detached worktree). None of these have a more-authoritative signal than git's own
+    # ancestry check, so -d's refusal-if-unmerged behavior is exactly the safety net to
+    # keep here — unlike the exact-merge-confirmed branches below.
+    if git -C "$main_root" branch -d "$branch" >/dev/null 2>&1; then echo "  branch deleted   $branch"; fi
+    return 0
+  fi
+  # -D, not -d: classify() already confirmed this branch's CURRENT tip SHA matches a
+  # MERGED PR's exact recorded head via authoritative GitHub PR state, not git
+  # ancestry. Under a squash/rebase-merge workflow (this repo's own, confirmed live —
+  # issue #2309) the local branch tip is never an ancestor of the squash commit on the
+  # default branch, so -d's own ancestry check would silently refuse a genuinely
+  # merged branch here — exactly the fix already applied to housekeep's Phase 4d/1e
+  # (issue #2309) for the identical reason. The name+SHA (not name-only) requirement
+  # additionally guards against a reused branch name aliasing an old, unrelated merged
+  # PR (Greptile review, PR #2311) — a name-only match would hand -D a brand-new,
+  # never-merged branch's real commits just because an old PR once used the same name.
+  #
+  # Re-verified against the exact SHA classify() confirmed, immediately before the
+  # delete: this call happens right after this branch's own worktree removal, not
+  # deferred to a batch loop after the whole worktree walk — but even so, `head` was
+  # captured before that removal. Re-reading the branch's CURRENT tip right here and
+  # refusing on any mismatch means a rename, force-push, or recreation of this exact
+  # name in the interim is never silently deleted (Greptile review, PR #2469).
+  if [ "$(git -C "$main_root" rev-parse --quiet --verify "refs/heads/$branch" 2>/dev/null)" = "$head" ]; then
+    if git -C "$main_root" branch -D "$branch" >/dev/null 2>&1; then echo "  branch deleted   $branch"; fi
+  else
+    echo "  skip (branch ref changed since classification)  $branch"
+  fi
+}
+
 # Directories that no longer exist on disk: git's own bookkeeping handles these.
 [ "$dry_run" -eq 1 ] || git -C "$main_root" worktree prune
 
 # These are newline-delimited STRINGS, not arrays: `${#arr[@]}` on an empty array trips
 # `set -u` on bash 3.2, which this script still targets for portability.
 removed=0; skipped_dirty=0; skipped_open=0; skipped_orphan=0; skipped_locked=0
-freed_branches=""; freed_branches_unconfirmed=""; orphan_branches=""
+orphan_branches=""
 
 # `git worktree list --porcelain` emits stanzas: worktree <path> / HEAD <sha> /
 # branch <ref>|detached / locked. Parse the stanza rather than the human format, whose
@@ -204,24 +249,24 @@ flush() {
 
   if [ "$dry_run" -eq 1 ]; then
     echo "  would remove     $label"
-  else
-    if git -C "$main_root" worktree remove "$path" 2>/dev/null; then
-      echo "  removed          $label"
-    else
-      echo "  skip (git refused the remove)  $label — $path"
-      return 0
-    fi
+    return 0
   fi
+  if ! git -C "$main_root" worktree remove "$path" 2>/dev/null; then
+    echo "  skip (git refused the remove)  $label — $path"
+    return 0
+  fi
+  echo "  removed          $label"
   removed=$((removed + 1))
-  if [ -n "$branch" ]; then
-    if [ "$verdict" -eq 3 ]; then
-      freed_branches_unconfirmed="${freed_branches_unconfirmed}${branch}
-"
-    else
-      freed_branches="${freed_branches}${branch}
-"
-    fi
-  fi
+
+  # Deletion happens HERE, immediately after this branch's own worktree removal — not
+  # deferred to a batch loop run after the whole worktree walk finishes. Deferring it (the
+  # original design) left a window, for however long the rest of the walk took, in which a
+  # concurrent process could recreate or advance this exact branch name before the deletion
+  # loop got to it; `-D` would then delete that NEW ref by name with no revalidation. Doing
+  # it inline collapses that window to the next statement, and prune_branch()'s own SHA
+  # re-check (for the -D path specifically) closes what's left of it outright (Greptile
+  # review, PR #2469).
+  prune_branch "$branch" "$head" "$verdict"
   return 0
 }
 
@@ -234,43 +279,6 @@ while IFS= read -r line; do
   esac
 done < <(git -C "$main_root" worktree list --porcelain)
 flush
-
-if [ "$prune_branches" -eq 1 ] && [ "$dry_run" -eq 0 ]; then
-  if [ -n "$freed_branches" ]; then
-    while IFS= read -r b; do
-      [ -n "$b" ] || continue
-      # -D, not -d: classify() already confirmed this branch's CURRENT tip SHA matches a
-      # MERGED PR's exact recorded head via authoritative GitHub PR state, not git
-      # ancestry. Under a squash/rebase-merge workflow (this repo's own, confirmed live —
-      # issue #2309) the local branch tip is never an ancestor of the squash commit on the
-      # default branch, so -d's own ancestry check would silently refuse a genuinely
-      # merged branch here — exactly the fix already applied to housekeep's Phase 4d/1e
-      # (issue #2309) for the identical reason. The name+SHA (not name-only) requirement
-      # additionally guards against a reused branch name aliasing an old, unrelated merged
-      # PR (Greptile review, PR #2311) — a name-only match would hand -D a brand-new,
-      # never-merged branch's real commits just because an old PR once used the same name.
-      if git -C "$main_root" branch -D "$b" >/dev/null 2>&1; then echo "  branch deleted   $b"; fi
-    done <<EOF
-$freed_branches
-EOF
-  fi
-  if [ -n "$freed_branches_unconfirmed" ]; then
-    while IFS= read -r b; do
-      [ -n "$b" ] || continue
-      # -d, not -D: this branch was classified "settled" but without an exact name+SHA
-      # match against a MERGED PR — either it's a CLOSED-without-merging PR (no landed
-      # commit exists to pin against; deleting its branch with -D could destroy real,
-      # never-merged work), a MERGED PR whose branch name has since been reused for
-      # different commits, or the git-ancestry-test fallback (no gh available, or a
-      # detached worktree). None of these have a more-authoritative signal than git's own
-      # ancestry check, so -d's refusal-if-unmerged behavior is exactly the safety net to
-      # keep here — unlike the exact-merge-confirmed branches above.
-      if git -C "$main_root" branch -d "$b" >/dev/null 2>&1; then echo "  branch deleted   $b"; fi
-    done <<EOF
-$freed_branches_unconfirmed
-EOF
-  fi
-fi
 
 # Orphans get named, not just counted. Folding them into the in-flight total is what lets
 # a repo report itself healthy while dozens of dead worktrees pin their branch names.
