@@ -167,51 +167,61 @@ describe('gc-worktrees.sh classify() (#2310)', () => {
 });
 
 /**
- * Regression test for Greptile's round-1 finding on PR #2469: the original fix collected
- * confirmed-`-D`-safe branch names into a list during the worktree walk, then deleted them
- * all in a SEPARATE loop after the walk finished. That gap — the time the rest of the walk
- * took — let a concurrent process recreate or advance a freed branch name before the
- * deferred loop reached it; `-D` would then delete that NEW ref by name alone, with no
- * re-verification. The fix moves deletion into `prune_branch()`, called immediately after
- * each branch's own worktree removal, which re-reads the branch's CURRENT tip and refuses
- * to `-D` on any mismatch against the SHA `classify()` actually confirmed.
+ * Regression test for Greptile's findings across two rounds of review on PR #2469:
+ *
+ * Round 1: the original fix collected confirmed-`-D`-safe branch names into a list during
+ * the worktree walk, then deleted them all in a SEPARATE loop after the walk finished. That
+ * gap — the time the rest of the walk took — let a concurrent process recreate or advance a
+ * freed branch name before the deferred loop reached it; `-D` would then delete that NEW ref
+ * by name alone, with no re-verification. Fixed by moving deletion into `prune_branch()`,
+ * called immediately after each branch's own worktree removal.
+ *
+ * Round 2: that fix still re-read the branch's tip via a separate `rev-parse`, THEN called
+ * `git branch -D` in a second, distinct git invocation — leaving a narrower but still-real
+ * gap between the two commands. Fixed by replacing both with a single
+ * `git update-ref -d refs/heads/<branch> <expected-sha>` call, which git performs as one
+ * atomic compare-and-delete: it deletes the ref only if it still points at the given SHA,
+ * with no window in between for a concurrent process to exploit.
  */
 const pruneBranchFn = extractFunction(script, 'prune_branch');
 
 interface PruneBranchOpts {
   pruneBranches?: 0 | 1;
-  /** Whether the stubbed `git branch -d|-D` should succeed. */
+  /** Whether the stubbed `git branch -d` should succeed (verdict-3 path only). */
   deleteOk?: boolean;
-  /** What the stubbed `git rev-parse --quiet --verify refs/heads/<branch>` should print. Defaults to `head` (no drift). */
-  revParseSha?: string;
+  /** What the branch's ref is stubbed to ACTUALLY point at, simulating concurrent mutation. Defaults to `head` (no drift). */
+  actualRefSha?: string;
 }
 
-/** Run the real prune_branch() against controlled inputs; reports output text and how many times `git branch` was invoked (and with which flag). */
+/** Run the real prune_branch() against controlled inputs; reports output text and every `git branch`/`git update-ref` invocation it made. */
 function runPruneBranch(
   branch: string,
   head: string,
   verdict: number,
   opts: PruneBranchOpts = {},
-): { output: string; branchCalls: string[] } {
+): { output: string; gitCalls: string[] } {
   const pruneBranches = opts.pruneBranches ?? 1;
   const deleteOk = opts.deleteOk ?? true;
-  const revParseSha = opts.revParseSha ?? head;
+  const actualRefSha = opts.actualRefSha ?? head;
   const logFile = path.join(
     os.tmpdir(),
     `gc-worktrees-prune-branch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.log`,
   );
   // Stub `git` so both call shapes prune_branch() makes are controllable without a real
-  // repo: `git -C "$main_root" branch -d|-D "$branch"` (arg $3 = "branch", logged so the
-  // test can assert whether -D fired at all, not just whether the message printed) and
-  // `git -C "$main_root" rev-parse --quiet --verify "refs/heads/$branch"` (arg $3 = "rev-parse").
+  // repo: `git -C "$main_root" branch -d "$branch"` (arg $3 = "branch", verdict-3 path) and
+  // `git -C "$main_root" update-ref -d "refs/heads/$branch" "$head"` (arg $3 = "update-ref",
+  // verdict-0 path). update-ref is simulated with the same atomic compare-and-delete
+  // semantics the real command has: it succeeds only if the given old value ($6) matches
+  // this branch's stubbed actual ref value, mirroring how a concurrent mutation would make
+  // the real `git update-ref -d` fail closed rather than delete the wrong ref.
   const gitStub = `
     git() {
       if [ "$3" = "branch" ]; then
-        echo "$4" >> "${logFile}"
+        echo "branch $4" >> "${logFile}"
         [ "${deleteOk ? 1 : 0}" = "1" ] && return 0 || return 1
-      elif [ "$3" = "rev-parse" ]; then
-        printf '%s' "${revParseSha}"
-        return 0
+      elif [ "$3" = "update-ref" ]; then
+        echo "update-ref $6" >> "${logFile}"
+        [ "$6" = "${actualRefSha}" ] && return 0 || return 1
       fi
     }
   `;
@@ -223,64 +233,62 @@ function runPruneBranch(
     prune_branch "${branch}" "${head}" "${verdict}"
   `;
   const output = execFileSync('bash', ['-c', runner], { encoding: 'utf8' });
-  let branchCalls: string[] = [];
+  let gitCalls: string[] = [];
   if (fs.existsSync(logFile)) {
-    branchCalls = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean);
+    gitCalls = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean);
     fs.unlinkSync(logFile);
   }
-  return { output, branchCalls };
+  return { output, gitCalls };
 }
 
-describe('gc-worktrees.sh prune_branch() (#2310, Greptile round-1 on PR #2469)', () => {
-  it('extracted a non-trivial prune_branch() containing the SHA re-check', () => {
-    expect(pruneBranchFn).toContain('rev-parse');
+describe('gc-worktrees.sh prune_branch() (#2310, Greptile rounds 1-2 on PR #2469)', () => {
+  it('extracted a non-trivial prune_branch() containing the atomic update-ref delete', () => {
+    expect(pruneBranchFn).toContain('update-ref');
     expect(pruneBranchFn).toContain('branch ref changed since classification');
   });
 
-  it('uses -d (not -D) for verdict 3 (settled, not name+SHA-confirmed)', () => {
-    const { output, branchCalls } = runPruneBranch('feat/x', 'abc123', 3);
-    expect(branchCalls).toEqual(['-d']);
+  it('uses -d (not update-ref) for verdict 3 (settled, not name+SHA-confirmed)', () => {
+    const { output, gitCalls } = runPruneBranch('feat/x', 'abc123', 3);
+    expect(gitCalls).toEqual(['branch -d']);
     expect(output).toContain('branch deleted');
   });
 
   it('reports nothing (not an error) when -d refuses an unmerged verdict-3 branch', () => {
-    const { output, branchCalls } = runPruneBranch('feat/x', 'abc123', 3, { deleteOk: false });
-    expect(branchCalls).toEqual(['-d']);
+    const { output, gitCalls } = runPruneBranch('feat/x', 'abc123', 3, { deleteOk: false });
+    expect(gitCalls).toEqual(['branch -d']);
     expect(output).not.toContain('branch deleted');
   });
 
-  it('uses -D for verdict 0 when the current tip SHA still matches the confirmed-merged SHA', () => {
-    const { output, branchCalls } = runPruneBranch('feat/x', 'abc123', 0, {
-      revParseSha: 'abc123',
-    });
-    expect(branchCalls).toEqual(['-D']);
+  it('deletes via update-ref for verdict 0 when the ref still matches the confirmed-merged SHA', () => {
+    const { output, gitCalls } = runPruneBranch('feat/x', 'abc123', 0, { actualRefSha: 'abc123' });
+    expect(gitCalls).toEqual(['update-ref abc123']);
     expect(output).toContain('branch deleted');
   });
 
-  it('refuses to -D, and never invokes git branch at all, when the branch ref changed since classification', () => {
-    // This is the core TOCTOU fix: classify() confirmed SHA abc123 merged, but by the time
-    // prune_branch() runs, refs/heads/feat/x now points at def456 — a concurrent process
-    // recreated or advanced this exact branch name in the window between classification and
-    // deletion. -D must never fire against this new, unconfirmed ref.
-    const { output, branchCalls } = runPruneBranch('feat/x', 'abc123', 0, {
-      revParseSha: 'def456',
-    });
-    expect(branchCalls).toEqual([]);
+  it('atomically refuses the update-ref delete when the branch ref changed since classification', () => {
+    // This is the round-2 TOCTOU fix: classify() confirmed SHA abc123 merged, but by the
+    // time prune_branch() runs, refs/heads/feat/x actually points at def456 — a concurrent
+    // process recreated or advanced this exact branch name. The single update-ref call still
+    // fires (there is no separate pre-check to skip), but git's own atomic compare-and-delete
+    // refuses it in the same operation — never a two-step check-then-delete that a race could
+    // slip between.
+    const { output, gitCalls } = runPruneBranch('feat/x', 'abc123', 0, { actualRefSha: 'def456' });
+    expect(gitCalls).toEqual(['update-ref abc123']);
     expect(output).toContain('skip (branch ref changed since classification)  feat/x');
   });
 
   it('is a no-op when --prune-branches was not passed', () => {
-    const { output, branchCalls } = runPruneBranch('feat/x', 'abc123', 0, {
+    const { output, gitCalls } = runPruneBranch('feat/x', 'abc123', 0, {
       pruneBranches: 0,
-      revParseSha: 'abc123',
+      actualRefSha: 'abc123',
     });
-    expect(branchCalls).toEqual([]);
+    expect(gitCalls).toEqual([]);
     expect(output).toBe('');
   });
 
   it('is a no-op for a detached worktree (no branch name to delete)', () => {
-    const { output, branchCalls } = runPruneBranch('', 'abc123', 3);
-    expect(branchCalls).toEqual([]);
+    const { output, gitCalls } = runPruneBranch('', 'abc123', 3);
+    expect(gitCalls).toEqual([]);
     expect(output).toBe('');
   });
 });

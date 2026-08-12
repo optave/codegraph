@@ -184,14 +184,14 @@ prune_branch() {
   # PR (Greptile review, PR #2311) — a name-only match would hand -D a brand-new,
   # never-merged branch's real commits just because an old PR once used the same name.
   #
-  # Re-verified against the exact SHA classify() confirmed, immediately before the
-  # delete: this call happens right after this branch's own worktree removal, not
-  # deferred to a batch loop after the whole worktree walk — but even so, `head` was
-  # captured before that removal. Re-reading the branch's CURRENT tip right here and
-  # refusing on any mismatch means a rename, force-push, or recreation of this exact
-  # name in the interim is never silently deleted (Greptile review, PR #2469).
-  if [ "$(git -C "$main_root" rev-parse --quiet --verify "refs/heads/$branch" 2>/dev/null)" = "$head" ]; then
-    if git -C "$main_root" branch -D "$branch" >/dev/null 2>&1; then echo "  branch deleted   $branch"; fi
+  # `update-ref -d <ref> <oldvalue>`, not a separate `rev-parse` check followed by
+  # `branch -D`: those are two distinct git invocations, and a concurrent process could
+  # mutate the ref in the gap between them — narrower than the original deferred-batch
+  # gap, but not closed. `update-ref -d` takes the expected old value as part of the SAME
+  # command and refuses atomically if the ref no longer matches, so there is no window at
+  # all between "confirm" and "delete" (Greptile review, PR #2469, round 2).
+  if git -C "$main_root" update-ref -d "refs/heads/$branch" "$head" 2>/dev/null; then
+    echo "  branch deleted   $branch"
   else
     echo "  skip (branch ref changed since classification)  $branch"
   fi
