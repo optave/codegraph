@@ -214,4 +214,165 @@ import 'package:flutter/material.dart';`);
       );
     });
   });
+
+  // #2319: Dart never populated typeMap at all, so receiver-typed method
+  // calls (`_repo.findById(id)`, where `_repo`'s type comes from a typed
+  // field declaration or a `this.field` constructor-shorthand param) could
+  // never resolve.
+  describe('#2319: typeMap seeding for field/parameter types', () => {
+    it('seeds class-scoped and bare fallback keys for a typed final field', () => {
+      const symbols = parseDart(`class UserService {
+  final UserRepository _repo;
+  UserService(this._repo);
+}`);
+      expect(symbols.typeMap.get('UserService._repo')).toEqual({
+        type: 'UserRepository',
+        confidence: 0.9,
+      });
+      expect(symbols.typeMap.get('_repo')).toEqual({
+        type: 'UserRepository',
+        confidence: 0.6,
+      });
+      expect(symbols.typeMap.get('this._repo')).toEqual({
+        type: 'UserRepository',
+        confidence: 0.6,
+      });
+    });
+
+    it('seeds a non-final field declaration the same way', () => {
+      const symbols = parseDart(`class A {
+  UserRepository repo;
+}`);
+      expect(symbols.typeMap.get('A.repo')?.type).toBe('UserRepository');
+    });
+
+    it('seeds a late field declaration', () => {
+      const symbols = parseDart(`class A {
+  late UserRepository _repo;
+}`);
+      expect(symbols.typeMap.get('A._repo')?.type).toBe('UserRepository');
+    });
+
+    it('strips no extra characters for a nullable field type', () => {
+      const symbols = parseDart(`class A {
+  UserRepository? _repo;
+}`);
+      expect(symbols.typeMap.get('A._repo')?.type).toBe('UserRepository');
+    });
+
+    it('seeds the generic base type for a generic field', () => {
+      const symbols = parseDart(`class A {
+  List<User>? users;
+}`);
+      expect(symbols.typeMap.get('A.users')?.type).toBe('List');
+    });
+
+    it('seeds every identifier in a comma-separated multi-field declaration', () => {
+      const symbols = parseDart(`class A {
+  final Foo a, b;
+}`);
+      expect(symbols.typeMap.get('A.a')?.type).toBe('Foo');
+      expect(symbols.typeMap.get('A.b')?.type).toBe('Foo');
+    });
+
+    it('seeds a field even when it carries an initializer', () => {
+      const symbols = parseDart(`class A {
+  final Foo x = Foo();
+}`);
+      expect(symbols.typeMap.get('A.x')?.type).toBe('Foo');
+    });
+
+    it('does not seed a field with no explicit type', () => {
+      // `var x = Foo();` has no explicit type annotation on the declaration
+      // itself — inferring one from the initializer is a separate,
+      // out-of-scope problem (#2319).
+      const symbols = parseDart(`class A {
+  var x = Foo();
+}`);
+      expect(symbols.typeMap.has('A.x')).toBe(false);
+      expect(symbols.typeMap.has('x')).toBe(false);
+    });
+
+    it('seeds from an inline-typed constructor-shorthand param', () => {
+      // `UserRepository this._repo` — an explicit inline type on a
+      // field-formal parameter is a genuine type annotation (not
+      // initializer inference), and here it's the ONLY source of type info
+      // since the class declares no field for `_repo` at all.
+      const symbols = parseDart(`class UserService {
+  UserService(UserRepository this._repo);
+}`);
+      expect(symbols.typeMap.get('UserService._repo')?.type).toBe('UserRepository');
+    });
+
+    it('needs no separate seeding for a plain this-shorthand param beyond the field', () => {
+      const symbols = parseDart(`class UserService {
+  final UserRepository _repo;
+  UserService(this._repo);
+}`);
+      expect(symbols.typeMap.get('UserService._repo')).toEqual({
+        type: 'UserRepository',
+        confidence: 0.9,
+      });
+    });
+
+    it('sets receiver on a bare field-access method call', () => {
+      const symbols = parseDart(`class UserService {
+  final UserRepository _repo;
+  UserService(this._repo);
+  User? getUser(String id) {
+    return _repo.findById(id);
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'findById', receiver: '_repo' }),
+      );
+    });
+
+    it('sets receiver on a local-variable method call', () => {
+      const symbols = parseDart(`void f() {
+  var w = Foo();
+  w.doSomething();
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'doSomething', receiver: 'w' }),
+      );
+    });
+
+    it('does not attribute a receiver to the second call in a chain', () => {
+      const symbols = parseDart(`void f() {
+  obj.method1().method2();
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'method1', receiver: 'obj' }),
+      );
+      const method2 = symbols.calls.find((c) => c.name === 'method2');
+      expect(method2).toBeDefined();
+      expect(method2!.receiver).toBeUndefined();
+    });
+
+    it('does not set a receiver on a bare call', () => {
+      const symbols = parseDart(`void f() {
+  helper();
+}`);
+      const call = symbols.calls.find((c) => c.name === 'helper');
+      expect(call).toBeDefined();
+      expect(call!.receiver).toBeUndefined();
+    });
+
+    it('end-to-end: resolves the issue example receiver-typed field access', () => {
+      const symbols = parseDart(`class UserService {
+  final UserRepository _repo;
+
+  UserService(this._repo);
+
+  User? getUser(String id) {
+    return _repo.findById(id);
+  }
+}`);
+      expect(symbols.typeMap.get('_repo')?.type).toBe('UserRepository');
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'findById', receiver: '_repo' }),
+      );
+    });
+  });
 });

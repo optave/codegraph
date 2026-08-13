@@ -211,12 +211,18 @@ const THRESHOLDS: Record<string, { precision: number; recall: number }> = {
   // function/method endLine was truncated to the signature line (breaking
   // enclosing-function caller-attribution for any call inside the body), and
   // bodyless (semicolon-only) constructors were never extracted as
-  // definitions. Now 100% precision, 61.9% recall (13/21). The remaining
-  // FNs are all receiver-typed calls (`_repo.save(user)` where `_repo`'s
-  // type comes from a constructor `this.field` parameter) — Dart has no
-  // typeMap population for field/parameter types yet, tracked separately
-  // in #2319. Ratcheted below the exact achieved value to avoid flakiness.
-  dart: { precision: 1.0, recall: 0.6 },
+  // definitions. #2319 then added typeMap population for explicitly-typed
+  // field declarations and `this.field` constructor-shorthand params (plus
+  // wiring `call.receiver` extraction for a bare `receiver.method()` access,
+  // which Dart never set at all before), lifting recall from 61.9% (13/21)
+  // to 81.0% (17/21) — the four `_repo.save(user)`-shaped field-receiver
+  // calls now resolve. The remaining FNs (`svc.createUser(...)`, where
+  // `svc`'s type comes from `var svc = UserService(repo)` — a local
+  // variable typed only by its constructor-call initializer, not an
+  // explicit type annotation) are deliberately out of #2319's scope — Dart
+  // has no typeMap population for that shape yet, tracked separately in
+  // #2474. Ratcheted below the exact achieved value to avoid flakiness.
+  dart: { precision: 1.0, recall: 0.75 },
   zig: { precision: 0.0, recall: 0.0 },
   fsharp: { precision: 0.0, recall: 0.0 },
   gleam: { precision: 0.0, recall: 0.0 },

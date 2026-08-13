@@ -17,6 +17,13 @@ impl SymbolExtractor for DartExtractor {
             &mut symbols.ast_nodes,
             &DART_AST_CONFIG,
         );
+        // #2319: seed typeMap from explicitly-typed field declarations and
+        // `this.field` constructor-shorthand params, mirroring the two-pass
+        // convention every other type-map-populating extractor in this file
+        // uses (match_X_node then match_X_type_map, e.g. javascript.rs,
+        // python.rs, swift.rs).
+        walk_tree(&tree.root_node(), source, &mut symbols, match_dart_type_map);
+        dedup_type_map(&mut symbols.type_map);
         symbols
     }
 }
@@ -42,6 +49,20 @@ fn match_dart_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
         "type_alias" => handle_dart_type_alias(node, source, symbols),
         "selector" => handle_dart_selector(node, source, symbols),
         "call_expression" => handle_dart_call_expression(node, source, symbols),
+        _ => {}
+    }
+}
+
+/// #2319: seed typeMap entries for call resolution — Dart's explicitly-typed
+/// field declarations and `this.field` constructor-shorthand params. A
+/// separate pass (rather than folding into `match_dart_node` above) mirrors
+/// the two-pass convention every other type-map-populating extractor in this
+/// crate uses (`match_X_node` then `match_X_type_map` — e.g. javascript.rs,
+/// python.rs, swift.rs).
+fn match_dart_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: usize) {
+    match node.kind() {
+        "declaration" => handle_dart_field_decl_type_map(node, source, symbols),
+        "constructor_param" => handle_dart_constructor_param_type_map(node, source, symbols),
         _ => {}
     }
 }
@@ -435,20 +456,201 @@ fn handle_dart_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols)
     }
 }
 
+/// Seed a class-scoped typeMap entry for a Dart instance field, mirroring
+/// `handle_field_def_type_map`'s convention in this crate's `javascript.rs`
+/// (itself mirroring `handleFieldDefTypeMap` in `src/extractors/javascript.ts`):
+/// a primary class-scoped key (`ClassName.field`, confidence 0.9) so two
+/// classes with identically-named fields of different types don't overwrite
+/// each other's entry, plus lower-confidence bare-name fallbacks (`field`,
+/// `this.field`, confidence 0.6) for when the resolver doesn't have a
+/// callerClass in scope. Unlike JS/TS (where every field read requires an
+/// explicit `this.` prefix), idiomatic Dart reads a field with a bare
+/// identifier (`_repo.findById()` inside the SAME class means `this._repo`
+/// implicitly) — the bare fallback key is therefore what call resolution
+/// (`resolveReceiverTypeName` in `src/domain/graph/resolver/strategy.ts`)
+/// actually consults for that shape today; the class-scoped primary key is
+/// seeded for convention-consistency and to serve any future/explicit
+/// `this.field` access (#2319). Mirrors `seedDartFieldTypeMapEntry` in
+/// `src/extractors/dart.ts`.
+fn seed_dart_field_type_map_entry(
+    symbols: &mut FileSymbols,
+    class_name: Option<&str>,
+    field_name: &str,
+    type_name: &str,
+) {
+    match class_name {
+        Some(class_name) => {
+            set_type_map_entry(
+                symbols,
+                format!("{}.{}", class_name, field_name),
+                type_name.to_string(),
+                0.9,
+            );
+            set_type_map_entry(symbols, field_name.to_string(), type_name.to_string(), 0.6);
+            set_type_map_entry(
+                symbols,
+                format!("this.{}", field_name),
+                type_name.to_string(),
+                0.6,
+            );
+        }
+        None => {
+            // No enclosing class (shouldn't happen for a real Dart field —
+            // members are always inside a class_body — kept for defensive
+            // symmetry with handleFieldDefTypeMap's own "no enclosing class"
+            // branch).
+            set_type_map_entry(symbols, field_name.to_string(), type_name.to_string(), 0.9);
+            set_type_map_entry(
+                symbols,
+                format!("this.{}", field_name),
+                type_name.to_string(),
+                0.9,
+            );
+        }
+    }
+}
+
+/// Extract the declared type name from a class-field `declaration` node.
+/// tree-sitter-dart 0.2 (crates.io, this native engine's pinned grammar)
+/// nests the type under a NAMED field `type:` pointing to a `type` node,
+/// which itself wraps the base `type_identifier` — `final UserRepository
+/// _repo;` parses as `declaration type: (type (type_identifier))
+/// (initialized_identifier_list ...)` (confirmed by parsing several field
+/// variants — final/late/nullable/generic — with tree-sitter-dart 0.2;
+/// #2319). This mirrors the SAME "intermediate `type` field" version
+/// difference `handle_dart_constructor_call` already documents for
+/// `new_expression`'s constructor name — npm's tree-sitter-dart 1.x (the
+/// WASM engine's grammar) instead puts `type_identifier` DIRECTLY under
+/// `declaration`, no wrapper at all (see `extractDartDeclaredTypeName` in
+/// `src/extractors/dart.ts`). A generic's type arguments (`List<User>`) are
+/// a separate `type_arguments` sibling INSIDE the `type` node, and a
+/// nullable `?` a separate anonymous token, so reading only the
+/// `type_identifier`'s own text already yields the simple base type name
+/// with no further stripping needed. Returns `None` when there's no
+/// explicit type at all (`var x = Foo();`) — inferring one from the
+/// initializer is a separate, out-of-scope problem — or when `node` isn't
+/// shaped like a field at all (a bodyless constructor/abstract-method
+/// `declaration` has no `type` field either).
+fn extract_dart_declared_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
+    let type_node = node
+        .child_by_field_name("type")
+        .or_else(|| find_child(node, "type"))?;
+    find_child(&type_node, "type_identifier").map(|t| node_text(&t, source))
+}
+
+/// Nearest enclosing class name for class-scoped typeMap keys — walks the
+/// node's ancestor chain looking for the nearest `class_definition` /
+/// `class_declaration` (both crate-version node names, matching
+/// `match_dart_node`'s own dual-version acceptance), mirroring
+/// `enclosing_type_map_class` in this crate's `javascript.rs` and this
+/// file's own existing `is_inside_class` ancestor-walk pattern. Mirrors
+/// `findEnclosingDartClassName` in `src/extractors/dart.ts`.
+fn find_enclosing_dart_class_name(node: &Node, source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "class_definition" || parent.kind() == "class_declaration" {
+            return parent
+                .child_by_field_name("name")
+                .map(|n| node_text(&n, source).to_string());
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+/// Seed typeMap entries for every field name declared by a class-field
+/// `declaration` node — `final Foo a, b;` declares BOTH `a` and `b` at type
+/// `Foo` (comma-separated multi-identifier fields, confirmed by parsing with
+/// tree-sitter-dart 0.2; #2319). No-ops when the declaration has no explicit
+/// type (see `extract_dart_declared_type_name`) or isn't shaped like a field
+/// at all — recognized by the absence of `initialized_identifier_list`,
+/// which only a field declaration has (a bodyless constructor/abstract
+/// method wraps a `constructor_signature`/`function_signature` instead).
+/// Mirrors `handleDartFieldDeclTypeMap` in `src/extractors/dart.ts`.
+fn handle_dart_field_decl_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(type_name) = extract_dart_declared_type_name(node, source) else {
+        return;
+    };
+    let Some(list) = find_child(node, "initialized_identifier_list") else {
+        return;
+    };
+    let class_name = find_enclosing_dart_class_name(node, source);
+    for i in 0..list.child_count() {
+        let Some(item) = list.child(i) else {
+            continue;
+        };
+        if item.kind() != "initialized_identifier" {
+            continue;
+        }
+        // tree-sitter-dart 0.2 exposes a NAMED field `name:` for the field's
+        // own identifier (confirmed by parsing `final Foo a, b;`, whose sexp
+        // shows `initialized_identifier name: (identifier)` for EACH of `a`
+        // and `b`); fall back to a structural scan for defensive symmetry
+        // with the WASM engine's equivalent helper, which has no such field.
+        let name_node = item
+            .child_by_field_name("name")
+            .or_else(|| find_child(&item, "identifier"));
+        if let Some(name_node) = name_node {
+            seed_dart_field_type_map_entry(
+                symbols,
+                class_name.as_deref(),
+                node_text(&name_node, source),
+                type_name,
+            );
+        }
+    }
+}
+
+/// `this.field` constructor-shorthand parameter (`UserService(this._repo)`).
+/// Normally needs no typeMap seeding of its own — the field's own
+/// declaration (`handle_dart_field_decl_type_map`) already provides the
+/// type, and the shorthand param only confirms initialization, not a new
+/// type.
+///
+/// However, Dart's grammar permits an EXPLICIT inline type on a field-formal
+/// parameter (`UserService(UserRepository this._repo)` — used e.g. to
+/// narrow a covariant field's type at the constructor boundary; confirmed
+/// parseable with tree-sitter-dart 0.2, producing a `type` node sibling
+/// inside `constructor_param` that itself wraps `type_identifier`; #2319).
+/// That IS a genuine explicit type annotation (not initializer-based
+/// inference), and it's the ONLY source of type info when the field's own
+/// declaration has none of its own (`var _repo;`) — so it gets the same
+/// seeding treatment as a field declaration. `set_type_map_entry`'s
+/// higher-confidence-wins merge makes this safe to call unconditionally
+/// alongside the field declaration's own seeding. Mirrors
+/// `handleDartConstructorParamTypeMap` in `src/extractors/dart.ts`.
+fn handle_dart_constructor_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    // Unlike `declaration`'s `type:` field, tree-sitter-dart 0.2 does NOT
+    // expose a named field for constructor_param's inline type (confirmed by
+    // parsing `UserService(UserRepository this._repo)`, whose sexp shows
+    // `(constructor_param (type (type_identifier)) (identifier))` with no
+    // `type:` label) — a plain structural scan.
+    let Some(type_node) = find_child(node, "type") else {
+        return;
+    };
+    let Some(type_id) = find_child(&type_node, "type_identifier") else {
+        return;
+    };
+    let Some(name_node) = find_child(node, "identifier") else {
+        return;
+    };
+    let class_name = find_enclosing_dart_class_name(node, source);
+    seed_dart_field_type_map_entry(
+        symbols,
+        class_name.as_deref(),
+        node_text(&name_node, source),
+        node_text(&type_id, source),
+    );
+}
+
 fn handle_dart_selector(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     // selector with argument_part represents a function call; mirrors handleDartSelector in dart.ts
     if find_child(node, "argument_part").is_none() {
         return;
     }
-    let unconditional = match find_child(node, "unconditional_assignable_selector") {
-        Some(n) => n,
-        None => return,
+    let Some((method_name, receiver)) = resolve_dart_selector_call(node, source) else {
+        return;
     };
-    let id = match find_child(&unconditional, "identifier") {
-        Some(n) => n,
-        None => return,
-    };
-    let method_name = node_text(&id, source);
 
     // Function.apply(fn, positionalArgs, namedArgs) — dynamic higher-order dispatch
     if method_name == "apply" {
@@ -470,7 +672,77 @@ fn handle_dart_selector(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         }
     }
 
-    push_simple_call(symbols, node, method_name);
+    push_call(symbols, node, method_name, receiver, None);
+}
+
+/// Look for the identifier this selector belongs to, plus (for a genuine
+/// `.method` access) its receiver, for typeMap-based call resolution
+/// (#2319). Mirrors `resolveDartSelectorCall` in `src/extractors/dart.ts` —
+/// see that function's doc comment for the three possible layouts (A/B/C)
+/// this handles identically. Returns `(method_name, receiver)`; `receiver`
+/// is `None` for a bare call (Layout C) or when the preceding token isn't a
+/// plain identifier/type_identifier (a chained call's intermediate receiver
+/// or a subscript-indexed receiver).
+fn resolve_dart_selector_call(node: &Node, source: &[u8]) -> Option<(String, Option<String>)> {
+    if let Some(unconditional) = find_child(node, "unconditional_assignable_selector") {
+        let id = find_child(&unconditional, "identifier")?;
+        let receiver = find_dart_selector_receiver(node, source);
+        return Some((node_text(&id, source).to_string(), receiver));
+    }
+
+    let parent = node.parent()?;
+    let mut prev_sibling: Option<Node> = None;
+    for i in 0..parent.child_count() {
+        if let Some(sibling) = parent.child(i) {
+            if sibling.id() == node.id() {
+                break;
+            }
+            prev_sibling = Some(sibling);
+        }
+    }
+    let prev_sibling = prev_sibling?;
+
+    if prev_sibling.kind() == "selector" {
+        let unc2 = find_child(&prev_sibling, "unconditional_assignable_selector")?;
+        let id2 = find_child(&unc2, "identifier")?;
+        let receiver = find_dart_selector_receiver(&prev_sibling, source);
+        return Some((node_text(&id2, source).to_string(), receiver));
+    }
+
+    if prev_sibling.kind() == "identifier" || prev_sibling.kind() == "type_identifier" {
+        // Bare (keyword-less) call — the identifier IS the callee's own
+        // name, not a receiver+method pair, so no receiver.
+        return Some((node_text(&prev_sibling, source).to_string(), None));
+    }
+
+    None
+}
+
+/// Receiver for a `.method` access: the sibling immediately preceding the
+/// selector node that itself carries the `.method` access
+/// (`method_selector`), ONLY when that sibling is a plain
+/// identifier/type_identifier — e.g. `_repo` in `_repo.findById(id)`.
+/// Deliberately conservative, mirroring `findDartSelectorReceiver` in
+/// `src/extractors/dart.ts` — see that function's doc comment for the
+/// chained-call and subscript-indexed cases this intentionally leaves
+/// unresolved rather than guessing.
+fn find_dart_selector_receiver(method_selector: &Node, source: &[u8]) -> Option<String> {
+    let parent = method_selector.parent()?;
+    let mut prev_sibling: Option<Node> = None;
+    for i in 0..parent.child_count() {
+        if let Some(sibling) = parent.child(i) {
+            if sibling.id() == method_selector.id() {
+                break;
+            }
+            prev_sibling = Some(sibling);
+        }
+    }
+    let prev_sibling = prev_sibling?;
+    if prev_sibling.kind() == "identifier" || prev_sibling.kind() == "type_identifier" {
+        Some(node_text(&prev_sibling, source).to_string())
+    } else {
+        None
+    }
 }
 
 /// Handles `call_expression` nodes — the shape tree-sitter-dart 0.2
@@ -503,13 +775,14 @@ fn handle_dart_call_expression(node: &Node, source: &[u8], symbols: &mut FileSym
                 return;
             };
             let method_name = node_text(&property, source).to_string();
+            let object = func.child_by_field_name("object");
 
             // Function.apply(fn, positionalArgs, namedArgs) — dynamic
             // higher-order dispatch, mirrors handle_dart_selector's own
             // Function.apply special case for the older grammar shape.
             if method_name == "apply" {
-                if let Some(object) = func.child_by_field_name("object") {
-                    if object.kind() == "identifier" && node_text(&object, source) == "Function" {
+                if let Some(object) = &object {
+                    if object.kind() == "identifier" && node_text(object, source) == "Function" {
                         symbols.calls.push(Call {
                             name: "<dynamic:unresolved>".to_string(),
                             line: start_line(node),
@@ -522,7 +795,22 @@ fn handle_dart_call_expression(node: &Node, source: &[u8], symbols: &mut FileSym
                 }
             }
 
-            push_simple_call(symbols, node, method_name);
+            // Receiver for typeMap-based call resolution (#2319): the
+            // `object` field, but ONLY when it's a plain identifier — e.g.
+            // `_repo` in `_repo.findById(id)`. A chained call's intermediate
+            // receiver (`obj.method1().method2()` — `method2`'s object is
+            // `method1()`'s OWN call_expression, not a plain identifier)
+            // yields no receiver, mirroring `handleDartSelector`'s identical
+            // conservatism in `src/extractors/dart.ts`.
+            let receiver = object.and_then(|obj| {
+                if obj.kind() == "identifier" {
+                    Some(node_text(&obj, source).to_string())
+                } else {
+                    None
+                }
+            });
+
+            push_call(symbols, node, method_name, receiver, None);
         }
         _ => {}
     }
@@ -724,6 +1012,177 @@ mod tests {
                 "missing Waldo.Waldo method; got: {:?}",
                 s.definitions
             );
+        }
+    }
+
+    // #2319: Dart never populated typeMap at all, so receiver-typed method
+    // calls (`_repo.findById(id)`, where `_repo`'s type comes from a typed
+    // field declaration or a `this.field` constructor-shorthand param) could
+    // never resolve. Mirrors the `type_map_seeding` coverage in
+    // `src/extractors/dart.ts`'s own test suite.
+    mod type_map_seeding {
+        use super::*;
+
+        #[test]
+        fn seeds_class_scoped_and_bare_keys_for_a_typed_final_field() {
+            let s = parse_dart(
+                "class UserService {\n  final UserRepository _repo;\n  UserService(this._repo);\n}",
+            );
+            let class_scoped = s.type_map.iter().find(|e| e.name == "UserService._repo");
+            assert!(
+                class_scoped.is_some(),
+                "missing UserService._repo class-scoped key; got: {:?}",
+                s.type_map
+            );
+            assert_eq!(class_scoped.unwrap().type_name, "UserRepository");
+            assert_eq!(class_scoped.unwrap().confidence, 0.9);
+
+            let bare = s.type_map.iter().find(|e| e.name == "_repo");
+            assert!(bare.is_some(), "missing bare _repo fallback key");
+            assert_eq!(bare.unwrap().type_name, "UserRepository");
+            assert_eq!(bare.unwrap().confidence, 0.6);
+
+            let this_prefixed = s.type_map.iter().find(|e| e.name == "this._repo");
+            assert!(this_prefixed.is_some(), "missing this._repo fallback key");
+            assert_eq!(this_prefixed.unwrap().confidence, 0.6);
+        }
+
+        #[test]
+        fn seeds_a_non_final_field_declaration_the_same_way() {
+            let s = parse_dart("class A {\n  UserRepository repo;\n}");
+            let entry = s.type_map.iter().find(|e| e.name == "A.repo");
+            assert!(entry.is_some(), "missing A.repo; got: {:?}", s.type_map);
+            assert_eq!(entry.unwrap().type_name, "UserRepository");
+        }
+
+        #[test]
+        fn seeds_a_late_field_declaration() {
+            let s = parse_dart("class A {\n  late UserRepository _repo;\n}");
+            let entry = s.type_map.iter().find(|e| e.name == "A._repo");
+            assert!(entry.is_some(), "missing A._repo; got: {:?}", s.type_map);
+            assert_eq!(entry.unwrap().type_name, "UserRepository");
+        }
+
+        #[test]
+        fn strips_no_extra_characters_for_a_nullable_field_type() {
+            let s = parse_dart("class A {\n  UserRepository? _repo;\n}");
+            let entry = s.type_map.iter().find(|e| e.name == "A._repo");
+            assert!(entry.is_some(), "missing A._repo; got: {:?}", s.type_map);
+            assert_eq!(
+                entry.unwrap().type_name,
+                "UserRepository",
+                "nullable `?` must not leak into the seeded type name"
+            );
+        }
+
+        #[test]
+        fn seeds_the_generic_base_type_for_a_generic_field() {
+            let s = parse_dart("class A {\n  List<User>? users;\n}");
+            let entry = s.type_map.iter().find(|e| e.name == "A.users");
+            assert!(entry.is_some(), "missing A.users; got: {:?}", s.type_map);
+            assert_eq!(entry.unwrap().type_name, "List");
+        }
+
+        #[test]
+        fn seeds_every_identifier_in_a_comma_separated_multi_field_declaration() {
+            let s = parse_dart("class A {\n  final Foo a, b;\n}");
+            let a = s.type_map.iter().find(|e| e.name == "A.a");
+            let b = s.type_map.iter().find(|e| e.name == "A.b");
+            assert!(a.is_some(), "missing A.a; got: {:?}", s.type_map);
+            assert!(b.is_some(), "missing A.b; got: {:?}", s.type_map);
+            assert_eq!(a.unwrap().type_name, "Foo");
+            assert_eq!(b.unwrap().type_name, "Foo");
+        }
+
+        #[test]
+        fn does_not_seed_a_field_with_no_explicit_type() {
+            // `var x = Foo();` has no explicit type annotation on the
+            // declaration itself — inferring one from the initializer is a
+            // separate, out-of-scope problem (#2319).
+            let s = parse_dart("class A {\n  var x = Foo();\n}");
+            assert!(
+                s.type_map.iter().all(|e| e.name != "A.x" && e.name != "x"),
+                "should not have seeded a typeMap entry for `var x = Foo();`; got: {:?}",
+                s.type_map
+            );
+        }
+
+        #[test]
+        fn seeds_from_an_inline_typed_constructor_shorthand_param() {
+            // `UserRepository this._repo` — an explicit inline type on a
+            // field-formal parameter is a genuine type annotation (not
+            // initializer inference), and here it's the ONLY source of type
+            // info since the class declares no field for `_repo` at all.
+            let s = parse_dart("class UserService {\n  UserService(UserRepository this._repo);\n}");
+            let entry = s.type_map.iter().find(|e| e.name == "UserService._repo");
+            assert!(
+                entry.is_some(),
+                "missing UserService._repo from inline-typed this-param; got: {:?}",
+                s.type_map
+            );
+            assert_eq!(entry.unwrap().type_name, "UserRepository");
+        }
+
+        #[test]
+        fn plain_this_shorthand_param_needs_no_separate_seeding_beyond_the_field() {
+            // UserService(this._repo) with NO inline type carries no type
+            // info of its own — the field declaration is the sole source.
+            let s = parse_dart(
+                "class UserService {\n  final UserRepository _repo;\n  UserService(this._repo);\n}",
+            );
+            let matches: Vec<_> = s
+                .type_map
+                .iter()
+                .filter(|e| e.name == "UserService._repo")
+                .collect();
+            assert_eq!(
+                matches.len(),
+                1,
+                "expected exactly one UserService._repo entry (from the field decl, deduped); got: {:?}",
+                s.type_map
+            );
+            assert_eq!(matches[0].type_name, "UserRepository");
+        }
+
+        #[test]
+        fn sets_receiver_on_a_bare_field_access_method_call() {
+            let s = parse_dart(
+                "class UserService {\n  final UserRepository _repo;\n  UserService(this._repo);\n  User? getUser(String id) {\n    return _repo.findById(id);\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "findById");
+            assert!(call.is_some(), "missing findById call; got: {:?}", s.calls);
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("_repo"));
+        }
+
+        #[test]
+        fn sets_receiver_on_a_local_variable_method_call() {
+            let s = parse_dart("void f() {\n  var w = Foo();\n  w.doSomething();\n}");
+            let call = s.calls.iter().find(|c| c.name == "doSomething");
+            assert!(
+                call.is_some(),
+                "missing doSomething call; got: {:?}",
+                s.calls
+            );
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("w"));
+        }
+
+        #[test]
+        fn does_not_attribute_a_receiver_to_the_second_call_in_a_chain() {
+            let s = parse_dart("void f() {\n  obj.method1().method2();\n}");
+            let m1 = s.calls.iter().find(|c| c.name == "method1").unwrap();
+            let m2 = s.calls.iter().find(|c| c.name == "method2").unwrap();
+            assert_eq!(m1.receiver.as_deref(), Some("obj"));
+            assert_eq!(
+                m2.receiver, None,
+                "method2's receiver is method1()'s return value, not a plain identifier — must not guess `obj`"
+            );
+        }
+
+        #[test]
+        fn bare_call_has_no_receiver() {
+            let s = parse_dart("void f() {\n  helper();\n}");
+            let call = s.calls.iter().find(|c| c.name == "helper").unwrap();
+            assert_eq!(call.receiver, None);
         }
     }
 }
