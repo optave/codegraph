@@ -113,13 +113,19 @@ echo "fixer: operating on $(cat .codegraph/fixer/repo)"
 
 **This is the only repo /fixer touches for the rest of this run.** Every `gh` command in every phase below targets `$(cat .codegraph/fixer/repo)` exclusively. Do not `cd` into another repo, do not pass `--repo` with a different slug, and do not fall back to a different repository's issue queue for any reason — including an empty queue in Phase 1. Hardcoding the slug instead of reading it from this file is exactly the bug this skill avoids (see issue #2164 — the `sweep` skill hardcoded `optave/codegraph` while the real repo is `optave/ops-codegraph-tool` — for what that looks like when it goes wrong).
 
-Phase 1's queue filter and Phase 3's batch-completion check both exclude issues carrying a `blocked` label — but that exclusion is a silent no-op in any repo where the label itself was never created (issue #2324: it never existed here, so every run to date queued self-gated issues right back in). Create it once, tolerantly, so those checks have something to actually filter on:
+Phase 1's queue filter and Phase 3's batch-completion check both exclude issues carrying a `blocked` label — but that exclusion is a silent no-op in any repo where the label itself was never created (issue #2324: it never existed here, so every run to date queued self-gated issues right back in). Create it once, checking existence explicitly rather than swallowing every `gh label create` error — a blanket `|| true` would hide a genuine failure (auth, rate limit, permissions) just as quietly as it hides "already exists," leaving the label absent while still printing a success message, and only surfacing as a failure much later when step 2b's `gh issue edit --add-label blocked` hits an issue that needs it (Greptile review, PR #2480):
 
 ```bash
-# 2>/dev/null || true: "already exists" is the expected steady state after the first run
-gh label create blocked --repo "$(cat .codegraph/fixer/repo)" \
-  --description "Excluded from /fixer's queue until removed" --color "d73a4a" > /dev/null 2>&1 || true
-echo "fixer: 'blocked' label present (created if missing)"
+REPO=$(cat .codegraph/fixer/repo)
+if gh label list --repo "$REPO" --search blocked --json name --jq '.[].name' 2>/dev/null | grep -qx blocked; then
+  echo "fixer: 'blocked' label already exists"
+else
+  if ! LABEL_ERR=$(gh label create blocked --repo "$REPO" \
+    --description "Excluded from /fixer's queue until removed" --color "d73a4a" 2>&1); then
+    echo "ERROR: could not create the 'blocked' label: $LABEL_ERR"; exit 1
+  fi
+  echo "fixer: 'blocked' label created"
+fi
 ```
 
 Detect the package manager once and persist the commands (Pattern 6 — never assume `npm`):
