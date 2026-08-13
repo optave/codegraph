@@ -252,7 +252,7 @@ fn insert_symbol_nodes(
 
         for batch in batches {
             let node_ids = query_node_ids(&mut id_stmt, &batch.file)?;
-            let file_id = node_ids.get(&format!("{}|file|0", &batch.file)).copied();
+            let file_id = node_ids.get(&format!("{}|file|0", batch.file)).copied();
 
             for def in &batch.definitions {
                 let def_key = format!("{}|{}|{}", def.name, def.kind, def.line);
