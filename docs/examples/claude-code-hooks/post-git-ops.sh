@@ -32,10 +32,11 @@ fi
 # Use git worktree root so each worktree session has its own state
 PROJECT_DIR=$(git rev-parse --show-toplevel 2>/dev/null) || PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
 
-# --- 1. Full rebuild of codegraph ---
-# Git operations (merge, rebase, pull) can change many files at once. A full
-# rebuild ensures complexity, dataflow, and directory cohesion metrics are
-# recomputed for all affected files — not just direct edits.
+# --- 1. Rebuild codegraph ---
+# Git operations (merge, rebase, pull) can change many files at once, including
+# files not directly edited in this session. A full rebuild ensures complexity,
+# dataflow, and directory cohesion metrics are recomputed for all affected files
+# — not just the ones the incremental pipeline would detect via reverse-deps.
 # See docs/guides/incremental-builds.md for what incremental skips.
 DB_PATH="$PROJECT_DIR/.codegraph/graph.db"
 if [ -f "$DB_PATH" ]; then
@@ -43,6 +44,13 @@ if [ -f "$DB_PATH" ]; then
   if command -v codegraph &>/dev/null; then
     codegraph build "$PROJECT_DIR" -d "$DB_PATH" --no-incremental 2>/dev/null && BUILD_OK=1 || true
   else
+    # Falls back to npx here since this is the template external consumers
+    # copy into their own project — they have no local dist/cli.js to prefer.
+    # codegraph's own repo copy of this hook (.claude/hooks/post-git-ops.sh)
+    # intentionally differs on this one line: it uses `node dist/cli.js`
+    # instead, so dogfooding this repo always rebuilds with the exact
+    # checked-out source rather than silently falling back to whatever
+    # version is currently published to npm.
     npx --yes @optave/codegraph build "$PROJECT_DIR" -d "$DB_PATH" --no-incremental 2>/dev/null && BUILD_OK=1 || true
   fi
   # Update staleness marker only if the full rebuild succeeded

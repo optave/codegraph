@@ -44,6 +44,13 @@ if [ -f "$DB_PATH" ]; then
   if command -v codegraph &>/dev/null; then
     codegraph build "$PROJECT_DIR" -d "$DB_PATH" --no-incremental 2>/dev/null && BUILD_OK=1 || true
   else
+    # Uses the local build here (this repo IS codegraph's own source) rather
+    # than npx, so dogfooding always rebuilds with the exact checked-out
+    # source instead of silently falling back to whatever version is
+    # currently published to npm. docs/examples/claude-code-hooks/post-git-
+    # ops.sh — the template external consumers copy — intentionally differs
+    # on this one line: it falls back to `npx --yes @optave/codegraph`
+    # instead, since a copied project has no local dist/cli.js to prefer.
     node "${CLAUDE_PROJECT_DIR:-$PROJECT_DIR}/dist/cli.js" build "$PROJECT_DIR" -d "$DB_PATH" --no-incremental 2>/dev/null && BUILD_OK=1 || true
   fi
   # Update staleness marker only if the full rebuild succeeded

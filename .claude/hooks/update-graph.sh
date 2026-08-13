@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rebuild-graph.sh — PostToolUse hook for Edit and Write tools
+# update-graph.sh — PostToolUse hook for Edit and Write tools
 # Incrementally updates the codegraph after source file edits.
 # On the first edit of a stale session (no full rebuild in >24h), upgrades
 # to a full rebuild so complexity/dataflow/cohesion data stays fresh.
@@ -110,6 +110,10 @@ fi
 # version than the one actually checked out here, and building with it
 # silently downgrades this project's build_meta / parsing results. Only
 # fall back to the global binary when the project has no local build at all.
+# docs/examples/claude-code-hooks/update-graph.sh — the template external
+# consumers copy — intentionally differs here: it falls back to
+# `npx --yes @optave/codegraph` instead, since a copied project has no
+# local dist/cli.js to prefer.
 BUILD_OK=0
 BUILD_ERR=""
 CLI_ENTRY="$PROJECT_DIR/dist/cli.js"

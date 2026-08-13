@@ -46,9 +46,17 @@ if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
   EDITED_FILES=$(awk '{print $2}' "$LOG_FILE" | sort -u)
 fi
 
-# Run all checks in a single Node.js process
+# Run all checks in a single Node.js process. Prefer a compiled .js copy
+# (what this repo ships) so every commit here skips the type-stripping
+# step; fall back to running the .ts source directly (what the docs/
+# examples copy ships, so external users need no build step of their own).
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-RESULT=$(node "$HOOK_DIR/pre-commit-checks.js" "$WORK_ROOT" "$EDITED_FILES" "$STAGED" 2>/dev/null) || true
+if [ -f "$HOOK_DIR/pre-commit-checks.js" ]; then
+  RESULT=$(node "$HOOK_DIR/pre-commit-checks.js" "$WORK_ROOT" "$EDITED_FILES" "$STAGED" 2>/dev/null) || true
+else
+  STRIP_FLAG=$(node -e "const [M,m]=process.versions.node.split('.').map(Number); console.log(M>=23?'--strip-types':'--experimental-strip-types')")
+  RESULT=$(node $STRIP_FLAG "$HOOK_DIR/pre-commit-checks.ts" "$WORK_ROOT" "$EDITED_FILES" "$STAGED" 2>/dev/null) || true
+fi
 
 if [ -z "$RESULT" ]; then
   exit 0
