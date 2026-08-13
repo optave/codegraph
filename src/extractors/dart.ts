@@ -163,15 +163,25 @@ function extractDartClassMembers(
  * a primary class-scoped key (`ClassName.field`, confidence 0.9) so two
  * classes with identically-named fields of different types don't overwrite
  * each other's entry, plus lower-confidence bare-name fallbacks (`field`,
- * `this.field`, confidence 0.6) for when the resolver doesn't have a
- * callerClass in scope. Unlike JS/TS (where every field read requires an
- * explicit `this.` prefix), idiomatic Dart reads a field with a bare
- * identifier (`_repo.findById()` inside the SAME class means `this._repo`
- * implicitly) — the bare fallback key is therefore what call resolution
- * (`resolveReceiverTypeName` in `src/domain/graph/resolver/strategy.ts`)
- * actually consults for that shape today; the class-scoped primary key is
- * seeded for convention-consistency and to serve any future/explicit
- * `this.field` access (#2319).
+ * `this.field`, confidence 0.6) for callers the resolver can't attribute to
+ * a specific class (e.g. no `callerName` in scope at all).
+ *
+ * Idiomatic Dart reads a field with a bare identifier — `_repo.findById()`
+ * inside the SAME class means `this._repo` implicitly, unlike JS/TS, which
+ * requires an explicit `this.` prefix for every field read. `dart.ts`'s
+ * receiver extraction (`findDartSelectorReceiver`) normalises that implicit
+ * shape by emitting the receiver text itself as `this.<name>` (matching the
+ * JS/TS convention textually), so `resolveReceiverTypeName` in
+ * `src/domain/graph/resolver/strategy.ts` treats a bare Dart field receiver
+ * exactly like a JS/TS `this.field` one: it strips the `this.` prefix and
+ * tries the class-scoped key (`ClassName.field`) FIRST, before ever falling
+ * back to these bare/`this.`-prefixed keys. That is what actually prevents
+ * two classes in the same file from cross-contaminating each other's
+ * same-named field's method resolution (#2319 follow-up on PR #2477's
+ * Greptile finding — see `findDartSelectorReceiver`'s own doc comment for
+ * the extraction-side half of this fix). The bare/`this.`-prefixed keys
+ * seeded here remain as the fallback for any caller the resolver can't
+ * scope to a class at all.
  *
  * `setTypeMapEntry`'s higher-confidence-wins merge means calling this
  * multiple times for the same field (e.g. once from the field declaration,
@@ -582,6 +592,27 @@ function resolveDartSelectorCall(node: TreeSitterNode): DartSelectorCall | null 
  * `_repo` in `_repo.findById(id)` (confirmed by parsing this exact shape
  * with tree-sitter-dart, matching the issue's own example; #2319).
  *
+ * A plain `identifier` sibling is emitted as `this.<name>`, NOT the bare
+ * name — even though idiomatic Dart never writes an explicit `this.` for a
+ * same-class field access. This normalises Dart's implicit-`this` field
+ * shape to look textually identical to JS/TS's explicit `this.field` shape,
+ * which lets `resolveReceiverTypeName` (`src/domain/graph/resolver/
+ * strategy.ts`) apply its EXISTING `this.`-prefix-stripping, class-scoped-
+ * key-first lookup to Dart too, with no resolver changes needed. Without
+ * this, two classes in the same file each declaring a same-named field of a
+ * different type would collide on the resolver's bare fallback key — a
+ * Greptile finding on PR #2477 (#2319 follow-up); see `seedDartFieldTypeMapEntry`'s
+ * doc comment for the seeding-side half. Safe even when the identifier is
+ * actually a local variable/parameter, not a field: the class-scoped lookup
+ * this enables (`ClassName.<name>`) simply finds no entry for a non-field
+ * name and falls through to the same bare-key lookup as before the prefix
+ * was added (`stripInstancePrefix` recovers the original bare name).
+ *
+ * A `type_identifier` sibling (a class/type name used as a static-call
+ * receiver, e.g. `MyClass.staticMethod()`) is deliberately left UNPREFIXED —
+ * it never denotes a field access, so there is no class-scoped key for it
+ * to benefit from, and prefixing it could only add a spurious lookup.
+ *
  * Deliberately conservative, mirroring `resolveDartSelectorCall`'s own
  * fall-through-to-null discipline: a chained call's intermediate receiver
  * (`obj.method1().method2()` — `method2`'s receiver is `method1()`'s return
@@ -603,7 +634,10 @@ function findDartSelectorReceiver(methodSelector: TreeSitterNode): string | unde
     if (sibling?.id === methodSelector.id) break;
     prevSibling = sibling;
   }
-  if (prevSibling?.type === 'identifier' || prevSibling?.type === 'type_identifier') {
+  if (prevSibling?.type === 'identifier') {
+    return `this.${prevSibling.text}`;
+  }
+  if (prevSibling?.type === 'type_identifier') {
     return prevSibling.text;
   }
   return undefined;

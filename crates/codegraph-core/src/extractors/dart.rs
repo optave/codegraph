@@ -462,15 +462,27 @@ fn handle_dart_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols)
 /// a primary class-scoped key (`ClassName.field`, confidence 0.9) so two
 /// classes with identically-named fields of different types don't overwrite
 /// each other's entry, plus lower-confidence bare-name fallbacks (`field`,
-/// `this.field`, confidence 0.6) for when the resolver doesn't have a
-/// callerClass in scope. Unlike JS/TS (where every field read requires an
-/// explicit `this.` prefix), idiomatic Dart reads a field with a bare
-/// identifier (`_repo.findById()` inside the SAME class means `this._repo`
-/// implicitly) — the bare fallback key is therefore what call resolution
-/// (`resolveReceiverTypeName` in `src/domain/graph/resolver/strategy.ts`)
-/// actually consults for that shape today; the class-scoped primary key is
-/// seeded for convention-consistency and to serve any future/explicit
-/// `this.field` access (#2319). Mirrors `seedDartFieldTypeMapEntry` in
+/// `this.field`, confidence 0.6) for callers the resolver can't attribute to
+/// a specific class at all.
+///
+/// Idiomatic Dart reads a field with a bare identifier — `_repo.findById()`
+/// inside the SAME class means `this._repo` implicitly, unlike JS/TS, which
+/// requires an explicit `this.` prefix for every field read. This crate's
+/// receiver extraction (`find_dart_selector_receiver` / the `object` field
+/// read in `handle_dart_call_expression`) normalises that implicit shape by
+/// emitting the receiver text itself as `this.<name>` (matching the JS/TS
+/// convention textually), so `resolve_call_targets_core` in
+/// `build_edges.rs` treats a bare Dart field receiver exactly like a JS/TS
+/// `this.field` one: it strips the `this.` prefix and tries the
+/// class-scoped key (`ClassName.field`) FIRST, before ever falling back to
+/// these bare/`this.`-prefixed keys. That is what actually prevents two
+/// classes in the same file from cross-contaminating each other's
+/// same-named field's method resolution (#2319 follow-up on PR #2477's
+/// Greptile finding — see `find_dart_selector_receiver`'s and
+/// `handle_dart_call_expression`'s own doc comments for the
+/// extraction-side half of this fix). The bare/`this.`-prefixed keys seeded
+/// here remain as the fallback for any caller the resolver can't scope to a
+/// class at all. Mirrors `seedDartFieldTypeMapEntry` in
 /// `src/extractors/dart.ts`.
 fn seed_dart_field_type_map_entry(
     symbols: &mut FileSymbols,
@@ -725,7 +737,21 @@ fn resolve_dart_selector_call(node: &Node, source: &[u8]) -> Option<(String, Opt
 /// Deliberately conservative, mirroring `findDartSelectorReceiver` in
 /// `src/extractors/dart.ts` — see that function's doc comment for the
 /// chained-call and subscript-indexed cases this intentionally leaves
-/// unresolved rather than guessing.
+/// unresolved rather than guessing, and for why a plain `identifier`
+/// sibling is returned as `this.<name>` rather than the bare name (#2319
+/// follow-up on PR #2477's Greptile finding: prevents same-named fields on
+/// different classes in the same file from colliding on the resolver's bare
+/// fallback key). A `type_identifier` sibling (a static-call receiver, e.g.
+/// `MyClass.staticMethod()`) is left unprefixed — it never denotes a field
+/// access.
+///
+/// NOTE: this function backs `handle_dart_selector`, which targets the
+/// `selector`-based call shape tree-sitter-dart 0.0.4 (and older) produces.
+/// The pinned crates.io grammar (0.2) instead represents every call as a
+/// `call_expression` node (see `handle_dart_call_expression` below, which
+/// duplicates this same `this.`-prefixing decision inline for that shape) —
+/// kept mirrored here for parity should the pinned grammar ever regress to
+/// (or a caller re-parses with) the older shape.
 fn find_dart_selector_receiver(method_selector: &Node, source: &[u8]) -> Option<String> {
     let parent = method_selector.parent()?;
     let mut prev_sibling: Option<Node> = None;
@@ -738,10 +764,10 @@ fn find_dart_selector_receiver(method_selector: &Node, source: &[u8]) -> Option<
         }
     }
     let prev_sibling = prev_sibling?;
-    if prev_sibling.kind() == "identifier" || prev_sibling.kind() == "type_identifier" {
-        Some(node_text(&prev_sibling, source).to_string())
-    } else {
-        None
+    match prev_sibling.kind() {
+        "identifier" => Some(format!("this.{}", node_text(&prev_sibling, source))),
+        "type_identifier" => Some(node_text(&prev_sibling, source).to_string()),
+        _ => None,
     }
 }
 
@@ -802,9 +828,18 @@ fn handle_dart_call_expression(node: &Node, source: &[u8], symbols: &mut FileSym
             // `method1()`'s OWN call_expression, not a plain identifier)
             // yields no receiver, mirroring `handleDartSelector`'s identical
             // conservatism in `src/extractors/dart.ts`.
+            //
+            // Returned as `this.<name>`, NOT the bare name: this is the
+            // ACTUAL live receiver-extraction path for the pinned crates.io
+            // 0.2 grammar (unlike `find_dart_selector_receiver` above, which
+            // only backs the older, currently-dead `selector`-based shape),
+            // so the `this.`-prefixing fix for #2319's cross-class field
+            // collision (see `seed_dart_field_type_map_entry`'s doc comment)
+            // must live HERE for the native engine to actually benefit from
+            // it. Mirrors `findDartSelectorReceiver` in `src/extractors/dart.ts`.
             let receiver = object.and_then(|obj| {
                 if obj.kind() == "identifier" {
-                    Some(node_text(&obj, source).to_string())
+                    Some(format!("this.{}", node_text(&obj, source)))
                 } else {
                     None
                 }
@@ -1151,7 +1186,13 @@ mod tests {
             );
             let call = s.calls.iter().find(|c| c.name == "findById");
             assert!(call.is_some(), "missing findById call; got: {:?}", s.calls);
-            assert_eq!(call.unwrap().receiver.as_deref(), Some("_repo"));
+            // Emitted as `this._repo`, not the bare `_repo` text Dart itself
+            // uses at the call site — normalises the implicit-`this` field
+            // access to the same shape JS/TS's explicit `this.field` already
+            // uses, so the resolver's existing class-scoped-key-first lookup
+            // applies to Dart too (#2319 follow-up on PR #2477's Greptile
+            // finding: prevents cross-class same-named-field collisions).
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("this._repo"));
         }
 
         #[test]
@@ -1163,7 +1204,12 @@ mod tests {
                 "missing doSomething call; got: {:?}",
                 s.calls
             );
-            assert_eq!(call.unwrap().receiver.as_deref(), Some("w"));
+            // Also `this.`-prefixed even though `w` is a local, not a field:
+            // the extractor cannot tell the two apart from a bare identifier
+            // alone, and prefixing is harmless here — the class-scoped
+            // lookup it enables just finds no entry for a non-field name and
+            // falls through to the same bare-key lookup as before.
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("this.w"));
         }
 
         #[test]
@@ -1171,7 +1217,7 @@ mod tests {
             let s = parse_dart("void f() {\n  obj.method1().method2();\n}");
             let m1 = s.calls.iter().find(|c| c.name == "method1").unwrap();
             let m2 = s.calls.iter().find(|c| c.name == "method2").unwrap();
-            assert_eq!(m1.receiver.as_deref(), Some("obj"));
+            assert_eq!(m1.receiver.as_deref(), Some("this.obj"));
             assert_eq!(
                 m2.receiver, None,
                 "method2's receiver is method1()'s return value, not a plain identifier — must not guess `obj`"

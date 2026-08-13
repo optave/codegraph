@@ -323,8 +323,15 @@ import 'package:flutter/material.dart';`);
     return _repo.findById(id);
   }
 }`);
+      // Emitted as `this._repo`, not the bare `_repo` text Dart itself uses
+      // at the call site — normalises the implicit-`this` field access to
+      // the same shape JS/TS's explicit `this.field` already uses, so the
+      // resolver's existing class-scoped-key-first lookup (`resolveReceiverTypeName`
+      // in resolver/strategy.ts) applies to Dart too (#2319 follow-up on PR
+      // #2477's Greptile finding: prevents cross-class same-named-field
+      // collisions — see `findDartSelectorReceiver`'s doc comment).
       expect(symbols.calls).toContainEqual(
-        expect.objectContaining({ name: 'findById', receiver: '_repo' }),
+        expect.objectContaining({ name: 'findById', receiver: 'this._repo' }),
       );
     });
 
@@ -333,8 +340,13 @@ import 'package:flutter/material.dart';`);
   var w = Foo();
   w.doSomething();
 }`);
+      // Also `this.`-prefixed even though `w` is a local, not a field: the
+      // extractor cannot tell the two apart from a bare identifier alone,
+      // and prefixing is harmless here — the class-scoped lookup it enables
+      // just finds no entry for a non-field name and falls through to the
+      // same bare-key lookup as before.
       expect(symbols.calls).toContainEqual(
-        expect.objectContaining({ name: 'doSomething', receiver: 'w' }),
+        expect.objectContaining({ name: 'doSomething', receiver: 'this.w' }),
       );
     });
 
@@ -343,7 +355,7 @@ import 'package:flutter/material.dart';`);
   obj.method1().method2();
 }`);
       expect(symbols.calls).toContainEqual(
-        expect.objectContaining({ name: 'method1', receiver: 'obj' }),
+        expect.objectContaining({ name: 'method1', receiver: 'this.obj' }),
       );
       const method2 = symbols.calls.find((c) => c.name === 'method2');
       expect(method2).toBeDefined();
@@ -371,7 +383,7 @@ import 'package:flutter/material.dart';`);
 }`);
       expect(symbols.typeMap.get('_repo')?.type).toBe('UserRepository');
       expect(symbols.calls).toContainEqual(
-        expect.objectContaining({ name: 'findById', receiver: '_repo' }),
+        expect.objectContaining({ name: 'findById', receiver: 'this._repo' }),
       );
     });
   });
