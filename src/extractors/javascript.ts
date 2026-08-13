@@ -5314,6 +5314,35 @@ function extractReflectCalleeFromArg(firstArg: TreeSitterNode | null, callLine: 
   };
 }
 
+/**
+ * Whether `node` is an inline function literal — `function(){}`, `()=>{}`, or
+ * `function*(){}` — either directly, or wrapped in exactly one level of
+ * parentheses (`(function(){})`, `(()=>{})`; confirmed by parsing both forms
+ * with tree-sitter — arrow functions used as a `.call`/`.apply`/`.bind`
+ * receiver always need the parens, since `()=>{}.bind(x)` on its own is not
+ * how the grammar attaches the member access). Used by
+ * `extractMemberExprCallInfo`'s `.call`/`.apply`/`.bind` branch (issue #2321)
+ * to recognize an anonymous callee with no meaningful name to record, rather
+ * than falling through to `extractReceiverName`'s raw-text fallback (which
+ * would otherwise embed the entire function body as `receiver`). Only one
+ * level of parens is unwrapped, mirroring `extractReceiverName`'s own
+ * documented "only one level" limitation for its analogous
+ * `(new Foo()).method()` case earlier in this file.
+ */
+function isInlineFunctionLiteral(node: TreeSitterNode): boolean {
+  const isFnLiteral = (n: TreeSitterNode): boolean =>
+    n.type === 'function_expression' ||
+    n.type === 'arrow_function' ||
+    n.type === 'generator_function';
+  if (isFnLiteral(node)) return true;
+  if (node.type !== 'parenthesized_expression') return false;
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && isFnLiteral(child)) return true;
+  }
+  return false;
+}
+
 /** Extract call info from a member_expression function node (obj.method()). */
 function extractMemberExprCallInfo(fn: TreeSitterNode, callNode: TreeSitterNode): Call | null {
   const obj = fn.childForFieldName('object');
@@ -5403,6 +5432,22 @@ function extractMemberExprCallInfo(fn: TreeSitterNode, callNode: TreeSitterNode)
       const innerProp = obj.childForFieldName('property');
       if (innerProp)
         return { name: innerProp.text, line: callLine, dynamic: true, dynamicKind: 'reflection' };
+    }
+    // Inline function literal (`function(){...}.bind(this)`, or the same
+    // wrapped in one level of parens — `(function(){}).bind(x)`,
+    // `(() => {}).bind(x)`; arrow functions in this position always need the
+    // parens, confirmed by parsing both forms) — there is no meaningful
+    // bound-target NAME to record (the wrapped function is anonymous), and
+    // falling through to the generic tail below would set `receiver` to the
+    // entire function body's source text via extractReceiverName's raw-text
+    // fallback (issue #2321). Still tag the call site itself as a
+    // dynamic/reflection invocation — same informational value as the
+    // identifier/member_expression cases above — just without a receiver,
+    // since none exists. Only one level of parens is unwrapped, mirroring
+    // extractReceiverName's own documented "only one level" limitation for
+    // its analogous `(new Foo()).method()` case just above in this file.
+    if (obj && isInlineFunctionLiteral(obj)) {
+      return { name: propText, line: callLine, dynamic: true, dynamicKind: 'reflection' };
     }
   }
 

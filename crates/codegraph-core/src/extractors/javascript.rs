@@ -5750,6 +5750,39 @@ fn extract_reflect_callee_from_arg(first_arg: Option<Node>, call_line: u32, sour
     }
 }
 
+/// Whether `node` is an inline function literal — `function(){}`, `()=>{}`,
+/// or `function*(){}` — either directly, or wrapped in exactly one level of
+/// parentheses (`(function(){})`, `(()=>{})`; arrow functions used as a
+/// `.call`/`.apply`/`.bind` receiver always need the parens). Used by
+/// `extract_call_info`'s `.call`/`.apply`/`.bind` branch (issue #2321) to
+/// recognize an anonymous callee with no meaningful name to record, rather
+/// than falling through to `extract_receiver_name`'s raw-text fallback
+/// (which would otherwise embed the entire function body as `receiver`).
+/// Only one level of parens is unwrapped. Mirrors isInlineFunctionLiteral in
+/// src/extractors/javascript.ts.
+fn is_inline_function_literal(node: &Node) -> bool {
+    fn is_fn_literal(n: &Node) -> bool {
+        matches!(
+            n.kind(),
+            "function_expression" | "arrow_function" | "generator_function"
+        )
+    }
+    if is_fn_literal(node) {
+        return true;
+    }
+    if node.kind() != "parenthesized_expression" {
+        return false;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if is_fn_literal(&child) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn extract_call_info(fn_node: &Node, call_node: &Node, source: &[u8]) -> Option<Call> {
     match fn_node.kind() {
         "identifier" => {
@@ -5893,6 +5926,28 @@ fn extract_call_info(fn_node: &Node, call_node: &Node, source: &[u8]) -> Option<
                                 ..Default::default()
                             });
                         }
+                    }
+                    // Inline function literal (`function(){...}.bind(this)`, or the
+                    // same wrapped in one level of parens — `(function(){}).bind(x)`,
+                    // `(() => {}).bind(x)`; arrow functions in this position always
+                    // need the parens) — there is no meaningful bound-target NAME to
+                    // record (the wrapped function is anonymous), and falling through
+                    // to the generic tail below would set `receiver` to the entire
+                    // function body's source text via extract_receiver_name's
+                    // raw-text fallback (issue #2321). Still tag the call site itself
+                    // as a dynamic/reflection invocation — same informational value
+                    // as the identifier/member_expression cases above — just without
+                    // a receiver, since none exists. Mirrors isInlineFunctionLiteral
+                    // + extractMemberExprCallInfo in src/extractors/javascript.ts.
+                    if is_inline_function_literal(obj) {
+                        return Some(Call {
+                            name: prop_text.to_string(),
+                            line: call_line,
+                            dynamic: Some(true),
+                            dynamic_kind: Some("reflection".to_string()),
+                            receiver: None,
+                            ..Default::default()
+                        });
                     }
                 }
             }
@@ -8252,6 +8307,49 @@ mod tests {
     fn call_on_member_expression_receiver_tags_reflection() {
         let s = parse_js("obj.method.call({});");
         let c = s.calls.iter().find(|c| c.name == "method").unwrap();
+        assert_eq!(c.dynamic, Some(true));
+        assert_eq!(c.dynamic_kind.as_deref(), Some("reflection"));
+    }
+
+    // ── #2321: .call/.apply/.bind on an inline function literal ──────────────
+    //
+    // Before the fix, an inline function_expression/arrow_function/
+    // generator_function object fell through to the generic tail of
+    // extract_call_info, which set `receiver` to the ENTIRE function body's
+    // source text via extract_receiver_name's raw-text fallback.
+
+    #[test]
+    fn bind_on_unwrapped_function_expression_has_no_receiver() {
+        let s = parse_js(
+            "class Session {
+                isReady() { return true; }
+                checkBound() {
+                    setTimeout(function () {
+                        return this.isReady();
+                    }.bind(this), 100);
+                }
+            }",
+        );
+        let c = s.calls.iter().find(|c| c.name == "bind").unwrap();
+        assert_eq!(c.receiver, None);
+        assert_eq!(c.dynamic, Some(true));
+        assert_eq!(c.dynamic_kind.as_deref(), Some("reflection"));
+    }
+
+    #[test]
+    fn call_on_parenthesized_arrow_function_has_no_receiver() {
+        let s = parse_js("(() => { doWork(); }).call(ctx);");
+        let c = s.calls.iter().find(|c| c.name == "call").unwrap();
+        assert_eq!(c.receiver, None);
+        assert_eq!(c.dynamic, Some(true));
+        assert_eq!(c.dynamic_kind.as_deref(), Some("reflection"));
+    }
+
+    #[test]
+    fn apply_on_parenthesized_generator_function_has_no_receiver() {
+        let s = parse_js("(function* () { yield 1; }).apply(ctx, args);");
+        let c = s.calls.iter().find(|c| c.name == "apply").unwrap();
+        assert_eq!(c.receiver, None);
         assert_eq!(c.dynamic, Some(true));
         assert_eq!(c.dynamic_kind.as_deref(), Some("reflection"));
     }

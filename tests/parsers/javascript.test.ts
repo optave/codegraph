@@ -1077,6 +1077,47 @@ describe('JavaScript parser', () => {
     expect(methodCall.dynamicKind).toBe('reflection');
   });
 
+  it('does not embed the function source as receiver for .bind() on an inline function expression (#2321)', () => {
+    // The exact repro from the issue: `.bind()` invoked directly on an inline
+    // function_expression, not a named reference. Before the fix, this fell
+    // through to the generic tail of extractMemberExprCallInfo, which set
+    // `receiver` to the ENTIRE function body's source text via
+    // extractReceiverName's raw-text fallback.
+    const symbols = parseJS(
+      `class Session {
+        isReady() { return true; }
+        checkBound() {
+          setTimeout(function () {
+            return this.isReady();
+          }.bind(this), 100);
+        }
+      }`,
+    );
+    const bindCall = symbols.calls.find((c) => c.name === 'bind');
+    expect(bindCall).toBeDefined();
+    expect(bindCall.receiver).toBeUndefined();
+    expect(bindCall.dynamic).toBe(true);
+    expect(bindCall.dynamicKind).toBe('reflection');
+  });
+
+  it('does not embed the arrow function source as receiver for .call()', () => {
+    const symbols = parseJS(`(() => { doWork(); }).call(ctx);`);
+    const callCall = symbols.calls.find((c) => c.name === 'call');
+    expect(callCall).toBeDefined();
+    expect(callCall.receiver).toBeUndefined();
+    expect(callCall.dynamic).toBe(true);
+    expect(callCall.dynamicKind).toBe('reflection');
+  });
+
+  it('does not embed the generator function source as receiver for .apply()', () => {
+    const symbols = parseJS(`(function* () { yield 1; }).apply(ctx, args);`);
+    const applyCall = symbols.calls.find((c) => c.name === 'apply');
+    expect(applyCall).toBeDefined();
+    expect(applyCall.receiver).toBeUndefined();
+    expect(applyCall.dynamic).toBe(true);
+    expect(applyCall.dynamicKind).toBe('reflection');
+  });
+
   describe('callback pattern extraction', () => {
     // Commander patterns
     it('extracts Commander .command().action() with arrow function', () => {
