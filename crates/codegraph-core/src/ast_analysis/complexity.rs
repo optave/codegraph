@@ -46,6 +46,12 @@ pub struct LangRules {
     /// (wrapper-unwrapped) node's immediate parent's PRECEDING SIBLING is
     /// this keyword kind — see [`detect_else_if`]/[`is_pattern_d_else`].
     pub else_keyword_type: Option<&'static str>,
+    /// Node kinds to skip when walking backward from a transparent-wrapper
+    /// node looking for the preceding `else_keyword_type` sibling (e.g.
+    /// Solidity's `comment` — `else /* note */ if (...)` still counts as an
+    /// else-if even though a comment node sits between the `else` token and
+    /// the wrapper). Empty for every language without `else_keyword_type` set.
+    pub comment_types: &'static [&'static str],
 }
 
 impl LangRules {
@@ -113,6 +119,7 @@ pub static JS_TS_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 pub static PYTHON_RULES: LangRules = LangRules {
@@ -146,6 +153,7 @@ pub static PYTHON_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 pub static GO_RULES: LangRules = LangRules {
@@ -181,6 +189,7 @@ pub static GO_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 pub static RUST_LANG_RULES: LangRules = LangRules {
@@ -216,6 +225,7 @@ pub static RUST_LANG_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 pub static JAVA_RULES: LangRules = LangRules {
@@ -255,6 +265,7 @@ pub static JAVA_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 pub static CSHARP_RULES: LangRules = LangRules {
@@ -297,6 +308,7 @@ pub static CSHARP_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 pub static RUBY_RULES: LangRules = LangRules {
@@ -335,6 +347,7 @@ pub static RUBY_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 pub static PHP_RULES: LangRules = LangRules {
@@ -378,6 +391,7 @@ pub static PHP_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // tree-sitter-c's if_statement wraps its else branch in a real `else_clause`
@@ -426,6 +440,7 @@ pub static C_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // Mirrors C_RULES: tree-sitter-cpp's if_statement uses the same else_clause
@@ -472,6 +487,7 @@ pub static CPP_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // tree-sitter-objc extends tree-sitter-c: if_statement/for_statement/
@@ -524,6 +540,7 @@ pub static OBJC_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // `when_entry` (each case arm) must NOT also be in branch_nodes — `walk()`
@@ -562,6 +579,7 @@ pub static KOTLIN_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // tree-sitter-swift, like tree-sitter-kotlin, splits && / || into distinct
@@ -611,6 +629,7 @@ pub static SWIFT_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // `case_clause` must NOT also be in branch_nodes — same shadowing bug as
@@ -646,6 +665,7 @@ pub static SCALA_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 pub static BASH_RULES: LangRules = LangRules {
@@ -676,6 +696,7 @@ pub static BASH_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // Lua's `if_statement` is flat, not nested: `elseif`/`else` are separate node
@@ -730,6 +751,7 @@ pub static LUA_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // tree-sitter-zig's if_statement wraps its else branch in an `else_clause`
@@ -779,6 +801,7 @@ pub static ZIG_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 /// Mirrors the TS `complexity` export in `src/ast-analysis/rules/r.ts`.
@@ -816,6 +839,7 @@ pub static R_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 /// Mirrors the TS `complexityGroovy` export in `src/ast-analysis/rules/b2.ts`.
@@ -867,6 +891,7 @@ pub static GROOVY_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // tree-sitter-julia wraps EVERY binary operator token (`+`, `-`, `>`, `==`,
@@ -935,6 +960,7 @@ pub static JULIA_RULES: LangRules = LangRules {
     logical_operators_by_text: true,
     transparent_wrapper_types: &[],
     else_keyword_type: None,
+    comment_types: &[],
 };
 
 // tree-sitter-solidity's `if_statement` has NO `else_clause` wrapper node and
@@ -997,6 +1023,7 @@ pub static SOLIDITY_RULES: LangRules = LangRules {
     logical_operators_by_text: false,
     transparent_wrapper_types: &["statement", "expression"],
     else_keyword_type: Some("else"),
+    comment_types: &["comment"],
 };
 
 /// Look up complexity rules by language ID (matches `COMPLEXITY_RULES` keys in JS).
@@ -1212,7 +1239,18 @@ fn is_pattern_d_else_if(node: &Node, rules: &LangRules) -> bool {
     if !rules.transparent_wrapper_types.contains(&wrapper.kind()) {
         return false;
     }
-    wrapper.prev_sibling().is_some_and(|s| s.kind() == else_kw)
+    // Skip comment nodes when walking backward: `else /* note */ if (...)`
+    // still counts as an else-if even though a comment sibling sits between
+    // the `else` token and the wrapper (Greptile review, PR #2472).
+    let mut sib = wrapper.prev_sibling();
+    while let Some(candidate) = sib {
+        if rules.comment_types.contains(&candidate.kind()) {
+            sib = candidate.prev_sibling();
+        } else {
+            break;
+        }
+    }
+    sib.is_some_and(|s| s.kind() == else_kw)
 }
 
 /// Detect whether an if-node is actually an else-if (Pattern A, C, or D).
@@ -4208,6 +4246,32 @@ mod tests {
         // asserts (e.g. `zig_if_elseif_else`, `r_if_elseif_else`).
         assert_eq!(m.cognitive, 3);
         assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn solidity_else_if_with_comment_before_branch_still_scores_flat() {
+        // Regression guard (Greptile review, PR #2472): a comment sibling
+        // between the `else` token and the transparent wrapper would make
+        // `wrapper.prev_sibling()` the comment, not `else`. `comment_types`
+        // must be skipped over when walking backward, or this scores
+        // cognitive 4/max_nesting 2 (a fresh nested branch) instead of
+        // matching the uncommented case above (cognitive 3/max_nesting 1).
+        let m = compute_solidity(
+            "contract C { function f(int x, int y) public { if (x > 0) { x = 1; } else /* note */ if (y > 0) { x = 2; } else { x = 3; } } }",
+        );
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn solidity_plain_else_with_line_comment_still_scores_flat() {
+        let m = compute_solidity(
+            "contract C { function f(int x) public { if (x > 0) { x = 1; } else // note\n { x = 2; } } }",
+        );
+        assert_eq!(m.cognitive, 2);
+        assert_eq!(m.cyclomatic, 2);
         assert_eq!(m.max_nesting, 1);
     }
 

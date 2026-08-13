@@ -1742,6 +1742,26 @@ describe('Solidity complexity (#2312)', () => {
     expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
   });
 
+  it('if/else-if/else with a comment between `else` and its branch still scores flat (Greptile review, PR #2472)', () => {
+    // A comment sibling between the `else` token and the transparent
+    // wrapper (`else /* note */ if (...)`) would make `wrapper.previousSibling`
+    // the comment, not `else` — commentTypes must be skipped over when
+    // walking backward, or this scores identically to the uncommented Bug-2
+    // regression case above (cognitive 4/maxNesting 2) instead of matching it
+    // (cognitive 3/maxNesting 1).
+    const r = analyze(
+      'contract C { function f(int x, int y) public { if (x > 0) { x = 1; } else /* note */ if (y > 0) { x = 2; } else { x = 3; } } }',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('plain else with a line comment before its block still scores as a flat else (Greptile review, PR #2472)', () => {
+    const r = analyze(
+      'contract C { function f(int x) public { if (x > 0) { x = 1; } else // note\n { x = 2; } } }',
+    );
+    expect(r).toEqual({ cognitive: 2, cyclomatic: 2, maxNesting: 1 });
+  });
+
   it('logical operators — same operator sequence through the `expression` wrapper', () => {
     // Each operator token has its own distinct node type here (unlike
     // Julia) — this exercises effectiveParent's wrapper-unwrapping, not

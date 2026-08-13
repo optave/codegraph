@@ -1272,6 +1272,15 @@ export interface ComplexityRules {
    * parent's PRECEDING SIBLING is this keyword type (#2312).
    */
   elseKeywordType?: string | null;
+  /**
+   * Node types to skip when walking backward from a transparent-wrapper
+   * node looking for the preceding `elseKeywordType` sibling — e.g.
+   * Solidity's `comment`: `else /* note *\/ if (...)` still counts as an
+   * else-if even though a comment node sits between the `else` token and
+   * the wrapper. Omitted for every language without `elseKeywordType` set
+   * (#2312, Greptile review PR #2472).
+   */
+  commentTypes?: Set<string> | null;
 }
 
 /** Halstead rules for a language. */

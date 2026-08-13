@@ -200,7 +200,14 @@ function isPatternDElseIf(node: TreeSitterNode, rules: ComplexityRules): boolean
   if (!rules.elseKeywordType || !rules.transparentWrapperTypes?.size) return false;
   const wrapper = node.parent;
   if (!wrapper || !rules.transparentWrapperTypes.has(wrapper.type)) return false;
-  return wrapper.previousSibling?.type === rules.elseKeywordType;
+  // Skip comment nodes when walking backward: `else /* note */ if (...)`
+  // still counts as an else-if even though a comment sibling sits between
+  // the `else` token and the wrapper (Greptile review, PR #2472).
+  let sib = wrapper.previousSibling;
+  while (sib && rules.commentTypes?.has(sib.type)) {
+    sib = sib.previousSibling;
+  }
+  return sib?.type === rules.elseKeywordType;
 }
 
 /** Handle logical operators in binary expressions. Returns true if handled. */

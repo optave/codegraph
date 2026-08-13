@@ -123,6 +123,13 @@ export const complexitySolidity: ComplexityRules = {
   switchLikeNodes: new Set([]),
   transparentWrapperTypes: new Set(['statement', 'expression']),
   elseKeywordType: 'else',
+  // A comment can sit between the `else` token and its branch wrapper
+  // (`else /* note */ if (...)` or `else\n  // note\n  if (...)`) — both
+  // line and block comments share this one node type in the grammar
+  // (confirmed by parsing each form). Skipped when walking backward for
+  // the else keyword so a commented else-if/plain-else isn't misclassified
+  // as a fresh nested branch (Greptile review, PR #2472).
+  commentTypes: new Set(['comment']),
 };
 
 // tree-sitter-solidity gives every operator token its OWN distinct node type
