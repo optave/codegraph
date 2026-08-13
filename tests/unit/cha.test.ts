@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import type { CallNodeLookup } from '../../src/domain/graph/builder/call-resolver.js';
 import {
   type ChaContext,
+  deriveZeroImplementorInterfaces,
   resolveChaTargets,
   resolveThisDispatch,
 } from '../../src/domain/graph/builder/cha.js';
@@ -434,5 +435,65 @@ describe('resolveChaTargets — inherited (non-overriding) method walk (issue #2
 
     const result = resolveChaTargets('Handler', 'run', chaCtx, lookup);
     expect(result).toEqual([]);
+  });
+});
+
+describe('deriveZeroImplementorInterfaces (issue #2315)', () => {
+  it('returns an interface whose only implementor is never instantiated', () => {
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { IWorker: ['GhostWorker'] },
+      instantiatedTypes: [],
+    });
+
+    expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual(['IWorker']);
+  });
+
+  it('excludes an interface that has at least one instantiated implementor', () => {
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { IWorker: ['ConcreteWorker', 'GhostWorker'] },
+      instantiatedTypes: ['ConcreteWorker'],
+    });
+
+    expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual([]);
+  });
+
+  it('reports only the zero-implementor interface among several', () => {
+    const chaCtx = makeChaTargetsCtx({
+      implementors: {
+        IWorker: ['ConcreteWorker'],
+        IShape: ['GhostShape'],
+        Handler: ['ConcreteHandler'],
+      },
+      instantiatedTypes: ['ConcreteWorker', 'ConcreteHandler'],
+    });
+
+    expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual(['IShape']);
+  });
+
+  it('returns [] when every interface has an instantiated implementor', () => {
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { IWorker: ['ConcreteWorker', 'MockWorker'] },
+      instantiatedTypes: ['ConcreteWorker', 'MockWorker'],
+    });
+
+    expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual([]);
+  });
+
+  it('returns [] for an empty ChaContext', () => {
+    const chaCtx = makeChaTargetsCtx({});
+    expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual([]);
+  });
+
+  it('treats a base class reached only via `extends` the same as an `implements` interface', () => {
+    // `implementors` also records extends-derived parent -> children (used
+    // for CHA dispatch expansion via inheritance, not just `implements`) —
+    // the zero-implementor check is agnostic to which heritage kind produced
+    // the entry.
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { AbstractShape: ['Square'] },
+      instantiatedTypes: [],
+    });
+
+    expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual(['AbstractShape']);
   });
 });

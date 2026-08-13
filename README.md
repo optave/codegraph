@@ -597,6 +597,7 @@ codegraph build --no-incremental   # Force full rebuild
 
 - **After large refactors** (renames, moves, deleted files) — the reverse-dependency cascade handles most cases, but a full rebuild ensures nothing is stale
 - **If you suspect stale analysis data** — complexity or dataflow results for files you didn't directly edit won't update incrementally
+- **If `codegraph info` nudges you** — it flags when an interface gained its first instantiated implementor since the last full build, a narrow CHA/RTA dispatch-edge gap incremental rebuilds can't self-heal (see [incremental-builds.md](docs/guides/incremental-builds.md#known-limitation-an-interfaces-first-instantiated-implementor))
 - **Periodically** — if you rely heavily on `complexity`, `dataflow`, `roles --role dead`, or `communities` queries, run a full rebuild weekly or after major merges
 - **After upgrading codegraph** — engine, schema, or version changes trigger an automatic full rebuild, but if you skip versions you may want to force one
 

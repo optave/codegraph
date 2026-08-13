@@ -295,6 +295,61 @@ export function buildChaContextFromDb(db: BetterSqlite3Database): ChaContext {
   return { implementors, implementorsByFile, parents, parentsByFile, instantiatedTypes };
 }
 
+/**
+ * build_meta key for the CHA-zero-implementor snapshot (issue #2315).
+ * JSON-encoded array of interface/base-class names. Written by
+ * `persistChaZeroImplementorSnapshot` in both `builder/stages/finalize.ts`
+ * (WASM/JS full-build path, and any native full build that reaches
+ * `finalize()`) and `builder/stages/native-orchestrator.ts`'s
+ * `tryNativeOrchestrator` (the all-Rust fast path that otherwise bypasses
+ * `finalize()` entirely) — shared here as the single source of truth so
+ * both writers and `codegraph info`'s reader (`cli/commands/info.ts`) never
+ * drift out of sync on the literal key name.
+ */
+export const CHA_ZERO_IMPLEMENTOR_META_KEY = 'cha_zero_implementor_interfaces';
+
+/**
+ * Given a `ChaContext`, return the interface/base-class names that currently
+ * have ZERO instantiated implementors — i.e. every entry in
+ * `implementors.get(name)` is absent from `instantiatedTypes`.
+ *
+ * Pure: takes a plain `ChaContext` and returns plain data, independent of
+ * where that context came from (in-memory full build or `buildChaContextFromDb`)
+ * — trivial to unit test with hand-built fixtures.
+ *
+ * Used for the CHA-zero-implementor health check (issue #2315):
+ * `findChaSiblingCallerFiles` (`builder/incremental.ts`) discovers callers to
+ * revisit during an INCREMENTAL rebuild by following EXISTING `cha`/
+ * `super-dispatch` edges from some *other* implementor of a touched
+ * interface. If an interface had zero instantiated implementors when a
+ * caller's file was last parsed, that caller has no such edge anywhere in
+ * the DB — so when a later incremental rebuild gives the interface its
+ * FIRST instantiated implementor, there is nothing for
+ * `findChaSiblingCallerFiles` to search from, and the caller is never
+ * revisited. The caller's dispatch edge to the new implementor then stays
+ * silently missing until a full (non-incremental) rebuild.
+ *
+ * This function only *detects* the zero-implementor set for snapshotting —
+ * it does not close that gap (see the issue for why: a real fix needs either
+ * a schema change to persist unresolved-but-typed call sites, or an
+ * O(all-files) rescan per touched interface, both explicitly deferred
+ * pending a proven workload need). `persistChaZeroImplementorSnapshot`
+ * (`builder/stages/finalize.ts`) snapshots this set into `build_meta` at the
+ * end of every FULL build; `codegraph info` (`cli/commands/info.ts`) compares
+ * that snapshot against a fresh call to detect the transition and nudge a
+ * full rebuild.
+ */
+export function deriveZeroImplementorInterfaces(ctx: ChaContext): string[] {
+  const result: string[] = [];
+  for (const [name, implementorNames] of ctx.implementors) {
+    const hasInstantiatedImplementor = implementorNames.some((cls) =>
+      ctx.instantiatedTypes.has(cls),
+    );
+    if (!hasInstantiatedImplementor) result.push(name);
+  }
+  return result;
+}
+
 // ── this / self / super resolution ──────────────────────────────────────────
 
 /**

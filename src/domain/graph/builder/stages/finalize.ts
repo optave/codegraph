@@ -17,6 +17,11 @@ import { computeConfigHash } from '../../../../infrastructure/config.js';
 import { debug, info, warn } from '../../../../infrastructure/logger.js';
 import { CODEGRAPH_VERSION } from '../../../../shared/version.js';
 import { writeJournalHeader } from '../../journal.js';
+import {
+  buildChaContextFromDb,
+  CHA_ZERO_IMPLEMENTOR_META_KEY,
+  deriveZeroImplementorInterfaces,
+} from '../cha.js';
 import type { PipelineContext } from '../context.js';
 
 /** Release cached WASM parse trees to free memory. */
@@ -137,6 +142,71 @@ function persistBuildMetadata(
     }
   } catch (err) {
     warn(`Failed to write build metadata: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Snapshot which interfaces/base classes currently have ZERO instantiated
+ * implementors, for `codegraph info`'s CHA-zero-implementor nudge (#2315).
+ *
+ * NOT the only call site: `tryNativeOrchestrator` (`native-orchestrator.ts`)
+ * runs an entirely separate, all-Rust "fast path" (#695) that bypasses the
+ * rest of the JS pipeline — including this `finalize()` stage — whenever it
+ * succeeds. That function has its own copy of this same snapshot logic,
+ * gated on its own `result.isFullBuild`, right after its own CHA/dispatch
+ * post-passes commit their edges. This one only fires for builds that
+ * actually reach `finalize()`: the plain WASM/JS full-build path, or a
+ * native build where `tryNativeOrchestrator` fails/falls back to the JS
+ * pipeline (in which case `useNativeDb` below can still be true if native
+ * acceleration remains active for individual stages).
+ *
+ * Only meaningful as of a FULL build — skipped entirely otherwise. The
+ * incremental CHA post-pass (`findChaSiblingCallerFiles`, `builder/incremental.ts`)
+ * discovers callers to revisit by following EXISTING `cha`/`super-dispatch`
+ * edges from some *other* implementor of a touched interface; a caller typed
+ * against an interface that had zero instantiated implementors as of the
+ * last full build has no such edge anywhere in the DB, so if that interface
+ * gains its FIRST instantiated implementor mid-incremental-session, the
+ * caller is never revisited and its dispatch edge to the new implementor can
+ * stay silently missing until a full rebuild runs. This snapshot is what
+ * lets `codegraph info` detect that specific transition later — comparing
+ * "current state" against "state as of the last FULL build" is only valid
+ * when this key is written on full builds alone; writing it on an
+ * incremental build would corrupt that comparison.
+ *
+ * Recomputed via `buildChaContextFromDb` against `ctx.db` rather than reused
+ * from any in-memory `ChaContext` built earlier in this same pipeline run —
+ * neither the WASM/JS full-build path (`buildChaContext` in `build-edges.ts`)
+ * nor the native orchestrator's own CHA post-pass keeps that context
+ * reachable from `PipelineContext` once edges are committed, and by this
+ * point in `finalize()` all edges (including CHA/RTA dispatch edges, from
+ * either engine) are already committed and visible to `ctx.db` — the WAL
+ * checkpoint + `refreshJsDb` right before `finalize()` runs guarantee that.
+ * Re-deriving from the DB is two cheap SQL queries (the same primitive the
+ * incremental rebuild path already relies on for the same reason, #1852) —
+ * negligible next to a full build's parse cost, and correct regardless of
+ * which engine wrote the graph, since the schema itself is engine-agnostic.
+ * It also keeps the write side and `codegraph info`'s later read side
+ * (`buildChaZeroImplementorNudge` in `cli/commands/info.ts`) computing the
+ * zero-implementor set the exact same way, from the exact same source of
+ * truth — reusing the pre-edge-insertion in-memory `ChaContext` here instead
+ * would risk a subtle mismatch against the DB-derived state the read side
+ * checks against later.
+ */
+function persistChaZeroImplementorSnapshot(ctx: PipelineContext): void {
+  if (!ctx.isFullBuild) return;
+  const useNativeDb = ctx.engineName === 'native' && !!ctx.nativeDb;
+  try {
+    const chaCtx = buildChaContextFromDb(ctx.db);
+    const zeroImplementorNames = deriveZeroImplementorInterfaces(chaCtx);
+    const value = JSON.stringify(zeroImplementorNames);
+    if (useNativeDb) {
+      ctx.nativeDb!.setBuildMeta([{ key: CHA_ZERO_IMPLEMENTOR_META_KEY, value }]);
+    } else {
+      setBuildMeta(ctx.db, { [CHA_ZERO_IMPLEMENTOR_META_KEY]: value });
+    }
+  } catch (err) {
+    warn(`Failed to write CHA zero-implementor snapshot: ${(err as Error).message}`);
   }
 }
 
@@ -267,6 +337,7 @@ export async function finalize(ctx: PipelineContext): Promise<void> {
 
   detectIncrementalDrift(ctx, nodeCount, actualEdgeCount);
   persistBuildMetadata(ctx, nodeCount, actualEdgeCount, buildNow);
+  persistChaZeroImplementorSnapshot(ctx);
 
   // Skip expensive advisory queries for incremental builds — these are
   // informational warnings that don't affect correctness and cost ~40-60ms.

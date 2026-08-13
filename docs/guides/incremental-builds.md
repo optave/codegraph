@@ -41,6 +41,28 @@ The most important thing to understand: **complexity, dataflow, and CFG data for
 
 For most workflows — querying callers, checking impact, finding dead code — incremental builds are perfectly accurate. The staleness only matters for analysis-heavy queries (`complexity`, `dataflow`, `cfg`) on files that weren't directly modified.
 
+### Known limitation: an interface's first instantiated implementor
+
+There is one narrower, structural gap around virtual-dispatch resolution
+(CHA/RTA — the `cha`/`super-dispatch` edge techniques). The incremental CHA
+post-pass discovers callers to revisit by following *existing* `cha`/
+`super-dispatch` edges from some other implementor of a touched interface. If
+an interface had **zero instantiated implementors** when a caller's file was
+last parsed, that caller has no such edge anywhere in the graph — so when a
+later incremental rebuild gives the interface its *first* instantiated
+implementor, there's nothing for the post-pass to search from, and the
+caller is never revisited. Its dispatch edge to the new implementor stays
+silently missing until a full rebuild runs.
+
+`codegraph info` detects this automatically: it snapshots which interfaces
+have zero instantiated implementors at the end of every full build, and on
+a later run compares that snapshot against the current graph. If one of
+those interfaces has since gained an implementor, `info` prints a nudge to
+run `codegraph build --no-incremental` (issue #2315). This is a diagnostic
+only — closing the gap itself would need either a DB schema change to track
+unresolved-but-typed call sites, or an O(all-files) rescan per touched
+interface, both deferred pending a proven workload need.
+
 ---
 
 ## When to run a full rebuild
