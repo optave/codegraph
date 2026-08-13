@@ -317,11 +317,13 @@ trigger_count=$(gh api repos/<repo>/issues/<number>/comments --paginate \
 echo "Greptile has been re-triggered $trigger_count time(s) so far by this sweep."
 ```
 
-If `trigger_count` is already **50 or more**: do NOT trigger again, no matter how many real findings you just fixed. Reply to any outstanding comment (per Step 2e) so nothing is left unacknowledged, then run the mandatory final live re-check (Step 2h.1) — hitting the cap does not exempt you from it, and comments can still have arrived since your last check — reply to anything that check turns up, and only then proceed to Step 2i and report `Status: needs-human-review`, noting in Notes how many rounds occurred and what the last item was. Fixing a real bug on round 51+ does not extend the cap — it's a budget on wall-clock and review noise, not a correctness gate; a human reviews the rest.
+If `trigger_count` is already **50 or more**: do NOT trigger again, no matter how many real findings you just fixed. Reply to any outstanding comment (per Step 2e) so nothing is left unacknowledged, then run the mandatory final live re-check (Step 2h.1) — hitting the cap does not exempt you from it, and comments can still have arrived since your last check — reply to anything that check turns up, and only then proceed to Step 2j and report `Status: needs-human-review`, noting in Notes how many rounds occurred and what the last item was. Fixing a real bug on round 51+ does not extend the cap — it's a budget on wall-clock and review noise, not a correctness gate; a human reviews the rest.
 
 If `trigger_count` is under 50, proceed:
 
-**Greptile:** Always re-trigger after replying to Greptile comments — whether the comment was actionable or not. First, run the verification script below to confirm all Greptile comments have replies. Then, skip the actual trigger only if Greptile already reacted to your most recent reply with a positive emoji (thumbs up, check, etc.), which means it is already satisfied.
+**Greptile:** Re-trigger after replying to Greptile comments — whether the comment was actionable or not — so Greptile re-reviews the *updated* PR. First, run the verification script below to confirm all Greptile comments have replies. Then run the **Greptile re-trigger gate** (defined just below and reused verbatim by Step 2i): it posts `@greptileai` unless Greptile is *verifiably satisfied with the current PR head*.
+
+> A positive reaction on one of **your replies** is **not** satisfaction and never was — only a reaction on an `@greptileai` **trigger comment** counts. Skipping the trigger on a reply-reaction leaves your fix un-reviewed, and it is the specific mistake this gate replaced. Let the gate decide; do not second-guess it. (The 50-trigger cap above still applies — if it is spent, do not run the gate; follow the cap's instructions instead.)
 
 **CRITICAL — verify all Greptile comments have replies BEFORE triggering.** Posting `@greptileai` without replying to every comment is worse than not triggering at all — it starts a new review cycle while the old one still has unanswered feedback. Run this check first:
 
@@ -357,22 +359,251 @@ echo "All Greptile comments have replies — safe to re-trigger."
 **Do NOT proceed to the re-trigger step below until the check above passes.** If any comments are unanswered, go back to Step 2e, reply to each one, then re-run this check.
 
 ```bash
-# Step 1: Check if greptileai left a positive reaction on your most recent reply
-last_reply_id=$(gh api repos/<repo>/issues/<number>/comments --paginate \
-  --jq '[.[] | select(.user.login != "greptile-apps[bot]")] | last | .id')
+# === Greptile re-trigger gate (shared by Step 2g and Step 2i) ===
+# Re-trigger Greptile UNLESS it is verifiably satisfied with the CURRENT PR head.
+# "Satisfied" requires ALL of:
+#   (1) an `@greptileai` TRIGGER comment exists — a non-Greptile comment that REALLY MENTIONS
+#       @greptileai, i.e. GitHub linkified it. A body that merely CONTAINS the literal inside a
+#       code span, a fenced block, an indented block, or an HTML comment notifies nobody and is
+#       NOT a trigger (see the classifier's own header below, and #964),
+#   (2) Greptile reacted to THAT TRIGGER with a positive emoji (+1/hooray/heart/rocket),
+#   (3) Greptile posted no issue-style or inline comment after that trigger, AND
+#   (4) Greptile has reviewed the CURRENT head — established from its own `Last reviewed commit`
+#       marker, falling back to a commit-timestamp proxy only when that marker can't be parsed.
+# A positive reaction on one of YOUR REPLIES is NOT a satisfied signal — only a reaction on a
+# TRIGGER comment counts. If ANY condition fails, post `@greptileai`. Same idempotent gate is
+# safe to re-run, so Step 2i calls it verbatim as the final mandatory check.
 
-positive_count=$(gh api repos/<repo>/issues/comments/$last_reply_id/reactions \
-  --jq '[.[] | select(.user.login == "greptile-apps[bot]" and (.content == "+1" or .content == "hooray" or .content == "heart" or .content == "rocket"))] | length')
+# Candidate issue-stream comments, oldest first: `<id><TAB><created_at><TAB><body as a JSON string>`.
+# The body rides through jq's `@json` so every record stays ONE line — a raw multi-line body would
+# break the line-oriented classifier below. `@json` is core jq needing no regex, so this does not
+# depend on which jq flavour gh embeds, and it uses gh's BUILT-IN --jq (never a standalone `jq`
+# binary — same rationale as Step 0's guard).
+trigger_candidates=$(gh api repos/<repo>/issues/<number>/comments --paginate \
+  --jq '.[] | select(.user.login != "greptile-apps[bot]") | "\(.id)\t\(.created_at)\t\((.body // "") | @json)"') \
+  || { echo "FATAL: could not fetch trigger comments — aborting gate"; exit 1; }
 
-# Step 2: If positive reaction exists → skip. Otherwise → re-trigger, capturing this
-# trigger's own comment ID directly from the post response — Step 2h's reaction check
-# reuses this exact value rather than searching for "the last @greptileai comment",
-# which would drift to a different trigger if this PR is also being worked by another
-# session or agent (Parallel Sessions) before this round's poll runs.
-if [ "$positive_count" -gt 0 ]; then
-  echo "Greptile already reacted positively — skipping re-trigger."
+# <!-- greptile-trigger:decision:start -->
+# ── Decision half: pure text, NO network. Reads ONLY $trigger_candidates (newline-separated,
+# possibly empty) and sets $trigger_id / $trigger_ts (both empty ⇒ no real trigger exists).
+# `scripts/greptile-trigger-guard-check.sh` extracts these exact lines between the two markers and
+# runs them under bash AND zsh against frozen fixtures (CI job `greptile-trigger-guard`), so this
+# block is tested, executable code — not prose. Keep it hermetic: no gh/curl/git in command
+# position, and no input but that one variable.
+#
+# A TRIGGER is a comment that really MENTIONS @greptileai — one GitHub linkified, so Greptile was
+# notified. A body that merely CONTAINS the literal is NOT a trigger: GitHub does not linkify a
+# mention inside an inline code span, a fenced block, an indented block, or an HTML comment. The
+# gate used to test the raw body with `test("@greptileai")`, which counted all of those — and that
+# defeats the gate with its own detector. The warning above is explicit that a 👍 on one of OUR
+# replies must never substitute for a reaction on a real trigger, yet a reply whose prose merely
+# said `@greptileai` in backticks was classified AS the trigger, so conditions (1) and (2) were
+# both satisfied by exactly that reply-reaction. A false trigger also moved $trigger_ts later,
+# relaxing condition (3)'s baseline. Observed on PR #964: the `Digest` stage's "Concepts to know"
+# comment reads "…blocking a re-trigger of `@greptileai` while feedback is unanswered", and being
+# the newest match it won `| last` over the real bare trigger — the one actually carrying
+# Greptile's 👍. No wrong SKIP was ever observed (that comment happened to carry no reaction, so
+# condition (2) failed), but the detector demonstrably picked it, and the `Digest` stage emits
+# comments of that shape systematically.
+#
+# The stripper below is deliberately OVER-aggressive (first-to-last backtick per line, greedy HTML
+# comments, an unterminated fence swallowing to EOF). Every gap therefore DROPS a candidate, and a
+# dropped candidate costs at most one redundant `@greptileai` — it can never invent a trigger and
+# skip a review. Bias the direction; do not make the parser clever.
+#
+# NO positional variables ($0/$1/…) anywhere in this block. Skill argument substitution rewrites
+# them before the text reaches the agent, so `/sweep 947` turned `awk 'NF{last=$0}'` into
+# `awk 'NF{last=947}'` (#951) — inside this very gate. The awk program therefore reads records with
+# `getline` into a NAMED variable and splits fields into an array. Do not reintroduce $0/$1 here;
+# `scripts/greptile-trigger-guard-check.sh` lints for them.
+trigger_pair=$(printf '%s\n' "$trigger_candidates" | awk '
+  BEGIN {
+    # Dynamic regex so the handle stays a single source of truth; tolower() on both sides makes the
+    # match case-insensitive the way GitHub mentions are. Kept as a variable (not inlined) so every
+    # fleet copy of this block is textually identical apart from the handle — the drift #962 exists
+    # to stop.
+    mention = tolower("@greptileai")
+    # A fence opener, built rather than written: a literal triple-backtick INSIDE this fenced
+    # block truncates any extractor that scans for the closing fence non-greedily — including
+    # a harness that executes this gate end-to-end. CommonMark itself would not close the fence
+    # on an 8-space-indented line, but "correct per spec" is no help when the tools that read
+    # this file disagree. Do not inline it back.
+    fence = sprintf("%c%c%c", 96, 96, 96)
+    while ((getline rec) > 0) {
+      if (rec == "") continue
+      nf = split(rec, fld, "\t")
+      if (nf < 3) continue                          # malformed record — drop (fail safe)
+      body = fld[3]
+      for (i = 4; i <= nf; i++) body = body "\t" fld[i]
+      if (substr(body, 1, 1) != "\"") continue      # not a JSON string literal — drop
+      if (substr(body, length(body), 1) != "\"") continue
+      body = substr(body, 2, length(body) - 2)
+      gsub(/<!--.*-->/, " ", body)                  # HTML comments never notify anyone
+      sub(/<!--.*$/, " ", body)                     # …unterminated: swallow to the end
+      gsub(/\\r/, " ", body)
+      gsub(/\\t/, "    ", body)                     # a tab indents like four spaces
+      gsub(/\\n/, "\n", body)                       # restore line structure
+      n = split(body, line, "\n")
+      kept = ""; fenced = 0
+      for (i = 1; i <= n; i++) {
+        probe = line[i]
+        sub(/^[ ]*/, "", probe)
+        if (substr(probe, 1, 3) == fence || substr(probe, 1, 3) == "~~~") { fenced = 1 - fenced; continue }
+        if (fenced) continue                        # inside a fence (unterminated ⇒ to EOF)
+        if (line[i] ~ /^    /) continue             # indented code block
+        one = line[i]
+        if (one ~ /`/) { sub(/`.*`/, " ", one); sub(/`.*$/, " ", one) }
+        kept = kept " " one
+      }
+      low = tolower(kept)
+      # A standalone mention: bracket boundaries, not \b (not portable across greps/awks). The
+      # trailing class keeps `-` in, so @greptileai-bot is a DIFFERENT user and must not count;
+      # the leading class keeps `@` in, so foo@greptileai (an address) must not count either.
+      if (low ~ ("(^|[^a-z0-9_@-])" mention "([^a-z0-9_-]|$)")) print fld[1] "\t" fld[2]
+    }
+  }
+' | grep -v '^[[:space:]]*$' | tail -1)
+
+# Most recent real trigger wins (the stream is oldest-first, so: the last surviving record).
+trigger_id=$(printf '%s' "$trigger_pair" | cut -f1)
+trigger_ts=$(printf '%s' "$trigger_pair" | cut -f2)
+# <!-- greptile-trigger:decision:end -->
+
+if [ -z "$trigger_id" ]; then
+  # (1) fails — no trigger has ever reflected this PR. This is the case the old reply-reaction
+  # shortcut got wrong: a 👍 on a reply is not a trigger, so we MUST post one.
+  echo "No @greptileai trigger comment exists — posting trigger."
+  gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
 else
-  trigger_id=$(gh api repos/<repo>/issues/<number>/comments -f body="@greptileai" --jq '.id')
+  # Trigger timestamp (ISO-8601 → lexicographically comparable as a string) came from the same
+  # record as the id, so it needs no second fetch. Keep the guard anyway: an empty created_at
+  # would leave conditions (3)/(4) unable to run.
+  if [ -z "$trigger_ts" ]; then
+    # Fail safe: we found a trigger id but could not resolve its timestamp, so the
+    # after-trigger inline-comment check (3) and the push-staleness check (4) can't
+    # run. Never assume the conditions they control are met — post the trigger.
+    echo "Could not resolve trigger timestamp — posting @greptileai (fail safe)."
+    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+    exit 0
+  fi
+
+  # (2) positive reaction ON THE TRIGGER (never on a reply).
+  positive=$(gh api "repos/<repo>/issues/comments/$trigger_id/reactions" \
+    --jq '[.[] | select(.user.login == "greptile-apps[bot]" and (.content == "+1" or .content == "hooray" or .content == "heart" or .content == "rocket"))] | length' 2>/dev/null || echo 0)
+
+  # (3) any Greptile comment after the trigger: issue stream (id-ordered) + inline stream (time-ordered).
+  # Capture the RAW per-page `length` lines (one per page under --paginate) so a failed fetch is
+  # detectable: `--jq '... | length'` emits "0" on a successful fetch with no matches but NOTHING on
+  # a failed one. Don't pipe straight into a summing awk (`print s+0` emits "0" on empty stdin, making
+  # a failed fetch indistinguishable from zero comments and silently satisfying this condition).
+  # trigger_ts is guaranteed non-empty here (guarded above).
+  issue_raw=$(gh api repos/<repo>/issues/<number>/comments --paginate \
+    --jq "[.[] | select(.user.login == \"greptile-apps[bot]\" and .id > $trigger_id)] | length" || echo "")
+  inline_raw=$(gh api repos/<repo>/pulls/<number>/comments --paginate \
+    --jq "[.[] | select(.user.login == \"greptile-apps[bot]\" and .created_at > \"$trigger_ts\")] | length" || echo "")
+  if [ -z "$issue_raw" ] || [ -z "$inline_raw" ]; then
+    # Fail safe (same reasoning as the trigger_ts/head_ts guards): a failed fetch can't prove
+    # "no new comments" — post the trigger rather than assume condition (3) is met.
+    echo "Could not fetch after-trigger comments — posting @greptileai (fail safe)."
+    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+    exit 0
+  fi
+  # Sum the per-page counts from each stream. Shell arithmetic, NOT `awk '{s+=$1}'`: a positional
+  # awk variable in skill text is rewritten by argument substitution before the agent ever sees it
+  # (#951), so under `/sweep 947` that awk became `{s+=947}` — adding 947 per page and leaving this
+  # condition unable to discriminate. A non-numeric count means the fetch returned something
+  # unexpected, which cannot prove "no new comments" — post rather than assume.
+  #
+  # The loop is fed by process substitution, NOT a here-doc: a here-doc terminator must sit at
+  # column 0, so the block breaks the moment a fleet copy INDENTS this gate — and one already does,
+  # wrapping it in a function so its early-outs can `return` rather than `exit`. `< <(…)` also keeps
+  # the loop in THIS shell, so the accumulator survives; `printf | while` would lose it to a
+  # subshell. Both shells in the guard's matrix support it, as the `comm -23 <(…)` above does.
+  comments_after=0
+  while IFS= read -r page_count; do
+    [ -n "$page_count" ] || continue
+    case "$page_count" in
+      *[!0-9]*)
+        echo "Non-numeric after-trigger count ('$page_count') — posting @greptileai (fail safe)."
+        gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+        exit 0
+        ;;
+    esac
+    comments_after=$((comments_after + page_count))
+  done < <(printf '%s\n%s\n' "$issue_raw" "$inline_raw")
+
+  # (4) has Greptile reviewed the CURRENT head? Prefer Greptile's OWN direct evidence over any
+  # timestamp proxy: its sticky summary comment ends with a footer naming the exact commit it
+  # reviewed —
+  #   Reviews (N): Last reviewed commit: ["<subject>"](https://github.com/<owner>/<repo>/commit/<40-hex>)
+  # — so when that SHA equals the PR head, Greptile HAS reviewed the head and (4) holds regardless
+  # of commit/push timestamps. This is load-bearing because Greptile re-reviews by EDITING that
+  # summary IN PLACE (same comment id, no new comment), so timestamps alone cannot observe a
+  # completed re-review. Observed on PR #930: the marker named the exact head at Confidence
+  # Score 5/5, yet the timestamp proxy read "commit newer than trigger" and posted `@greptileai`
+  # twice more — review #9 of a commit already approved, and a converged sweep that looked
+  # unconverged. Timestamps stay as the FALLBACK only (see the else branch).
+  head_sha=$(gh pr view <number> --repo <repo> \
+    --json headRefOid --jq '.headRefOid // empty' 2>/dev/null | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+  if [ -z "$head_sha" ]; then
+    # Fail safe (same reasoning as the trigger_ts guard above): with no head SHA, neither the
+    # marker comparison nor the timestamp fallback can prove the trigger reflects the current
+    # head. Post rather than assume — a failed fetch must never count as satisfied.
+    echo "Could not resolve PR head SHA — posting @greptileai (fail safe)."
+    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+    exit 0
+  fi
+
+  # Every SHA Greptile has published as "last reviewed" (normally one — the sticky summary).
+  # `--jq` only SELECTS the bodies; grep does the extraction, so this needs neither a standalone
+  # `jq` binary nor jq-flavour named-capture regex. grep is line-oriented and the footer is a
+  # single line, so `.*` cannot run past it into another comment's link.
+  # inline-sweep GREPTILE-LAST-REVIEWED extractor [#930]
+  reviewed_shas=$(gh api repos/<repo>/issues/<number>/comments --paginate \
+    --jq '.[] | select(.user.login == "greptile-apps[bot]") | .body' 2>/dev/null \
+    | grep -o 'Last reviewed commit:.*/commit/[0-9a-fA-F]\{40\}' \
+    | grep -o '[0-9a-fA-F]\{40\}$' | tr 'A-Z' 'a-z')
+
+  if [ -n "$reviewed_shas" ] && printf '%s\n' "$reviewed_shas" | grep -qx "$head_sha"; then
+    # Direct evidence: a published Greptile review names the current head. Not stale.
+    pushed_after=0; head_basis="marker"
+  elif [ -n "$reviewed_shas" ]; then
+    # Direct evidence the other way: every review Greptile published names some OTHER commit,
+    # so it has not reviewed this head. Stale — post.
+    pushed_after=1; head_basis="marker"
+  else
+    # FALLBACK ONLY — no parsable marker (Greptile has not summarised yet, the footer format
+    # changed, or the fetch failed). Empty output cannot distinguish those three, and all of them
+    # land on the pre-existing behaviour below, so this path is never weaker than it was.
+    # Latest commit's committedDate is a proxy for push time — if it post-dates the trigger, the
+    # trigger predates your fix and is stale.
+    # Caveat: committedDate is the local commit/amend time, not the true push time, so a cherry-pick,
+    # a timestamp-preserving rebase, or `git commit --date` can leave it BEFORE a later push and
+    # yield a false "not stale" (pushed_after=0). This errs toward skipping, but Step 2i's mandatory
+    # final run of this gate is the backstop. For an exact push time, use the GraphQL `pushedDate`.
+    head_ts=$(gh pr view <number> --repo <repo> \
+      --json commits --jq '.commits[-1].committedDate // empty' 2>/dev/null || echo "")
+    if [ -z "$head_ts" ]; then
+      # Fail safe (same reasoning as the trigger_ts guard above): if the head commit time
+      # can't be fetched, the staleness check (4) can't run. Don't let it short-circuit to
+      # "not stale" — post the trigger so a failed fetch never silently counts as satisfied.
+      echo "Could not resolve head commit time — posting @greptileai (fail safe)."
+      gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+      exit 0
+    fi
+    # awk does the string compare (portable across bash/zsh; avoids `[ \> ]`, which zsh rejects).
+    # ISO-8601 values are non-numeric, so awk compares them lexically = chronologically.
+    # Both h and t are guaranteed non-empty here (the fail-safes above exit otherwise).
+    pushed_after=$(awk -v h="$head_ts" -v t="$trigger_ts" 'BEGIN{print (h>t) ? 1 : 0}')
+    head_basis="timestamp-proxy"
+  fi
+
+  if [ "$positive" -gt 0 ] && [ "$comments_after" -eq 0 ] && [ "$pushed_after" -eq 0 ]; then
+    echo "Greptile satisfied with current head $head_sha (reacted to trigger $trigger_id; no new comments; head reviewed per $head_basis) — skipping re-trigger."
+  else
+    echo "Not satisfied (positive=$positive comments_after=$comments_after pushed_after=$pushed_after basis=$head_basis) — posting @greptileai."
+    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+  fi
 fi
 ```
 
@@ -401,9 +632,25 @@ After re-triggering:
 
 ### 2h.1. Final fresh check — do this immediately before reporting, every time
 
-Right before you write your Step 2i result, re-run Step 2d + 2d.1 **one more time, live** — regardless of how confident you are that things are settled. Comments arrive asynchronously; a check from even 10–15 minutes ago can already be stale, and reporting `Status: ready` on stale data is worse than reporting late or as `needs-human-review`. If this final check turns up anything new, handle it (reply, and re-trigger only if the Step 2g cap allows it) before finalizing. Only write your Step 2i block once this last check is clean, or you've hit a hard stop (the 50-trigger cap, or 3 rounds of CI fixes).
+Right before you write your Step 2j result, re-run Step 2d + 2d.1 **one more time, live** — regardless of how confident you are that things are settled. Comments arrive asynchronously; a check from even 10–15 minutes ago can already be stale, and reporting `Status: ready` on stale data is worse than reporting late or as `needs-human-review`. If this final check turns up anything new, handle it (reply, and re-trigger only if the Step 2g cap allows it) before finalizing. Only write your Step 2i block once this last check is clean, or you've hit a hard stop (the 50-trigger cap, or 3 rounds of CI fixes).
 
-### 2i. Return result
+### 2i. Final Greptile re-trigger (mandatory)
+
+After all work on the PR is complete — CI green, every comment addressed, every reply posted — **run the Greptile re-trigger gate from Step 2g one final time** (verify reply coverage first, then run the gate). This step is **mandatory and must never be skipped**: the gate itself decides whether to post `@greptileai`, and it skips the post *only* when Greptile is verifiably satisfied with the current head.
+
+Greptile is **satisfied** only when **all four** of the gate's conditions hold:
+1. An `@greptileai` *trigger comment* exists (posted by a non-Greptile user) — and it **really
+   mentions** Greptile. A comment that merely contains the literal `@greptileai` inside a code
+   span, a fenced block, an indented block, or an HTML comment notifies nobody, so it is **not** a
+   trigger; the gate strips those before testing. Left untested, the detector itself would hand
+   conditions (1) and (2) to exactly the reply-reaction the warning above rejects.
+2. Greptile reacted to **that trigger** with a positive emoji (👍, 🎉, ❤️, or 🚀).
+3. Greptile posted **no** new comment (issue-style or inline) after that trigger.
+4. **Greptile has reviewed the current head.** Take this from Greptile's own summary footer — `Reviews (N): Last reviewed commit: [...](.../commit/<sha>)` — and require that `<sha>` to equal `gh pr view <number> --json headRefOid`. Greptile re-reviews by editing that summary **in place**, so a "was anything pushed after the trigger?" timestamp check cannot see a re-review that already happened and will re-trigger a commit Greptile has already approved. The commit-timestamp comparison remains only as the fallback for when the marker can't be parsed.
+
+Do **not** skip the trigger on any other basis. In particular, a positive reaction on one of *your replies* is **not** satisfaction — that mistake leaves your fix un-reviewed and the mandatory final trigger unsent. When in doubt, the gate errs toward posting; let it run rather than second-guessing it.
+
+### 2j. Return result
 
 At the end of processing, the subagent MUST return a structured result with these fields so the main agent can build the summary table:
 
@@ -456,4 +703,4 @@ If any subagent failed or returned an error, note it in the Status column as `ag
 - **No fake "something will notify me" framing.** A background job, watcher, or "monitor" you start yourself does not resume your turn when it fires — only your own next tool call does. Do not write or act on "is running and will notify me," "remains armed," or "I'll pick this back up when re-prompted." If you're about to write something like that, make another tool call instead.
 - **Respect the shared GitHub API rate limit.** All subagents in a sweep (and any concurrent session) share one identity's quota. Poll no tighter than every 60–120s and batch checks rather than looping per-item. `gh api rate_limit` is free to check. If you hit `API rate limit exceeded`, bridge the wait yourself with bounded sleep-then-recheck cycles against the `reset` epoch (see "Mind the GitHub API rate limit") — never assume it will clear on its own without you checking, and never spam retries while it's still exhausted.
 - **The 50-Greptile-trigger cap is counted from live data (actual `@greptileai` comments posted), not from memory of "how many rounds I've done."** Check it mechanically (Step 2g) before every trigger. Once hit, stop triggering even if you just fixed a real bug — reply, don't trigger, and report `needs-human-review`.
-- **Never declare `Status: ready` from a stale check.** Re-verify comments and CI live, immediately before writing your Step 2i result (Step 2h.1) — not from a check earlier in the session, and not just because you feel confident nothing more is coming. The orchestrator relaying a manual spot-check to you is not a substitute for this either — always do your own final live check.
+- **Never declare `Status: ready` from a stale check.** Re-verify comments and CI live, immediately before writing your Step 2j result (Step 2h.1) — not from a check earlier in the session, and not just because you feel confident nothing more is coming. The orchestrator relaying a manual spot-check to you is not a substitute for this either — always do your own final live check.

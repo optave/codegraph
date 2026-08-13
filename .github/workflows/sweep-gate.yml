@@ -1,0 +1,59 @@
+# sweep-gate — execute the /sweep Greptile re-trigger gate against fixture PR state.
+#
+# The gate lives inside .claude/skills/sweep/SKILL.md as a fenced bash block, so nothing
+# else in CI ever runs it: it is shipped, load-bearing, and otherwise unproven. A wrong
+# verdict either DROPS reviewer feedback (skipped when it should post) or spams redundant
+# re-reviews and makes a converged sweep look unconverged (posted when it should skip).
+#
+# The suite extracts the real fenced block from SKILL.md — no copy — and drives it with a
+# stub `gh`, so a change to the gate is a change to the tested code. Three of its cases are
+# mutation tests that revert the gate to the pre-fix timestamp proxy and REQUIRE the
+# regression assertion to fail, so that assertion cannot rot into one that passes with and
+# without the bug it names.
+#
+# zsh is installed and REQUIRED rather than skipped: it is the maintainers' interactive
+# shell, and a /sweep guard in a sibling repo once silently PASSED under zsh while failing
+# its job, because zsh does not word-split an unquoted parameter. jq is pre-installed on
+# ubuntu-latest. Pure stdlib otherwise — no pip install.
+
+name: sweep-gate
+
+on:
+  pull_request:
+    paths:
+      - '.claude/skills/sweep/SKILL.md'
+      - '.github/scripts/test_sweep_greptile_gate.py'
+      - '.github/workflows/sweep-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sweep-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Greptile re-trigger gate (#930 regression)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Ensure zsh is present (the cross-shell proof must never silently degrade)
+        run: |
+          set -euo pipefail
+          if ! command -v zsh > /dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh
+          fi
+          zsh --version
+
+      - name: Run the gate suite
+        working-directory: .github/scripts
+        env:
+          REQUIRE_SHELLS: "1"
+        run: python3 test_sweep_greptile_gate.py
