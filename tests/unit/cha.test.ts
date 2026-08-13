@@ -13,6 +13,8 @@ import type { CallNodeLookup } from '../../src/domain/graph/builder/call-resolve
 import {
   type ChaContext,
   deriveZeroImplementorInterfaces,
+  displayNameForZeroImplementorKey,
+  hasInstantiatedImplementor,
   resolveChaTargets,
   resolveThisDispatch,
 } from '../../src/domain/graph/builder/cha.js';
@@ -495,5 +497,69 @@ describe('deriveZeroImplementorInterfaces (issue #2315)', () => {
     });
 
     expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual(['AbstractShape']);
+  });
+
+  it('recognizes a transitively-instantiated descendant reached through an uninstantiated intermediate class (Greptile review, PR #2473)', () => {
+    // IWorker -> AbstractWorker (never instantiated) -> ConcreteWorker
+    // (instantiated). The original direct-children-only check saw only
+    // AbstractWorker under IWorker, found it uninstantiated, and stopped —
+    // never looking one level further to ConcreteWorker.
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { IWorker: ['AbstractWorker'], AbstractWorker: ['ConcreteWorker'] },
+      instantiatedTypes: ['ConcreteWorker'],
+    });
+
+    expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual([]);
+    expect(hasInstantiatedImplementor('IWorker', chaCtx)).toBe(true);
+  });
+
+  it('still reports zero when a transitive chain never reaches an instantiated class', () => {
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { IWorker: ['AbstractWorker'], AbstractWorker: ['GhostWorker'] },
+      instantiatedTypes: [],
+    });
+
+    // AbstractWorker is itself a distinct root (a caller could be typed
+    // against it directly) that ALSO has zero instantiated implementors
+    // down its own chain — both it and IWorker are correctly reported.
+    expect(deriveZeroImplementorInterfaces(chaCtx).sort()).toEqual(['AbstractWorker', 'IWorker']);
+  });
+
+  it('disambiguates two unrelated files that each declare their own same-named interface (Greptile review, PR #2473)', () => {
+    // fileA.ts's IHandler has an uninstantiated implementor (GhostA);
+    // fileB.ts's unrelated IHandler has an instantiated one (ConcreteB).
+    // The bare `implementors` map merges both under one "IHandler" key —
+    // without implementorsByFile disambiguation, this would either report
+    // NO zero-implementor interface (a real transition on fileA's IHandler
+    // would then be silently missed) or incorrectly report one that already
+    // has an instantiated implementor via fileB (a false nudge).
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { IHandler: ['GhostA', 'ConcreteB'] },
+      implementorsByFile: {
+        'IHandler|fileA.ts': ['GhostA'],
+        'IHandler|fileB.ts': ['ConcreteB'],
+      },
+      instantiatedTypes: ['ConcreteB'],
+    });
+
+    const result = deriveZeroImplementorInterfaces(chaCtx);
+    expect(result).toEqual(['IHandler|fileA.ts']);
+    expect(hasInstantiatedImplementor('IHandler|fileA.ts', chaCtx)).toBe(false);
+    expect(hasInstantiatedImplementor('IHandler|fileB.ts', chaCtx)).toBe(true);
+    expect(displayNameForZeroImplementorKey('IHandler|fileA.ts')).toBe('IHandler');
+  });
+
+  it("detects the transition once fileA.ts's IHandler gains its own instantiated implementor", () => {
+    const chaCtx = makeChaTargetsCtx({
+      implementors: { IHandler: ['RealA', 'ConcreteB'] },
+      implementorsByFile: {
+        'IHandler|fileA.ts': ['RealA'],
+        'IHandler|fileB.ts': ['ConcreteB'],
+      },
+      instantiatedTypes: ['RealA', 'ConcreteB'],
+    });
+
+    expect(deriveZeroImplementorInterfaces(chaCtx)).toEqual([]);
+    expect(hasInstantiatedImplementor('IHandler|fileA.ts', chaCtx)).toBe(true);
   });
 });

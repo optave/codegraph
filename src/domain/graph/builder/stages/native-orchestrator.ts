@@ -2750,10 +2750,19 @@ class NativeOrchestrationSession {
  * `cha` post-pass, backfill, and this/super dispatch) are already committed
  * and visible on `ctx.db` — mirroring `finalize.ts`'s own timing requirement.
  * Uses the plain JS `setBuildMeta(ctx.db, ...)` write (no `useNativeDb`
- * branch): by this point in the function `ctx.db` is already guaranteed to
- * be a proper better-sqlite3 connection (see the "DB handoff" comment above
- * this call site), matching this file's own existing precedent for writing
- * build_meta post-handoff (the `engine`/`built_at` sync a few dozen lines up).
+ * branch): `ctx.db` is NOT necessarily a real better-sqlite3 connection at
+ * this exact call site — `ensureJsDbForPostPasses` (called above, before
+ * `runPostNativePasses`) only reopens/hands off the connection when
+ * `needsStructure || needsAnalysisFallback`; when neither is needed it
+ * returns `true` without touching `ctx.db`, which can still be the
+ * `NativeDbProxy` from the earlier native build. That's fine here: both
+ * `buildChaContextFromDb`'s `.prepare().all()` reads and `setBuildMeta`'s
+ * `.prepare().run()` write are part of `NativeDbProxy`'s own implemented
+ * `BetterSqlite3Database` interface (`builder/native-db-proxy.ts`) — this
+ * function only needs that shared interface, never a real-better-sqlite3-
+ * only API like `.prepare().iterate()` (which the proxy explicitly does not
+ * support), so it works correctly through either connection type (Greptile
+ * review, PR #2473).
  */
 function persistChaZeroImplementorSnapshotNative(ctx: PipelineContext, isFullBuild: boolean): void {
   if (!isFullBuild) return;

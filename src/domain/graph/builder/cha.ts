@@ -309,9 +309,100 @@ export function buildChaContextFromDb(db: BetterSqlite3Database): ChaContext {
 export const CHA_ZERO_IMPLEMENTOR_META_KEY = 'cha_zero_implementor_interfaces';
 
 /**
- * Given a `ChaContext`, return the interface/base-class names that currently
- * have ZERO instantiated implementors — i.e. every entry in
- * `implementors.get(name)` is absent from `instantiatedTypes`.
+ * Parse a zero-implementor snapshot entry (see `deriveZeroImplementorInterfaces`)
+ * back into its name and, when file-scoped, its declaring file. Mirrors the
+ * `${name}|${file}` composite-key convention `implementorsByFile`/`parentsByFile`
+ * already use elsewhere in this module (issue #2237) — a bare name (no `|`)
+ * means the root was never disambiguated to a specific file (issue #2315).
+ */
+function parseZeroImplementorKey(key: string): { name: string; file: string | null } {
+  const sep = key.indexOf('|');
+  return sep === -1
+    ? { name: key, file: null }
+    : { name: key.slice(0, sep), file: key.slice(sep + 1) };
+}
+
+/**
+ * BFS over `implementors`/`implementorsByFile` starting from `rootName`
+ * (scoped to `rootFile` when known), collecting every transitively reachable
+ * class name. Mirrors `resolveChaTargets`'s own traversal — same
+ * file-scoped-preferred-with-bare-fallback semantics at every step (a child
+ * discovered only through the bare map has an unknown file, so its own
+ * children keep resolving through the bare map too — legitimate multi-file
+ * hierarchies must keep working, see `resolveChaTargets`'s doc comment), and
+ * the same requirement to keep traversing non-instantiated classes since
+ * they may have instantiated subclasses (e.g. `IFoo → AbstractFoo →
+ * ConcreteFoo`) — without method resolution, since callers here only need
+ * the reachable set itself, not a dispatch target (issue #2315, Greptile
+ * review PR #2473: the original direct-children-only check missed exactly
+ * this transitive case).
+ */
+function collectTransitiveImplementors(
+  rootName: string,
+  rootFile: string | null,
+  ctx: ChaContext,
+): ReadonlySet<string> {
+  const reachable = new Set<string>();
+  const queue: Array<{ name: string; file: string | null }> = [{ name: rootName, file: rootFile }];
+  const visited = new Set<string>([rootName]);
+  while (queue.length > 0) {
+    const { name: current, file: currentFile } = queue.shift()!;
+    const scoped = currentFile
+      ? ctx.implementorsByFile.get(`${current}|${currentFile}`)
+      : undefined;
+    const children = scoped ?? ctx.implementors.get(current);
+    const childFile = scoped ? currentFile : null;
+    if (!children?.length) continue;
+    for (const cls of children) {
+      if (visited.has(cls)) continue;
+      visited.add(cls);
+      reachable.add(cls);
+      queue.push({ name: cls, file: childFile });
+    }
+  }
+  return reachable;
+}
+
+/**
+ * Whether the root identified by `key` (a `deriveZeroImplementorInterfaces`
+ * entry — bare name, or `${name}|${file}`) currently has at least one
+ * transitively-reachable instantiated implementor. Shared by the write side
+ * (`deriveZeroImplementorInterfaces` below) and the read side (`codegraph
+ * info`'s `buildChaZeroImplementorNudge`, `cli/commands/info.ts`) so both
+ * derive "has an instantiated implementor" the exact same way — issue #2315.
+ */
+export function hasInstantiatedImplementor(key: string, ctx: ChaContext): boolean {
+  const { name, file } = parseZeroImplementorKey(key);
+  const reachable = collectTransitiveImplementors(name, file, ctx);
+  for (const cls of reachable) {
+    if (ctx.instantiatedTypes.has(cls)) return true;
+  }
+  return false;
+}
+
+/**
+ * Display name for a zero-implementor snapshot entry — strips the
+ * `|${file}` file-scope suffix, if any, for user-facing output.
+ */
+export function displayNameForZeroImplementorKey(key: string): string {
+  return parseZeroImplementorKey(key).name;
+}
+
+/**
+ * Given a `ChaContext`, return identifiers for every interface/base-class
+ * root that currently has ZERO transitively-reachable instantiated
+ * implementors.
+ *
+ * Each root is identified by a bare name (never disambiguated to a specific
+ * file — the same "legitimate multi-file hierarchy, file identity unknown"
+ * fallback `resolveChaTargets` itself falls back to) or a `${name}|${file}`
+ * composite key (disambiguated via `implementorsByFile`, exactly as
+ * `resolveChaTargets` prefers when a child's own file also locally declares
+ * a same-named parent — issue #2237). Checking every DISTINCT
+ * `implementorsByFile` entry as its own root, rather than merging everything
+ * under one bare-name bucket, is what avoids a false transition (or a missed
+ * one) when two unrelated files each declare their own same-named interface
+ * with independent implementors (issue #2315, Greptile review PR #2473).
  *
  * Pure: takes a plain `ChaContext` and returns plain data, independent of
  * where that context came from (in-memory full build or `buildChaContextFromDb`)
@@ -340,12 +431,22 @@ export const CHA_ZERO_IMPLEMENTOR_META_KEY = 'cha_zero_implementor_interfaces';
  * full rebuild.
  */
 export function deriveZeroImplementorInterfaces(ctx: ChaContext): string[] {
+  const roots: string[] = [];
+  const scopedRootNames = new Set<string>();
+  for (const key of ctx.implementorsByFile.keys()) {
+    scopedRootNames.add(parseZeroImplementorKey(key).name);
+    roots.push(key);
+  }
+  // Bare-name roots that were NEVER disambiguated to a specific file for ANY
+  // caller — the only remaining source of the cross-file bare-name ambiguity
+  // this function must accept (matches resolveChaTargets's own fallback).
+  for (const name of ctx.implementors.keys()) {
+    if (!scopedRootNames.has(name)) roots.push(name);
+  }
+
   const result: string[] = [];
-  for (const [name, implementorNames] of ctx.implementors) {
-    const hasInstantiatedImplementor = implementorNames.some((cls) =>
-      ctx.instantiatedTypes.has(cls),
-    );
-    if (!hasInstantiatedImplementor) result.push(name);
+  for (const key of roots) {
+    if (!hasInstantiatedImplementor(key, ctx)) result.push(key);
   }
   return result;
 }

@@ -11,28 +11,39 @@ const CHA_NUDGE_MAX_NAMED = 3;
  * when there's nothing to report.
  *
  * `raw` is the `cha_zero_implementor_interfaces` build_meta snapshot — a
- * JSON array of interface/base-class names that had ZERO instantiated
- * implementors as of the last FULL build (written by
+ * JSON array of `deriveZeroImplementorInterfaces` entries (bare names, or
+ * `${name}|${file}` composite keys for roots disambiguated via
+ * `implementorsByFile` — issue #2237) that had ZERO transitively-reachable
+ * instantiated implementors as of the last FULL build (written by
  * `persistChaZeroImplementorSnapshot` in `domain/graph/builder/stages/finalize.ts`,
  * and its sibling call site in `native-orchestrator.ts`'s all-Rust fast
  * path). This compares that snapshot against a FRESH `buildChaContextFromDb`
- * call against this same `db`. Any name present in the snapshot that now has
- * at least one instantiated implementor has gained one since that full
- * build: the one caller-discovery gap `findChaSiblingCallerFiles`
+ * call against this same `db`, via `hasInstantiatedImplementor` — the exact
+ * same file-scoped-preferred, transitive check `deriveZeroImplementorInterfaces`
+ * itself uses, so the write and read sides can never disagree on what "has
+ * an instantiated implementor" means (issue #2315, Greptile review PR #2473:
+ * the original bare-name, direct-children-only check could both miss a real
+ * transition and print a false nudge). Any entry that now has an
+ * instantiated implementor has gained one since that full build: the one
+ * caller-discovery gap `findChaSiblingCallerFiles`
  * (`domain/graph/builder/incremental.ts`) cannot close by searching existing
- * edges alone (issue #2315) — a caller typed against that interface may
- * still be missing its dispatch edge to the new implementor until a full
- * (non-incremental) rebuild runs.
+ * edges alone — a caller typed against that interface may still be missing
+ * its dispatch edge to the new implementor until a full (non-incremental)
+ * rebuild runs.
  *
  * `db` must still be open when this is called — it re-queries `nodes`/`edges`.
- * `buildChaContextFromDb` is passed in (rather than dynamically imported
- * here) so `printBuildMetadata` only pays for one dynamic import of
- * `cha.js` and reads `CHA_ZERO_IMPLEMENTOR_META_KEY` from the same module.
+ * `cha` bundles the three `cha.js` exports this needs (rather than importing
+ * them individually here) so `printBuildMetadata` only pays for one dynamic
+ * import of that module.
  */
 function buildChaZeroImplementorNudge(
   db: BetterSqlite3Database,
   raw: string | null,
-  buildChaContextFromDb: typeof import('../../domain/graph/builder/cha.js').buildChaContextFromDb,
+  cha: {
+    buildChaContextFromDb: typeof import('../../domain/graph/builder/cha.js').buildChaContextFromDb;
+    hasInstantiatedImplementor: typeof import('../../domain/graph/builder/cha.js').hasInstantiatedImplementor;
+    displayNameForZeroImplementorKey: typeof import('../../domain/graph/builder/cha.js').displayNameForZeroImplementorKey;
+  },
 ): string | null {
   if (!raw) return null;
   let snapshot: unknown;
@@ -44,12 +55,11 @@ function buildChaZeroImplementorNudge(
   }
   if (!Array.isArray(snapshot) || snapshot.length === 0) return null;
 
-  const chaCtx = buildChaContextFromDb(db);
-  const nowImplemented = snapshot.filter((name): name is string => {
-    if (typeof name !== 'string') return false;
-    const implementorNames = chaCtx.implementors.get(name);
-    return implementorNames?.some((cls) => chaCtx.instantiatedTypes.has(cls)) ?? false;
-  });
+  const chaCtx = cha.buildChaContextFromDb(db);
+  const nowImplemented = snapshot
+    .filter((key): key is string => typeof key === 'string')
+    .filter((key) => cha.hasInstantiatedImplementor(key, chaCtx))
+    .map((key) => cha.displayNameForZeroImplementorKey(key));
   if (nowImplemented.length === 0) return null;
 
   const plural = nowImplemented.length > 1;
@@ -118,9 +128,12 @@ export async function printBuildMetadata(
 ): Promise<void> {
   try {
     const { findDbPath, getBuildMeta, resolveBusyTimeoutMs } = await import('../../db/index.js');
-    const { buildChaContextFromDb, CHA_ZERO_IMPLEMENTOR_META_KEY } = await import(
-      '../../domain/graph/builder/cha.js'
-    );
+    const {
+      buildChaContextFromDb,
+      CHA_ZERO_IMPLEMENTOR_META_KEY,
+      hasInstantiatedImplementor,
+      displayNameForZeroImplementorKey,
+    } = await import('../../domain/graph/builder/cha.js');
     const Database = (await import('better-sqlite3')).default;
     const dbPath = findDbPath(opts.db as string | undefined);
     const fs = await import('node:fs');
@@ -132,11 +145,11 @@ export async function printBuildMetadata(
       const builtAt = getBuildMeta(db, 'built_at');
       const chaZeroImplementorRaw = getBuildMeta(db, CHA_ZERO_IMPLEMENTOR_META_KEY);
       // Computed while `db` is still open: buildChaZeroImplementorNudge re-queries it.
-      const chaNudge = buildChaZeroImplementorNudge(
-        db,
-        chaZeroImplementorRaw,
+      const chaNudge = buildChaZeroImplementorNudge(db, chaZeroImplementorRaw, {
         buildChaContextFromDb,
-      );
+        hasInstantiatedImplementor,
+        displayNameForZeroImplementorKey,
+      });
       db.close();
 
       if (buildEngine || buildVersion || builtAt) {
