@@ -597,6 +597,45 @@ mod tests {
     }
 
     #[test]
+    fn computes_complexity_for_long_form_function_issue_2312() {
+        // Regression guard: `handle_function_def` has always called
+        // `compute_all_metrics(node, source, "julia")` (see above), but it
+        // was a no-op — `compute_all_metrics` returns `None` for a language
+        // with no registered `LangRules`/`HalsteadRules`. This confirms the
+        // JULIA_RULES/JULIA_HALSTEAD registration in complexity.rs actually
+        // makes it effective end-to-end.
+        let s = parse_jl(
+            "function classify(x)\n    if x > 0 && x < 10\n        return 1\n    elseif x < 0\n        return -1\n    else\n        return 0\n    end\nend\n",
+        );
+        let g = s.definitions.iter().find(|d| d.name == "classify").unwrap();
+        let complexity = g
+            .complexity
+            .as_ref()
+            .expect("complexity should be computed");
+        // if: +1 cog, +1 cyc; &&: +1 cog, +1 cyc; elseif: +1 cog, +1 cyc;
+        // else: +1 cog.
+        assert_eq!(complexity.cognitive, 4);
+        assert_eq!(complexity.cyclomatic, 4);
+        let halstead = complexity.halstead.as_ref().expect("halstead present");
+        assert!(
+            halstead.n1 >= 2,
+            "expected multiple distinct operators, got n1={}",
+            halstead.n1
+        );
+    }
+
+    #[test]
+    fn computes_complexity_for_short_form_function_issue_2312() {
+        let s = parse_jl("add(x, y) = x + y\n");
+        let add = s.definitions.iter().find(|d| d.name == "add").unwrap();
+        let complexity = add
+            .complexity
+            .as_ref()
+            .expect("complexity should be computed");
+        assert_eq!(complexity.cyclomatic, 1);
+    }
+
+    #[test]
     fn module_prefixes_inner_functions() {
         let s = parse_jl("module Foo\n    function bar()\n    end\nend\n");
         let names: Vec<&str> = s.definitions.iter().map(|d| d.name.as_str()).collect();

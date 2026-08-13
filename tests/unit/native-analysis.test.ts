@@ -83,6 +83,38 @@ function complex(x) {
       expect(results.length).toBe(1);
       expect(results[0].name).toBe('process');
     });
+
+    it('works for Julia, including the &&/|| operator-by-text fix (#2312)', () => {
+      const source = `function classify(x)\n    if x > 0 && x < 10\n        return 1\n    elseif x < 0\n        return -1\n    else\n        return 0\n    end\nend\n`;
+      const results = native.analyzeComplexity(source, 'test.jl', 'julia');
+      // NOTE: `name` resolves to "<anonymous>" here — this standalone helper's
+      // generic `function_name` only checks a direct `name` field, which
+      // Julia's `function_definition` doesn't have (the name is nested under
+      // `signature` → `call_expression`, see `extractors/julia.rs`). This is
+      // a pre-existing gap shared by every language with the same shape
+      // (e.g. R) and is unrelated to complexity/Halstead correctness — out
+      // of scope for issue #2312.
+      expect(results.length).toBe(1);
+      const classify = results[0]!;
+      // if: +1 cog, +1 cyc; &&: +1 cog, +1 cyc; elseif: +1 cog, +1 cyc; else: +1 cog
+      expect(classify.complexity.cognitive).toBe(4);
+      expect(classify.complexity.cyclomatic).toBe(4);
+      // Distinct operators (+, at least >, <, &&) must not collapse onto a
+      // single "operator" vocabulary entry.
+      expect(classify.complexity.halstead!.n1).toBeGreaterThanOrEqual(3);
+    });
+
+    it('works for Solidity, including the else-if transparent-wrapper fix (#2312)', () => {
+      const source =
+        'contract C { function f(int x, int y) public { if (x > 0) { x = 1; } else if (y > 0) { x = 2; } else { x = 3; } } }';
+      const results = native.analyzeComplexity(source, 'test.sol', 'solidity');
+      const f = results.find((r) => r.name === 'f');
+      expect(f).toBeDefined();
+      // if: +1 cog, +1 cyc; else-if (flat, Pattern D): +1 cog, +1 cyc; plain else: +1 cog
+      expect(f!.complexity.cognitive).toBe(3);
+      expect(f!.complexity.cyclomatic).toBe(3);
+      expect(f!.complexity.maxNesting).toBe(1);
+    });
   });
 
   // ─── buildCfgAnalysis ─────────────────────────────────────────────────

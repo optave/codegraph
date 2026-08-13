@@ -95,6 +95,7 @@ const LINE_COMMENT_PREFIXES = new Map<string, string[]>([
   ['zig', LINE_COMMENT_PREFIX],
   ['groovy', LINE_COMMENT_PREFIX],
   ['r', ['#']],
+  ['julia', ['#']],
 ]);
 
 /**
@@ -104,8 +105,17 @@ const LINE_COMMENT_PREFIXES = new Map<string, string[]>([
  * same fallback `computeLOCMetrics` already gives an unlisted language for
  * its line-comment prefix (`LINE_COMMENT_PREFIX`, `//`), matching the native
  * mirror's own pre-fix catch-all default of full C-style support.
+ *
+ * Julia is included here too (issue #2312): its block-comment delimiters
+ * are `#=`/`=#`, not `/*`/`* /` — `scanBlockCommentDepth` below only
+ * recognizes the latter. Treating Julia as a block-comment language would
+ * never actually close a block (no `* /` ever appears), leaving every
+ * subsequent line wrongly marked as a comment continuation. Excluding it
+ * instead means `#=...=#` block comments are undercounted as SLOC rather
+ * than comment lines — a documented, minor precision loss, not a silent
+ * miscount of unrelated code.
  */
-const NO_BLOCK_COMMENT_LANGS = new Set(['python', 'ruby', 'bash', 'lua', 'zig', 'r']);
+const NO_BLOCK_COMMENT_LANGS = new Set(['python', 'ruby', 'bash', 'lua', 'zig', 'r', 'julia']);
 
 /**
  * Languages whose block comments can nest (`/* outer /* inner *\/ still

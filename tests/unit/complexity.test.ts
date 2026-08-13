@@ -1644,6 +1644,138 @@ describe('Bash complexity', () => {
   });
 });
 
+// ─── Julia (#2312) ────────────────────────────────────────────────────────
+//
+// tree-sitter-julia wraps EVERY binary operator token (`+`, `-`, `>`, `==`,
+// `&&`, `||`, ...) in one generic `operator` leaf node — only the leaf's
+// `.text` distinguishes which operator it actually is (confirmed by parsing
+// `x > 0 && y > 0`). `elseif_clause`/`else_clause` are genuine, distinctly-
+// typed nodes reached via the repeated `alternative` field (Pattern B, same
+// as Python's elif/else) — no transparent-wrapper involvement.
+
+describe('Julia complexity (#2312)', () => {
+  const { analyze, halstead } = makeHelpers('julia', sharedParsers());
+
+  it('function with if/elseif/else chain', () => {
+    const r = analyze(
+      'function classify(x)\n    if x > 0\n        return 1\n    elseif x < 0\n        return -1\n    else\n        return 0\n    end\nend\n',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('logical operators — same operator sequence (Bug 1 regression)', () => {
+    // Without logicalOperatorsByText, `&&` is unrecognizable (every operator
+    // shares the generic `operator` leaf type) — cyclomatic/cognitive would
+    // silently miss both `&&` contributions entirely, not just mis-adjust
+    // the same-sequence check.
+    const r = analyze(
+      'function check(a, b, c)\n    if a && b && c\n        return 1\n    end\nend\n',
+    );
+    expect(r.cognitive).toBe(2);
+    expect(r.cyclomatic).toBe(4);
+  });
+
+  it('logical operators — mixed operators', () => {
+    const r = analyze(
+      'function check(a, b, c)\n    if a && b || c\n        return 1\n    end\nend\n',
+    );
+    expect(r.cognitive).toBe(3);
+    expect(r.cyclomatic).toBe(4);
+  });
+
+  it('while loop', () => {
+    const r = analyze(
+      'function s(n)\n    total = 0\n    i = 0\n    while i < n\n        total += i\n        i += 1\n    end\n    return total\nend\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it('try/catch', () => {
+    const r = analyze(
+      'function risky()\n    try\n        return 1\n    catch e\n        return -1\n    end\nend\n',
+    );
+    expect(r).toEqual({ cognitive: 1, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it('halstead: operator vocabulary is not collapsed (Bug 1 Halstead regression)', () => {
+    // Without operatorLeafTypesByText, every distinct operator below would
+    // collapse onto a single vocabulary entry keyed by the literal string
+    // "operator" (n1 === 1) regardless of how many distinct operators
+    // actually appear.
+    const h = halstead('function f(a, b, c)\n    return a + b - c * 2\nend\n');
+    expect(h).not.toBeNull();
+    expect(h.n1).toBeGreaterThanOrEqual(4);
+  });
+});
+
+// ─── Solidity (#2312) ───────────────────────────────────────────────────────
+//
+// tree-sitter-solidity's `if_statement` has NO `else_clause` wrapper node and
+// NO `alternative` field — both the then- and else-branch bodies are
+// reached via the SAME field name (`body`), each wrapped in a generic,
+// single-named-child `statement` supertype-alias node, with the bare `else`
+// keyword as an ordinary sibling token in between (confirmed by parsing
+// `if (x>0) {..} else if (y>0) {..} else {..}` and inspecting field names).
+// The condition (and other value positions) is ALSO wrapped in a generic
+// `expression` node, which independently breaks the same-operator-sequence
+// check for a chained `a && b && c`.
+
+describe('Solidity complexity (#2312)', () => {
+  const { analyze, halstead } = makeHelpers('solidity', sharedParsers());
+
+  it('plain if/else', () => {
+    const r = analyze(
+      'contract C { function f(int x) public { if (x > 0) { x = 1; } else { x = 2; } } }',
+    );
+    expect(r).toEqual({ cognitive: 2, cyclomatic: 2, maxNesting: 1 });
+  });
+
+  it('if/else-if/else does not double-count nesting (Bug 2 regression)', () => {
+    // Without the transparent-wrapper (Pattern D) fix, the nested
+    // if_statement's parent is seen as the generic `statement` wrapper
+    // rather than recognized as an else-if, and cognitive complexity is
+    // inflated to 4/maxNesting to 2 — scoring it as a fresh nested branch
+    // instead of the flat +1 every other else-if pattern in this file gets.
+    const r = analyze(
+      'contract C { function f(int x, int y) public { if (x > 0) { x = 1; } else if (y > 0) { x = 2; } else { x = 3; } } }',
+    );
+    expect(r).toEqual({ cognitive: 3, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('logical operators — same operator sequence through the `expression` wrapper', () => {
+    // Each operator token has its own distinct node type here (unlike
+    // Julia) — this exercises effectiveParent's wrapper-unwrapping, not
+    // logicalOperatorsByText.
+    const r = analyze(
+      'contract C { function f(bool a, bool b, bool c) public { if (a && b && c) { a = false; } } }',
+    );
+    expect(r.cognitive).toBe(2);
+    expect(r.cyclomatic).toBe(4);
+  });
+
+  it('while/for loops', () => {
+    const r = analyze(
+      'contract C { function f(int x) public { while (x > 0) { x -= 1; } for (uint i = 0; i < 10; i++) { x += 1; } } }',
+    );
+    expect(r).toEqual({ cognitive: 2, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('try/catch with multiple catch arms', () => {
+    const r = analyze(
+      'contract C { function f() public { try other.doThing() returns (uint x) { y = x; } catch Error(string memory reason) { y = 0; } catch { y = 1; } } }',
+    );
+    expect(r).toEqual({ cognitive: 2, cyclomatic: 3, maxNesting: 1 });
+  });
+
+  it('halstead: positive volume', () => {
+    const h = halstead(
+      'contract C { function f(int a, int b) public returns (int) { return a + b; } }',
+    );
+    expect(h).not.toBeNull();
+    expect(h.volume).toBeGreaterThan(0);
+  });
+});
+
 // ─── Parity: standalone DFS vs visitor-based computeAllMetrics ──────────
 
 describe('DFS vs visitor parity', () => {
@@ -1923,4 +2055,110 @@ describe('DFS vs visitor parity — #1923 tier-1 languages', () => {
       expect(visitor!.maxNesting).toBe(dfs!.maxNesting);
     });
   }
+});
+
+// computeFunctionComplexity is the standalone DFS reference (mirrors the
+// Rust walk); computeAllMetrics is the visitor-based path WASM builds
+// actually use. Julia gets its own dedicated block (rather than folding
+// into the tier-1 dict above) because its logicalOperatorsByText fix must
+// agree identically between the two independent TS implementations — both
+// duplicate the logical-operator classification inline rather than sharing
+// one helper (issue #2312).
+describe('DFS vs visitor parity — Julia (#2312, logicalOperatorsByText)', () => {
+  let juliaParser: any;
+
+  beforeAll(async () => {
+    const parsers = await createParsers();
+    juliaParser = parsers.get('julia');
+  });
+
+  function findJuliaFunc(node: any): any {
+    const rules = COMPLEXITY_RULES.get('julia');
+    if (!rules) return null;
+    if (rules.functionNodes.has(node.type)) return node;
+    for (let i = 0; i < node.childCount; i++) {
+      const result = findJuliaFunc(node.child(i));
+      if (result) return result;
+    }
+    return null;
+  }
+
+  function analyzeJuliaBoth(code: string) {
+    if (!juliaParser) throw new Error('Julia parser not available');
+    const tree = juliaParser.parse(code);
+    const funcNode = findJuliaFunc(tree.rootNode);
+    if (!funcNode) throw new Error('No function found in Julia snippet');
+    const dfs = computeFunctionComplexity(funcNode, 'julia');
+    const visitor = computeAllMetrics(funcNode, 'julia');
+    return { dfs, visitor };
+  }
+
+  it('if/elseif/else — identical', () => {
+    const { dfs, visitor } = analyzeJuliaBoth(
+      'function classify(x)\n    if x > 0\n        return 1\n    elseif x < 0\n        return -1\n    else\n        return 0\n    end\nend\n',
+    );
+    expect(visitor!.cognitive).toBe(dfs!.cognitive);
+    expect(visitor!.cyclomatic).toBe(dfs!.cyclomatic);
+    expect(visitor!.maxNesting).toBe(dfs!.maxNesting);
+  });
+
+  it('chained && (same operator sequence) — identical', () => {
+    const { dfs, visitor } = analyzeJuliaBoth(
+      'function check(a, b, c)\n    if a && b && c\n        return 1\n    end\nend\n',
+    );
+    expect(visitor!.cognitive).toBe(dfs!.cognitive);
+    expect(visitor!.cyclomatic).toBe(dfs!.cyclomatic);
+    expect(visitor!.maxNesting).toBe(dfs!.maxNesting);
+  });
+});
+
+// Solidity gets its own dedicated block for the same reason: its
+// transparentWrapperTypes/elseKeywordType (Pattern D) fix must agree
+// identically between the two independent TS implementations (issue #2312).
+describe('DFS vs visitor parity — Solidity (#2312, transparent wrapper)', () => {
+  let solidityParser: any;
+
+  beforeAll(async () => {
+    const parsers = await createParsers();
+    solidityParser = parsers.get('solidity');
+  });
+
+  function findSolidityFunc(node: any): any {
+    const rules = COMPLEXITY_RULES.get('solidity');
+    if (!rules) return null;
+    if (rules.functionNodes.has(node.type)) return node;
+    for (let i = 0; i < node.childCount; i++) {
+      const result = findSolidityFunc(node.child(i));
+      if (result) return result;
+    }
+    return null;
+  }
+
+  function analyzeSolidityBoth(code: string) {
+    if (!solidityParser) throw new Error('Solidity parser not available');
+    const tree = solidityParser.parse(code);
+    const funcNode = findSolidityFunc(tree.rootNode);
+    if (!funcNode) throw new Error('No function found in Solidity snippet');
+    const dfs = computeFunctionComplexity(funcNode, 'solidity');
+    const visitor = computeAllMetrics(funcNode, 'solidity');
+    return { dfs, visitor };
+  }
+
+  it('if/else-if/else through the `statement` wrapper — identical', () => {
+    const { dfs, visitor } = analyzeSolidityBoth(
+      'contract C { function f(int x, int y) public { if (x > 0) { x = 1; } else if (y > 0) { x = 2; } else { x = 3; } } }',
+    );
+    expect(visitor!.cognitive).toBe(dfs!.cognitive);
+    expect(visitor!.cyclomatic).toBe(dfs!.cyclomatic);
+    expect(visitor!.maxNesting).toBe(dfs!.maxNesting);
+  });
+
+  it('chained && through the `expression` wrapper — identical', () => {
+    const { dfs, visitor } = analyzeSolidityBoth(
+      'contract C { function f(bool a, bool b, bool c) public { if (a && b && c) { a = false; } } }',
+    );
+    expect(visitor!.cognitive).toBe(dfs!.cognitive);
+    expect(visitor!.cyclomatic).toBe(dfs!.cyclomatic);
+    expect(visitor!.maxNesting).toBe(dfs!.maxNesting);
+  });
 });

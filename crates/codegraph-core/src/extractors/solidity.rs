@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::SymbolExtractor;
+use crate::ast_analysis::complexity::compute_all_metrics;
 use crate::types::*;
 use tree_sitter::{Node, Tree};
 
@@ -310,7 +311,7 @@ fn handle_function_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         line: start_line(node),
         end_line: Some(end_line(node)),
         decorators: None,
-        complexity: None,
+        complexity: compute_all_metrics(node, source, "solidity"),
         cfg: None,
         children: opt_children(params),
         bodyless: None,
@@ -335,7 +336,7 @@ fn handle_modifier_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         line: start_line(node),
         end_line: Some(end_line(node)),
         decorators: Some(vec!["modifier".to_string()]),
-        complexity: None,
+        complexity: compute_all_metrics(node, source, "solidity"),
         cfg: None,
         children: None,
         bodyless: None,
@@ -587,6 +588,41 @@ mod tests {
         // (parameters are direct children of `function_definition`), so the
         // current extractor emits no parameter children. Tracked alongside JS
         // parity; do not "fix" here without also updating the WASM extractor.
+    }
+
+    #[test]
+    fn extracts_function_complexity_issue_2312() {
+        // Regression guard: `handle_function_def` must call `compute_all_metrics`
+        // (mirrors every other extractor's inline wiring, e.g. julia.rs) rather
+        // than hardcoding `complexity: None` — otherwise registering
+        // SOLIDITY_RULES/SOLIDITY_HALSTEAD in complexity.rs has no effect on
+        // what the native extractor actually returns.
+        let s = parse_sol(
+            "contract C { function f(int x, int y) public { if (x > 0) { x = 1; } else if (y > 0) { x = 2; } else { x = 3; } } }",
+        );
+        let d = s.definitions.iter().find(|d| d.name == "C.f").unwrap();
+        let complexity = d
+            .complexity
+            .as_ref()
+            .expect("complexity should be computed");
+        assert_eq!(complexity.cognitive, 3);
+        assert_eq!(complexity.cyclomatic, 3);
+        assert_eq!(complexity.max_nesting, 1);
+    }
+
+    #[test]
+    fn extracts_modifier_complexity_issue_2312() {
+        let s = parse_sol("contract C { modifier onlyPositive(int x) { if (x > 0) { _; } } }");
+        let d = s
+            .definitions
+            .iter()
+            .find(|d| d.name == "C.onlyPositive")
+            .unwrap();
+        let complexity = d
+            .complexity
+            .as_ref()
+            .expect("complexity should be computed");
+        assert_eq!(complexity.cyclomatic, 2);
     }
 
     #[test]

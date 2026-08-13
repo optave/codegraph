@@ -48,6 +48,8 @@ export const COMPLEXITY_RULES: Map<string, ComplexityRules> = new Map([
   ['zig', zig.complexity],
   ['groovy', b2.complexityGroovy],
   ['r', r.complexity],
+  ['julia', b3.complexityJulia],
+  ['solidity', b5.complexitySolidity],
 ]);
 
 // ─── Halstead Rules ───────────────────────────────────────────────────────
@@ -75,6 +77,8 @@ export const HALSTEAD_RULES: Map<string, HalsteadRules> = new Map([
   ['zig', zig.halstead],
   ['groovy', b2.halsteadGroovy],
   ['r', r.halstead],
+  ['julia', b3.halsteadJulia],
+  ['solidity', b5.halsteadSolidity],
 ]);
 
 // ─── CFG Rules ────────────────────────────────────────────────────────────

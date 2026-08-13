@@ -22,6 +22,18 @@ interface PerFunctionResult {
   metrics: ReturnType<typeof collectResult>;
 }
 
+/**
+ * Extract a leaf's Halstead/logical-operator comparison key: `.text` (the
+ * literal operator symbol) when `byText` is set — needed for grammars where
+ * every binary operator shares one generic node type (e.g. tree-sitter-julia's
+ * `operator`, issue #2312) — otherwise `.type` (every other grammar, where
+ * the node type already equals the operator's literal text, so behavior is
+ * unchanged).
+ */
+function operatorKey(node: TreeSitterNode, byText: boolean): string {
+  return byText ? node.text : node.type;
+}
+
 function classifyHalstead(node: TreeSitterNode, hRules: AnyRules, acc: ComplexityAcc): void {
   const type = node.type;
   if (hRules.skipTypes.has(type)) acc.halsteadSkipDepth++;
@@ -31,8 +43,9 @@ function classifyHalstead(node: TreeSitterNode, hRules: AnyRules, acc: Complexit
     acc.operators.set(type, (acc.operators.get(type) || 0) + 1);
   }
   if (node.childCount === 0) {
-    if (hRules.operatorLeafTypes.has(type) && acc.operators) {
-      acc.operators.set(type, (acc.operators.get(type) || 0) + 1);
+    const opKey = operatorKey(node, !!hRules.operatorLeafTypesByText);
+    if (hRules.operatorLeafTypes.has(opKey) && acc.operators) {
+      acc.operators.set(opKey, (acc.operators.get(opKey) || 0) + 1);
     } else if (hRules.operandLeafTypes.has(type) && acc.operands) {
       const text = node.text;
       acc.operands.set(text, (acc.operands.get(text) || 0) + 1);
@@ -41,10 +54,42 @@ function classifyHalstead(node: TreeSitterNode, hRules: AnyRules, acc: Complexit
 }
 
 /**
+ * Effective parent: skip over consecutive nodes whose type is in
+ * `cRules.transparentWrapperTypes` (e.g. Solidity's `statement`/`expression`
+ * supertype-alias wrapper nodes, issue #2312) to find the nearest
+ * structurally-meaningful ancestor. Degenerates to plain `.parent` for every
+ * language that leaves `transparentWrapperTypes` unset.
+ */
+function effectiveParent(node: TreeSitterNode, cRules: AnyRules): TreeSitterNode | null {
+  let p = node.parent;
+  while (p && cRules.transparentWrapperTypes?.has(p.type)) {
+    p = p.parent;
+  }
+  return p;
+}
+
+/**
+ * Detect Pattern D else-if: node's immediate parent is a transparent wrapper
+ * (e.g. Solidity's `statement`, reached via the SAME field name — `body` —
+ * for both the then- and else-branch, with no dedicated `else_clause` node
+ * and no `alternative` field) whose preceding sibling is the bare `else`
+ * keyword token. Mirrors Pattern A's role but for grammars that dropped the
+ * wrapping node entirely (issue #2312).
+ */
+function isPatternDElseIf(node: TreeSitterNode, cRules: AnyRules): boolean {
+  if (!cRules.elseKeywordType || !cRules.transparentWrapperTypes?.size) return false;
+  const wrapper = node.parent;
+  if (!wrapper || !cRules.transparentWrapperTypes.has(wrapper.type)) return false;
+  return wrapper.previousSibling?.type === cRules.elseKeywordType;
+}
+
+/**
  * Detect whether a branch node is an else-if that the DFS walk would NOT
  * increment nesting for.  Returns true for:
  *  - Pattern A (JS/C#/Rust): if_statement whose parent is else_clause
  *  - Pattern C (Go/Java): if_statement that is the alternative of parent if
+ *  - Pattern D (Solidity): if_statement reached via a transparent wrapper
+ *    whose preceding sibling is the bare else keyword
  *
  * Pattern B (Python elif_clause) is not an issue because elif_clause is
  * never in nestingNodes.
@@ -63,7 +108,7 @@ function isElseIfNonNesting(node: TreeSitterNode, type: string, cRules: AnyRules
     // Pattern A
     return node.parent?.type === cRules.elseNodeType;
   }
-  return false;
+  return isPatternDElseIf(node, cRules);
 }
 
 function classifyBranchNode(
@@ -96,6 +141,8 @@ function classifyBranchNode(
         node.parent?.childForFieldName('alternative')?.id === node.id;
     } else if (cRules.elseNodeType) {
       isElseIf = node.parent?.type === cRules.elseNodeType;
+    } else {
+      isElseIf = isPatternDElseIf(node, cRules);
     }
   }
 
@@ -114,12 +161,22 @@ function classifyBranchNode(
 }
 
 function classifyLogicalOp(node: TreeSitterNode, cRules: AnyRules, acc: ComplexityAcc): void {
-  const op = node.child(1)?.type;
-  if (!op || !cRules.logicalOperators.has(op)) return;
+  const byText = !!cRules.logicalOperatorsByText;
+  const opNode = node.child(1);
+  if (!opNode) return;
+  const op = operatorKey(opNode, byText);
+  if (!cRules.logicalOperators.has(op)) return;
   acc.cyclomatic++;
-  const parent = node.parent;
+  // effectiveParent walks through transparent wrapper nodes (e.g. Solidity's
+  // `expression`) that would otherwise hide a same-operator chain's real
+  // parent binary_expression (issue #2312).
+  const parent = effectiveParent(node, cRules);
+  const parentOp = parent?.child(1);
   const sameSequence =
-    parent != null && cRules.logicalNodeTypes.has(parent.type) && parent.child(1)?.type === op;
+    parent != null &&
+    cRules.logicalNodeTypes.has(parent.type) &&
+    !!parentOp &&
+    operatorKey(parentOp, byText) === op;
   if (!sameSequence) acc.cognitive++;
 }
 
@@ -135,6 +192,12 @@ function classifyPlainElse(
     node.parent?.type === cRules.ifNodeType &&
     node.parent?.childForFieldName('alternative')?.id === node.id
   ) {
+    acc.cognitive++;
+    return;
+  }
+  // Pattern D plain else (Solidity): a non-if block whose immediate parent
+  // is a transparent wrapper preceded by the bare else keyword.
+  if (type !== cRules.ifNodeType && isPatternDElseIf(node, cRules)) {
     acc.cognitive++;
   }
 }

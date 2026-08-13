@@ -1242,6 +1242,36 @@ export interface ComplexityRules {
   elifNodeType: string | null;
   elseViaAlternative: boolean;
   switchLikeNodes: Set<string>;
+  /**
+   * Compare a logical/binary operator token by its `.text` (the literal
+   * operator symbol) instead of its `.type` (grammar node type). Needed for
+   * grammars where every binary operator (`+`, `>`, `&&`, ...) shares one
+   * generic node type (e.g. tree-sitter-julia's `operator`) and only the
+   * token TEXT distinguishes which operator it actually is (#2312). When
+   * false/omitted (every other language), behavior is byte-for-byte
+   * unchanged — `.type` already equals the operator's literal text.
+   */
+  logicalOperatorsByText?: boolean;
+  /**
+   * Node types that transparently wrap a single meaningful child (e.g.
+   * Solidity's `statement`/`expression` supertype-alias wrapper nodes
+   * produced by ungrammar/ASDL-style grammar specs, #2312). Parent/sibling
+   * lookups used to detect else-if chains and logical-operator sequences
+   * walk THROUGH nodes of these types (see `effectiveParent` in
+   * complexity-visitor.ts) rather than stopping at the wrapper. Omitted for
+   * every language without this grammar shape.
+   */
+  transparentWrapperTypes?: Set<string> | null;
+  /**
+   * Node type of a bare `else` keyword token, for grammars where else has NO
+   * wrapping node (no `else_clause`, no `alternative` field) and the same
+   * field name is reused positionally for both the then- and else-branch
+   * bodies (Solidity: both reached via field `body`, the second occurrence
+   * only present when an `else` sibling precedes it). An else-if / plain-else
+   * is detected by checking whether the (wrapper-unwrapped) node's immediate
+   * parent's PRECEDING SIBLING is this keyword type (#2312).
+   */
+  elseKeywordType?: string | null;
 }
 
 /** Halstead rules for a language. */
@@ -1252,6 +1282,16 @@ export interface HalsteadRules {
   skipTypes: Set<string>;
   /** See ComplexityRules.bodySiblingTypes — same split-signature/body case (#2182). */
   bodySiblingTypes?: Set<string> | null;
+  /**
+   * Compare an operator LEAF node by its `.text` instead of its `.type` when
+   * classifying Halstead operators. Needed for grammars where every operator
+   * token shares one generic leaf type (tree-sitter-julia's `operator`) —
+   * matching by `.type` alone would collapse every distinct operator (+, -,
+   * >, &&, ...) into a single vocabulary entry, corrupting n1 (distinct
+   * operator count, #2312). False/omitted for every other language, where
+   * behavior is unchanged.
+   */
+  operatorLeafTypesByText?: boolean;
 }
 
 /** CFG rules for a language (merged result of CFG_DEFAULTS + overrides). */

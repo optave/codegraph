@@ -33,6 +33,17 @@ const COMPLEXITY_EXTENSIONS = buildExtensionSet(COMPLEXITY_RULES);
 
 // ─── Halstead Metrics Computation ─────────────────────────────────────────
 
+/**
+ * Extract a leaf's Halstead comparison key: `.text` when `rules.operatorLeafTypesByText`
+ * is set (grammars where every operator token shares one generic leaf type,
+ * e.g. tree-sitter-julia's `operator`, issue #2312), otherwise `.type` (every
+ * other grammar, where the node type already equals the operator's literal
+ * text — behavior is unchanged).
+ */
+function halsteadOperatorKey(node: TreeSitterNode, rules: HalsteadRules): string {
+  return rules.operatorLeafTypesByText ? node.text : node.type;
+}
+
 /** Classify a tree-sitter node as a Halstead operator or operand,
  *  updating the running counts. Pure helper extracted from computeHalsteadMetrics
  *  to keep the dispatcher thin. */
@@ -49,8 +60,9 @@ function classifyHalsteadToken(
 
   // Leaf nodes: classify as operator or operand
   if (node.childCount === 0) {
-    if (rules.operatorLeafTypes.has(node.type)) {
-      operators.set(node.type, (operators.get(node.type) || 0) + 1);
+    const opKey = halsteadOperatorKey(node, rules);
+    if (rules.operatorLeafTypes.has(opKey)) {
+      operators.set(opKey, (operators.get(opKey) || 0) + 1);
     } else if (rules.operandLeafTypes.has(node.type)) {
       const text = node.text;
       operands.set(text, (operands.get(text) || 0) + 1);
@@ -150,6 +162,47 @@ function walkChildren(node: TreeSitterNode, nestingLevel: number, walkFn: WalkFn
   }
 }
 
+/**
+ * Extract a logical/binary operator token's comparison key: `.text` when
+ * `rules.logicalOperatorsByText` is set (grammars where every operator
+ * shares one generic node type, e.g. tree-sitter-julia's `operator`, issue
+ * #2312), otherwise `.type` (every other grammar, where the node type
+ * already equals the operator's literal text — behavior is unchanged).
+ */
+function logicalOperatorKey(node: TreeSitterNode, rules: ComplexityRules): string {
+  return rules.logicalOperatorsByText ? node.text : node.type;
+}
+
+/**
+ * Effective parent: skip over consecutive nodes whose type is in
+ * `rules.transparentWrapperTypes` (e.g. Solidity's `statement`/`expression`
+ * supertype-alias wrapper nodes, issue #2312) to find the nearest
+ * structurally-meaningful ancestor. Degenerates to plain `.parent` for every
+ * language that leaves `transparentWrapperTypes` unset.
+ */
+function effectiveParent(node: TreeSitterNode, rules: ComplexityRules): TreeSitterNode | null {
+  let p = node.parent;
+  while (p && rules.transparentWrapperTypes?.has(p.type)) {
+    p = p.parent;
+  }
+  return p;
+}
+
+/**
+ * Detect Pattern D else-if/plain-else: node's immediate parent is a
+ * transparent wrapper (e.g. Solidity's `statement`, reached via the SAME
+ * field name — `body` — for both the then- and else-branch, with no
+ * dedicated `else_clause` node and no `alternative` field) whose preceding
+ * sibling is the bare `else` keyword token. Mirrors Pattern A's role but for
+ * grammars that dropped the wrapping node entirely (issue #2312).
+ */
+function isPatternDElseIf(node: TreeSitterNode, rules: ComplexityRules): boolean {
+  if (!rules.elseKeywordType || !rules.transparentWrapperTypes?.size) return false;
+  const wrapper = node.parent;
+  if (!wrapper || !rules.transparentWrapperTypes.has(wrapper.type)) return false;
+  return wrapper.previousSibling?.type === rules.elseKeywordType;
+}
+
 /** Handle logical operators in binary expressions. Returns true if handled. */
 function handleLogicalOperator(
   node: TreeSitterNode,
@@ -161,15 +214,24 @@ function handleLogicalOperator(
 ): boolean {
   if (!rules.logicalNodeTypes.has(type)) return false;
 
-  const op = node.child(1)?.type;
-  if (!op || !rules.logicalOperators.has(op)) return false;
+  const opNode = node.child(1);
+  if (!opNode) return false;
+  const op = logicalOperatorKey(opNode, rules);
+  if (!rules.logicalOperators.has(op)) return false;
 
   acc.cyclomatic++;
 
-  // Cognitive: +1 only when operator changes from the previous sibling sequence
-  const parent = node.parent;
+  // Cognitive: +1 only when operator changes from the previous sibling
+  // sequence. effectiveParent walks through transparent wrapper nodes (e.g.
+  // Solidity's `expression`) that would otherwise hide a same-operator
+  // chain's real parent binary_expression (issue #2312).
+  const parent = effectiveParent(node, rules);
+  const parentOpNode = parent?.child(1);
   const sameSequence =
-    parent != null && rules.logicalNodeTypes.has(parent.type) && parent.child(1)?.type === op;
+    parent != null &&
+    rules.logicalNodeTypes.has(parent.type) &&
+    !!parentOpNode &&
+    logicalOperatorKey(parentOpNode, rules) === op;
   if (!sameSequence) acc.cognitive++;
 
   walkChildren(node, nestingLevel, walkFn);
@@ -199,7 +261,7 @@ function handleElseClause(
   return true;
 }
 
-/** Detect and handle else-if patterns (Patterns A, B, C). Returns true if handled. */
+/** Detect and handle else-if patterns (Patterns A, B, C, D). Returns true if handled. */
 function handleElseIf(
   node: TreeSitterNode,
   type: string,
@@ -216,7 +278,7 @@ function handleElseIf(
     return true;
   }
 
-  // Detect else-if via Pattern A or C
+  // Detect else-if via Pattern A, C, or D
   if (type === rules.ifNodeType) {
     let isElseIf = false;
     if (rules.elseViaAlternative) {
@@ -227,6 +289,10 @@ function handleElseIf(
     } else if (rules.elseNodeType) {
       // Pattern A (JS/C#/Rust): if_statement inside else_clause
       isElseIf = node.parent?.type === rules.elseNodeType;
+    } else {
+      // Pattern D (Solidity): if_statement reached via a transparent wrapper
+      // whose preceding sibling is the bare else keyword.
+      isElseIf = isPatternDElseIf(node, rules);
     }
     if (isElseIf) {
       acc.cognitive++;
@@ -300,6 +366,29 @@ function handlePatternCElse(
   return true;
 }
 
+/**
+ * Handle Pattern D plain else (Solidity): a non-if block whose immediate
+ * parent is a transparent wrapper preceded by the bare `else` keyword — the
+ * Pattern-D counterpart to `handlePatternCElse`, for grammars with no
+ * `else_clause` node and no `alternative` field.
+ */
+function handlePatternDElse(
+  node: TreeSitterNode,
+  type: string,
+  rules: ComplexityRules,
+  acc: ComplexityAccumulator,
+  nestingLevel: number,
+  walkFn: WalkFn,
+): boolean {
+  if (type === rules.ifNodeType || !isPatternDElseIf(node, rules)) {
+    return false;
+  }
+
+  acc.cognitive++;
+  walkChildren(node, nestingLevel, walkFn);
+  return true;
+}
+
 export function computeFunctionComplexity(
   functionNode: TreeSitterNode,
   language: string,
@@ -323,6 +412,7 @@ export function computeFunctionComplexity(
 
     if (handleBranchNode(node, type, rules!, acc, nestingLevel, walk)) return;
     if (handlePatternCElse(node, type, rules!, acc, nestingLevel, walk)) return;
+    if (handlePatternDElse(node, type, rules!, acc, nestingLevel, walk)) return;
 
     // Case nodes (cyclomatic only, skip keyword leaves)
     if (rules!.caseNodes.has(type) && node.childCount > 0) acc.cyclomatic++;

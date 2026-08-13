@@ -228,6 +228,169 @@ export const dataflowJulia: DataflowRulesConfig = makeDataflowRules({
   // Leave callFunctionField at default — will return null gracefully.
 });
 
+// tree-sitter-julia wraps EVERY binary operator token (`+`, `-`, `>`, `==`,
+// `&&`, `||`, ...) in one generic `operator` leaf node — `binary_expression`
+// is shared by arithmetic, comparison, AND logical expressions alike, and
+// only the leaf's `.text` distinguishes which operator it actually is
+// (confirmed by parsing `x > 0 && y > 0`). `logicalOperatorsByText: true`
+// makes `classifyLogicalOp`/`handleLogicalOperator` compare `.text` instead
+// of `.type` for both the operator-token extraction AND the same-sequence
+// parent check (issue #2312).
+//
+// `elseif_clause`/`else_clause` are genuine, distinctly-typed nodes reached
+// via the SAME `alternative` field (repeated per elseif, terminal `else`) —
+// confirmed by parsing `if a elseif b elseif c else d end`: this is
+// structurally Pattern B (explicit elif node, same as Python/Ruby/PHP/Lua),
+// NOT Solidity's transparent-wrapper shape — no `transparentWrapperTypes`
+// needed here.
+//
+// `do_clause` (`map(xs) do x ... end`) is NOT in `functionNodes`: the
+// extractor (`extractJuliaSymbols`) does not treat it as a scope boundary
+// either, so a do-block's body is walked as part of its enclosing function,
+// matching existing extractor/dataflow behavior rather than introducing new
+// scope-detection machinery in this PR.
+//
+// Short-form function definitions (`add(x, y) = x + y`) have LHS
+// `call_expression` under a plain `assignment` node — the SAME node type
+// used for ordinary variable assignment, with no distinct wrapper to key
+// off. Adding `assignment` to `functionNodes` would misclassify every plain
+// assignment statement as a function boundary. This mirrors the existing,
+// accepted limitation of `dataflowJulia` above: the file-level complexity
+// visitor (engine.ts) can only detect scope boundaries by node TYPE, so
+// short-form Julia functions simply are not detected as complexity scopes
+// by the WASM engine — the same gap the native Rust extractor's own inline
+// `compute_all_metrics` call sidesteps by already knowing which node is the
+// function (see `handle_assignment` in `extractors/julia.rs`).
+export const complexityJulia: ComplexityRules = {
+  // `try_statement` itself is NOT a branch/nesting node, only
+  // `catch_clause` is — mirrors every other try/catch language here (JS/
+  // Java/C#/PHP/Ruby): `try` alone doesn't add a decision path.
+  branchNodes: new Set([
+    'if_statement',
+    'elseif_clause',
+    'else_clause',
+    'for_statement',
+    'while_statement',
+    'catch_clause',
+    'ternary_expression',
+  ]),
+  caseNodes: new Set([]),
+  logicalOperators: new Set(['&&', '||']),
+  logicalNodeTypes: new Set(['binary_expression']),
+  optionalChainType: null,
+  nestingNodes: new Set([
+    'if_statement',
+    'for_statement',
+    'while_statement',
+    'catch_clause',
+    'ternary_expression',
+  ]),
+  functionNodes: new Set(['function_definition']),
+  ifNodeType: 'if_statement',
+  elseNodeType: 'else_clause',
+  elifNodeType: 'elseif_clause',
+  elseViaAlternative: false,
+  switchLikeNodes: new Set([]),
+  logicalOperatorsByText: true,
+};
+
+// See complexityJulia for the generic-`operator`-leaf-type rationale.
+// `operatorLeafTypesByText: true` makes leaf classification compare `.text`
+// instead of `.type` — without it, EVERY distinct Julia operator (+, -, >,
+// &&, ...) would collapse onto one vocabulary entry keyed by the literal
+// string "operator", corrupting n1 (issue #2312). Keyword tokens (`if`,
+// `end`, `return`, ...) already have their own distinct type equal to their
+// text, so by-text comparison is a no-op for them.
+//
+// `content` (a string literal's body, confirmed by parsing `s = "hello"`) is
+// a genuine leaf — unlike Solidity, Julia's grammar DOES expose string body
+// text as its own node, so no precision loss here.
+export const halsteadJulia: HalsteadRules = {
+  operatorLeafTypes: new Set([
+    '+',
+    '-',
+    '*',
+    '/',
+    '÷',
+    '%',
+    '^',
+    '\\',
+    '=',
+    '+=',
+    '-=',
+    '*=',
+    '/=',
+    '%=',
+    '^=',
+    '&=',
+    '|=',
+    '<<=',
+    '>>=',
+    '==',
+    '!=',
+    '<',
+    '<=',
+    '>',
+    '>=',
+    '===',
+    '!==',
+    '&&',
+    '||',
+    '!',
+    '&',
+    '|',
+    '~',
+    '<<',
+    '>>',
+    '<:',
+    '>:',
+    '...',
+    '->',
+    '::',
+    '.',
+    ',',
+    ';',
+    ':',
+    '?',
+    '@',
+    'if',
+    'elseif',
+    'else',
+    'for',
+    'while',
+    'try',
+    'catch',
+    'finally',
+    'return',
+    'break',
+    'continue',
+    'end',
+    'function',
+    'do',
+    'local',
+    'global',
+    'const',
+    'struct',
+    'module',
+    'import',
+    'using',
+    'in',
+    'where',
+    'macro',
+  ]),
+  operandLeafTypes: new Set([
+    'identifier',
+    'integer_literal',
+    'float_literal',
+    'content',
+    'true',
+    'false',
+  ]),
+  compoundOperators: new Set(['call_expression', 'macrocall_expression', 'field_expression']),
+  skipTypes: new Set([]),
+  operatorLeafTypesByText: true,
+};
+
 // ─── Bash ─────────────────────────────────────────────────────────────────────
 //
 // Bash function_definition: name via `childForFieldName('name')` (confirmed in extractor line 42).

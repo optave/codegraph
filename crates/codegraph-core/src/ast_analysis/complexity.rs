@@ -20,6 +20,32 @@ pub struct LangRules {
     pub elif_node_type: Option<&'static str>,
     pub else_via_alternative: bool,
     pub switch_like_nodes: &'static [&'static str],
+    /// Compare a logical/binary operator token by its `.text` (the literal
+    /// operator symbol) instead of its `.kind()` (grammar node type). Needed
+    /// for grammars where every binary operator (`+`, `>`, `&&`, ...) shares
+    /// one generic node kind (e.g. tree-sitter-julia's `operator`) and only
+    /// the token TEXT distinguishes which operator it actually is. When
+    /// false (every other language), behavior is byte-for-byte unchanged —
+    /// `.kind()` already equals the operator's literal text.
+    pub logical_operators_by_text: bool,
+    /// Node kinds that transparently wrap a single meaningful child (e.g.
+    /// Solidity's `statement`/`expression` supertype-alias wrapper nodes
+    /// produced by ungrammar/ASDL-style grammar specs). Parent/sibling
+    /// lookups used to detect else-if chains and logical-operator sequences
+    /// walk THROUGH nodes of these kinds via [`effective_parent`] rather
+    /// than stopping at the wrapper. Empty for every language without this
+    /// grammar shape, in which case `effective_parent` degenerates to plain
+    /// `.parent()`.
+    pub transparent_wrapper_types: &'static [&'static str],
+    /// Node kind of a bare `else` keyword token, for grammars where else has
+    /// NO wrapping node (no `else_clause`, no `alternative` field) and the
+    /// same field name is reused positionally for both the then- and
+    /// else-branch bodies (Solidity: both reached via field `body`, the
+    /// second occurrence only present when an `else` sibling precedes it).
+    /// An else-if / plain-else is detected by checking whether the
+    /// (wrapper-unwrapped) node's immediate parent's PRECEDING SIBLING is
+    /// this keyword kind — see [`detect_else_if`]/[`is_pattern_d_else`].
+    pub else_keyword_type: Option<&'static str>,
 }
 
 impl LangRules {
@@ -84,6 +110,9 @@ pub static JS_TS_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: false,
     switch_like_nodes: &["switch_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 pub static PYTHON_RULES: LangRules = LangRules {
@@ -114,6 +143,9 @@ pub static PYTHON_RULES: LangRules = LangRules {
     elif_node_type: Some("elif_clause"),
     else_via_alternative: false,
     switch_like_nodes: &["match_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 pub static GO_RULES: LangRules = LangRules {
@@ -146,6 +178,9 @@ pub static GO_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: true,
     switch_like_nodes: &["expression_switch_statement", "type_switch_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 pub static RUST_LANG_RULES: LangRules = LangRules {
@@ -178,6 +213,9 @@ pub static RUST_LANG_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: false,
     switch_like_nodes: &["match_expression"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 pub static JAVA_RULES: LangRules = LangRules {
@@ -214,6 +252,9 @@ pub static JAVA_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: true,
     switch_like_nodes: &["switch_expression"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 pub static CSHARP_RULES: LangRules = LangRules {
@@ -253,6 +294,9 @@ pub static CSHARP_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: false,
     switch_like_nodes: &["switch_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 pub static RUBY_RULES: LangRules = LangRules {
@@ -288,6 +332,9 @@ pub static RUBY_RULES: LangRules = LangRules {
     elif_node_type: Some("elsif"),
     else_via_alternative: false,
     switch_like_nodes: &["case"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 pub static PHP_RULES: LangRules = LangRules {
@@ -328,6 +375,9 @@ pub static PHP_RULES: LangRules = LangRules {
     elif_node_type: Some("else_if_clause"),
     else_via_alternative: false,
     switch_like_nodes: &["switch_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 // tree-sitter-c's if_statement wraps its else branch in a real `else_clause`
@@ -373,6 +423,9 @@ pub static C_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: false,
     switch_like_nodes: &["switch_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 // Mirrors C_RULES: tree-sitter-cpp's if_statement uses the same else_clause
@@ -416,6 +469,9 @@ pub static CPP_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: false,
     switch_like_nodes: &["switch_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 // tree-sitter-objc extends tree-sitter-c: if_statement/for_statement/
@@ -465,6 +521,9 @@ pub static OBJC_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: false,
     switch_like_nodes: &["switch_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 // `when_entry` (each case arm) must NOT also be in branch_nodes — `walk()`
@@ -500,6 +559,9 @@ pub static KOTLIN_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: true,
     switch_like_nodes: &["when_expression"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 // tree-sitter-swift, like tree-sitter-kotlin, splits && / || into distinct
@@ -546,6 +608,9 @@ pub static SWIFT_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: true,
     switch_like_nodes: &["switch_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 // `case_clause` must NOT also be in branch_nodes — same shadowing bug as
@@ -578,6 +643,9 @@ pub static SCALA_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: true,
     switch_like_nodes: &["match_expression"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 pub static BASH_RULES: LangRules = LangRules {
@@ -605,6 +673,9 @@ pub static BASH_RULES: LangRules = LangRules {
     elif_node_type: Some("elif_clause"),
     else_via_alternative: false,
     switch_like_nodes: &["case_statement"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 // Lua's `if_statement` is flat, not nested: `elseif`/`else` are separate node
@@ -656,6 +727,9 @@ pub static LUA_RULES: LangRules = LangRules {
     elif_node_type: Some("elseif_statement"),
     else_via_alternative: false,
     switch_like_nodes: &[],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 // tree-sitter-zig's if_statement wraps its else branch in an `else_clause`
@@ -702,6 +776,9 @@ pub static ZIG_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: false,
     switch_like_nodes: &["switch_expression"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 /// Mirrors the TS `complexity` export in `src/ast-analysis/rules/r.ts`.
@@ -736,6 +813,9 @@ pub static R_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: true,
     switch_like_nodes: &[],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
 };
 
 /// Mirrors the TS `complexityGroovy` export in `src/ast-analysis/rules/b2.ts`.
@@ -784,6 +864,139 @@ pub static GROOVY_RULES: LangRules = LangRules {
     elif_node_type: None,
     else_via_alternative: true,
     switch_like_nodes: &["switch_expression"],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
+};
+
+// tree-sitter-julia wraps EVERY binary operator token (`+`, `-`, `>`, `==`,
+// `&&`, `||`, ...) in one generic `operator` leaf node — `binary_expression`
+// is shared by arithmetic, comparison, AND logical expressions alike, and
+// only the leaf's `.text` distinguishes which operator it actually is
+// (confirmed by parsing `x > 0 && y > 0`). `logical_operators_by_text: true`
+// makes `handle_logical_op` compare `.text` instead of `.kind()` for both
+// the operator-token extraction AND the same-sequence parent check (issue
+// #2312).
+//
+// `elseif_clause`/`else_clause` are genuine, distinctly-typed nodes reached
+// via the SAME `alternative` field (repeated per elseif, terminal `else`) —
+// confirmed by parsing `if a elseif b elseif c else d end`: this is
+// structurally Pattern B (explicit elif node, same as Python/Ruby/PHP/Lua),
+// NOT Solidity's transparent-wrapper shape — no `transparent_wrapper_types`
+// needed here.
+//
+// `do_clause` (`map(xs) do x ... end`) is NOT in `function_nodes`: the JS/
+// Rust extractor (`extractJuliaSymbols`/`JuliaExtractor`) does not treat it
+// as a scope boundary either, so a do-block's body is walked as part of
+// its enclosing function, matching existing extractor/dataflow behavior
+// rather than introducing new scope-detection machinery in this PR.
+//
+// Short-form function definitions (`add(x, y) = x + y`) have LHS
+// `call_expression` under a plain `assignment` node — the SAME node type
+// used for ordinary variable assignment, with no distinct wrapper to key
+// off. Adding `assignment` to `function_nodes` would misclassify every
+// plain assignment statement as a function boundary. This mirrors the
+// existing, accepted limitation of `dataflowJulia`/R's `binary_operator`
+// dataflow config: the extractor calls `compute_all_metrics` directly on
+// the node it already knows is a short-form function (see
+// `handle_assignment` in `extractors/julia.rs`), independent of this
+// generic `function_nodes` set, which is only consulted for NESTED
+// function-boundary detection during a walk already in progress.
+pub static JULIA_RULES: LangRules = LangRules {
+    // `try_statement` itself is NOT a branch/nesting node, only
+    // `catch_clause` is — mirrors every other try/catch language here (JS/
+    // Java/C#/PHP/Ruby): `try` alone doesn't add a decision path.
+    branch_nodes: &[
+        "if_statement",
+        "elseif_clause",
+        "else_clause",
+        "for_statement",
+        "while_statement",
+        "catch_clause",
+        "ternary_expression",
+    ],
+    case_nodes: &[],
+    logical_operators: &["&&", "||"],
+    logical_node_types: &["binary_expression"],
+    optional_chain_type: None,
+    nesting_nodes: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "catch_clause",
+        "ternary_expression",
+    ],
+    function_nodes: &["function_definition"],
+    if_node_type: Some("if_statement"),
+    else_node_type: Some("else_clause"),
+    elif_node_type: Some("elseif_clause"),
+    else_via_alternative: false,
+    switch_like_nodes: &[],
+    logical_operators_by_text: true,
+    transparent_wrapper_types: &[],
+    else_keyword_type: None,
+};
+
+// tree-sitter-solidity's `if_statement` has NO `else_clause` wrapper node and
+// NO `alternative` field (unlike Go/Java's Pattern C) — instead, BOTH the
+// then- and else-branch bodies are reached via the SAME field name (`body`),
+// each wrapped in a generic, single-named-child `statement` supertype-alias
+// node, with the bare `else` keyword as an ordinary sibling token in
+// between. Confirmed by parsing `if (x>0) {..} else if (y>0) {..} else {..}`
+// and inspecting field names: `if_statement[if, (condition) expr, (body)
+// statement, (else) else, (body) statement[if_statement | block_statement]]`.
+// `transparent_wrapper_types`/`else_keyword_type` (Pattern D) detect an
+// else-if / plain-else by walking through the `statement` wrapper and
+// checking whether its preceding sibling is the bare `else` token (issue
+// #2312) — see `is_pattern_d_else_if`/`is_pattern_d_else`.
+//
+// The condition (and other value positions: return values, ternary
+// branches, call arguments) is ALSO wrapped in a generic `expression`
+// node — this breaks `handle_logical_op`'s same-operator-sequence check for
+// a chained `a && b && c` (the inner `binary_expression`'s parent is an
+// `expression` wrapper, not the outer `binary_expression`), independently
+// of the if/else-if bug above. `transparent_wrapper_types` includes
+// `expression` too so `effective_parent` sees through it, restoring correct
+// cognitive counting for chained logical operators.
+//
+// Every operator token (`>`, `&&`, `==`, ...) has its OWN distinct node kind
+// here (unlike Julia) — confirmed by parsing the same snippet — so
+// `logical_operators_by_text` is NOT needed for Solidity.
+//
+// `try_statement` itself is deliberately NOT a branch/nesting node — only
+// each `catch_clause` is, mirroring every other language here (JS/Java/C#/
+// PHP/Ruby): `try` alone doesn't add a decision path, only a catch arm
+// does. Multiple `catch_clause` siblings on one `try` (Solidity commonly
+// has `catch Error(...) {..} catch {..}`) are each counted individually,
+// same as a multi-catch language would be.
+pub static SOLIDITY_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_statement",
+        "while_statement",
+        "for_statement",
+        "catch_clause",
+        "ternary_expression",
+    ],
+    case_nodes: &[],
+    logical_operators: &["&&", "||"],
+    logical_node_types: &["binary_expression"],
+    optional_chain_type: None,
+    nesting_nodes: &[
+        "if_statement",
+        "while_statement",
+        "for_statement",
+        "catch_clause",
+        "ternary_expression",
+    ],
+    function_nodes: &["function_definition", "modifier_definition"],
+    if_node_type: Some("if_statement"),
+    else_node_type: None,
+    elif_node_type: None,
+    else_via_alternative: false,
+    switch_like_nodes: &[],
+    logical_operators_by_text: false,
+    transparent_wrapper_types: &["statement", "expression"],
+    else_keyword_type: Some("else"),
 };
 
 /// Look up complexity rules by language ID (matches `COMPLEXITY_RULES` keys in JS).
@@ -817,6 +1030,8 @@ pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
         "zig" => Some(&ZIG_RULES),
         "r" => Some(&R_RULES),
         "groovy" => Some(&GROOVY_RULES),
+        "julia" => Some(&JULIA_RULES),
+        "solidity" => Some(&SOLIDITY_RULES),
         _ => None,
     }
 }
@@ -827,13 +1042,21 @@ pub fn lang_rules(lang_id: &str) -> Option<&'static LangRules> {
 /// for a function's AST subtree in a single DFS walk.
 ///
 /// This is a faithful port of `computeFunctionComplexity()` from `src/complexity.js`.
-pub fn compute_function_complexity(function_node: &Node, rules: &LangRules) -> ComplexityMetrics {
+/// `source` is only consulted when `rules.logical_operators_by_text` is set
+/// (Julia) — every other language ignores it, same as before this parameter
+/// was added.
+pub fn compute_function_complexity(
+    function_node: &Node,
+    source: &[u8],
+    rules: &LangRules,
+) -> ComplexityMetrics {
     let mut cognitive: u32 = 0;
     let mut cyclomatic: u32 = 1; // McCabe starts at 1
     let mut max_nesting: u32 = 0;
 
     walk(
         function_node,
+        source,
         0,
         true,
         rules,
@@ -846,8 +1069,10 @@ pub fn compute_function_complexity(function_node: &Node, rules: &LangRules) -> C
     ComplexityMetrics::basic(cognitive, cyclomatic, max_nesting)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_children(
     node: &Node,
+    source: &[u8],
     nesting_level: u32,
     is_top_function: bool,
     rules: &LangRules,
@@ -863,6 +1088,7 @@ fn walk_children(
         if let Some(child) = node.child(i) {
             walk(
                 &child,
+                source,
                 nesting_level,
                 is_top_function,
                 rules,
@@ -950,7 +1176,46 @@ fn classify_branch(node: &Node, kind: &str, rules: &LangRules, nesting_level: u3
     }
 }
 
-/// Detect whether an if-node is actually an else-if (Pattern A or C).
+/// Effective parent: skip over consecutive nodes whose kind is in
+/// `rules.transparent_wrapper_types` (e.g. Solidity's `statement`/
+/// `expression` supertype-alias wrapper nodes) to find the nearest
+/// structurally-meaningful ancestor. Degenerates to plain `.parent()` for
+/// every language that leaves `transparent_wrapper_types` empty.
+fn effective_parent<'a>(node: &Node<'a>, rules: &LangRules) -> Option<Node<'a>> {
+    let mut p = node.parent();
+    while let Some(ref candidate) = p {
+        if rules.transparent_wrapper_types.contains(&candidate.kind()) {
+            p = candidate.parent();
+        } else {
+            break;
+        }
+    }
+    p
+}
+
+/// Detect Pattern D else-if: node's immediate parent is a transparent
+/// wrapper (e.g. Solidity's `statement`, reached via the SAME field name —
+/// `body` — for both the then- and else-branch, with no dedicated
+/// `else_clause` node and no `alternative` field) whose preceding sibling is
+/// the bare `else` keyword token. Mirrors Pattern A's role but for grammars
+/// that dropped the wrapping node entirely (issue #2312).
+fn is_pattern_d_else_if(node: &Node, rules: &LangRules) -> bool {
+    if rules.transparent_wrapper_types.is_empty() {
+        return false;
+    }
+    let Some(else_kw) = rules.else_keyword_type else {
+        return false;
+    };
+    let Some(wrapper) = node.parent() else {
+        return false;
+    };
+    if !rules.transparent_wrapper_types.contains(&wrapper.kind()) {
+        return false;
+    }
+    wrapper.prev_sibling().is_some_and(|s| s.kind() == else_kw)
+}
+
+/// Detect whether an if-node is actually an else-if (Pattern A, C, or D).
 fn detect_else_if(node: &Node, kind: &str, rules: &LangRules) -> bool {
     if !rules.if_node_type.map_or(false, |if_t| kind == if_t) {
         return false;
@@ -980,7 +1245,9 @@ fn detect_else_if(node: &Node, kind: &str, rules: &LangRules) -> bool {
             }
         }
     }
-    false
+    // Pattern D (Solidity): if_statement reached via a transparent wrapper
+    // whose preceding sibling is the bare else keyword.
+    is_pattern_d_else_if(node, rules)
 }
 
 /// Detect Pattern C plain else: a non-if block that is the `alternative` of an
@@ -1005,11 +1272,36 @@ fn is_pattern_c_else(node: &Node, kind: &str, rules: &LangRules) -> bool {
     false
 }
 
+/// Detect Pattern D plain else: a non-if block (e.g. `block_statement`) whose
+/// immediate parent is a transparent wrapper preceded by the bare `else`
+/// keyword — the Pattern-D counterpart to `is_pattern_c_else`, for grammars
+/// with no `else_clause` node and no `alternative` field (Solidity).
+fn is_pattern_d_else(node: &Node, kind: &str, rules: &LangRules) -> bool {
+    if rules.if_node_type.map_or(false, |if_t| kind == if_t) {
+        return false; // if_statement is handled by detect_else_if instead
+    }
+    is_pattern_d_else_if(node, rules)
+}
+
+/// Extract a logical/binary operator token's comparison key: `.text` when
+/// `by_text` is set (grammars where every operator shares one generic node
+/// kind, e.g. tree-sitter-julia's `operator`), otherwise `.kind()` (every
+/// other grammar, where the node kind already equals the operator's literal
+/// text — behavior is unchanged).
+fn operator_key<'a>(op_node: &Node, source: &'a [u8], by_text: bool) -> &'a str {
+    if by_text {
+        op_node.utf8_text(source).unwrap_or("")
+    } else {
+        op_node.kind()
+    }
+}
+
 /// Handle logical operator nodes: returns true if the node was a logical op
 /// (caller should walk children and return).
 fn handle_logical_op(
     node: &Node,
     kind: &str,
+    source: &[u8],
     rules: &LangRules,
     cognitive: &mut u32,
     cyclomatic: &mut u32,
@@ -1020,17 +1312,22 @@ fn handle_logical_op(
     let Some(op_node) = node.child(1) else {
         return false;
     };
-    let op = op_node.kind();
+    let op = operator_key(&op_node, source, rules.logical_operators_by_text);
     if !rules.is_logical_op(op) {
         return false;
     }
 
     *cyclomatic += 1;
 
-    // Cognitive: +1 only when operator changes from the previous sibling sequence
-    let same_sequence = node.parent().map_or(false, |parent| {
+    // Cognitive: +1 only when operator changes from the previous sibling
+    // sequence. `effective_parent` walks through transparent wrapper nodes
+    // (e.g. Solidity's `expression`) that would otherwise hide a
+    // same-operator chain's real parent binary_expression (issue #2312).
+    let same_sequence = effective_parent(node, rules).map_or(false, |parent| {
         rules.logical_node_types.contains(&parent.kind())
-            && parent.child(1).map_or(false, |pop| pop.kind() == op)
+            && parent.child(1).map_or(false, |pop| {
+                operator_key(&pop, source, rules.logical_operators_by_text) == op
+            })
     });
     if !same_sequence {
         *cognitive += 1;
@@ -1040,8 +1337,10 @@ fn handle_logical_op(
 
 // ─── walk (complexity-only DFS) ─────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn walk(
     node: &Node,
+    source: &[u8],
     nesting_level: u32,
     is_top_function: bool,
     rules: &LangRules,
@@ -1060,9 +1359,10 @@ fn walk(
     }
 
     // Logical operators
-    if handle_logical_op(node, kind, rules, cognitive, cyclomatic) {
+    if handle_logical_op(node, kind, source, rules, cognitive, cyclomatic) {
         walk_children(
             node,
+            source,
             nesting_level,
             false,
             rules,
@@ -1092,6 +1392,7 @@ fn walk(
         *cyclomatic += cyclomatic_delta;
         walk_children(
             node,
+            source,
             nesting_level + nesting_delta,
             false,
             rules,
@@ -1103,11 +1404,12 @@ fn walk(
         return;
     }
 
-    // Pattern C plain else (Go/Java)
-    if is_pattern_c_else(node, kind, rules) {
+    // Pattern C plain else (Go/Java) / Pattern D plain else (Solidity)
+    if is_pattern_c_else(node, kind, rules) || is_pattern_d_else(node, kind, rules) {
         *cognitive += 1;
         walk_children(
             node,
+            source,
             nesting_level,
             false,
             rules,
@@ -1128,6 +1430,7 @@ fn walk(
     if !is_top_function && rules.is_function(kind) {
         walk_children(
             node,
+            source,
             nesting_level + 1,
             false,
             rules,
@@ -1141,6 +1444,7 @@ fn walk(
 
     walk_children(
         node,
+        source,
         nesting_level,
         false,
         rules,
@@ -1159,6 +1463,14 @@ pub struct HalsteadRules {
     pub operand_leaf_types: &'static [&'static str],
     pub compound_operators: &'static [&'static str],
     pub skip_types: &'static [&'static str],
+    /// Compare an operator LEAF node by its `.text` instead of its `.kind()`
+    /// when classifying Halstead operators. Needed for grammars where every
+    /// operator token shares one generic leaf kind (tree-sitter-julia's
+    /// `operator`) — matching by `.kind()` alone would collapse every
+    /// distinct operator (+, -, >, &&, ...) into a single vocabulary entry,
+    /// corrupting n1 (distinct operator count). False for every other
+    /// language, where behavior is unchanged.
+    pub operator_leaf_types_by_text: bool,
 }
 
 pub static JS_TS_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1262,6 +1574,7 @@ pub static JS_TS_HALSTEAD: HalsteadRules = HalsteadRules {
         "return_type",
         "implements_clause",
     ],
+    operator_leaf_types_by_text: false,
 };
 
 pub static PYTHON_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1283,6 +1596,7 @@ pub static PYTHON_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call", "subscript", "attribute"],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 pub static GO_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1368,6 +1682,7 @@ pub static GO_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call_expression", "index_expression", "selector_expression"],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 pub static RUST_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1393,6 +1708,7 @@ pub static RUST_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call_expression", "index_expression", "field_expression"],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 pub static JAVA_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1478,6 +1794,7 @@ pub static JAVA_HALSTEAD: HalsteadRules = HalsteadRules {
         "object_creation_expression",
     ],
     skip_types: &["type_arguments", "type_parameters"],
+    operator_leaf_types_by_text: false,
 };
 
 pub static CSHARP_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1508,6 +1825,7 @@ pub static CSHARP_HALSTEAD: HalsteadRules = HalsteadRules {
         "object_creation_expression",
     ],
     skip_types: &["type_argument_list", "type_parameter_list"],
+    operator_leaf_types_by_text: false,
 };
 
 pub static RUBY_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1536,6 +1854,7 @@ pub static RUBY_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call", "element_reference"],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 pub static PHP_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1633,6 +1952,7 @@ pub static PHP_HALSTEAD: HalsteadRules = HalsteadRules {
         "object_creation_expression",
     ],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 pub static C_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1655,6 +1975,7 @@ pub static C_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call_expression", "subscript_expression"],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 pub static CPP_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1680,6 +2001,7 @@ pub static CPP_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call_expression", "subscript_expression", "new_expression"],
     skip_types: &["template_argument_list", "template_parameter_list"],
+    operator_leaf_types_by_text: false,
 };
 
 // Extends C_HALSTEAD with ObjC's `@try`/`@catch`/`@finally`/`@throw`/
@@ -1766,6 +2088,7 @@ pub static OBJC_HALSTEAD: HalsteadRules = HalsteadRules {
         "selector_expression",
     ],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 pub static KOTLIN_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1793,6 +2116,7 @@ pub static KOTLIN_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call_expression", "indexing_expression"],
     skip_types: &["type_arguments", "type_parameters"],
+    operator_leaf_types_by_text: false,
 };
 
 pub static SWIFT_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1819,6 +2143,7 @@ pub static SWIFT_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call_expression", "subscript_expression"],
     skip_types: &["type_arguments", "type_parameters"],
+    operator_leaf_types_by_text: false,
 };
 
 pub static SCALA_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1844,6 +2169,7 @@ pub static SCALA_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call_expression", "field_expression"],
     skip_types: &["type_arguments", "type_parameters"],
+    operator_leaf_types_by_text: false,
 };
 
 pub static BASH_HALSTEAD: HalsteadRules = HalsteadRules {
@@ -1865,6 +2191,7 @@ pub static BASH_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["command", "command_substitution", "pipeline"],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 // Member/method access (`dot_index_expression` `.`, `method_index_expression`
@@ -1898,6 +2225,7 @@ pub static LUA_HALSTEAD: HalsteadRules = HalsteadRules {
         "method_index_expression",
     ],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 // Zig has no `++`/`--` (increments are `x += 1`) and no `case` keyword in
@@ -1986,6 +2314,7 @@ pub static ZIG_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call_expression", "field_expression", "index_expression"],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 /// Mirrors the TS `halstead` export in `src/ast-analysis/rules/r.ts`.
@@ -2025,6 +2354,7 @@ pub static R_HALSTEAD: HalsteadRules = HalsteadRules {
     ],
     compound_operators: &["call", "subset", "subset2"],
     skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 /// Mirrors the TS `halsteadGroovy` export in `src/ast-analysis/rules/b2.ts`.
@@ -2114,6 +2444,83 @@ pub static GROOVY_HALSTEAD: HalsteadRules = HalsteadRules {
         "object_creation_expression",
     ],
     skip_types: &["type_arguments", "type_parameters"],
+    operator_leaf_types_by_text: false,
+};
+
+// See JULIA_RULES for the generic-`operator`-leaf-kind rationale.
+// `operator_leaf_types_by_text: true` makes leaf classification compare
+// `.text` instead of `.kind()` — without it, EVERY distinct Julia operator
+// (+, -, >, &&, ...) would collapse onto one vocabulary entry keyed by the
+// literal string `"operator"`, corrupting n1 (issue #2312). Keyword tokens
+// (`if`, `end`, `return`, ...) already have their own distinct kind equal to
+// their text, so by-text comparison is a no-op for them.
+//
+// `content` (a string literal's body, confirmed by parsing `s = "hello"`) is
+// a genuine leaf — unlike Solidity, Julia's grammar DOES expose string body
+// text as its own node, so no precision loss here.
+pub static JULIA_HALSTEAD: HalsteadRules = HalsteadRules {
+    operator_leaf_types: &[
+        "+", "-", "*", "/", "÷", "%", "^", "\\", "=", "+=", "-=", "*=", "/=", "%=", "^=", "&=",
+        "|=", "<<=", ">>=", "==", "!=", "<", "<=", ">", ">=", "===", "!==", "&&", "||", "!", "&",
+        "|", "~", "<<", ">>", "<:", ">:", "...", "->", "::", ".", ",", ";", ":", "?", "@", "if",
+        "elseif", "else", "for", "while", "try", "catch", "finally", "return", "break", "continue",
+        "end", "function", "do", "local", "global", "const", "struct", "module", "import", "using",
+        "in", "where", "macro",
+    ],
+    operand_leaf_types: &[
+        "identifier",
+        "integer_literal",
+        "float_literal",
+        "content",
+        "true",
+        "false",
+    ],
+    compound_operators: &[
+        "call_expression",
+        "macrocall_expression",
+        "field_expression",
+    ],
+    skip_types: &[],
+    operator_leaf_types_by_text: true,
+};
+
+// tree-sitter-solidity gives every operator token its OWN distinct node kind
+// (confirmed by parsing `a && b && c`: the `&&` leaf's kind is literally
+// `"&&"`, not a generic wrapper) — `operator_leaf_types_by_text` stays false;
+// Solidity does not have Julia's Bug-1 problem.
+//
+// Plain `string_literal`/`string` nodes are deliberately NOT in
+// `operand_leaf_types`: confirmed by parsing `s = "hello world"` and
+// inspecting byte ranges, the grammar exposes ONLY the two quote-character
+// tokens as children — the string body itself (`hello world`) is unnamed
+// text with no node of its own, so there is no leaf to key an operand on.
+// This is a minor, documented precision loss (string literals under-counted
+// as Halstead operands), not a bug this PR introduces — `hex_string_literal`
+// / `unicode_string_literal` ARE proper leaves (no exposed sub-structure in
+// node-types.json) and are counted normally.
+pub static SOLIDITY_HALSTEAD: HalsteadRules = HalsteadRules {
+    operator_leaf_types: &[
+        "+", "-", "*", "/", "%", "**", "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=",
+        ">>=", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "!", "&", "|", "^", "~", "<<", ">>",
+        "++", "--", "if", "else", "while", "for", "try", "catch", "return", "revert", "break",
+        "continue", "delete", "new", "emit", "function", "modifier", ".", ",", ";", ":", "?", "=>",
+    ],
+    operand_leaf_types: &[
+        "identifier",
+        "number_literal",
+        "true",
+        "false",
+        "hex_string_literal",
+        "unicode_string_literal",
+    ],
+    compound_operators: &[
+        "call_expression",
+        "function_call",
+        "member_expression",
+        "new_expression",
+    ],
+    skip_types: &[],
+    operator_leaf_types_by_text: false,
 };
 
 /// Look up Halstead rules by language ID.
@@ -2138,6 +2545,8 @@ pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
         "zig" => Some(&ZIG_HALSTEAD),
         "r" => Some(&R_HALSTEAD),
         "groovy" => Some(&GROOVY_HALSTEAD),
+        "julia" => Some(&JULIA_HALSTEAD),
+        "solidity" => Some(&SOLIDITY_HALSTEAD),
         _ => None,
     }
 }
@@ -2153,7 +2562,7 @@ pub fn halstead_rules(lang_id: &str) -> Option<&'static HalsteadRules> {
 /// where [`is_block_comment_lang`] returns true.
 pub fn line_comment_prefixes(lang_id: &str) -> &'static [&'static str] {
     match lang_id {
-        "python" | "ruby" | "r" => &["#"],
+        "python" | "ruby" | "r" | "julia" => &["#"],
         "php" => &["//", "#"],
         "bash" => &["#"],
         "lua" => &["--"],
@@ -2162,8 +2571,20 @@ pub fn line_comment_prefixes(lang_id: &str) -> &'static [&'static str] {
 }
 
 /// Languages using `/** ... */`-style block comments (issue #2058, #2287).
+///
+/// Julia is excluded: its block-comment delimiters are `#=`/`=#`, not `/*`/
+/// `*/` — the shared `scan_block_comment_depth` below only recognizes the
+/// latter. Treating Julia as a block-comment language would therefore never
+/// actually close a block (no `*/` ever appears), leaving every subsequent
+/// line wrongly marked as a comment continuation. Excluding it here instead
+/// means `#=...=#` block comments are undercounted as SLOC rather than
+/// comment lines — a documented, minor precision loss (issue #2312), not a
+/// silent miscount of unrelated code.
 pub fn is_block_comment_lang(lang_id: &str) -> bool {
-    !matches!(lang_id, "python" | "ruby" | "r" | "bash" | "lua" | "zig")
+    !matches!(
+        lang_id,
+        "python" | "ruby" | "r" | "bash" | "lua" | "zig" | "julia"
+    )
 }
 
 /// Languages whose block comments can nest (`/* outer /* inner */ still
@@ -2414,6 +2835,14 @@ fn walk_all_children(
 }
 
 /// Classify a single node for Halstead operator/operand counting.
+///
+/// When `hr.operator_leaf_types_by_text` is set (Julia), an operator LEAF is
+/// matched — and bucketed — by its `.text` rather than its `.kind()`: every
+/// distinct operator (`+`, `-`, `>`, `&&`, ...) shares tree-sitter-julia's
+/// one generic `operator` leaf kind, so matching/bucketing by `.kind()` alone
+/// would collapse them all into a single vocabulary entry keyed `"operator"`,
+/// corrupting n1 (distinct operator count). False for every other language,
+/// where `.kind()` already equals the operator's literal text.
 fn classify_halstead(
     node: &Node,
     kind: &str,
@@ -2428,8 +2857,9 @@ fn classify_halstead(
     }
     // Leaf nodes: classify as operator or operand
     if node.child_count() == 0 {
-        if hr.operator_leaf_types.contains(&kind) {
-            *operators.entry(kind.to_string()).or_insert(0) += 1;
+        let op_key = operator_key(node, source, hr.operator_leaf_types_by_text);
+        if hr.operator_leaf_types.contains(&op_key) {
+            *operators.entry(op_key.to_string()).or_insert(0) += 1;
         } else if hr.operand_leaf_types.contains(&kind) {
             let start = node.start_byte();
             let end = node.end_byte().min(source.len());
@@ -2473,7 +2903,7 @@ fn walk_all(
     }
 
     // Logical operators
-    if handle_logical_op(node, kind, c_rules, cognitive, cyclomatic) {
+    if handle_logical_op(node, kind, source, c_rules, cognitive, cyclomatic) {
         walk_all_children(
             node,
             source,
@@ -2524,8 +2954,8 @@ fn walk_all(
         return;
     }
 
-    // Pattern C plain else (Go/Java)
-    if is_pattern_c_else(node, kind, c_rules) {
+    // Pattern C plain else (Go/Java) / Pattern D plain else (Solidity)
+    if is_pattern_c_else(node, kind, c_rules) || is_pattern_d_else(node, kind, c_rules) {
         *cognitive += 1;
         walk_all_children(
             node,
@@ -2702,7 +3132,7 @@ mod tests {
         let root = tree.root_node();
         let func =
             find_first_function(&root, &JS_TS_RULES).expect("no function found in test code");
-        compute_function_complexity(&func, &JS_TS_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &JS_TS_RULES)
     }
 
     fn find_first_function<'a>(node: &Node<'a>, rules: &LangRules) -> Option<Node<'a>> {
@@ -2868,7 +3298,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &PYTHON_RULES).expect("no function found");
-        compute_function_complexity(&func, &PYTHON_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &PYTHON_RULES)
     }
 
     #[test]
@@ -2903,7 +3333,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &GO_RULES).expect("no function found");
-        compute_function_complexity(&func, &GO_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &GO_RULES)
     }
 
     #[test]
@@ -2940,7 +3370,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &LUA_RULES).expect("no function found");
-        compute_function_complexity(&func, &LUA_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &LUA_RULES)
     }
 
     #[test]
@@ -3040,7 +3470,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &C_RULES).expect("no function found");
-        compute_function_complexity(&func, &C_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &C_RULES)
     }
 
     fn compute_cpp(code: &str) -> ComplexityMetrics {
@@ -3051,7 +3481,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &CPP_RULES).expect("no function found");
-        compute_function_complexity(&func, &CPP_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &CPP_RULES)
     }
 
     #[test]
@@ -3164,7 +3594,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &CPP_RULES).expect("no function found");
-        compute_function_complexity(&func, &CPP_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &CPP_RULES)
     }
 
     #[test]
@@ -3203,7 +3633,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &OBJC_RULES).expect("no function found");
-        compute_function_complexity(&func, &OBJC_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &OBJC_RULES)
     }
 
     #[test]
@@ -3277,7 +3707,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &ZIG_RULES).expect("no function found");
-        compute_function_complexity(&func, &ZIG_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &ZIG_RULES)
     }
 
     #[test]
@@ -3339,7 +3769,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &R_RULES).expect("no function found");
-        compute_function_complexity(&func, &R_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &R_RULES)
     }
 
     #[test]
@@ -3385,7 +3815,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &GROOVY_RULES).expect("no function found");
-        compute_function_complexity(&func, &GROOVY_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &GROOVY_RULES)
     }
 
     #[test]
@@ -3434,7 +3864,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &KOTLIN_RULES).expect("no function found");
-        compute_function_complexity(&func, &KOTLIN_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &KOTLIN_RULES)
     }
 
     #[test]
@@ -3495,7 +3925,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &SWIFT_RULES).expect("no function found");
-        compute_function_complexity(&func, &SWIFT_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &SWIFT_RULES)
     }
 
     #[test]
@@ -3540,7 +3970,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &SCALA_RULES).expect("no function found");
-        compute_function_complexity(&func, &SCALA_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &SCALA_RULES)
     }
 
     #[test]
@@ -3594,7 +4024,7 @@ mod tests {
         let tree = parser.parse(code.as_bytes(), None).unwrap();
         let root = tree.root_node();
         let func = find_first_function(&root, &BASH_RULES).expect("no function found");
-        compute_function_complexity(&func, &BASH_RULES)
+        compute_function_complexity(&func, code.as_bytes(), &BASH_RULES)
     }
 
     #[test]
@@ -3628,5 +4058,199 @@ mod tests {
         // both forms and inspecting the S-expression.
         let m = compute_bash("f() {\n  if [[ \"$1\" && \"$2\" ]]; then\n    echo yes\n  fi\n}");
         assert_eq!(m.cyclomatic, 3);
+    }
+
+    // ─── Julia tests (issue #2312) ────────────────────────────────────────
+
+    fn compute_julia(code: &str) -> ComplexityMetrics {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_julia::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &JULIA_RULES).expect("no function found");
+        compute_function_complexity(&func, code.as_bytes(), &JULIA_RULES)
+    }
+
+    #[test]
+    fn julia_if_elseif_else() {
+        // elseif_clause/else_clause are genuine, distinctly-typed nodes
+        // reached via the repeated `alternative` field (Pattern B, like
+        // Python's elif/else) — no transparent-wrapper involvement here.
+        let m = compute_julia(
+            "function classify(x)\n    if x > 0\n        return 1\n    elseif x < 0\n        return -1\n    else\n        return 0\n    end\nend",
+        );
+        // if: +1 cog, +1 cyc; elseif: +1 cog, +1 cyc; else: +1 cog
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn julia_logical_operators_same_sequence() {
+        // Regression guard for issue #2312 Bug 1: every Julia binary operator
+        // (+, -, >, ==, &&, ||, ...) shares tree-sitter-julia's one generic
+        // `operator` leaf kind — without `logical_operators_by_text: true`,
+        // `&&`/`||` would never be recognized as logical operators at all
+        // (is_logical_op("operator") never matches "&&"/"||"), silently
+        // undercounting cyclomatic/cognitive for every Julia function using
+        // them, not merely mis-adjusting the same-sequence check.
+        let m = compute_julia(
+            "function check(a, b, c)\n    if a && b && c\n        return 1\n    end\nend",
+        );
+        // if: +1 cog, +1 cyc; first &&: +1 cog, +1 cyc; second && (same
+        // operator sequence): +0 cog, +1 cyc
+        assert_eq!(m.cognitive, 2);
+        assert_eq!(m.cyclomatic, 4);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn julia_logical_operators_mixed() {
+        let m = compute_julia(
+            "function check(a, b, c)\n    if a && b || c\n        return 1\n    end\nend",
+        );
+        // if: +1 cog, +1 cyc; && nested: +1 cog, +1 cyc; || top: +1 cog, +1 cyc
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 4);
+    }
+
+    #[test]
+    fn julia_while_loop() {
+        let m = compute_julia(
+            "function s(n)\n    total = 0\n    i = 0\n    while i < n\n        total += i\n        i += 1\n    end\n    return total\nend",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn julia_try_catch() {
+        let m = compute_julia(
+            "function risky()\n    try\n        return 1\n    catch e\n        return -1\n    end\nend",
+        );
+        assert_eq!(m.cognitive, 1);
+        assert_eq!(m.cyclomatic, 2);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn julia_halstead_operator_vocabulary_is_not_collapsed() {
+        // Regression guard for issue #2312 Bug 1's Halstead half: without
+        // `operator_leaf_types_by_text`, every distinct operator below would
+        // collapse onto a single vocabulary entry keyed by the literal
+        // string "operator" (n1 == 1), no matter how many distinct operators
+        // actually appear.
+        let code = "function f(a, b, c)\n    return a + b - c * 2\nend";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_julia::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &JULIA_RULES).expect("no function found");
+        let metrics = compute_all_metrics(&func, code.as_bytes(), "julia").expect("julia rules");
+        let halstead = metrics.halstead.expect("halstead metrics present");
+        // Distinct operators here: +, -, *, return (at least 4) — nowhere
+        // near collapsing to n1 == 1.
+        assert!(
+            halstead.n1 >= 4,
+            "expected at least 4 distinct operators, got n1={}",
+            halstead.n1
+        );
+    }
+
+    // ─── Solidity tests (issue #2312) ───────────────────────────────────────
+
+    fn compute_solidity(code: &str) -> ComplexityMetrics {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_solidity::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let func = find_first_function(&root, &SOLIDITY_RULES).expect("no function found");
+        compute_function_complexity(&func, code.as_bytes(), &SOLIDITY_RULES)
+    }
+
+    #[test]
+    fn solidity_if_else_no_wrapper_issue() {
+        let m = compute_solidity(
+            "contract C { function f(int x) public { if (x > 0) { x = 1; } else { x = 2; } } }",
+        );
+        // if: +1 cog, +1 cyc; plain else (Pattern D): +1 cog
+        assert_eq!(m.cognitive, 2);
+        assert_eq!(m.cyclomatic, 2);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn solidity_if_elseif_else_does_not_double_count_nesting() {
+        // Regression guard for issue #2312 Bug 2: Solidity's grammar has NO
+        // `else_clause` node and NO `alternative` field — both the then- and
+        // else-branch bodies are wrapped in a generic, single-child
+        // `statement` node reached via the SAME field (`body`), with the
+        // nested if_statement for an else-if a GRANDCHILD of the outer
+        // if_statement (through that wrapper), not a direct child. Without
+        // Pattern D (`transparent_wrapper_types` + `else_keyword_type`), the
+        // nested if_statement's parent is seen as the wrapper, never
+        // recognized as an else-if, and cognitive complexity is inflated by
+        // scoring it as a fresh nested branch (cognitive 1+nesting instead
+        // of the flat +1 every other else-if pattern here gets).
+        let m = compute_solidity(
+            "contract C { function f(int x, int y) public { if (x > 0) { x = 1; } else if (y > 0) { x = 2; } else { x = 3; } } }",
+        );
+        // if: +1 cog, +1 cyc; else-if (Pattern D, flat): +1 cog, +1 cyc;
+        // plain else (Pattern D): +1 cog. Matches the canonical
+        // if/elseif/else numbers every other language section in this file
+        // asserts (e.g. `zig_if_elseif_else`, `r_if_elseif_else`).
+        assert_eq!(m.cognitive, 3);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn solidity_logical_operators_same_sequence_through_expression_wrapper() {
+        // Regression guard for the `expression`-wrapper variant of the same
+        // bug: the condition (and every other value position) is ALSO
+        // wrapped in a generic `expression` node, including a chained
+        // logical operator's own operand positions — so the inner
+        // `binary_expression`'s real parent (the outer binary_expression) is
+        // hidden behind an `expression` wrapper. Without `effective_parent`
+        // unwrapping it, `a && b && c` would score as two independent
+        // sequences (cognitive 3) instead of recognizing the repeated `&&`
+        // as one sequence (cognitive 2), even though each operator has its
+        // own distinct node kind (no by-text fix needed here).
+        let m = compute_solidity(
+            "contract C { function f(bool a, bool b, bool c) public { if (a && b && c) { a = false; } } }",
+        );
+        // if: +1 cog, +1 cyc; outer &&: +1 cog, +1 cyc; inner && (same
+        // sequence through the `expression` wrapper): +0 cog, +1 cyc
+        assert_eq!(m.cognitive, 2);
+        assert_eq!(m.cyclomatic, 4);
+    }
+
+    #[test]
+    fn solidity_while_for_loops() {
+        let m = compute_solidity(
+            "contract C { function f(int x) public { while (x > 0) { x -= 1; } for (uint i = 0; i < 10; i++) { x += 1; } } }",
+        );
+        assert_eq!(m.cognitive, 2);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
+    }
+
+    #[test]
+    fn solidity_try_catch() {
+        let m = compute_solidity(
+            "contract C { function f() public { try other.doThing() returns (uint x) { y = x; } catch Error(string memory reason) { y = 0; } catch { y = 1; } } }",
+        );
+        // Two independent catch_clause arms on the same try, each its own
+        // branch — mirrors how a multi-catch language would be counted.
+        assert_eq!(m.cognitive, 2);
+        assert_eq!(m.cyclomatic, 3);
+        assert_eq!(m.max_nesting, 1);
     }
 }

@@ -1,4 +1,4 @@
-import type { DataflowRulesConfig } from '../../types.js';
+import type { ComplexityRules, DataflowRulesConfig, HalsteadRules } from '../../types.js';
 import { makeDataflowRules } from '../shared.js';
 
 // ─── Zig ──────────────────────────────────────────────────────────────────────
@@ -63,3 +63,153 @@ export const dataflowSolidity: DataflowRulesConfig = makeDataflowRules({
   memberObjectField: 'object',
   memberPropertyField: 'property',
 });
+
+// tree-sitter-solidity's `if_statement` has NO `else_clause` wrapper node and
+// NO `alternative` field (unlike Go/Java's Pattern C) — instead, BOTH the
+// then- and else-branch bodies are reached via the SAME field name (`body`),
+// each wrapped in a generic, single-named-child `statement` supertype-alias
+// node, with the bare `else` keyword as an ordinary sibling token in
+// between. Confirmed by parsing `if (x>0) {..} else if (y>0) {..} else {..}`
+// and inspecting field names: `if_statement[if, (condition) expr, (body)
+// statement, (else) else, (body) statement[if_statement | block_statement]]`.
+// `transparentWrapperTypes`/`elseKeywordType` (Pattern D) detect an else-if
+// / plain-else by walking through the `statement` wrapper and checking
+// whether its preceding sibling is the bare `else` token (issue #2312) —
+// see `isPatternDElseIf` in complexity-visitor.ts / features/complexity.ts.
+//
+// The condition (and other value positions: return values, ternary
+// branches, call arguments) is ALSO wrapped in a generic `expression`
+// node — this breaks `classifyLogicalOp`'s same-operator-sequence check for
+// a chained `a && b && c` (the inner `binary_expression`'s parent is an
+// `expression` wrapper, not the outer `binary_expression`), independently
+// of the if/else-if bug above. `transparentWrapperTypes` includes
+// `expression` too so `effectiveParent` sees through it, restoring correct
+// cognitive counting for chained logical operators.
+//
+// Every operator token (`>`, `&&`, `==`, ...) has its OWN distinct node type
+// here (unlike Julia) — confirmed by parsing the same snippet — so
+// `logicalOperatorsByText` is NOT needed for Solidity.
+//
+// `try_statement` itself is deliberately NOT a branch/nesting node — only
+// each `catch_clause` is, mirroring every other language here (JS/Java/C#/
+// PHP/Ruby): `try` alone doesn't add a decision path, only a catch arm
+// does. Multiple `catch_clause` siblings on one `try` (Solidity commonly
+// has `catch Error(...) {..} catch {..}`) are each counted individually,
+// same as a multi-catch language would be.
+export const complexitySolidity: ComplexityRules = {
+  branchNodes: new Set([
+    'if_statement',
+    'while_statement',
+    'for_statement',
+    'catch_clause',
+    'ternary_expression',
+  ]),
+  caseNodes: new Set([]),
+  logicalOperators: new Set(['&&', '||']),
+  logicalNodeTypes: new Set(['binary_expression']),
+  optionalChainType: null,
+  nestingNodes: new Set([
+    'if_statement',
+    'while_statement',
+    'for_statement',
+    'catch_clause',
+    'ternary_expression',
+  ]),
+  functionNodes: new Set(['function_definition', 'modifier_definition']),
+  ifNodeType: 'if_statement',
+  elseNodeType: null,
+  elifNodeType: null,
+  elseViaAlternative: false,
+  switchLikeNodes: new Set([]),
+  transparentWrapperTypes: new Set(['statement', 'expression']),
+  elseKeywordType: 'else',
+};
+
+// tree-sitter-solidity gives every operator token its OWN distinct node type
+// (confirmed by parsing `a && b && c`: the `&&` leaf's type is literally
+// `"&&"`, not a generic wrapper) — `operatorLeafTypesByText` stays unset;
+// Solidity does not have Julia's Bug-1 problem.
+//
+// Plain `string_literal`/`string` nodes are deliberately NOT in
+// `operandLeafTypes`: confirmed by parsing `s = "hello world"` and
+// inspecting byte ranges, the grammar exposes ONLY the two quote-character
+// tokens as children — the string body itself (`hello world`) is unnamed
+// text with no node of its own, so there is no leaf to key an operand on.
+// This is a minor, documented precision loss (string literals under-counted
+// as Halstead operands), not a bug this PR introduces — `hex_string_literal`
+// / `unicode_string_literal` ARE proper leaves (no exposed sub-structure)
+// and are counted normally.
+export const halsteadSolidity: HalsteadRules = {
+  operatorLeafTypes: new Set([
+    '+',
+    '-',
+    '*',
+    '/',
+    '%',
+    '**',
+    '=',
+    '+=',
+    '-=',
+    '*=',
+    '/=',
+    '%=',
+    '&=',
+    '|=',
+    '^=',
+    '<<=',
+    '>>=',
+    '==',
+    '!=',
+    '<',
+    '<=',
+    '>',
+    '>=',
+    '&&',
+    '||',
+    '!',
+    '&',
+    '|',
+    '^',
+    '~',
+    '<<',
+    '>>',
+    '++',
+    '--',
+    'if',
+    'else',
+    'while',
+    'for',
+    'try',
+    'catch',
+    'return',
+    'revert',
+    'break',
+    'continue',
+    'delete',
+    'new',
+    'emit',
+    'function',
+    'modifier',
+    '.',
+    ',',
+    ';',
+    ':',
+    '?',
+    '=>',
+  ]),
+  operandLeafTypes: new Set([
+    'identifier',
+    'number_literal',
+    'true',
+    'false',
+    'hex_string_literal',
+    'unicode_string_literal',
+  ]),
+  compoundOperators: new Set([
+    'call_expression',
+    'function_call',
+    'member_expression',
+    'new_expression',
+  ]),
+  skipTypes: new Set([]),
+};
