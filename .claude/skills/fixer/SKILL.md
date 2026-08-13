@@ -9,7 +9,7 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Monitor, Agent
 
 Work the lowest-numbered open issues in **this repository only** from open issue to merged PR, one at a time, in batches of `count` (default 10). Each issue gets its own branch cut from a freshly fetched `origin/main`, its own PR, its own review-convergence loop, and its own merge. Any PR that cannot be brought to a mergeable state inline is **parked** so the batch keeps moving, and Phase: Drain Parked PRs drains all parked PRs with `/sweep` and `/resolve` until every one is merged or provably blocked.
 
-**The objective is the whole qualifying backlog, not one arbitrary batch.** Once a batch's issues are all merged/parked/abandoned and Phase: Drain Parked PRs has run, Phase: Continue the Batch Loop, or Proceed to Drain checks whether more open issues by `AUTHOR` still qualify. If they do, the next batch starts automatically. Pass `--once` to process a single batch and stop instead, regardless of what remains.
+**The objective is the whole qualifying backlog, not one arbitrary batch.** Once a batch's issues are all merged/parked/abandoned/self-gated and Phase: Drain Parked PRs has run, Phase: Continue the Batch Loop, or Proceed to Drain checks whether more open issues by `AUTHOR` still qualify. If they do, the next batch starts automatically. Pass `--once` to process a single batch and stop instead, regardless of what remains.
 
 **Repo scope.** /fixer only ever acts on the repo it is invoked in (detected dynamically in Phase 0 — on this checkout, `optave/ops-codegraph-tool`). It never searches, opens issues on, or opens PRs against any other repository, even when this repo currently has nothing to do. **An empty queue is a successful outcome, not a failure**: if there is nothing to do, Phase 1 reports that and stops — it does not look elsewhere, does not lower the `--author`/`blocked`-label bar to manufacture a queue, and does not invent unrelated work (stale files, refactors, drive-by fixes) to fill a batch.
 
@@ -112,6 +112,15 @@ echo "fixer: operating on $(cat .codegraph/fixer/repo)"
 ```
 
 **This is the only repo /fixer touches for the rest of this run.** Every `gh` command in every phase below targets `$(cat .codegraph/fixer/repo)` exclusively. Do not `cd` into another repo, do not pass `--repo` with a different slug, and do not fall back to a different repository's issue queue for any reason — including an empty queue in Phase 1. Hardcoding the slug instead of reading it from this file is exactly the bug this skill avoids (see issue #2164 — the `sweep` skill hardcoded `optave/codegraph` while the real repo is `optave/ops-codegraph-tool` — for what that looks like when it goes wrong).
+
+Phase 1's queue filter and Phase 3's batch-completion check both exclude issues carrying a `blocked` label — but that exclusion is a silent no-op in any repo where the label itself was never created (issue #2324: it never existed here, so every run to date queued self-gated issues right back in). Create it once, tolerantly, so those checks have something to actually filter on:
+
+```bash
+# 2>/dev/null || true: "already exists" is the expected steady state after the first run
+gh label create blocked --repo "$(cat .codegraph/fixer/repo)" \
+  --description "Excluded from /fixer's queue until removed" --color "d73a4a" > /dev/null 2>&1 || true
+echo "fixer: 'blocked' label present (created if missing)"
+```
 
 Detect the package manager once and persist the commands (Pattern 6 — never assume `npm`):
 
@@ -262,12 +271,12 @@ Emit progress at the top of every iteration so a long batch is never silent (Pat
 ```bash
 mkdir -p .codegraph/fixer
 TOTAL=$(jq 'length' .codegraph/fixer/queue.json)
-DONE=$(jq '[.issues[] | select(.status=="merged" or .status=="parked" or .status=="abandoned")] | length' .codegraph/fixer/state.json)
+DONE=$(jq '[.issues[] | select(.status=="merged" or .status=="parked" or .status=="abandoned" or .status=="self-gated")] | length' .codegraph/fixer/state.json)
 echo "fixer: progress $DONE/$TOTAL issues resolved"
 jq -r '.[] | "  #\(.issue)  \(.title)"' .codegraph/fixer/queue.json | head -"$TOTAL"
 ```
 
-For each issue `ISSUE` in the queue whose recorded status is not `merged`, `parked`, or `abandoned`, **dispatch one fresh sub-agent to run steps 2a–2g for that issue alone**, then validate its result before advancing (see "Dispatching each issue to a sub-agent" below).
+For each issue `ISSUE` in the queue whose recorded status is not `merged`, `parked`, `abandoned`, or `self-gated`, **dispatch one fresh sub-agent to run steps 2a–2g for that issue alone**, then validate its result before advancing (see "Dispatching each issue to a sub-agent" below).
 
 `state.json` and `queue.json` are updated by two separate writes in step 2g (Pattern 1 — bash blocks do not share variables, so the outcome is appended in one `jq`/`mv` and the queue is shifted in another). If a run stops between those two writes, `queue.json[0]` is still the issue that `state.json` already recorded as resolved. Filter it out before ever reading the queue head, so a resumed run never re-branches or re-PRs completed work:
 
@@ -279,7 +288,7 @@ while true; do
   STATUS=$(jq -r --argjson issue "$HEAD_ISSUE" \
     '[.issues[] | select(.issue == $issue)] | if length > 0 then .[0].status else empty end' \
     .codegraph/fixer/state.json)
-  case "$STATUS" in merged | parked | abandoned) ;; *) break ;; esac
+  case "$STATUS" in merged | parked | abandoned | self-gated) ;; *) break ;; esac
   echo "fixer: issue #$HEAD_ISSUE already resolved in state.json ($STATUS) — dropping stale queue head (resume safety)"
 
   # 2g writes state.json's terminal record and parked.txt's append as two separate
@@ -341,7 +350,7 @@ Agent({
     reparse $ARGUMENTS.
 
     Stop as soon as steps 2a-2g reach a terminal outcome for this issue (merged,
-    parked, or abandoned) — do not continue to the next queue entry, that is the
+    parked, abandoned, or self-gated) — do not continue to the next queue entry, that is the
     orchestrating run's job. Return a short summary: the outcome, the PR number
     if one was opened, and anything unusual.
 })
@@ -366,7 +375,7 @@ if [ "$RECORDED" -eq 1 ]; then
 fi
 
 case "$STATUS" in
-  merged|parked|abandoned)
+  merged|parked|abandoned|self-gated)
     echo "fixer: sub-agent recorded issue #$ISSUE as $STATUS"
     ;;
   *)
@@ -616,6 +625,21 @@ gh issue close "$ISSUE" --repo "$REPO" --comment "<why this is already fixed, in
   echo "ERROR: could not close issue #$ISSUE"; exit 1; }
 printf '%s\n' "abandoned" > .codegraph/fixer/outcome
 echo "fixer: issue #$ISSUE abandoned — no PR opened"
+```
+
+Then skip directly to step 2g to record the outcome and advance.
+
+If the issue is explicitly **self-gated** — its own author wrote it to stay open until some future trigger condition (e.g. "only take this on if/when a real caller needs it"), and that condition is still unmet — do not close it and do not invent work just to force a mergeable PR out of it. Re-verifying the same unmet condition every batch forever wastes a queue slot that could go to a real fix (issue #2324). Apply the `blocked` label with a comment naming the specific condition it is waiting on and inviting removal once that condition is met, record status `self-gated`, and move to the next queue entry:
+
+```bash
+mkdir -p .codegraph/fixer
+REPO=$(cat .codegraph/fixer/repo)
+ISSUE=$(jq -r '.[0].issue' .codegraph/fixer/queue.json)
+gh issue edit "$ISSUE" --repo "$REPO" --add-label blocked || { echo "ERROR: could not label issue #$ISSUE as blocked"; exit 1; }
+gh issue comment "$ISSUE" --repo "$REPO" --body "<restate the specific trigger condition this issue is waiting on, and note that removing the 'blocked' label once it's met will let /fixer re-pick it up>" || {
+  echo "ERROR: could not comment on issue #$ISSUE"; exit 1; }
+printf '%s\n' "self-gated" > .codegraph/fixer/outcome
+echo "fixer: issue #$ISSUE self-gated — labeled blocked, left open, no PR opened"
 ```
 
 Then skip directly to step 2g to record the outcome and advance.
@@ -1083,7 +1107,7 @@ rm -f .codegraph/fixer/post-merge-ci-run
 
 ### 2g. Record the outcome and advance
 
-Append this issue's result to `state.json`, then remove it from the queue so the next iteration picks up the following entry. Status is one of `merged`, `parked`, or `abandoned`.
+Append this issue's result to `state.json`, then remove it from the queue so the next iteration picks up the following entry. Status is one of `merged`, `parked`, `abandoned`, or `self-gated`.
 
 ```bash
 mkdir -p .codegraph/fixer
@@ -1107,16 +1131,16 @@ if [ -f .codegraph/fixer/dispatching-issue ]; then
   fi
 fi
 # STATUS comes from .codegraph/fixer/outcome, written by whichever path this issue
-# actually took: "abandoned" in 2b, "parked" once the convergence-round cap is hit in
-# 2f, or "merged" right after a successful `gh pr merge`. Never hardcode it here — that
-# previously recorded every issue as "merged" regardless of what actually happened.
+# actually took: "abandoned" or "self-gated" in 2b, "parked" once the convergence-round
+# cap is hit in 2f, or "merged" right after a successful `gh pr merge`. Never hardcode
+# it here — that previously recorded every issue as "merged" regardless of what actually happened.
 # 2>/dev/null: an empty STATUS below is expected if an earlier step failed to write it, and is handled explicitly
 STATUS=$(cat .codegraph/fixer/outcome 2>/dev/null)
 if [ -z "$STATUS" ]; then
-  echo "ERROR: .codegraph/fixer/outcome was not set — an earlier step should have written abandoned/merged/parked before reaching this point"
+  echo "ERROR: .codegraph/fixer/outcome was not set — an earlier step should have written abandoned/self-gated/merged/parked before reaching this point"
   exit 1
 fi
-# 2>/dev/null: expected when the issue was abandoned in 2b and no PR was ever opened
+# 2>/dev/null: expected when the issue was abandoned or self-gated in 2b and no PR was ever opened
 PR=$(cat .codegraph/fixer/current-pr 2>/dev/null)
 # --argjson rejects an empty string, so an absent PR must become the JSON literal null
 [ -z "$PR" ] && PR="null"
@@ -1179,7 +1203,7 @@ echo "fixer: issue #$ISSUE recorded as $STATUS; $(jq 'length' .codegraph/fixer/q
 
 Loop back to step 2a for the next queue entry. **Only after the current PR is merged or parked** — that ordering is I2.
 
-**Exit condition:** Every queue entry has a `state.json` record with status `merged`, `parked`, or `abandoned`; `queue.json` is an empty array. Every merged PR satisfied all five gate conditions, and every merge's post-merge CI on `main` was confirmed green (I8) before the next issue's branch was cut. No branch was reused and no branch was stacked on another issue's branch. Every issue's 2a–2g ran inside its own dispatched sub-agent, validated against `state.json` before the next dispatch — never inline in this session.
+**Exit condition:** Every queue entry has a `state.json` record with status `merged`, `parked`, `abandoned`, or `self-gated`; `queue.json` is an empty array. Every merged PR satisfied all five gate conditions, and every merge's post-merge CI on `main` was confirmed green (I8) before the next issue's branch was cut. No branch was reused and no branch was stacked on another issue's branch. Every issue's 2a–2g ran inside its own dispatched sub-agent, validated against `state.json` before the next dispatch — never inline in this session.
 
 ---
 
@@ -1221,7 +1245,7 @@ else
   REPO=$(cat .codegraph/fixer/repo)
   AUTHOR=$(cat .codegraph/fixer/author)
   # One past the highest issue number this run has recorded, so the next batch's queue
-  # never re-examines an issue this run already marked merged/parked/abandoned.
+  # never re-examines an issue this run already marked merged/parked/abandoned/self-gated.
   NEXT_START=$(( $(jq '[.issues[].issue] | max // 0' .codegraph/fixer/state.json) + 1 ))
   # --author filters server-side (see Phase 1) and reuses the same ISSUE_FETCH_LIMIT /
   # truncation-detection pattern: a hard 400-issue window once silently under-reported
@@ -1506,7 +1530,7 @@ Output a summary table:
 
 | Issue | PR | Branch | Status | CI | Greptile | Notes |
 |-------|----|--------|--------|----|----------|-------|
-| #N | #M | fix/issue-N | merged / parked / needs-human-review / abandoned | green / red | 5/5 | conflicts resolved, follow-ups filed, any check bypassed and why |
+| #N | #M | fix/issue-N | merged / parked / needs-human-review / abandoned / self-gated | green / red | 5/5 | conflicts resolved, follow-ups filed, any check bypassed and why |
 
 Also list, explicitly:
 - every follow-up issue created during the run, with its number
@@ -1549,7 +1573,7 @@ All state is under `.codegraph/fixer/`:
 | `loop-decision` | text | `loop`/`stop` — Phase 3's verdict on whether to start another batch |
 | `current-pr`, `last-pr-url`, `gate-fail` | text | current iteration's scratch state |
 | `post-merge-ci-run` | text | run ID of the post-merge `CI` workflow run on `main` currently being watched for the just-merged commit (I8); cleared once that run is confirmed green (or the run exits on an unresolved red) |
-| `outcome` | text | `abandoned`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
+| `outcome` | text | `abandoned`/`self-gated`/`merged`/`parked` for the issue in progress; read by 2g, cleared after recording |
 | `round` | text | convergence-round counter for the current PR; cleared once it merges or parks |
 | `gate-signature`, `prev-gate-signature` | text | fingerprint of this round's / the previous round's gate state (score, a hash of the full Greptile review text, which specific comments are unanswered, branch ancestry, mergeability, each non-green check's name plus its completion timestamp, and the current commit SHA), used to detect a stalled (blocked) PR rather than counting rounds |
 | `stall-count` | text | consecutive convergence rounds with an unchanged gate signature; park threshold is 3 |
@@ -1592,6 +1616,7 @@ All state is under `.codegraph/fixer/`:
 - **Never silently skip verification.** If lint, tests, or a build cannot run or fail for any reason, stop and report to the user. Do not decide on their behalf to proceed.
 - **Never document a bug as expected behaviour.** Engine divergence is a bug in the less accurate engine — fix the root cause.
 - **Park when blocked, not on a fixed round count (I6).** Keep converging as long as each round changes the gate signature — a comment answered, a check going green, the Greptile score moving. Park only after 3 consecutive rounds with zero measurable change (genuinely blocked), or the 15-round absolute safety cap. Then move to the next issue; Phase: Drain Parked PRs handles it.
+- **Label a self-gated issue instead of re-verifying it forever (issue #2324).** When an issue is explicitly written to stay open until some future trigger condition, and that condition is still unmet, apply the `blocked` label and record status `self-gated` rather than leaving it to be re-queued and re-confirmed unmet on every future batch. It will not re-enter the queue until a human removes the label.
 - **Bounded loops only, but bounded by progress, not by an arbitrary count where it matters.** Convergence rounds and drain passes are both capped by stall detection (3 consecutive rounds/passes with zero measurable progress) with a 15-round / 15-pass safety backstop; the whole run is capped at 15 batches. Then report for human review or resume.
 - **The run's objective is the whole backlog, not one batch.** By default, keep starting new batches (Phase 3) until no qualifying open issues remain or the 15-batch cap is hit. Pass `--once` to process exactly one batch and stop.
 - **Only ever act on the repo detected in Phase 0.** Never search, open issues on, or open PRs against any other repository — including when this repo's queue comes up empty. Read the slug from `.codegraph/fixer/repo`; never hardcode it (see issue #2164).
