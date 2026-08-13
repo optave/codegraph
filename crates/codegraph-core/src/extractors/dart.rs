@@ -63,6 +63,7 @@ fn match_dart_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols, _d
     match node.kind() {
         "declaration" => handle_dart_field_decl_type_map(node, source, symbols),
         "constructor_param" => handle_dart_constructor_param_type_map(node, source, symbols),
+        "formal_parameter" => handle_dart_formal_param_type_map(node, source, symbols),
         _ => {}
     }
 }
@@ -471,19 +472,21 @@ fn handle_dart_type_alias(node: &Node, source: &[u8], symbols: &mut FileSymbols)
 /// receiver extraction (`find_dart_selector_receiver` / the `object` field
 /// read in `handle_dart_call_expression`) normalises that implicit shape by
 /// emitting the receiver text itself as `this.<name>` (matching the JS/TS
-/// convention textually), so `resolve_call_targets_core` in
-/// `build_edges.rs` treats a bare Dart field receiver exactly like a JS/TS
-/// `this.field` one: it strips the `this.` prefix and tries the
-/// class-scoped key (`ClassName.field`) FIRST, before ever falling back to
-/// these bare/`this.`-prefixed keys. That is what actually prevents two
-/// classes in the same file from cross-contaminating each other's
-/// same-named field's method resolution (#2319 follow-up on PR #2477's
-/// Greptile finding — see `find_dart_selector_receiver`'s and
-/// `handle_dart_call_expression`'s own doc comments for the
-/// extraction-side half of this fix). The bare/`this.`-prefixed keys seeded
-/// here remain as the fallback for any caller the resolver can't scope to a
-/// class at all. Mirrors `seedDartFieldTypeMapEntry` in
-/// `src/extractors/dart.ts`.
+/// convention textually) WHENEVER the identifier isn't shadowed by a
+/// same-named parameter of the enclosing function (see those functions' own
+/// doc comments for the shadowing case, #2319 second follow-up), so
+/// `resolve_call_targets_core` in `build_edges.rs` treats a bare Dart field
+/// receiver exactly like a JS/TS `this.field` one: it strips the `this.`
+/// prefix and tries the class-scoped key (`ClassName.field`) FIRST, before
+/// ever falling back to these bare/`this.`-prefixed keys. That is what
+/// actually prevents two classes in the same file from cross-contaminating
+/// each other's same-named field's method resolution (#2319 first
+/// follow-up on PR #2477's Greptile finding — see
+/// `find_dart_selector_receiver`'s and `handle_dart_call_expression`'s own
+/// doc comments for the extraction-side half of this fix). The
+/// bare/`this.`-prefixed keys seeded here remain as the fallback for any
+/// caller the resolver can't scope to a class at all. Mirrors
+/// `seedDartFieldTypeMapEntry` in `src/extractors/dart.ts`.
 fn seed_dart_field_type_map_entry(
     symbols: &mut FileSymbols,
     class_name: Option<&str>,
@@ -655,6 +658,215 @@ fn handle_dart_constructor_param_type_map(node: &Node, source: &[u8], symbols: &
     );
 }
 
+/// Seed a function-scoped typeMap entry (`${enclosingQualifier}::${name}`,
+/// confidence 0.9) for a PLAIN typed function/method parameter — `void
+/// run(MockRepository repo)` — mirroring `handleParamTypeMap`'s identical
+/// convention in `src/extractors/javascript.ts` / this crate's own
+/// `javascript.rs` (`push_scoped_type_map_entry`, #2235). Mirrors
+/// `handleDartFormalParamTypeMap` in `src/extractors/dart.ts` — see that
+/// function's doc comment for the full rationale (a Greptile finding on PR
+/// #2477, #2319 second follow-up: a parameter legally shadowing a
+/// same-named class field must resolve against the PARAMETER's type, and
+/// merely suppressing the `this.`-prefix at the call site — see
+/// `find_dart_selector_receiver` / `handle_dart_call_expression` — is not
+/// sufficient on its own; this scoped entry is what the resolver's
+/// function-scoped lookup actually finds instead of falling through to the
+/// field's own bare fallback key).
+///
+/// No-ops for the `this.field`/`super.field` constructor-shorthand shape
+/// (detected by a `constructor_param` child — that shape aliases the field
+/// rather than introducing a new local name, and its type is already seeded
+/// by `handle_dart_constructor_param_type_map`) and for an untyped
+/// parameter (`var repo` / bare `repo`) — no type to seed.
+///
+/// Unlike `handle_dart_constructor_param_type_map`'s `constructor_param`
+/// shape, a plain `formal_parameter`'s type is NOT wrapped in an
+/// intermediate `type` node here — tree-sitter-dart 0.2 puts `type` (which
+/// itself wraps `type_identifier`) as a direct child of `formal_parameter`
+/// (confirmed by parsing `void run(MockRepository repo)`, whose sexp shows
+/// `(formal_parameter (type (type_identifier)) (identifier))`).
+fn handle_dart_formal_param_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    if find_child(node, "constructor_param").is_some() {
+        return;
+    }
+    let Some(type_wrapper) = find_child(node, "type") else {
+        return;
+    };
+    let Some(type_id) = find_child(&type_wrapper, "type_identifier") else {
+        return;
+    };
+    let Some(name_node) = find_child(node, "identifier") else {
+        return;
+    };
+    let enclosing_qualifier = find_enclosing_dart_function_qualifier_for_param(node, source);
+    push_scoped_type_map_entry(
+        symbols,
+        enclosing_qualifier.as_deref(),
+        node_text(&name_node, source),
+        node_text(&type_id, source),
+        0.9,
+    );
+}
+
+/// Qualified name (`ClassName.methodName`, or bare `functionName` for a
+/// top-level/local function) of the function/method enclosing a `node` that
+/// is itself a DESCENDANT of that function's OWN signature — e.g. a
+/// `formal_parameter` inside its `formal_parameter_list`. Simple ancestor
+/// walk to the nearest `function_signature`/`constructor_signature`: a
+/// parameter is always nested INSIDE its own signature node, regardless of
+/// whether that signature is itself further wrapped in a `method_signature`/
+/// `method_declaration` — which only matters for
+/// `find_enclosing_dart_param_list_for_call`'s opposite direction (see that
+/// function's doc comment for why a CALL site can't use this same simple
+/// ancestor walk). Mirrors `findEnclosingDartFunctionQualifierForParam` in
+/// `src/extractors/dart.ts`.
+fn find_enclosing_dart_function_qualifier_for_param(node: &Node, source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "function_signature" || parent.kind() == "constructor_signature" {
+            let fn_name = extract_dart_fn_name(&parent, source)?;
+            let class_name = find_enclosing_dart_class_name(&parent, source);
+            return Some(match class_name {
+                Some(cn) => format!("{}.{}", cn, fn_name),
+                None => fn_name,
+            });
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+/// Unwrap a `method_signature` node to the inner `function_signature`/
+/// `constructor_signature`/`getter_signature`/`setter_signature` node that
+/// actually carries the `formal_parameter_list` — the same wrapper
+/// `extract_dart_fn_name` already unwraps for name extraction, factored out
+/// here so `find_enclosing_dart_param_list_for_call` can reach the
+/// parameter list too. Returns `node` itself unchanged when it isn't a
+/// `method_signature` — a bare `function_signature`/`constructor_signature`
+/// (top-level and local functions are never wrapped) already carries
+/// `formal_parameter_list` directly. Mirrors `findDartInnerSignatureNode` in
+/// `src/extractors/dart.ts`.
+fn find_dart_inner_signature_node<'a>(node: &Node<'a>) -> Node<'a> {
+    if node.kind() != "method_signature" {
+        return *node;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if matches!(
+                child.kind(),
+                "function_signature"
+                    | "getter_signature"
+                    | "setter_signature"
+                    | "constructor_signature"
+            ) {
+                return child;
+            }
+        }
+    }
+    *node
+}
+
+/// Names bound by a `formal_parameter_list` — every plain parameter name,
+/// whether required, optional-positional (`[...]`), or optional-named
+/// (`{...}` — both shapes wrap their `formal_parameter` children in an
+/// intervening `optional_formal_parameters` node), EXCLUDING the
+/// `this.field`/`super.field` constructor-shorthand shape (a
+/// `constructor_param`-wrapped `formal_parameter`) — that shape aliases the
+/// field itself rather than introducing a new, distinctly-typed local
+/// binding, so it must NOT count as shadowing. Mirrors
+/// `collectDartParamNames` in `src/extractors/dart.ts`.
+fn collect_dart_param_names(param_list: &Node, source: &[u8]) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    let mut add_formal_parameter = |fp: &Node| {
+        if find_child(fp, "constructor_param").is_some() {
+            return;
+        }
+        if let Some(id_node) = find_child(fp, "identifier") {
+            names.insert(node_text(&id_node, source).to_string());
+        }
+    };
+    for i in 0..param_list.child_count() {
+        let Some(child) = param_list.child(i) else {
+            continue;
+        };
+        if child.kind() == "formal_parameter" {
+            add_formal_parameter(&child);
+        } else if child.kind() == "optional_formal_parameters" {
+            for j in 0..child.child_count() {
+                if let Some(inner) = child.child(j) {
+                    if inner.kind() == "formal_parameter" {
+                        add_formal_parameter(&inner);
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Parameter names in scope for a receiver identifier at a call site
+/// (`node`, some descendant of the enclosing function/method's
+/// `function_body`) — used by `find_dart_selector_receiver` /
+/// `handle_dart_call_expression` to decide whether a bare identifier is
+/// shadowed by a same-named parameter rather than being a genuine field
+/// access (#2319 second follow-up, Greptile finding on PR #2477).
+///
+/// Unlike `find_enclosing_dart_function_qualifier_for_param` (a simple
+/// ancestor walk), a CALL site can't reach its enclosing signature by
+/// walking ancestors alone: tree-sitter-dart 0.2 splits a function/method's
+/// signature and body into SIBLING nodes under a shared parent
+/// (`method_signature` + `function_body` under `method_declaration`, or
+/// `function_signature` + `function_body` under `function_declaration` —
+/// confirmed by parsing top-level, class-method, and constructor variants;
+/// the same split `dart_function_end_line` already documents and skips
+/// forward across for `end_line` computation, #2082) — a call inside the
+/// body has the `function_body` node as an ancestor, never the signature.
+/// This walks up to that `function_body` ancestor, then scans ITS siblings
+/// backward (skipping any intervening `comment` nodes, mirroring
+/// `dart_function_end_line`'s identical forward skip) for the nearest
+/// signature-shaped node.
+///
+/// Returns `None` (safe default: no shadowing detected, `this.`-prefix
+/// kept) when no enclosing `function_body` is found at all, or when the
+/// sibling immediately preceding it isn't recognizably a signature —
+/// deliberately conservative, matching this file's own established
+/// discipline of falling through rather than guessing. Mirrors
+/// `findEnclosingDartParamListForCall` in `src/extractors/dart.ts`.
+fn find_enclosing_dart_param_list_for_call<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "function_body" {
+            let parent = n.parent()?;
+            let mut idx: i64 = -1;
+            for i in 0..parent.child_count() {
+                if parent.child(i).map(|c| c.id()) == Some(n.id()) {
+                    idx = i as i64;
+                    break;
+                }
+            }
+            let mut i = idx - 1;
+            while i >= 0 {
+                let sibling = parent.child(i as usize)?;
+                if sibling.kind() == "comment" {
+                    i -= 1;
+                    continue;
+                }
+                if matches!(
+                    sibling.kind(),
+                    "method_signature" | "function_signature" | "constructor_signature"
+                ) {
+                    let inner = find_dart_inner_signature_node(&sibling);
+                    return find_child(&inner, "formal_parameter_list");
+                }
+                return None;
+            }
+            return None;
+        }
+        current = n.parent();
+    }
+    None
+}
+
 fn handle_dart_selector(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     // selector with argument_part represents a function call; mirrors handleDartSelector in dart.ts
     if find_child(node, "argument_part").is_none() {
@@ -738,10 +950,20 @@ fn resolve_dart_selector_call(node: &Node, source: &[u8]) -> Option<(String, Opt
 /// `src/extractors/dart.ts` — see that function's doc comment for the
 /// chained-call and subscript-indexed cases this intentionally leaves
 /// unresolved rather than guessing, and for why a plain `identifier`
-/// sibling is returned as `this.<name>` rather than the bare name (#2319
-/// follow-up on PR #2477's Greptile finding: prevents same-named fields on
-/// different classes in the same file from colliding on the resolver's bare
-/// fallback key). A `type_identifier` sibling (a static-call receiver, e.g.
+/// sibling is normally returned as `this.<name>` rather than the bare name
+/// (#2319 first follow-up on PR #2477's Greptile finding: prevents
+/// same-named fields on different classes in the same file from colliding
+/// on the resolver's bare fallback key) EXCEPT when that identifier is
+/// shadowed by a same-named parameter of the enclosing function/method
+/// (checked via `find_enclosing_dart_param_list_for_call` +
+/// `collect_dart_param_names`), in which case the bare name is returned
+/// instead — Dart legally allows a parameter to shadow a same-named class
+/// field of a DIFFERENT type for the rest of its scope, and unconditional
+/// prefixing would incorrectly resolve against the field's type instead of
+/// the parameter's (#2319 second follow-up on PR #2477's Greptile finding;
+/// see `handle_dart_formal_param_type_map`'s doc comment for why the bare
+/// name alone, with no function-scoped typeMap seeding, would still be
+/// insufficient). A `type_identifier` sibling (a static-call receiver, e.g.
 /// `MyClass.staticMethod()`) is left unprefixed — it never denotes a field
 /// access.
 ///
@@ -749,9 +971,9 @@ fn resolve_dart_selector_call(node: &Node, source: &[u8]) -> Option<(String, Opt
 /// `selector`-based call shape tree-sitter-dart 0.0.4 (and older) produces.
 /// The pinned crates.io grammar (0.2) instead represents every call as a
 /// `call_expression` node (see `handle_dart_call_expression` below, which
-/// duplicates this same `this.`-prefixing decision inline for that shape) —
-/// kept mirrored here for parity should the pinned grammar ever regress to
-/// (or a caller re-parses with) the older shape.
+/// duplicates this same shadowing-aware `this.`-prefixing decision inline
+/// for that shape) — kept mirrored here for parity should the pinned
+/// grammar ever regress to (or a caller re-parses with) the older shape.
 fn find_dart_selector_receiver(method_selector: &Node, source: &[u8]) -> Option<String> {
     let parent = method_selector.parent()?;
     let mut prev_sibling: Option<Node> = None;
@@ -765,7 +987,15 @@ fn find_dart_selector_receiver(method_selector: &Node, source: &[u8]) -> Option<
     }
     let prev_sibling = prev_sibling?;
     match prev_sibling.kind() {
-        "identifier" => Some(format!("this.{}", node_text(&prev_sibling, source))),
+        "identifier" => {
+            let name = node_text(&prev_sibling, source);
+            if let Some(param_list) = find_enclosing_dart_param_list_for_call(method_selector) {
+                if collect_dart_param_names(&param_list, source).contains(name) {
+                    return Some(name.to_string());
+                }
+            }
+            Some(format!("this.{}", name))
+        }
         "type_identifier" => Some(node_text(&prev_sibling, source).to_string()),
         _ => None,
     }
@@ -829,20 +1059,34 @@ fn handle_dart_call_expression(node: &Node, source: &[u8], symbols: &mut FileSym
             // yields no receiver, mirroring `handleDartSelector`'s identical
             // conservatism in `src/extractors/dart.ts`.
             //
-            // Returned as `this.<name>`, NOT the bare name: this is the
-            // ACTUAL live receiver-extraction path for the pinned crates.io
-            // 0.2 grammar (unlike `find_dart_selector_receiver` above, which
-            // only backs the older, currently-dead `selector`-based shape),
-            // so the `this.`-prefixing fix for #2319's cross-class field
-            // collision (see `seed_dart_field_type_map_entry`'s doc comment)
-            // must live HERE for the native engine to actually benefit from
-            // it. Mirrors `findDartSelectorReceiver` in `src/extractors/dart.ts`.
+            // Normally returned as `this.<name>`, NOT the bare name: this is
+            // the ACTUAL live receiver-extraction path for the pinned
+            // crates.io 0.2 grammar (unlike `find_dart_selector_receiver`
+            // above, which only backs the older, currently-dead
+            // `selector`-based shape), so the `this.`-prefixing fix for
+            // #2319's cross-class field collision (see
+            // `seed_dart_field_type_map_entry`'s doc comment) must live HERE
+            // for the native engine to actually benefit from it.
+            //
+            // EXCEPT when the identifier is shadowed by a same-named
+            // parameter of the enclosing function/method — see
+            // `find_dart_selector_receiver`'s doc comment for the full
+            // rationale (#2319 second follow-up, Greptile finding on PR
+            // #2477: this is likewise the LIVE path for that shadowing fix,
+            // for the same reason it's the live path for the `this.`-prefix
+            // fix above). Mirrors `findDartSelectorReceiver` in
+            // `src/extractors/dart.ts`.
             let receiver = object.and_then(|obj| {
-                if obj.kind() == "identifier" {
-                    Some(format!("this.{}", node_text(&obj, source)))
-                } else {
-                    None
+                if obj.kind() != "identifier" {
+                    return None;
                 }
+                let name = node_text(&obj, source);
+                if let Some(param_list) = find_enclosing_dart_param_list_for_call(node) {
+                    if collect_dart_param_names(&param_list, source).contains(name) {
+                        return Some(name.to_string());
+                    }
+                }
+                Some(format!("this.{}", name))
             });
 
             push_call(symbols, node, method_name, receiver, None);
@@ -1229,6 +1473,116 @@ mod tests {
             let s = parse_dart("void f() {\n  helper();\n}");
             let call = s.calls.iter().find(|c| c.name == "helper").unwrap();
             assert_eq!(call.receiver, None);
+        }
+    }
+
+    // #2319 second follow-up: a Greptile finding on PR #2477. The FIRST
+    // follow-up fix made a bare-identifier receiver always emit
+    // `this.<name>`, which activates the resolver's class-scoped field
+    // lookup — correct for a genuine field access, but WRONG when the
+    // identifier is actually a PARAMETER that legally shadows a same-named
+    // class field of a different type. This module verifies the shadowing
+    // fix: `find_dart_selector_receiver` / `handle_dart_call_expression`
+    // must emit the BARE name (not `this.`-prefixed) for a shadowed
+    // receiver, and `handle_dart_formal_param_type_map` must seed a
+    // function-scoped typeMap entry for the parameter's own type so the
+    // resolver actually finds the PARAMETER's type instead of falling
+    // through to the field's bare fallback key.
+    mod parameter_shadows_field {
+        use super::*;
+
+        #[test]
+        fn formal_param_receiver_is_not_this_prefixed_when_it_shadows_a_field() {
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run(MockRepository _repo) {\n    _repo.mockOnlyMethod();\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "mockOnlyMethod");
+            assert!(
+                call.is_some(),
+                "missing mockOnlyMethod call; got: {:?}",
+                s.calls
+            );
+            assert_eq!(
+                call.unwrap().receiver.as_deref(),
+                Some("_repo"),
+                "a parameter shadowing a field must emit the BARE receiver, not `this.`-prefixed \
+                 (which would wrongly activate the class-scoped FIELD lookup)"
+            );
+        }
+
+        #[test]
+        fn seeds_a_function_scoped_type_map_entry_for_the_shadowing_parameter() {
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run(MockRepository _repo) {\n    _repo.mockOnlyMethod();\n  }\n}",
+            );
+            let scoped = s.type_map.iter().find(|e| e.name == "Service.run::_repo");
+            assert!(
+                scoped.is_some(),
+                "missing function-scoped Service.run::_repo entry; got: {:?}",
+                s.type_map
+            );
+            assert_eq!(scoped.unwrap().type_name, "MockRepository");
+        }
+
+        #[test]
+        fn does_not_shadow_when_the_call_is_in_a_different_method() {
+            // Sibling method with no parameter named `_repo` at all — the
+            // bare field access there must still be `this.`-prefixed (the
+            // #2319 first-follow-up fix must not regress).
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run(MockRepository _repo) {\n    _repo.mockOnlyMethod();\n  }\n  void other() {\n    _repo.findById();\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "findById");
+            assert!(call.is_some(), "missing findById call; got: {:?}", s.calls);
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("this._repo"));
+        }
+
+        #[test]
+        fn this_field_shorthand_constructor_param_does_not_count_as_shadowing() {
+            // `this._repo` in the constructor parameter list aliases the
+            // field itself — it must NOT be treated as a distinct shadowing
+            // binding, and a bare field access inside a method must still
+            // resolve via the class-scoped field key.
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run() {\n    _repo.findById();\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "findById");
+            assert!(call.is_some(), "missing findById call; got: {:?}", s.calls);
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("this._repo"));
+            assert!(
+                s.type_map
+                    .iter()
+                    .all(|e| e.name != "Service._repo" || e.type_name == "Repository"),
+                "this.-shorthand ctor param must not overwrite the field's own type; got: {:?}",
+                s.type_map
+            );
+        }
+
+        #[test]
+        fn end_to_end_resolution_does_not_target_the_field_type() {
+            // Full end-to-end regression for the Greptile finding: build a
+            // graph-resolvable scenario (both types define a same-named
+            // method) and confirm the WRONG (field-typed) target is never
+            // produced. This mirrors the reasoning
+            // `resolve_call_targets_core` in `build_edges.rs` applies at
+            // graph-build time, exercised here at the extractor level via
+            // the receiver + typeMap shape it consumes.
+            let s = parse_dart(
+                "class Repository {\n  void save() {}\n}\nclass MockRepository {\n  void save() {}\n}\nclass Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run(MockRepository _repo) {\n    _repo.save();\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "save");
+            assert!(call.is_some(), "missing save call; got: {:?}", s.calls);
+            // Bare receiver (not `this.`-prefixed) skips the class-scoped
+            // Service._repo=Repository lookup entirely.
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("_repo"));
+            // And the function-scoped key resolves it to the PARAMETER's
+            // own type, not the field's.
+            let scoped = s
+                .type_map
+                .iter()
+                .find(|e| e.name == "Service.run::_repo")
+                .expect("missing Service.run::_repo scoped type-map entry");
+            assert_eq!(scoped.type_name, "MockRepository");
         }
     }
 }

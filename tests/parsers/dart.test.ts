@@ -387,4 +387,114 @@ import 'package:flutter/material.dart';`);
       );
     });
   });
+
+  // #2319 second follow-up: a Greptile finding on PR #2477. The FIRST
+  // follow-up fix made a bare-identifier receiver always emit `this.<name>`,
+  // which activates the resolver's class-scoped field lookup — correct for a
+  // genuine field access, but WRONG when the identifier is actually a
+  // PARAMETER that legally shadows a same-named class field of a different
+  // type. These tests verify the shadowing fix: `findDartSelectorReceiver`
+  // must emit the BARE name (not `this.`-prefixed) for a shadowed receiver,
+  // and `handleDartFormalParamTypeMap` must seed a function-scoped typeMap
+  // entry for the parameter's own type so the resolver actually finds the
+  // PARAMETER's type instead of falling through to the field's bare
+  // fallback key (merely skipping the `this.` prefix, with no scoped
+  // seeding, would NOT be sufficient — the field's bare `_repo` fallback key
+  // would still match).
+  describe('#2319 second follow-up: parameter shadowing a same-named class field', () => {
+    it('emits the bare receiver (not `this.`-prefixed) when a parameter shadows the field', () => {
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run(MockRepository _repo) {
+    _repo.mockOnlyMethod();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'mockOnlyMethod', receiver: '_repo' }),
+      );
+    });
+
+    it('seeds a function-scoped typeMap entry for the shadowing parameter', () => {
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run(MockRepository _repo) {
+    _repo.mockOnlyMethod();
+  }
+}`);
+      expect(symbols.typeMap.get('Service.run::_repo')).toEqual({
+        type: 'MockRepository',
+        confidence: 0.9,
+      });
+    });
+
+    it('does not shadow a bare field access in a sibling method with no such parameter', () => {
+      // Guards against a regression of the #2319 FIRST follow-up fix: a
+      // different method with no `_repo` parameter at all must still get
+      // the `this.`-prefixed, class-scoped-lookup-eligible receiver.
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run(MockRepository _repo) {
+    _repo.mockOnlyMethod();
+  }
+  void other() {
+    _repo.findById();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'findById', receiver: 'this._repo' }),
+      );
+    });
+
+    it('does not treat a this-shorthand constructor parameter as shadowing', () => {
+      // `this._repo` in the constructor parameter list aliases the field
+      // itself, not a new distinct binding — a bare field access elsewhere
+      // must still resolve via the class-scoped field key.
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run() {
+    _repo.findById();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'findById', receiver: 'this._repo' }),
+      );
+      expect(symbols.typeMap.get('Service._repo')).toEqual({
+        type: 'Repository',
+        confidence: 0.9,
+      });
+    });
+
+    it('end-to-end: does not resolve the shadowed call against the field type', () => {
+      // Full extractor-level regression for the Greptile finding: both
+      // types define a same-named method, so a wrong (field-typed)
+      // resolution would be indistinguishable from a correct one without
+      // this assertion on the receiver + typeMap shape the resolver
+      // (`resolveReceiverTypeName` in `src/domain/graph/resolver/
+      // strategy.ts`) actually consumes.
+      const symbols = parseDart(`class Repository {
+  void save() {}
+}
+class MockRepository {
+  void save() {}
+}
+class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run(MockRepository _repo) {
+    _repo.save();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'save', receiver: '_repo' }),
+      );
+      expect(symbols.typeMap.get('Service.run::_repo')).toEqual({
+        type: 'MockRepository',
+        confidence: 0.9,
+      });
+    });
+  });
 });
