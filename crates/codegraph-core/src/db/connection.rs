@@ -1409,14 +1409,17 @@ impl NativeDatabase {
                 let mut block_db_ids: std::collections::HashMap<u32, i64> =
                     std::collections::HashMap::new();
                 for block in &entry.blocks {
-                    if let Ok(_) = block_stmt.execute(params![
-                        entry.node_id,
-                        block.index,
-                        &block.block_type,
-                        block.start_line,
-                        block.end_line,
-                        &block.label,
-                    ]) {
+                    if block_stmt
+                        .execute(params![
+                            entry.node_id,
+                            block.index,
+                            &block.block_type,
+                            block.start_line,
+                            block.end_line,
+                            &block.label,
+                        ])
+                        .is_ok()
+                    {
                         block_db_ids.insert(block.index, tx.last_insert_rowid());
                         total += 1;
                     }
@@ -1633,11 +1636,9 @@ impl NativeDatabase {
             let rows = stmt
                 .query_map(params![file], |row| row.get::<_, String>(0))
                 .map_err(|e| napi::Error::from_reason(format!("reverseDeps query failed: {e}")))?;
-            for row in rows {
-                if let Ok(dep_file) = row {
-                    if !changed_set.contains(dep_file.as_str()) {
-                        result_set.insert(dep_file);
-                    }
+            for dep_file in rows.flatten() {
+                if !changed_set.contains(dep_file.as_str()) {
+                    result_set.insert(dep_file);
                 }
             }
         }
@@ -1748,7 +1749,7 @@ impl NativeDatabase {
         purge_hashes: Option<bool>,
         reverse_dep_files: Option<Vec<String>>,
     ) -> napi::Result<()> {
-        if files.is_empty() && reverse_dep_files.as_ref().map_or(true, |v| v.is_empty()) {
+        if files.is_empty() && reverse_dep_files.as_ref().is_none_or(|v| v.is_empty()) {
             return Ok(());
         }
         let conn = self.conn()?;
@@ -1955,8 +1956,8 @@ fn row_to_json(
     col_names: &[String],
 ) -> serde_json::Value {
     let mut map = serde_json::Map::with_capacity(col_count);
-    for i in 0..col_count {
-        map.insert(col_names[i].clone(), value_ref_to_json(row.get_ref(i)));
+    for (i, name) in col_names.iter().enumerate().take(col_count) {
+        map.insert(name.clone(), value_ref_to_json(row.get_ref(i)));
     }
     serde_json::Value::Object(map)
 }

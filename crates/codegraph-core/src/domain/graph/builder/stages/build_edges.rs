@@ -385,7 +385,7 @@ fn add_to_file_scoped<'a>(
 /// branch of `collectInstantiatedTypes` in `cha.ts` (constructor-confidence
 /// 1.0 and type-annotation-confidence 0.9 entries both qualify; native has no
 /// dedicated `newExpressions` list, so this is the only RTA evidence source).
-fn collect_cha_instantiated_types<'a>(files: &'a [FileEdgeInput]) -> HashSet<&'a str> {
+fn collect_cha_instantiated_types(files: &[FileEdgeInput]) -> HashSet<&str> {
     let mut instantiated = HashSet::new();
     for file in files {
         for tm in &file.type_map {
@@ -1104,7 +1104,7 @@ struct FileContext<'a> {
 /// Build the per-file type map from the input's type_map entries.
 /// Keeps the highest-confidence entry per name (first-wins on tie), matching
 /// the JS `setTypeMapEntry` behaviour.
-fn build_type_map<'a>(file_input: &'a FileEdgeInput) -> HashMap<&'a str, (&'a str, f64)> {
+fn build_type_map(file_input: &FileEdgeInput) -> HashMap<&str, (&str, f64)> {
     let mut type_map: HashMap<&str, (&str, f64)> = HashMap::new();
     for tm in &file_input.type_map {
         let entry = type_map.entry(tm.name.as_str());
@@ -1281,6 +1281,9 @@ fn build_file_context<'a>(
 ///   (c) module-level alias bindings (`const f = handler`, `f = fn.bind(ctx)`)
 ///       — flat key, gated on fnRefBindingLhs so self-seeded local definitions never fire.
 /// Confidence is penalised by one hop to reflect the indirection.
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical edge-emission path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn emit_no_receiver_pts_edges<'a>(
     ctx: &EdgeContext<'a>,
     fc: &FileContext<'a>,
@@ -1348,6 +1351,9 @@ fn emit_no_receiver_pts_edges<'a>(
 ///
 /// Phase 8.3f: `rest.prop()` resolves when pts["rest.prop"] was seeded by the
 /// rest-dispatch chain. Builtin receivers are already skipped at the call-loop top.
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical edge-emission path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn emit_receiver_pts_edges<'a>(
     ctx: &EdgeContext<'a>,
     fc: &FileContext<'a>,
@@ -1690,13 +1696,11 @@ fn find_enclosing_caller<'a>(
                         fn_caller_span = span;
                     }
                 }
-            } else if is_top_level_binding_kind(def.kind) {
-                if (span as i64) > var_caller_span {
-                    if let Some(id) = def.node_id {
-                        var_caller_id = Some(id);
-                        var_caller_name = def.name;
-                        var_caller_span = span as i64;
-                    }
+            } else if is_top_level_binding_kind(def.kind) && (span as i64) > var_caller_span {
+                if let Some(id) = def.node_id {
+                    var_caller_id = Some(id);
+                    var_caller_name = def.name;
+                    var_caller_span = span as i64;
                 }
             }
         }
@@ -1889,6 +1893,9 @@ fn prefer_type_aware_over_bare<'a>(
 /// `resolve_call_targets_core`'s ~15 early returns to a tuple) keeps the
 /// blast radius of this change small in a function shared by all 34
 /// supported languages.
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical call-resolution path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn resolve_call_targets<'a>(
     ctx: &EdgeContext<'a>,
     call: &CallInfo,
@@ -1952,6 +1959,9 @@ fn caller_has_real_class_ancestor(ctx: &EdgeContext, caller_name: &str, rel_path
 
 /// Core multi-strategy call target resolution — see `resolve_call_targets` for
 /// the public entry point (which additionally applies constructor attribution).
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical call-resolution path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn resolve_call_targets_core<'a>(
     ctx: &EdgeContext<'a>,
     call: &CallInfo,
@@ -2492,7 +2502,7 @@ fn resolve_call_targets_core<'a>(
         // traversal starting from that entry point keeps working) — this hint only supplies the
         // class needed to resolve `this`/`self` here.
         let is_bare_call = call.receiver.is_none();
-        if !caller_name.is_empty() && !(is_bare_call && is_module_scoped_language(rel_path)) {
+        if !(caller_name.is_empty() || is_bare_call && is_module_scoped_language(rel_path)) {
             let class_prefix = if let Some(dot_idx) = caller_name.rfind('.') {
                 // Extract only the segment immediately before the method name so that
                 // 'Namespace.ClassName.method' yields 'ClassName', not 'Namespace.ClassName'.
@@ -2698,6 +2708,9 @@ fn sort_targets_by_confidence(
 /// `confidence_override` is set (#1949 CHA typed-dispatch fallback), every
 /// target uses that flat confidence instead of `resolve::compute_confidence`
 /// — file proximity is not meaningful for virtual dispatch confidence.
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical edge-emission path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn emit_call_edges(
     targets: &[&NodeInfo],
     caller_id: u32,
@@ -2744,6 +2757,9 @@ fn emit_call_edges(
 }
 
 /// Emit a receiver edge from caller to the receiver's type node (if applicable).
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical edge-emission path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn emit_receiver_edge(
     ctx: &EdgeContext,
     call: &CallInfo,
@@ -3156,7 +3172,7 @@ impl<'a> BarrelContext for ImportEdgeContext<'a> {
     fn has_definition(&self, file_path: &str, symbol: &str) -> bool {
         self.file_defs
             .get(file_path)
-            .map_or(false, |defs| defs.contains(symbol))
+            .is_some_and(|defs| defs.contains(symbol))
     }
 }
 

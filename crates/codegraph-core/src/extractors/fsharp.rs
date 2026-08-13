@@ -304,7 +304,7 @@ fn handle_import_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let source_name = node_text(&module_node, source).to_string();
     let last = source_name
         .split('.')
-        .last()
+        .next_back()
         .unwrap_or(&source_name)
         .to_string();
 

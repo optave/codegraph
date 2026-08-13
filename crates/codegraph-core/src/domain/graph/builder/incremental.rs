@@ -26,6 +26,12 @@ pub struct ParseTreeCache {
     entries: SendWrapper<HashMap<String, CacheEntry>>,
 }
 
+impl Default for ParseTreeCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl ParseTreeCache {
     #[napi(constructor)]

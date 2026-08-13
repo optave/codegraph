@@ -304,7 +304,7 @@ fn handle_include_directive(node: &Node, source: &[u8], symbols: &mut FileSymbol
                 }
                 let last = source_path
                     .split('/')
-                    .last()
+                    .next_back()
                     .unwrap_or(&source_path)
                     .to_string();
                 let mut imp = Import::new(source_path, vec![last], start_line(node));

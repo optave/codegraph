@@ -333,7 +333,7 @@ fn extract_go_import_spec(spec: &Node, source: &[u8], symbols: &mut FileSymbols)
         let name_node = spec.child_by_field_name("name");
         let alias = match name_node {
             Some(n) => node_text(&n, source).to_string(),
-            None => import_path.split('/').last().unwrap_or("").to_string(),
+            None => import_path.split('/').next_back().unwrap_or("").to_string(),
         };
         let mut imp = Import::new(import_path, vec![alias], start_line(spec));
         imp.go_import = Some(true);

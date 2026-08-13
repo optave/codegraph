@@ -267,7 +267,7 @@ fn handle_using_directive(node: &Node, source: &[u8], symbols: &mut FileSymbols)
         .or_else(|| find_child(node, "identifier"));
     if let Some(name_node) = name_node {
         let full_path = node_text(&name_node, source).to_string();
-        let last_name = full_path.split('.').last().unwrap_or("").to_string();
+        let last_name = full_path.split('.').next_back().unwrap_or("").to_string();
         let mut imp = Import::new(full_path, vec![last_name], start_line(node));
         imp.csharp_using = Some(true);
         symbols.imports.push(imp);

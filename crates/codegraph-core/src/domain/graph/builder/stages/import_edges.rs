@@ -120,7 +120,7 @@ impl BarrelContext for ImportEdgeContext {
     fn has_definition(&self, file_path: &str, symbol: &str) -> bool {
         self.file_symbols
             .get(file_path)
-            .map_or(false, |s| s.definitions.iter().any(|d| d.name == symbol))
+            .is_some_and(|s| s.definitions.iter().any(|d| d.name == symbol))
     }
 }
 
@@ -643,6 +643,9 @@ fn push_edge_once(
     });
 }
 
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical import-edge-emission path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn emit_named_symbol_rows(
     edges: &mut Vec<EdgeRow>,
     file_node_id: i64,
@@ -681,6 +684,9 @@ fn emit_named_symbol_rows(
 
 /// For a non-reexport import targeting a barrel file, emit `imports`-like
 /// edges to each ultimate definition file reached through the barrel chain.
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical import-edge-emission path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn emit_barrel_through_rows(
     edges: &mut Vec<EdgeRow>,
     file_node_id: i64,
@@ -725,6 +731,9 @@ fn emit_barrel_through_rows(
 }
 
 /// Emit all edges produced by a single import on a single source file.
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical import-edge-emission path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn emit_edges_for_import(
     edges: &mut Vec<EdgeRow>,
     file_node_id: i64,

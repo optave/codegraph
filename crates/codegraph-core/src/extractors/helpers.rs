@@ -774,25 +774,24 @@ fn walk_ast_nodes_with_config_depth(
             "await" => {
                 ast_nodes.push(build_await_node(node, source));
             }
-            "string" => {
+            "string"
                 if build_string_node(node, source, config)
                     .map(|n| ast_nodes.push(n))
-                    .is_none()
-                {
-                    // Short string: recurse children then skip outer loop
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            walk_ast_nodes_with_config_depth(
-                                &child,
-                                source,
-                                ast_nodes,
-                                config,
-                                depth + 1,
-                            );
-                        }
+                    .is_none() =>
+            {
+                // Short string: recurse children then skip outer loop
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        walk_ast_nodes_with_config_depth(
+                            &child,
+                            source,
+                            ast_nodes,
+                            config,
+                            depth + 1,
+                        );
                     }
-                    return;
                 }
+                return;
             }
             "regex" => {
                 ast_nodes.push(build_regex_node(node, source));

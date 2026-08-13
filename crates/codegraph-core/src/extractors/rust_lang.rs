@@ -71,7 +71,7 @@ fn handle_function_item(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     if node
         .parent()
         .and_then(|p| p.parent())
-        .map_or(false, |gp| gp.kind() == "trait_item")
+        .is_some_and(|gp| gp.kind() == "trait_item")
     {
         return;
     }
@@ -511,7 +511,7 @@ fn extract_rust_use_path(node: &Node, source: &[u8]) -> Vec<(String, Vec<String>
             )]
         }
         "use_wildcard" => {
-            let src = named_child_text(&node, "path", source)
+            let src = named_child_text(node, "path", source)
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "*".to_string());
             vec![(src, vec!["*".to_string()])]
@@ -526,7 +526,7 @@ fn extract_rust_use_path(node: &Node, source: &[u8]) -> Vec<(String, Vec<String>
 }
 
 fn extract_scoped_use_list(node: &Node, source: &[u8]) -> Vec<(String, Vec<String>)> {
-    let prefix = named_child_text(&node, "path", source)
+    let prefix = named_child_text(node, "path", source)
         .map(|s| s.to_string())
         .unwrap_or_default();
     let Some(list_node) = node.child_by_field_name("list") else {
@@ -748,7 +748,7 @@ fn match_rust_return_type_map(
     if node
         .parent()
         .and_then(|p| p.parent())
-        .map_or(false, |gp| gp.kind() == "trait_item")
+        .is_some_and(|gp| gp.kind() == "trait_item")
     {
         return;
     }
@@ -777,7 +777,7 @@ fn match_rust_return_type_map(
         .iter()
         .find(|e| e.name == full_name)
         .map(|e| e.confidence);
-    if existing_confidence.map_or(true, |c| c < 1.0) {
+    if existing_confidence.is_none_or(|c| c < 1.0) {
         symbols.return_type_map.push(TypeMapEntry {
             name: full_name,
             type_name: type_name.to_string(),

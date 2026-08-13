@@ -240,7 +240,7 @@ fn handle_ocaml_open(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     }
 
     if let Some(name) = module_name {
-        let last = name.split('.').last().unwrap_or(&name).to_string();
+        let last = name.split('.').next_back().unwrap_or(&name).to_string();
         symbols
             .imports
             .push(Import::new(name, vec![last], start_line(node)));

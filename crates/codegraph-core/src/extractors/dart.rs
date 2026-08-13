@@ -37,10 +37,8 @@ fn match_dart_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
         "enum_declaration" => handle_dart_enum(node, source, symbols),
         "mixin_declaration" => handle_dart_mixin(node, source, symbols),
         "extension_declaration" => handle_dart_extension(node, source, symbols),
-        "function_signature" => {
-            if !is_inside_class(node) {
-                handle_dart_function_sig(node, source, symbols);
-            }
+        "function_signature" if !is_inside_class(node) => {
+            handle_dart_function_sig(node, source, symbols);
         }
         "library_import" => handle_dart_import(node, source, symbols),
         "constructor_invocation" | "new_expression" => {

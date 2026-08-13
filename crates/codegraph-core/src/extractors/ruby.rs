@@ -193,7 +193,7 @@ fn handle_require_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     for i in 0..args.child_count() {
         let Some(arg) = args.child(i) else { continue };
         if let Some(content) = extract_ruby_string_content(&arg, source) {
-            let last = content.split('/').last().unwrap_or("").to_string();
+            let last = content.split('/').next_back().unwrap_or("").to_string();
             let mut imp = Import::new(content, vec![last], start_line(node));
             imp.ruby_require = Some(true);
             symbols.imports.push(imp);

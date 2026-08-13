@@ -272,7 +272,7 @@ pub fn collect_files(
         .filter_entry(move |entry| {
             let name = entry.file_name().to_str().unwrap_or("");
             // Skip ignored directory names
-            if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 if ignore_set.contains(name) {
                     return false;
                 }

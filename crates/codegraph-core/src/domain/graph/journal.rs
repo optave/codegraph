@@ -85,10 +85,8 @@ pub fn write_journal_header(root_dir: &str, timestamp: f64) {
     }
 
     let content = format!("{HEADER_PREFIX}{timestamp}\n");
-    if fs::write(&tmp, &content).is_ok() {
-        if fs::rename(&tmp, &path).is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
+    if fs::write(&tmp, &content).is_ok() && fs::rename(&tmp, &path).is_err() {
+        let _ = fs::remove_file(&tmp);
     }
 }
 

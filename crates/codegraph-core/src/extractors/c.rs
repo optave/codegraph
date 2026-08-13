@@ -305,7 +305,7 @@ fn match_c_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth: u
                 let raw = node_text(&path_node, source);
                 let path = raw.trim_matches(|c| c == '"' || c == '<' || c == '>');
                 if !path.is_empty() {
-                    let last = path.split('/').last().unwrap_or(path);
+                    let last = path.split('/').next_back().unwrap_or(path);
                     let name = last.strip_suffix(".h").unwrap_or(last);
                     let mut imp =
                         Import::new(path.to_string(), vec![name.to_string()], start_line(node));

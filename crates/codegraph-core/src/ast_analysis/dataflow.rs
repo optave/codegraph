@@ -828,14 +828,12 @@ fn extract_param_names(node: &Node, rules: &DataflowRules, source: &[u8]) -> Vec
 /// Extract parameters: name + index pairs from formal_parameters node.
 fn extract_params(params_node: &Node, rules: &DataflowRules, source: &[u8]) -> Vec<(String, u32)> {
     let mut result = Vec::new();
-    let mut index: u32 = 0;
     let cursor = &mut params_node.walk();
-    for child in params_node.named_children(cursor) {
+    for (index, child) in params_node.named_children(cursor).enumerate() {
         let names = extract_param_names(&child, rules, source);
         for name in names {
-            result.push((name, index));
+            result.push((name, index as u32));
         }
-        index += 1;
     }
     result
 }
@@ -1197,6 +1195,9 @@ fn resolve_var_declarator_nodes<'a>(
 }
 
 /// Emit assignments for a destructuring pattern (object or array).
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical dataflow path (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn emit_destructuring_assignments(
     name_n: &Node,
     node: &Node,
@@ -1224,7 +1225,7 @@ fn handle_var_declarator(
     node: &Node,
     rules: &DataflowRules,
     source: &[u8],
-    scope_stack: &mut Vec<ScopeFrame>,
+    scope_stack: &mut [ScopeFrame],
     assignments: &mut Vec<DataflowAssignment>,
 ) {
     let (name_node, value_node) = resolve_var_declarator_nodes(node, rules);
@@ -1292,7 +1293,7 @@ fn handle_assignment(
     node: &Node,
     rules: &DataflowRules,
     source: &[u8],
-    scope_stack: &mut Vec<ScopeFrame>,
+    scope_stack: &mut [ScopeFrame],
     assignments: &mut Vec<DataflowAssignment>,
     mutations: &mut Vec<DataflowMutation>,
 ) {
@@ -1371,9 +1372,9 @@ fn handle_call_expr(
         None => return,
     };
 
-    let mut arg_index: u32 = 0;
     let cursor = &mut args_node.walk();
-    for arg_raw in args_node.named_children(cursor) {
+    for (arg_index, arg_raw) in args_node.named_children(cursor).enumerate() {
+        let arg_index = arg_index as u32;
         // PHP/Java: unwrap argument wrapper
         let arg = if rules
             .argument_wrapper_type
@@ -1419,7 +1420,6 @@ fn handle_call_expr(
                 });
             }
         }
-        arg_index += 1;
     }
 }
 

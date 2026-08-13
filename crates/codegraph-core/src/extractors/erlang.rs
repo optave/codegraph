@@ -25,11 +25,9 @@ fn match_erlang_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
         "record_decl" => handle_record_decl(node, source, symbols),
         "type_alias" | "opaque" => handle_type_alias(node, source, symbols),
         "fun_decl" => handle_fun_decl(node, source, symbols),
-        "function_clause" => {
-            // Only handle if not inside fun_decl (fun_decl handles its own clauses)
-            if node.parent().map(|p| p.kind()) != Some("fun_decl") {
-                handle_function_clause(node, source, symbols);
-            }
+        // Only handle if not inside fun_decl (fun_decl handles its own clauses)
+        "function_clause" if node.parent().map(|p| p.kind()) != Some("fun_decl") => {
+            handle_function_clause(node, source, symbols);
         }
         "pp_define" => handle_define(node, source, symbols),
         "pp_include" | "pp_include_lib" => handle_include(node, source, symbols),

@@ -3008,8 +3008,11 @@ fn handle_export_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let source_node = node
         .child_by_field_name("source")
         .or_else(|| find_child(node, "string"));
-    if source_node.is_some() && decl.is_none() {
-        handle_reexport(node, &source_node.unwrap(), source, symbols);
+    match &source_node {
+        Some(source_node) if decl.is_none() => {
+            handle_reexport(node, source_node, source, symbols);
+        }
+        _ => {}
     }
 }
 
@@ -3298,8 +3301,8 @@ fn walk_ast_nodes_depth(node: &Node, source: &[u8], ast_nodes: &mut Vec<AstNode>
             let raw = node_text(node, source);
             // Strip quotes to get content
             let content = raw
-                .trim_start_matches(|c| c == '\'' || c == '"' || c == '`')
-                .trim_end_matches(|c| c == '\'' || c == '"' || c == '`');
+                .trim_start_matches(['\'', '"', '`'])
+                .trim_end_matches(['\'', '"', '`']);
             // Count Unicode code points, not UTF-8 bytes, so the filter matches
             // helpers.rs `build_string_node` and the WASM visitor — a single non-
             // ASCII glyph like `─` (3 bytes / 1 code point) must be treated as one
@@ -4699,10 +4702,10 @@ fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8], depth: usize
                     continue;
                 };
                 match child.kind() {
-                    "shorthand_property_identifier_pattern" => {
-                        if node_text(&child, source) == name {
-                            return true;
-                        }
+                    "shorthand_property_identifier_pattern"
+                        if node_text(&child, source) == name =>
+                    {
+                        return true;
                     }
                     "pair_pattern" => {
                         if let Some(value) = child.child_by_field_name("value") {
@@ -4711,10 +4714,10 @@ fn pattern_binds_name(param_node: &Node, name: &str, source: &[u8], depth: usize
                             }
                         }
                     }
-                    "rest_pattern" | "object_assignment_pattern" => {
-                        if pattern_binds_name(&child, name, source, depth + 1) {
-                            return true;
-                        }
+                    "rest_pattern" | "object_assignment_pattern"
+                        if pattern_binds_name(&child, name, source, depth + 1) =>
+                    {
+                        return true;
                     }
                     _ => {}
                 }
@@ -4824,7 +4827,7 @@ fn scan_pattern_defaults_for_reference(
                             }
                         }
                     }
-                    "rest_pattern" | "object_assignment_pattern" => {
+                    "rest_pattern" | "object_assignment_pattern"
                         if scan_pattern_defaults_for_reference(
                             &child,
                             name,
@@ -4832,9 +4835,9 @@ fn scan_pattern_defaults_for_reference(
                             source,
                             depth + 1,
                             require_call_site,
-                        ) {
-                            return true;
-                        }
+                        ) =>
+                    {
+                        return true;
                     }
                     _ => {}
                 }
@@ -4929,10 +4932,11 @@ fn block_contains_identifier_excluding(
     if node.id() == exclude_id {
         return false;
     }
-    if node.kind() == "identifier" && node_text(node, source) == name {
-        if !require_call_site || is_call_callee(node) {
-            return true;
-        }
+    if node.kind() == "identifier"
+        && node_text(node, source) == name
+        && (!require_call_site || is_call_callee(node))
+    {
+        return true;
     }
     if SCOPE_NODE_TYPES.contains(&node.kind()) && introduces_shadowed_binding(node, name, source) {
         return false;

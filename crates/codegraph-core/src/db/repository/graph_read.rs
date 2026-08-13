@@ -305,7 +305,7 @@ fn expand_method_hierarchy_callers(
     if node.kind != "method" || !node.name.contains('.') {
         return Ok(());
     }
-    let method_name = match node.name.split('.').last() {
+    let method_name = match node.name.split('.').next_back() {
         Some(n) => n,
         None => return Ok(()),
     };

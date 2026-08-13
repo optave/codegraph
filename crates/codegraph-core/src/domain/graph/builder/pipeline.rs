@@ -12,7 +12,7 @@
 //! 5. Insert nodes (existing `insert_nodes::do_insert_nodes`) — file_hashes
 //!    for changed files is NOT written here; see step 7
 //! 6. Resolve imports (existing `resolve::resolve_imports_batch`)
-//! 6b. Re-parse barrel candidates (incremental only)
+//!    6b. Re-parse barrel candidates (incremental only)
 //! 7. Build import edges + call edges + barrel resolution, then commit
 //!    file_hashes for changed files (`insert_nodes::commit_file_hashes`) now
 //!    that their edges match this revision (#1731)
@@ -45,6 +45,12 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
+
+/// Per-file return-type index: `rel_path → (fn_name → (type_name, confidence))`.
+type ReturnTypeIndex = HashMap<String, HashMap<String, (String, f64)>>;
+
+/// Flat map for qualified `Type.method` lookups: `qualified_name → (type_name, confidence)`.
+type GlobalReturnTypes = HashMap<String, (String, f64)>;
 
 /// Timing result for each pipeline phase (returned as JSON to JS).
 #[derive(Debug, Clone, Serialize, Default)]
@@ -403,6 +409,9 @@ fn reconnect_saved_reverse_dep_edges(
 /// cross-directory import neighbors of `removed_files`, captured before they
 /// were purged — lets that refresh also reach a directory whose only link to
 /// the touched set was an edge to/from one of those removed files (#1839).
+// A params-struct refactor is deferred to avoid a hasty change to this
+// parity-critical build-pipeline phase (dual-engine mandate) — tracked in #2481.
+#[allow(clippy::too_many_arguments)]
 fn run_structure_phase(
     conn: &Connection,
     file_symbols: &BTreeMap<String, FileSymbols>,
@@ -1366,6 +1375,7 @@ fn build_file_hash_entries(
 /// Scoping is gated on:
 ///   - small incremental change set (`file_symbols.len() <= SMALL_FILES`)
 ///   - large-enough existing codebase (`file-node count > MIN_EXISTING`)
+///
 /// Both gates mirror the JS path in `build-edges.ts` (#976) to avoid
 /// exercising the scoped path on tiny fixtures where the scoped set can
 /// miss transitively-required nodes (e.g. a call site whose receiver type
@@ -1721,11 +1731,8 @@ fn propagate_return_types_across_files(
 fn build_return_type_index(
     conn: &Connection,
     file_symbols: &BTreeMap<String, FileSymbols>,
-) -> (
-    HashMap<String, HashMap<String, (String, f64)>>,
-    HashMap<String, (String, f64)>,
-) {
-    let mut return_type_index: HashMap<String, HashMap<String, (String, f64)>> = HashMap::new();
+) -> (ReturnTypeIndex, GlobalReturnTypes) {
+    let mut return_type_index: ReturnTypeIndex = HashMap::new();
     for (rel_path, symbols) in file_symbols.iter() {
         if symbols.return_type_map.is_empty() {
             continue;
@@ -1761,7 +1768,7 @@ fn build_return_type_index(
         }
     }
 
-    let mut global_return_types: HashMap<String, (String, f64)> = HashMap::new();
+    let mut global_return_types: GlobalReturnTypes = HashMap::new();
     let mut sorted_paths: Vec<&String> = return_type_index.keys().collect();
     sorted_paths.sort();
     for rel_path in sorted_paths {
@@ -1864,8 +1871,8 @@ fn inject_return_types_for_file(
     rel_path: &str,
     symbols: &mut FileSymbols,
     import_ctx: &ImportEdgeContext,
-    return_type_index: &HashMap<String, HashMap<String, (String, f64)>>,
-    global_return_types: &HashMap<String, (String, f64)>,
+    return_type_index: &ReturnTypeIndex,
+    global_return_types: &GlobalReturnTypes,
     hop_penalty: f64,
 ) {
     let abs_file = Path::new(&import_ctx.root_dir).join(rel_path);

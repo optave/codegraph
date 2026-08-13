@@ -98,7 +98,7 @@ fn median(sorted: &[u32]) -> f64 {
         return 0.0;
     }
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         (sorted[mid - 1] as f64 + sorted[mid] as f64) / 2.0
     } else {
         sorted[mid] as f64
@@ -113,7 +113,7 @@ fn compute_type_def_names_by_file(
 ) -> HashMap<String, std::collections::HashSet<String>> {
     let mut by_file: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
     for (_id, name, kind, file, _fan_in, _fan_out) in rows {
-        if TYPE_DEF_KINDS.iter().any(|k| *k == kind.as_str()) {
+        if TYPE_DEF_KINDS.contains(&kind.as_str()) {
             by_file
                 .entry(file.clone())
                 .or_default()
@@ -185,7 +185,7 @@ fn filter_type_member_property_rows(
 /// Dead sub-role classification matching JS `classifyDeadSubRole`.
 fn classify_dead_sub_role(_name: &str, kind: &str, file: &str) -> &'static str {
     // Leaf kinds
-    if LEAF_KINDS.iter().any(|k| *k == kind) {
+    if LEAF_KINDS.contains(&kind) {
         return "dead-leaf";
     }
     // FFI boundary (checked before dead-entry — an FFI boundary is a more
@@ -241,7 +241,7 @@ fn classify_node(
         // Well-known Commander.js dispatch methods (execute, validate) in framework
         // directories are confirmed entry points, not candidates. Promote them to
         // `entry` so they don't appear in `--role dead` output.
-        if COMMANDER_DISPATCH_NAMES.iter().any(|n| *n == name)
+        if COMMANDER_DISPATCH_NAMES.contains(&name)
             && ENTRY_PATH_PATTERNS.iter().any(|p| file.contains(p))
         {
             return "entry";
@@ -257,7 +257,7 @@ fn classify_node(
             // consumed via type annotations and struct literals — not calls — so they
             // never get inbound call edges. If the same file has active callables,
             // these types are almost certainly live — classify as leaf.
-            if TYPE_DEF_KINDS.iter().any(|k| *k == kind) {
+            if TYPE_DEF_KINDS.contains(&kind) {
                 return "leaf";
             }
             // Methods implementing interfaces are dispatched via conditional property
@@ -719,7 +719,7 @@ fn compute_active_files(
     let mut active = std::collections::HashSet::new();
     let mut called_active = std::collections::HashSet::new();
     for (_id, _name, kind, file, fan_in, fan_out) in rows {
-        if !ANNOTATION_ONLY_KINDS.iter().any(|k| *k == kind.as_str()) {
+        if !ANNOTATION_ONLY_KINDS.contains(&kind.as_str()) {
             if *fan_in > 0 || *fan_out > 0 {
                 active.insert(file.clone());
             }
@@ -813,8 +813,7 @@ fn classify_rows(
     for (id, name, kind, file, fan_in, fan_out) in rows {
         let is_exported = exported_ids.contains(id);
         let prod_fi = prod_fan_in.get(id).copied().unwrap_or(0);
-        let is_annotation_only =
-            kind == "constant" || TYPE_DEF_KINDS.iter().any(|k| *k == kind.as_str());
+        let is_annotation_only = kind == "constant" || TYPE_DEF_KINDS.contains(&kind.as_str());
         // Set has_active_siblings for annotation-only kinds AND for method/function —
         // the latter two can have fan_in == 0 due to untraced call-site patterns
         // (interface dispatch, logical-or defaults). The classifier interprets this
@@ -914,8 +913,7 @@ fn is_live_root(
     if is_public_surface {
         return true;
     }
-    COMMANDER_DISPATCH_NAMES.iter().any(|n| *n == name)
-        && ENTRY_PATH_PATTERNS.iter().any(|p| file.contains(p))
+    COMMANDER_DISPATCH_NAMES.contains(&name) && ENTRY_PATH_PATTERNS.iter().any(|p| file.contains(p))
 }
 
 /// Compute the set of bare (owner-prefix-stripped) member names declared by
@@ -1300,6 +1298,12 @@ fn find_neighbour_files(
     Ok(result)
 }
 
+/// `(id, name, file)` row for a `kind = 'property'` node.
+type LeafRow = (i64, String, String);
+
+/// `(id, name, kind, file, fan_in, fan_out)` row for a callable node.
+type CallableRow = (i64, String, String, String, u32, u32);
+
 /// Query leaf kind node rows and callable node rows for a set of files.
 /// `parameter` is intentionally excluded from the leaf query (#1723) — see
 /// `do_classify_full`'s leaf_rows comment for the rationale. Leaf rows carry
@@ -1308,10 +1312,7 @@ fn find_neighbour_files(
 fn query_nodes_for_files(
     tx: &rusqlite::Transaction,
     files: &[&str],
-) -> rusqlite::Result<(
-    Vec<(i64, String, String)>,
-    Vec<(i64, String, String, String, u32, u32)>,
-)> {
+) -> rusqlite::Result<(Vec<LeafRow>, Vec<CallableRow>)> {
     let ph: String = files.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
     let leaf_sql = format!(

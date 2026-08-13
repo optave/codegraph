@@ -1150,9 +1150,9 @@ fn classify_branch(node: &Node, kind: &str, rules: &LangRules, nesting_level: u3
     // Pattern A: else clause wraps if (JS/C#/Rust)
     if let Some(else_type) = rules.else_node_type {
         if kind == else_type {
-            let is_else_if = node.named_child(0).map_or(false, |c| {
-                rules.if_node_type.map_or(false, |if_t| c.kind() == if_t)
-            });
+            let is_else_if = node
+                .named_child(0)
+                .is_some_and(|c| rules.if_node_type.is_some_and(|if_t| c.kind() == if_t));
             if is_else_if {
                 // else-if: the if_statement child handles its own increment
                 return BranchAction::Handled {
@@ -1255,16 +1255,13 @@ fn is_pattern_d_else_if(node: &Node, rules: &LangRules) -> bool {
 
 /// Detect whether an if-node is actually an else-if (Pattern A, C, or D).
 fn detect_else_if(node: &Node, kind: &str, rules: &LangRules) -> bool {
-    if !rules.if_node_type.map_or(false, |if_t| kind == if_t) {
+    if rules.if_node_type != Some(kind) {
         return false;
     }
     if rules.else_via_alternative {
         // Pattern C (Go/Java): if_statement is the alternative of parent if_statement
         if let Some(parent) = node.parent() {
-            if rules
-                .if_node_type
-                .map_or(false, |if_t| parent.kind() == if_t)
-            {
+            if rules.if_node_type == Some(parent.kind()) {
                 if let Some(alt) = parent.child_by_field_name("alternative") {
                     if alt.id() == node.id() {
                         return true;
@@ -1275,10 +1272,7 @@ fn detect_else_if(node: &Node, kind: &str, rules: &LangRules) -> bool {
     } else if rules.else_node_type.is_some() {
         // Pattern A (JS/C#/Rust): if_statement inside else_clause
         if let Some(parent) = node.parent() {
-            if rules
-                .else_node_type
-                .map_or(false, |else_t| parent.kind() == else_t)
-            {
+            if rules.else_node_type == Some(parent.kind()) {
                 return true;
             }
         }
@@ -1294,14 +1288,11 @@ fn is_pattern_c_else(node: &Node, kind: &str, rules: &LangRules) -> bool {
     if !rules.else_via_alternative {
         return false;
     }
-    if rules.if_node_type.map_or(false, |if_t| kind == if_t) {
+    if rules.if_node_type == Some(kind) {
         return false; // This is an if, not a plain else block
     }
     if let Some(parent) = node.parent() {
-        if rules
-            .if_node_type
-            .map_or(false, |if_t| parent.kind() == if_t)
-        {
+        if rules.if_node_type == Some(parent.kind()) {
             if let Some(alt) = parent.child_by_field_name("alternative") {
                 return alt.id() == node.id();
             }
@@ -1315,7 +1306,7 @@ fn is_pattern_c_else(node: &Node, kind: &str, rules: &LangRules) -> bool {
 /// keyword — the Pattern-D counterpart to `is_pattern_c_else`, for grammars
 /// with no `else_clause` node and no `alternative` field (Solidity).
 fn is_pattern_d_else(node: &Node, kind: &str, rules: &LangRules) -> bool {
-    if rules.if_node_type.map_or(false, |if_t| kind == if_t) {
+    if rules.if_node_type == Some(kind) {
         return false; // if_statement is handled by detect_else_if instead
     }
     is_pattern_d_else_if(node, rules)
@@ -1361,9 +1352,9 @@ fn handle_logical_op(
     // sequence. `effective_parent` walks through transparent wrapper nodes
     // (e.g. Solidity's `expression`) that would otherwise hide a
     // same-operator chain's real parent binary_expression (issue #2312).
-    let same_sequence = effective_parent(node, rules).map_or(false, |parent| {
+    let same_sequence = effective_parent(node, rules).is_some_and(|parent| {
         rules.logical_node_types.contains(&parent.kind())
-            && parent.child(1).map_or(false, |pop| {
+            && parent.child(1).is_some_and(|pop| {
                 operator_key(&pop, source, rules.logical_operators_by_text) == op
             })
     });
@@ -2927,7 +2918,7 @@ fn walk_all(
     let kind = node.kind();
 
     // ── Halstead classification ──
-    let skip_h = halstead_skip || h_rules.map_or(false, |hr| hr.skip_types.contains(&kind));
+    let skip_h = halstead_skip || h_rules.is_some_and(|hr| hr.skip_types.contains(&kind));
 
     if let Some(hr) = h_rules {
         if !skip_h {

@@ -539,7 +539,7 @@ pub fn build_full_structure(
             abs.strip_prefix(root)
                 .ok()
                 .and_then(|p| p.to_str())
-                .map(|s| normalize_path(s))
+                .map(normalize_path)
         })
         .filter(|d| !d.is_empty() && d != ".")
         .collect();
@@ -793,7 +793,7 @@ fn insert_contains_edges(
     all_dirs: &HashSet<String>,
     changed_files: Option<&[String]>,
 ) {
-    let affected_dirs = changed_files.map(|cf| get_ancestor_dirs(cf));
+    let affected_dirs = changed_files.map(get_ancestor_dirs);
 
     let tx = match conn.unchecked_transaction() {
         Ok(tx) => tx,
@@ -1049,7 +1049,7 @@ fn count_directory_edges<'a>(
         if let Some(src_dirs) = src_dirs {
             for dir in src_dirs {
                 if let Some(counts) = dir_edge_counts.get_mut(dir) {
-                    if tgt_dirs.map_or(false, |td| td.contains(dir)) {
+                    if tgt_dirs.is_some_and(|td| td.contains(dir)) {
                         counts.0 += 1; // intra
                     } else {
                         counts.2 += 1; // fan_out
@@ -1059,7 +1059,7 @@ fn count_directory_edges<'a>(
         }
         if let Some(tgt_dirs) = tgt_dirs {
             for dir in tgt_dirs {
-                if src_dirs.map_or(true, |sd| !sd.contains(dir)) {
+                if src_dirs.is_none_or(|sd| !sd.contains(dir)) {
                     if let Some(counts) = dir_edge_counts.get_mut(dir) {
                         counts.1 += 1; // fan_in
                     }

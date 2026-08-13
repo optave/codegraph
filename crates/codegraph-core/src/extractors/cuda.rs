@@ -222,7 +222,7 @@ fn is_cuda_method_declarator(node: &Node) -> bool {
                 // data fields, not method declarations.
                 return current
                     .child_by_field_name("declarator")
-                    .map_or(true, |n| n.kind() != "parenthesized_declarator");
+                    .is_none_or(|n| n.kind() != "parenthesized_declarator");
             }
             _ => return false,
         }

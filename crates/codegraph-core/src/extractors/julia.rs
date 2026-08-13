@@ -779,7 +779,7 @@ mod tests {
         let names: Vec<&str> = s.definitions.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"Foo.bar"), "got {names:?}");
         assert!(
-            !names.iter().any(|n| *n == "Outer.Foo.bar"),
+            !names.contains(&"Outer.Foo.bar"),
             "qualified method got double-prefixed: {names:?}"
         );
     }
@@ -794,7 +794,7 @@ mod tests {
         let names: Vec<&str> = s.definitions.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"Base.show"), "got {names:?}");
         assert!(
-            !names.iter().any(|n| *n == "Foo.Base.show"),
+            !names.contains(&"Foo.Base.show"),
             "qualified function def got double-prefixed: {names:?}"
         );
     }

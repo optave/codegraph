@@ -10,6 +10,9 @@ use napi_derive::napi;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+/// `(source_node_id, target_node_id)` pair for a `contains`/`parameter_of` edge.
+type NodeEdge = (i64, i64);
+
 // ── Input types (received from JS via napi) ─────────────────────────
 
 /// Child node of a definition (parameter, nested function, etc.).
@@ -233,9 +236,9 @@ fn insert_file_nodes(
 fn insert_symbol_nodes(
     tx: &rusqlite::Transaction,
     batches: &[InsertNodesBatch],
-) -> rusqlite::Result<(Vec<(i64, i64)>, Vec<(i64, i64)>)> {
-    let mut contains_edges: Vec<(i64, i64)> = Vec::new();
-    let mut param_of_edges: Vec<(i64, i64)> = Vec::new();
+) -> rusqlite::Result<(Vec<NodeEdge>, Vec<NodeEdge>)> {
+    let mut contains_edges: Vec<NodeEdge> = Vec::new();
+    let mut param_of_edges: Vec<NodeEdge> = Vec::new();
 
     // Phase 2: query existing node IDs, insert children, collect file→def edges
     {
@@ -325,8 +328,8 @@ fn insert_symbol_nodes(
 /// [`insert_symbol_nodes`]. Single prepared statement, single pass.
 fn upsert_node_batch(
     tx: &rusqlite::Transaction,
-    contains_edges: &[(i64, i64)],
-    param_of_edges: &[(i64, i64)],
+    contains_edges: &[NodeEdge],
+    param_of_edges: &[NodeEdge],
 ) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare_cached(
         "INSERT OR IGNORE INTO edges (source_id, target_id, kind, confidence, dynamic) \

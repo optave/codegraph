@@ -524,8 +524,8 @@ fn find_parent_name(node: &Node, source: &[u8]) -> Option<String> {
 /// Strip leading/trailing single, double, or backtick quotes.
 fn strip_quotes(text: &str) -> String {
     let trimmed = text
-        .trim_start_matches(|c: char| c == '\'' || c == '"' || c == '`')
-        .trim_end_matches(|c: char| c == '\'' || c == '"' || c == '`');
+        .trim_start_matches(['\'', '"', '`'])
+        .trim_end_matches(['\'', '"', '`']);
     trimmed.to_string()
 }
 

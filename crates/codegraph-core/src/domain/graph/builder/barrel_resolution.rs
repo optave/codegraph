@@ -128,8 +128,11 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// Owned mirror of `ReexportRef`: `(source, names, wildcard_reexport, renames)`.
+    type TestReexportEntry = (String, Vec<String>, bool, Vec<RenamedImport>);
+
     struct TestContext {
-        reexports: HashMap<String, Vec<(String, Vec<String>, bool, Vec<RenamedImport>)>>,
+        reexports: HashMap<String, Vec<TestReexportEntry>>,
         definitions: HashMap<String, HashSet<String>>,
     }
 
@@ -151,7 +154,7 @@ mod tests {
         fn has_definition(&self, file_path: &str, symbol: &str) -> bool {
             self.definitions
                 .get(file_path)
-                .map_or(false, |defs| defs.contains(symbol))
+                .is_some_and(|defs| defs.contains(symbol))
         }
     }
 

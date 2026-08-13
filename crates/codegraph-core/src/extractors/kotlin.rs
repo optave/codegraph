@@ -338,7 +338,7 @@ fn match_kotlin_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dep
         "import_header" => {
             if let Some(id_node) = find_child(node, "identifier") {
                 let path = node_text(&id_node, source).to_string();
-                let last = path.split('.').last().unwrap_or("").to_string();
+                let last = path.split('.').next_back().unwrap_or("").to_string();
                 let mut imp = Import::new(path, vec![last], start_line(node));
                 imp.kotlin_import = Some(true);
                 symbols.imports.push(imp);

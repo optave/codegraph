@@ -306,7 +306,7 @@ fn handle_haskell_import(node: &Node, source: &[u8], symbols: &mut FileSymbols) 
     if names.is_empty() {
         let last = source_name
             .split('.')
-            .last()
+            .next_back()
             .unwrap_or(&source_name)
             .to_string();
         names.push(last);

@@ -385,7 +385,7 @@ fn match_swift_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _dept
         "import_declaration" => {
             if let Some(id_node) = find_child(node, "identifier") {
                 let path = node_text(&id_node, source).to_string();
-                let last = path.split('.').last().unwrap_or(&path).to_string();
+                let last = path.split('.').next_back().unwrap_or(&path).to_string();
                 let mut imp = Import::new(path, vec![last], start_line(node));
                 imp.swift_import = Some(true);
                 symbols.imports.push(imp);

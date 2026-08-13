@@ -252,7 +252,7 @@ fn handle_namespace_use(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
                 find_child(&child, "qualified_name").or_else(|| find_child(&child, "name"));
             if let Some(name_node) = name_node {
                 let full_path = node_text(&name_node, source).to_string();
-                let last_name = full_path.split('\\').last().unwrap_or("").to_string();
+                let last_name = full_path.split('\\').next_back().unwrap_or("").to_string();
                 let alias = child.child_by_field_name("alias");
                 let alias_text = alias
                     .map(|a| node_text(&a, source).to_string())
@@ -265,7 +265,7 @@ fn handle_namespace_use(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         // Single use clause without wrapper
         if child.kind() == "qualified_name" || child.kind() == "name" {
             let full_path = node_text(&child, source).to_string();
-            let last_name = full_path.split('\\').last().unwrap_or("").to_string();
+            let last_name = full_path.split('\\').next_back().unwrap_or("").to_string();
             let mut imp = Import::new(full_path, vec![last_name], start_line(node));
             imp.php_use = Some(true);
             symbols.imports.push(imp);
@@ -290,7 +290,7 @@ fn handle_function_call(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         }
         "qualified_name" => {
             let text = node_text(&fn_node, source);
-            let last = text.split('\\').last().unwrap_or("");
+            let last = text.split('\\').next_back().unwrap_or("");
             symbols.calls.push(Call {
                 name: last.to_string(),
                 line: start_line(node),
@@ -337,7 +337,7 @@ fn handle_object_creation(node: &Node, source: &[u8], symbols: &mut FileSymbols)
         return;
     }
     let text = node_text(&class_node, source);
-    let last = text.split('\\').last().unwrap_or("");
+    let last = text.split('\\').next_back().unwrap_or("");
     symbols.calls.push(Call {
         name: last.to_string(),
         line: start_line(node),

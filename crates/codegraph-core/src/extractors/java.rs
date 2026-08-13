@@ -321,7 +321,7 @@ fn handle_import_decl(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         let names = if has_asterisk {
             vec!["*".to_string()]
         } else {
-            let last = import_path.split('.').last().unwrap_or("").to_string();
+            let last = import_path.split('.').next_back().unwrap_or("").to_string();
             vec![last]
         };
         push_import(symbols, node, import_path, names, |imp| {

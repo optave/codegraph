@@ -59,8 +59,11 @@ fn match_bash_node(node: &Node, source: &[u8], symbols: &mut FileSymbols, _depth
                                         .trim_matches(|c| c == '"' || c == '\'')
                                         .to_string();
                                     if !path.is_empty() {
-                                        let last =
-                                            path.split('/').last().unwrap_or(&path).to_string();
+                                        let last = path
+                                            .split('/')
+                                            .next_back()
+                                            .unwrap_or(&path)
+                                            .to_string();
                                         let mut imp =
                                             Import::new(path, vec![last], start_line(node));
                                         imp.bash_source = Some(true);

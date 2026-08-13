@@ -352,7 +352,7 @@ fn handle_cpp_preproc_include(node: &Node, source: &[u8], symbols: &mut FileSymb
         let raw = node_text(&path_node, source);
         let path = raw.trim_matches(|c| c == '"' || c == '<' || c == '>');
         if !path.is_empty() {
-            let last = path.split('/').last().unwrap_or(path);
+            let last = path.split('/').next_back().unwrap_or(path);
             let name = last
                 .strip_suffix(".h")
                 .or_else(|| last.strip_suffix(".hpp"))

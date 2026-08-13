@@ -186,10 +186,8 @@ fn extract_scala_import_path(node: &Node, source: &[u8]) -> String {
                     }
                     path.push_str(node_text(&child, source));
                 }
-                "." => {
-                    if !path.is_empty() {
-                        path.push('.');
-                    }
+                "." if !path.is_empty() => {
+                    path.push('.');
                 }
                 "import_selectors" => {
                     // e.g. import scala.collection.mutable.{Map, Set}
@@ -322,7 +320,7 @@ fn handle_scala_function_definition(node: &Node, source: &[u8], symbols: &mut Fi
 fn handle_scala_import_declaration(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let path = extract_scala_import_path(node, source);
     if !path.is_empty() {
-        let last = path.split('.').last().unwrap_or("").to_string();
+        let last = path.split('.').next_back().unwrap_or("").to_string();
         let mut imp = Import::new(path, vec![last], start_line(node));
         imp.scala_import = Some(true);
         symbols.imports.push(imp);
