@@ -164,6 +164,27 @@ describe.skipIf(BASH4 === null)(
       expect(ranSuccessfully).toBe(true);
       expect(stdout).not.toContain('Cross-fence variable: $ARR');
     });
+
+    // Greptile round 3 on PR #2490: a value-taking flag combined into a
+    // multi-letter cluster (e.g. `-ei`, where `-e` takes no argument but
+    // the trailing `-i` does) wasn't recognized — only a standalone
+    // single-letter flag was.
+    it('still flags a leak past a combined short-flag cluster ending in a value-taking flag', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'FOO=hello',
+        'read -ei FOO BAR\necho "leak: $FOO"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
+      );
+    });
+
+    it('does not flag a combined cluster ending in `-a` (still a genuine array destination)', () => {
+      const { stdout, ranSuccessfully } = runLint(['read -ra ARR <<< "one two three"']);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).not.toContain('Cross-fence variable: $ARR');
+    });
   },
 );
 

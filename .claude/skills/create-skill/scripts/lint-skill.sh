@@ -88,13 +88,16 @@ while IFS=$'\t' read -r bnum line; do
     #   - quoted option arguments (`-p "prompt text"`, which may contain
     #     arbitrary uppercase words that aren't destinations at all)
     #   - a value-taking flag's own argument (`-t 5`, `-u FD`, `-d ':'`,
-    #     `-i "initial text"`) — every read flag EXCEPT `-a` (whose argument
-    #     is itself a genuine destination: the array read into)
+    #     `-i "initial text"`, and combined short forms like `-ei FOO`,
+    #     where `-e` takes no argument but the trailing `-i` does — every
+    #     read flag EXCEPT `-a` (whose argument is itself a genuine
+    #     destination: the array read into), so the strip only fires when
+    #     the cluster's LAST letter is one of the other value-taking flags
     #   - a `$`-prefixed token, which REFERENCES a var rather than binding it
     read_args="${read_args%%;*}"
     read_args="${read_args%%<*}"
     read_args=$(printf '%s' "$read_args" | sed -E 's/"[^"]*"//g' | sed -E "s/'[^']*'//g")
-    read_args=$(printf '%s' "$read_args" | sed -E 's/-[ptnNdui][[:space:]]+[^[:space:]]+//g')
+    read_args=$(printf '%s' "$read_args" | sed -E 's/-[a-zA-Z]*[ptnNdui][[:space:]]+[^[:space:]]+//g')
     while IFS= read -r var; do
       [ -z "$var" ] && continue
       register_var "$var" "$bnum"
