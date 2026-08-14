@@ -68,16 +68,27 @@ function makeChaCtx(
     parents: new Map(Object.entries(parents)),
     parentsByFile: new Map(Object.entries(parentsByFile)),
     instantiatedTypes: new Set(),
+    newExpressionTypes: new Set(),
   };
 }
 
-/** Build a ChaContext for resolveChaTargets tests (implementors-focused). */
+/**
+ * Build a ChaContext for resolveChaTargets tests (implementors-focused).
+ *
+ * `newExpressionTypes` defaults to the same names as `instantiatedTypes`
+ * when not given explicitly — every existing caller of this helper predates
+ * the `newExpressionTypes`/`instantiatedTypes` split (#2348) and already
+ * intends its `instantiatedTypes` entries to mean genuine construction
+ * evidence, so this keeps them passing unchanged. Pass `newExpressionTypes`
+ * explicitly to exercise the strict-vs-merged distinction itself.
+ */
 function makeChaTargetsCtx(opts: {
   implementors?: Record<string, string[]>;
   implementorsByFile?: Record<string, string[]>;
   parents?: Record<string, string>;
   parentsByFile?: Record<string, string>;
   instantiatedTypes?: string[];
+  newExpressionTypes?: string[];
 }): ChaContext {
   return {
     implementors: new Map(Object.entries(opts.implementors ?? {})),
@@ -85,6 +96,7 @@ function makeChaTargetsCtx(opts: {
     parents: new Map(Object.entries(opts.parents ?? {})),
     parentsByFile: new Map(Object.entries(opts.parentsByFile ?? {})),
     instantiatedTypes: new Set(opts.instantiatedTypes ?? []),
+    newExpressionTypes: new Set(opts.newExpressionTypes ?? opts.instantiatedTypes ?? []),
   };
 }
 

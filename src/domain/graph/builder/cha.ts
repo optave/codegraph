@@ -52,6 +52,21 @@ export interface ChaContext {
   readonly parentsByFile: ReadonlyMap<string, string>;
   /** RTA: class names that appear in `new X()` anywhere in the project */
   readonly instantiatedTypes: ReadonlySet<string>;
+  /**
+   * STRICT subset of `instantiatedTypes`: class names backed ONLY by a
+   * literal `new X()` expression somewhere in the project, never by the
+   * weaker type-annotation (confidence >= 0.9) heuristic that also feeds
+   * `instantiatedTypes`. `resolveChaTargets`'s receiver-own-type check
+   * (#2348) needs this stricter bar: unlike a subclass BFS hit (which is
+   * additionally gated by actually walking the hierarchy to reach that
+   * child), the root has no such gate — its own type name is exactly what
+   * the earlier, proximity-gated qualified lookup already tried and
+   * rejected one tier up, so re-admitting it ungated on nothing more than a
+   * type annotation would wrongly resurrect a distant interface's own
+   * (bodyless) method purely because some unrelated concrete subclass
+   * happens to override the same method name.
+   */
+  readonly newExpressionTypes: ReadonlySet<string>;
 }
 
 export const EMPTY_CHA_CONTEXT: ChaContext = {
@@ -60,6 +75,7 @@ export const EMPTY_CHA_CONTEXT: ChaContext = {
   parents: new Map(),
   parentsByFile: new Map(),
   instantiatedTypes: new Set(),
+  newExpressionTypes: new Set(),
 };
 
 /**
@@ -143,11 +159,21 @@ function addToFileScoped(
  * 8.5 dedicated `newExpressions` list (all `new X()` in the file), plus the
  * constructor-confidence typeMap fallback (confidence >= 0.9) that covers
  * codebases that haven't been re-parsed since Phase 8.5 was added.
+ *
+ * `newExpressionTypes` collects ONLY the first (strict) source — see
+ * `ChaContext.newExpressionTypes`'s doc comment for why the receiver-own-type
+ * check in `resolveChaTargets` (#2348) needs that stricter signal instead of
+ * the merged `instantiatedTypes` set.
  */
-function collectInstantiatedTypes(symbols: ExtractorOutput, instantiatedTypes: Set<string>): void {
+function collectInstantiatedTypes(
+  symbols: ExtractorOutput,
+  instantiatedTypes: Set<string>,
+  newExpressionTypes: Set<string>,
+): void {
   if (symbols.newExpressions) {
     for (const typeName of symbols.newExpressions) {
       instantiatedTypes.add(typeName);
+      newExpressionTypes.add(typeName);
     }
   }
   if (symbols.typeMap instanceof Map) {
@@ -171,6 +197,7 @@ export function buildChaContext(fileSymbols: ReadonlyMap<string, ExtractorOutput
   const parents = new Map<string, string>();
   const parentsByFile = new Map<string, string>();
   const instantiatedTypes = new Set<string>();
+  const newExpressionTypes = new Set<string>();
 
   for (const [file, symbols] of fileSymbols) {
     // `symbols.classes` only lists class RELATIONS (entries with an extends/
@@ -195,10 +222,17 @@ export function buildChaContext(fileSymbols: ReadonlyMap<string, ExtractorOutput
         localClassNames,
       );
     }
-    collectInstantiatedTypes(symbols, instantiatedTypes);
+    collectInstantiatedTypes(symbols, instantiatedTypes, newExpressionTypes);
   }
 
-  return { implementors, implementorsByFile, parents, parentsByFile, instantiatedTypes };
+  return {
+    implementors,
+    implementorsByFile,
+    parents,
+    parentsByFile,
+    instantiatedTypes,
+    newExpressionTypes,
+  };
 }
 
 /**
@@ -291,8 +325,22 @@ export function buildChaContextFromDb(db: BetterSqlite3Database): ChaContext {
     `)
     .all() as Array<{ name: string }>;
   const instantiatedTypes = new Set(rtaRows.map((r) => r.name));
+  // This path's RTA evidence is ALREADY strict (a resolved constructor call
+  // in the DB, not a bare type-annotation heuristic — see this function's
+  // doc comment), so `newExpressionTypes` can safely reuse the same set
+  // rather than needing a separately-collected one (contrast
+  // `buildChaContext`, whose in-memory `instantiatedTypes` is a weaker
+  // merged signal and therefore needs a distinct strict subset).
+  const newExpressionTypes = instantiatedTypes;
 
-  return { implementors, implementorsByFile, parents, parentsByFile, instantiatedTypes };
+  return {
+    implementors,
+    implementorsByFile,
+    parents,
+    parentsByFile,
+    instantiatedTypes,
+    newExpressionTypes,
+  };
 }
 
 /**
@@ -641,6 +689,34 @@ function resolveMethodViaAncestors(
  * scoped lookup falls back to the bare one when it finds nothing, so this is
  * never a regression — only a precision gain when file identity happens to
  * be known.
+ *
+ * The receiver's own declared type (`typeName`) is a valid dispatch target
+ * too, not just its subclasses. Previously this function only walked
+ * `chaCtx.implementors`/`implementorsByFile` starting FROM `typeName` to
+ * find children — it never checked whether `typeName` itself is
+ * instantiated. When the receiver's own type is instantiated directly and
+ * ALSO has an unrelated subclass overriding the same method (even a
+ * test-file-local one), the base type's own method was silently dropped
+ * from the result set while the unrelated subclass's override leaked in
+ * instead (#2348). Resolving `typeName` via the same
+ * `resolveMethodViaAncestors` helper used for children fixes this
+ * symmetrically — a duplicate resolution of an already-correctly-resolved
+ * edge is a no-op thanks to `emitChaCallEdgesForCall`'s `seenCallEdges`
+ * dedup, so this can only add a missing edge, never introduce a wrong one.
+ *
+ * This root-type check deliberately uses `chaCtx.newExpressionTypes`
+ * (STRICT: literal `new X()` evidence only) rather than the merged
+ * `chaCtx.instantiatedTypes` (which also credits a bare high-confidence
+ * type annotation, e.g. a `db: SomeInterface` parameter, as "instantiated").
+ * A child's BFS hit can safely trust the weaker merged signal because it is
+ * additionally gated by actually walking the class hierarchy to reach that
+ * child in the first place; the root has no such gate — `typeName` here is
+ * exactly what the earlier, proximity-gated qualified lookup already tried
+ * (and rejected) one tier up (see `CHA_TYPED_DISPATCH_CONFIDENCE`'s call
+ * site in `build-edges.ts`), so re-admitting it ungated on nothing more than
+ * a type annotation would wrongly resurrect a distant interface's own
+ * (bodyless) method purely because some unrelated concrete subclass happens
+ * to override the same method name.
  */
 export function resolveChaTargets(
   typeName: string,
@@ -656,6 +732,12 @@ export function resolveChaTargets(
   ];
   const visited = new Set<string>();
   visited.add(typeName);
+
+  if (chaCtx.newExpressionTypes.has(typeName)) {
+    results.push(
+      ...resolveMethodViaAncestors(typeName, callerFile ?? null, methodName, chaCtx, lookup),
+    );
+  }
 
   while (queue.length > 0) {
     const { name: current, file: currentFile } = queue.shift()!;
