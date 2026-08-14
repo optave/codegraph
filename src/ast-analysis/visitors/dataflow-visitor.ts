@@ -484,6 +484,19 @@ function dispatchDataflowNode(ctx: DataflowDispatchCtx, node: TreeSitterNode): v
 
   if (rules.functionNodes.has(t)) return;
 
+  // Arrow/`=>`-style implicit return (issue #2356): this node's grammar
+  // allows a bare expression directly in place of a block-wrapped statement
+  // body. When it's NOT block-wrapped, treat the node itself as if it were a
+  // return_statement — handleReturn only reads namedChildren[0], so it works
+  // unmodified regardless of the actual wrapper node's type.
+  if (rules.implicitReturnBodyNode && t === rules.implicitReturnBodyNode) {
+    const sole = node.namedChildCount === 1 ? node.namedChildren[0] : null;
+    if (sole && sole.type !== rules.blockBodyNode) {
+      handleReturn(node, rules, ctx.scopeStack, ctx.returns);
+    }
+    return;
+  }
+
   if (rules.returnNode && t === rules.returnNode) {
     handleReturn(node, rules, ctx.scopeStack, ctx.returns);
     return;

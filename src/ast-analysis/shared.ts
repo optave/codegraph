@@ -137,6 +137,10 @@ export const DATAFLOW_DEFAULTS: DataflowRulesConfig = {
   equalsClauseType: null, // C#: equals_value_clause wraps variable initializer
   argumentWrapperType: null, // PHP: individual args wrapped in 'argument' nodes
   extraIdentifierTypes: null, // Set of additional identifier-like types (PHP: variable_name, name)
+
+  // Arrow/`=>`-style implicit-return body (issue #2356)
+  implicitReturnBodyNode: null,
+  blockBodyNode: 'block',
 };
 
 export function makeDataflowRules(overrides: Partial<DataflowRulesConfig>): DataflowRulesConfig {

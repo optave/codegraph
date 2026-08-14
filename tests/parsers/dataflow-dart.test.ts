@@ -109,5 +109,39 @@ describe('extractDataflow — Dart', () => {
         ]),
       );
     });
+
+    // Issue #2356: tree-sitter-dart represents an arrow-bodied function's
+    // function_body as containing the expression DIRECTLY — no
+    // return_statement node at all — so returnNode's exact-type match never
+    // fires for these, independent of the #2182 sibling-body architecture.
+    it('captures an implicit return from a top-level arrow-bodied function (no return_statement in the grammar)', () => {
+      const data = parseAndExtract('int multiply(int x, int y) => x * y;\n');
+      expect(data!.returns).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            funcName: 'multiply',
+            referencedNames: expect.arrayContaining(['x', 'y']),
+          }),
+        ]),
+      );
+    });
+
+    it('captures an implicit return from an arrow-bodied class method', () => {
+      const data = parseAndExtract('class Calculator {\n  int add(int a, int b) => a + b;\n}\n');
+      expect(data!.returns).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            funcName: 'add',
+            referencedNames: expect.arrayContaining(['a', 'b']),
+          }),
+        ]),
+      );
+    });
+
+    it('does not double-count a block-bodied function as an implicit return', () => {
+      const data = parseAndExtract('int multiply(int x, int y) {\n  return x * y;\n}\n');
+      const multiplyReturns = (data!.returns as any[]).filter((r) => r.funcName === 'multiply');
+      expect(multiplyReturns).toHaveLength(1);
+    });
   });
 });

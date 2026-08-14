@@ -1384,6 +1384,18 @@ export interface DataflowRulesConfig {
   equalsClauseType: string | null;
   argumentWrapperType: string | null;
   extraIdentifierTypes: Set<string> | null;
+  /**
+   * Node type whose grammar allows EITHER a `blockBodyNode`-wrapped statement
+   * body OR a bare expression directly as its child (an arrow/`=>`-style
+   * implicit return, e.g. tree-sitter-dart's `function_body` in
+   * `int f() => x + 1;`). When set and the node's only named child is not
+   * `blockBodyNode`, that child is recorded as an implicit `returns` entry
+   * (issue #2356) — mirrors what a `return_statement` around the same
+   * expression would have produced.
+   */
+  implicitReturnBodyNode: string | null;
+  /** The "real" statement-block wrapper type `implicitReturnBodyNode` is compared against. */
+  blockBodyNode: string;
 }
 
 /** Language rule module: exports from each language rule file. */

@@ -596,6 +596,12 @@ export const dataflowDart: DataflowRulesConfig = makeDataflowRules({
   extractParamName: extractDartParamName,
 
   returnNode: 'return_statement',
+  // Arrow/`=>`-style implicit return (issue #2356): tree-sitter-dart's
+  // function_body node's ONLY child is either a `block` (`{ ... }`) or one
+  // of many bare expression types directly (`int f() => x + 1;` — no
+  // return_statement at all). blockBodyNode defaults to 'block', which
+  // already matches Dart's own block type name.
+  implicitReturnBodyNode: 'function_body',
 
   callNode: 'call_expression',
   // tree-sitter-dart does not have standard named fields for calls;
