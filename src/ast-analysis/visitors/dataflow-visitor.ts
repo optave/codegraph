@@ -207,6 +207,65 @@ function recordSimpleAssignment(
   scope.locals.set(varName, { type: 'call_return', callee });
 }
 
+/**
+ * Resolve a call node's callee name and argument-list node, using the
+ * language's `resolveCallParts` override when set (issue #2357 — grammars
+ * like tree-sitter-dart's `postfix_expression` have no field-based
+ * `callFunctionField`/`callArgsField` structure to read from a single
+ * self-contained node), falling back to the default field-based lookup
+ * (`resolveCalleeName` + `childForFieldName(callArgsField)`) otherwise.
+ */
+function resolveCallExprParts(
+  node: TreeSitterNode,
+  rules: AnyRules,
+): { callee: string; argsNode: TreeSitterNode } | null {
+  if (rules.resolveCallParts) return rules.resolveCallParts(node);
+  const callee = resolveCalleeName(node, rules);
+  const argsNode = node.childForFieldName(rules.callArgsField);
+  if (!callee || !argsNode) return null;
+  return { callee, argsNode };
+}
+
+/**
+ * Find the node `resolveCallExprParts` should be given for a value expression
+ * that MIGHT be call-sourced. For most languages `node` (already
+ * field-resolved to e.g. a `call_expression`) already IS the call node —
+ * `isCallNode(node.type)` returns it unchanged, exactly reproducing every
+ * existing caller's prior `isCall(node, isCallNode) ? node : null` check
+ * with zero behavior change.
+ *
+ * For a grammar whose call-node dispatch target is a SIBLING of the value
+ * expression rather than the value expression itself (tree-sitter-dart's
+ * `selector`, resolved backward from the callee — see `resolveDartCallParts`,
+ * issue #2357), `node` is instead the callee's own base expression (e.g. the
+ * bare `identifier` a var's `value` field resolves to for `var x =
+ * helper(y);`). This walks FORWARD through `node`'s sibling chain — a call's
+ * argument-list selector is always last in tree-sitter-dart's flat sibling
+ * sequence — to find the trailing call-node sibling, the symmetric
+ * counterpart of `resolveDartCallParts`'s backward walk. Returns null when
+ * no call-node sibling follows (a non-call value expression).
+ */
+function findCallSelector(
+  node: TreeSitterNode,
+  rules: AnyRules,
+  isCallNode: (t: string) => boolean,
+): TreeSitterNode | null {
+  if (isCallNode(node.type)) return node;
+  if (!rules.callChainSiblingType) return null;
+  let sib: TreeSitterNode | null = node.nextSibling;
+  let last: TreeSitterNode | null = null;
+  while (sib) {
+    if (!sib.isNamed) {
+      sib = sib.nextSibling;
+      continue;
+    }
+    if (sib.type !== rules.callChainSiblingType) break;
+    last = sib;
+    sib = sib.nextSibling;
+  }
+  return last && isCallNode(last.type) ? last : null;
+}
+
 function handleVarDeclarator(
   node: TreeSitterNode,
   rules: AnyRules,
@@ -222,11 +281,12 @@ function handleVarDeclarator(
   if (!nameNode || !valueNode || !scope) return;
 
   const unwrapped = unwrapAwait(valueNode, rules);
-  const callExpr = isCall(unwrapped, isCallNode) ? unwrapped : null;
+  const callExpr = findCallSelector(unwrapped, rules, isCallNode);
   if (!callExpr) return;
 
-  const callee = resolveCalleeName(callExpr, rules);
-  if (!callee || !scope.funcName) return;
+  const parts = resolveCallExprParts(callExpr, rules);
+  if (!parts || !scope.funcName) return;
+  const { callee } = parts;
 
   const isDestructured =
     (rules.objectDestructType && nameNode.type === rules.objectDestructType) ||
@@ -315,10 +375,10 @@ function handleCallExpr(
   scopeStack: ScopeEntry[],
   argFlows: DataflowArgFlow[],
 ): void {
-  const callee = resolveCalleeName(node, rules);
-  const argsNode = node.childForFieldName(rules.callArgsField);
+  const parts = resolveCallExprParts(node, rules);
   const scope = currentScope(scopeStack);
-  if (!callee || !argsNode || !scope?.funcName) return;
+  if (!parts || !scope?.funcName) return;
+  const { callee, argsNode } = parts;
 
   let argIndex = 0;
   for (const arg of argsNode.namedChildren) {

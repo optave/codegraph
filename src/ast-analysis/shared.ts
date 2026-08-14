@@ -141,6 +141,10 @@ export const DATAFLOW_DEFAULTS: DataflowRulesConfig = {
   // Arrow/`=>`-style implicit-return body (issue #2356)
   implicitReturnBodyNode: null,
   blockBodyNode: 'block',
+
+  // Fieldless call structure override (issue #2357)
+  resolveCallParts: null,
+  callChainSiblingType: null,
 };
 
 export function makeDataflowRules(overrides: Partial<DataflowRulesConfig>): DataflowRulesConfig {

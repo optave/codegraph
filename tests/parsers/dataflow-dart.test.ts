@@ -144,4 +144,66 @@ describe('extractDataflow — Dart', () => {
       expect(multiplyReturns).toHaveLength(1);
     });
   });
+
+  // Issue #2357: tree-sitter-dart has no call_expression node type at all,
+  // and its documented postfix_expression wrapper never actually appears in
+  // a parsed tree either — a call is a flat sequence of siblings (a base
+  // expression followed by a chain of `selector` siblings, one of which
+  // wraps an argument_part when it's a call). callNode/resolveCallParts and
+  // the argument-wrapper config were entirely unset, so argFlows (and any
+  // call-derived dataflow) was always empty regardless of the sibling-body
+  // and return fixes above.
+  describe('calls', () => {
+    it('tracks a bare call argument flow (helper(x) as a return expression)', () => {
+      const data = parseAndExtract('int square(int x) {\n  return helper(x);\n}\n');
+      expect(data!.argFlows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ callerFunc: 'square', calleeName: 'helper', argName: 'x' }),
+        ]),
+      );
+    });
+
+    it('tracks a bare statement-level call argument flow', () => {
+      const data = parseAndExtract('int square(int x) {\n  helper(x);\n  return x;\n}\n');
+      expect(data!.argFlows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ callerFunc: 'square', calleeName: 'helper', argName: 'x' }),
+        ]),
+      );
+    });
+
+    it('tracks a method-call argument flow, resolving the callee via the preceding property selector', () => {
+      const data = parseAndExtract(
+        'class Obj {\n  int method(int x) => x;\n}\nint square(Obj obj, int x) {\n  return obj.method(x);\n}\n',
+      );
+      expect(data!.argFlows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ callerFunc: 'square', calleeName: 'method', argName: 'x' }),
+        ]),
+      );
+    });
+
+    it('does not misidentify a non-call postfix expression (x++) as a call', () => {
+      const data = parseAndExtract('int inc(int x) {\n  x++;\n  return x;\n}\n');
+      expect(data!.argFlows).toEqual([]);
+    });
+  });
+
+  describe('assignments', () => {
+    it('tracks a call-sourced variable assignment (var x = helper(y))', () => {
+      const data = parseAndExtract('int square(int y) {\n  var x = helper(y);\n  return x;\n}\n');
+      expect(data!.assignments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ varName: 'x', callerFunc: 'square', sourceCallName: 'helper' }),
+        ]),
+      );
+    });
+
+    it('does not record a plain (non-call-sourced) variable declaration as an assignment', () => {
+      const data = parseAndExtract(
+        'int add(int a, int b) {\n  var sum = a + b;\n  return sum;\n}\n',
+      );
+      expect(data!.assignments).toEqual([]);
+    });
+  });
 });

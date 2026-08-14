@@ -1396,6 +1396,36 @@ export interface DataflowRulesConfig {
   implicitReturnBodyNode: string | null;
   /** The "real" statement-block wrapper type `implicitReturnBodyNode` is compared against. */
   blockBodyNode: string;
+  /**
+   * Override for grammars where a call has no field-based (`callFunctionField`/
+   * `callArgsField`) structure to read from a single self-contained node —
+   * e.g. tree-sitter-dart, which has no `call_expression` node type, AND
+   * whose grammar-documented `postfix_expression` wrapper never actually
+   * appears in a parsed tree either: a call is a FLAT SEQUENCE OF SIBLINGS
+   * (a base expression followed by a chain of `selector` siblings, one of
+   * which wraps an `argument_part` when it's a call — issue #2357). When
+   * set, this replaces the default `resolveCalleeName` +
+   * `childForFieldName(callArgsField)` lookup everywhere a call's
+   * callee/argument-list is resolved. Returns `null` when `node` isn't
+   * actually a call (e.g. Dart's `selector` also represents non-call member
+   * access and `x++`/`x--`).
+   */
+  resolveCallParts:
+    | ((node: TreeSitterNode) => { callee: string; argsNode: TreeSitterNode } | null)
+    | null;
+  /**
+   * The sibling node type `resolveCallParts`-style grammars chain calls
+   * through (Dart: `'selector'`). Lets `findCallSelector` (dataflow-visitor.ts)
+   * walk FORWARD from a call's base expression — resolved via the normal
+   * `varValueField`/`callFunctionField` lookup, landing on the base rather
+   * than the call itself in these grammars — to the trailing call-node
+   * sibling, so a call-sourced variable assignment (`var x = helper(y);`)
+   * is recognized the same way it already is for languages whose call node
+   * IS the value node directly (issue #2357). `null` for those languages:
+   * `findCallSelector` short-circuits via `isCallNode(node.type)` before
+   * ever consulting this field.
+   */
+  callChainSiblingType: string | null;
 }
 
 /** Language rule module: exports from each language rule file. */
