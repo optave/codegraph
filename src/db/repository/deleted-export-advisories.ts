@@ -250,8 +250,10 @@ export function getDeletedExportAdvisories(
       line: row.consumer_line,
       // Rows persisted before migration v22 have consumer_kind = NULL — leave
       // consumerKind undefined for those rather than guessing, same as any
-      // other pre-#1973 advisory row (#1973).
-      ...(row.consumer_kind === 'file' || row.consumer_kind === 'symbol'
+      // other pre-#1973 advisory row (#1973). 'topLevelCall' added by #2365.
+      ...(row.consumer_kind === 'file' ||
+      row.consumer_kind === 'symbol' ||
+      row.consumer_kind === 'topLevelCall'
         ? { consumerKind: row.consumer_kind }
         : {}),
     });

@@ -337,7 +337,20 @@ describe('exportsData — import type consumer crediting (#1724)', () => {
     const target = data.results.find((r) => r.name === 'topLevelTarget');
     expect(target).toBeDefined();
     expect(target.consumers.length).toBe(1);
-    expect(target.consumers[0].consumerKind).toBe('symbol');
+    expect(target.consumers[0].consumerKind).not.toBe('file');
+  });
+
+  // Regression coverage for #2365: that same top-level-call consumer must
+  // get its OWN discriminator distinct from a real named caller — `name`
+  // and `line` here are the file node's own values (the file's basename,
+  // line 0), not a genuine call-site, so lumping it in with 'symbol' would
+  // let renderers present a filename as if it were a calling function.
+  test('a top-level call sourced from a file node is discriminated distinctly from a real named caller (#2365)', () => {
+    const data = exportsData('types.ts', dbPath2);
+    const target = data.results.find((r) => r.name === 'topLevelTarget');
+    expect(target.consumers[0].consumerKind).toBe('topLevelCall');
+    expect(target.consumers[0].name).toBe('consumer.ts');
+    expect(target.consumers[0].line).toBe(0);
   });
 
   test('interface consumed only via `import type` is excluded from --unused', () => {

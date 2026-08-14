@@ -232,19 +232,25 @@ export interface ExportedDefRow {
  * A cross-file consumer of an exported symbol (from findExternalConsumers),
  * or a persisted deleted-export advisory's consumer row (#1938).
  *
- * `consumerKind` discriminates a real caller/constructor symbol (`name`/`line`
- * are a genuine call-site) from a whole-file reference such as
- * `import type { X}` (`name` equals `file`, `line` is always `0` because there
- * is no specific call-site to report) — mirrors the same discriminator on
- * exports' consumer rows (#1830). Optional because the persisted
- * deleted-export-advisories snapshot (#1938) doesn't store this discriminator;
- * only `findExternalConsumers`'s live-DB query populates it (#1973).
+ * `consumerKind` discriminates three cases: `'symbol'` — a real
+ * caller/constructor (`name`/`line` are a genuine call-site); `'file'` — a
+ * whole-file reference such as `import type { X }` (`name` equals `file`,
+ * `line` is always `0` because there is no specific call-site to report,
+ * #1830); `'topLevelCall'` — a genuine `calls` edge whose source is a bare
+ * top-level statement with no enclosing function/binding, so `findCaller`
+ * falls back to the FILE node itself as the edge's source (#2365) — `name`
+ * and `line` are the file node's own values (the file's basename, line `0`),
+ * not a real caller symbol/call-site, but this is still a genuine call
+ * (unlike `'file'`, which is never sourced from an actual `calls` edge).
+ * Optional because the persisted deleted-export-advisories snapshot (#1938)
+ * doesn't store this discriminator; only `findExternalConsumers`'s live-DB
+ * query populates it (#1973).
  */
 export interface ExternalConsumerRow {
   name: string;
   file: string;
   line: number;
-  consumerKind?: 'file' | 'symbol';
+  consumerKind?: 'file' | 'symbol' | 'topLevelCall';
 }
 
 /** Import target/source row. */
@@ -2435,19 +2441,23 @@ export interface FileExportEntry {
 }
 
 /**
- * A single caller of an exported symbol. `consumerKind` discriminates two
+ * A single caller of an exported symbol. `consumerKind` discriminates three
  * shapes that share this same struct:
  *   - `'symbol'` — a real caller/constructor: `name` is the calling
  *     function/method/class, `line` is the actual call-site line.
  *   - `'file'` — a whole-file reference such as `import type { X }`, where
  *     there is no specific calling symbol: `name` equals `file` and `line`
  *     is always `0` (no real call-site exists to report; see #1830).
+ *   - `'topLevelCall'` — a genuine `calls` edge sourced from a bare
+ *     top-level statement with no enclosing function/binding: `findCaller`
+ *     falls back to the file node itself, so `name`/`line` are the file
+ *     node's own values, not a real caller symbol/call-site (#2365).
  */
 export interface FileExportConsumer {
   name: string;
   file: string;
   line: number;
-  consumerKind: 'file' | 'symbol';
+  consumerKind: 'file' | 'symbol' | 'topLevelCall';
 }
 
 // ── Path ─────────────────────────────────────────────────────────────

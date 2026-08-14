@@ -10,14 +10,20 @@ interface ExportConsumer {
    * call-site). `'file'` — a whole-file reference such as
    * `import type { X }`, where `name` equals `file` and `line` is always
    * `0` because there is no specific call-site to report (#1830).
+   * `'topLevelCall'` — a genuine `calls` edge sourced from a bare top-level
+   * statement with no enclosing function/binding: `name`/`line` are the
+   * file node's own values, not a real caller symbol/call-site (#2365).
    */
-  consumerKind: 'file' | 'symbol';
+  consumerKind: 'file' | 'symbol' | 'topLevelCall';
 }
 
 /** Render one consumer entry, without a fabricated call-site line for file-level entries. */
 function formatConsumer(c: ExportConsumer): string {
   if (c.consumerKind === 'file') {
     return `${c.file} (type-only import)`;
+  }
+  if (c.consumerKind === 'topLevelCall') {
+    return `${c.file} (top-level call)`;
   }
   return `${c.name} (${c.file}:${c.line})`;
 }

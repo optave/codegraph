@@ -29,7 +29,12 @@ interface CheckViolation {
   edgeKind?: string;
   /** Set when this violation comes from `checkNoDeletedExportsInUse` (#1806). */
   reason?: string;
-  consumers?: Array<{ name: string; file: string; line: number; consumerKind?: 'file' | 'symbol' }>;
+  consumers?: Array<{
+    name: string;
+    file: string;
+    line: number;
+    consumerKind?: 'file' | 'symbol' | 'topLevelCall';
+  }>;
 }
 
 interface CheckPredicate {
@@ -96,6 +101,7 @@ function formatPredicateViolations(pred: CheckPredicate): void {
         .map((c) => {
           if (c.consumerKind === 'file') return `${c.file} (type-only import)`;
           if (c.consumerKind === 'symbol') return `${c.file}:${c.line}`;
+          if (c.consumerKind === 'topLevelCall') return `${c.file} (top-level call)`;
           return `${c.file} (kind unknown — pre-existing advisory)`;
         })
         .join(', ');
