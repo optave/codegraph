@@ -29,7 +29,7 @@ pub struct ImportEdgeContext {
     pub batch_resolved: HashMap<String, String>,
     /// Map of relPath -> reexport entries.
     pub reexport_map: HashMap<String, Vec<ReexportEntry>>,
-    /// Set of files that are barrel-only (reexport count >= definition count).
+    /// Set of files that are barrel-only (reexport count > definition count).
     pub barrel_only_files: HashSet<String>,
     /// Parsed symbols per relative path.
     pub file_symbols: BTreeMap<String, FileSymbols>,
@@ -72,7 +72,16 @@ impl ImportEdgeContext {
         )
     }
 
-    /// Check if a file is a barrel file (reexport count >= definition count).
+    /// Check if a file is a barrel file (reexport count strictly exceeds
+    /// definition count). Strict `>`, not `>=` (issue #2339): a file with
+    /// exactly one reexport and one own definition is a genuine hybrid (real
+    /// logic plus a reexport), not a pure barrel — `>=` misclassified it as
+    /// barrel-only, silently dropping its own outgoing call/receiver edges
+    /// whenever it got pulled into Stage 6b's barrel-candidate reparse. This
+    /// is orthogonal to #1848's fix, which scopes *which files* are even
+    /// eligible for this check (only transient barrel-candidate reparses,
+    /// never a file genuinely part of this build's changed set) — not the
+    /// comparison itself.
     pub fn is_barrel_file(&self, rel_path: &str) -> bool {
         let symbols = match self.file_symbols.get(rel_path) {
             Some(s) => s,
@@ -86,7 +95,7 @@ impl ImportEdgeContext {
         if reexport_count == 0 {
             return false;
         }
-        reexport_count >= symbols.definitions.len()
+        reexport_count > symbols.definitions.len()
     }
 
     /// Recursively resolve a barrel export to its actual source file.
@@ -1066,8 +1075,8 @@ mod tests {
 
     /// Regression test for #1848: `detect_barrel_only_files` must only
     /// classify files present in the supplied candidate list, even when a
-    /// file outside that list also satisfies the reexports>=ownDefs
-    /// heuristic. `run_pipeline` relies on this scoping to keep a
+    /// file outside that list also satisfies the reexports-outnumber-
+    /// ownDefs heuristic. `run_pipeline` relies on this scoping to keep a
     /// genuinely-changed (or, on a full build, every) file's own
     /// non-reexport imports from ever being dropped — only files
     /// transiently side-loaded by `reparse_barrel_candidates` for barrel
