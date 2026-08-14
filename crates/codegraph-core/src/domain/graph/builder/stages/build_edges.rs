@@ -156,6 +156,12 @@ pub struct FileEdgeInput {
     /// `src/types.ts` — see its doc comment for the full rationale.
     #[napi(js_name = "computedDispatchTableEvidence")]
     pub computed_dispatch_table_evidence: Option<Vec<String>>,
+    /// RTA instantiation evidence (issue #2346): every constructor type name
+    /// that appears in ANY `new X()` expression in this file, regardless of
+    /// assignment shape. Mirrors `ExtractorOutput.newExpressions` in
+    /// `src/types.ts` — see `collect_cha_instantiated_types`'s doc comment.
+    #[napi(js_name = "newExpressions")]
+    pub new_expressions: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -380,14 +386,26 @@ fn add_to_file_scoped<'a>(
     }
 }
 
-/// RTA: collect instantiated class names from every file's typeMap, keeping
-/// only high-confidence (>= 0.9) entries — mirrors the typeMap fallback
-/// branch of `collectInstantiatedTypes` in `cha.ts` (constructor-confidence
-/// 1.0 and type-annotation-confidence 0.9 entries both qualify; native has no
-/// dedicated `newExpressions` list, so this is the only RTA evidence source).
+/// RTA: collect instantiated class names from every file, unioning two
+/// sources — mirrors `collectInstantiatedTypes` in `cha.ts` exactly:
+/// (a) the dedicated `new_expressions` list (issue #2346): every constructor
+/// type name that appears in ANY `new X()` expression in the file, regardless
+/// of assignment shape (object-literal property value, bare non-`this.`
+/// assignment, etc.) — no confidence threshold applies to this source, same
+/// as the TS side; and
+/// (b) the typeMap fallback: high-confidence (>= 0.9) entries only
+/// (constructor-confidence 1.0 and type-annotation-confidence 0.9 entries
+/// both qualify) — covers instantiation evidence inferred indirectly (e.g.
+/// cross-file return-type propagation) that never produces a literal
+/// `new X()` in this file.
 fn collect_cha_instantiated_types(files: &[FileEdgeInput]) -> HashSet<&str> {
     let mut instantiated = HashSet::new();
     for file in files {
+        if let Some(new_expressions) = &file.new_expressions {
+            for type_name in new_expressions {
+                instantiated.insert(type_name.as_str());
+            }
+        }
         for tm in &file.type_map {
             if tm.confidence >= 0.9 {
                 instantiated.insert(tm.type_name.as_str());
@@ -4598,6 +4616,7 @@ mod call_edge_tests {
             object_rest_param_bindings: None,
             object_prop_bindings: None,
             computed_dispatch_table_evidence: None,
+            new_expressions: None,
         }
     }
 

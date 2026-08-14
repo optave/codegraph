@@ -1037,6 +1037,7 @@ mod tests {
             object_rest_param_bindings: vec![],
             object_prop_bindings: vec![],
             computed_dispatch_table_evidence: vec![],
+            new_expressions: vec![],
         }
     }
 

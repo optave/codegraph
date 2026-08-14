@@ -113,6 +113,27 @@ describe.each(ENGINES)('Phase 8.5 CHA dispatch (%s)', (engine) => {
     expect(edge?.technique).toBe('cha');
   });
 
+  // ── RTA evidence from non-typeMap instantiation shapes (issue #2346) ───
+  // ObjWorker is instantiated ONLY as an object-literal property value
+  // (`{ w: new ObjWorker() }`), never as `const x = new ObjWorker()`. The
+  // WASM engine's `newExpressions` list already covers this; the native
+  // engine's RTA evidence, before #2346, came only from typeMap
+  // confidence>=0.9 entries, which this instantiation shape never produces.
+
+  it('CHA: emits dispatch → ObjWorker.doWork (instantiated only via object-literal-property-value, issue #2346)', () => {
+    const edge = callEdges.find(
+      (e) =>
+        e.caller_name === 'dispatch' &&
+        e.callee_name === 'ObjWorker.doWork' &&
+        e.callee_file === 'ObjWorker.ts',
+    );
+    expect(
+      edge,
+      `Expected dispatch → ObjWorker.doWork edge (RTA must treat a new-expression used only as an object-literal property value as instantiation evidence, not just typeMap-tracked variable declarators).\nActual edges:\n${JSON.stringify(callEdges, null, 2)}`,
+    ).toBeDefined();
+    expect(edge?.technique).toBe('cha');
+  });
+
   // ── RTA filter ─────────────────────────────────────────────────────────
 
   it('RTA: does NOT emit dispatch → GhostWorker.doWork (never instantiated)', () => {

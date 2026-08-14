@@ -2120,6 +2120,7 @@ fn build_and_insert_call_edges(
             object_rest_param_bindings: non_empty(&symbols.object_rest_param_bindings),
             object_prop_bindings: non_empty(&symbols.object_prop_bindings),
             computed_dispatch_table_evidence: non_empty(&symbols.computed_dispatch_table_evidence),
+            new_expressions: non_empty(&symbols.new_expressions),
         });
     }
 
