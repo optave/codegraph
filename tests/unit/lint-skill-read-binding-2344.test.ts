@@ -145,6 +145,25 @@ describe.skipIf(BASH4 === null)(
         'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
       );
     });
+
+    // Greptile round 2 on PR #2490: `-i` (readline initial text) is a
+    // value-taking flag too, and was missing from the first fix's flag list.
+    it('still flags a leak past a `read -i` initial-text argument that is an uppercase word', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'FOO=hello',
+        'read -e -i FOO BAR\necho "leak: $FOO"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
+      );
+    });
+
+    it('does not flag `-a` (its argument is a genuine array destination, not a value)', () => {
+      const { stdout, ranSuccessfully } = runLint(['read -a ARR <<< "one two three"']);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).not.toContain('Cross-fence variable: $ARR');
+    });
   },
 );
 
