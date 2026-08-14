@@ -953,15 +953,18 @@ pub fn record_deleted_export_advisories(conn: &Connection, removed_files: &[Stri
          WHERE file = ?1 AND kind IN ('function', 'method', 'class') AND exported = 1 \
          ORDER BY line",
     );
-    // `e.kind` (not the source node's kind) is the discriminator: an
+    // `e.kind` (not the source node's kind) is the primary discriminator: an
     // `imports-type` edge is always sourced from the importing file's own
     // node by construction, while a `calls` edge is always a genuine call
     // even when `findCaller`'s TS/Rust mirror falls back to the file node as
     // source for a bare top-level call with no enclosing function/binding —
     // keying on source-node kind instead would misclassify that real call as
-    // a type-only import (Greptile, #1973).
+    // a type-only import (Greptile, #1973). `caller.kind` is ALSO selected
+    // to further split that file-sourced `calls` case into its own
+    // `'topLevelCall'` kind (#2365), since its `name`/`line` are the file
+    // node's own values, not a real caller symbol/call-site.
     let consumers_result = tx.prepare_cached(
-        "SELECT DISTINCT caller.name, caller.file, caller.line, e.kind \
+        "SELECT DISTINCT caller.name, caller.file, caller.line, caller.kind, e.kind \
          FROM edges e JOIN nodes caller ON e.source_id = caller.id \
          WHERE e.target_id = ?1 AND e.kind IN ('calls', 'imports-type') AND caller.file != ?2",
     );
@@ -992,16 +995,26 @@ pub fn record_deleted_export_advisories(conn: &Connection, removed_files: &[Stri
             }
             let _ = delete_stmt.execute([file]);
             for (id, name, kind, line) in defs {
-                let consumers: Vec<(String, String, i64, String)> = match consumers_stmt
+                let consumers: Vec<(String, String, i64, String, String)> = match consumers_stmt
                     .query_map(rusqlite::params![id, file], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
                     }) {
                     Ok(rows) => rows.flatten().collect(),
                     Err(_) => continue,
                 };
-                for (consumer_name, consumer_file, consumer_line, edge_kind) in consumers {
+                for (consumer_name, consumer_file, consumer_line, caller_kind, edge_kind) in
+                    consumers
+                {
                     let consumer_kind = if edge_kind == "imports-type" {
                         "file"
+                    } else if caller_kind == "file" {
+                        "topLevelCall"
                     } else {
                         "symbol"
                     };
@@ -2108,6 +2121,49 @@ mod tests {
             vec![
                 ("src/a.js".to_string(), Some("symbol".to_string())),
                 ("src/b.js".to_string(), Some("file".to_string())),
+            ]
+        );
+    }
+
+    /// Issue #2365: a genuine `calls` edge sourced from a FILE node
+    /// (findCaller's fallback for a bare top-level call with no enclosing
+    /// function/binding) must get its own `'topLevelCall'` consumer_kind,
+    /// distinct from `'symbol'` — `consumer_name`/`consumer_line` here are
+    /// the file node's own values, not a real caller symbol/call-site, so
+    /// lumping it in with a genuine named caller would let `codegraph check`
+    /// present a filename as if it were a calling function.
+    #[test]
+    fn record_deleted_export_advisories_discriminates_top_level_call_from_named_caller() {
+        let conn = test_conn_with_advisories();
+        let target = insert_exported_node(&conn, "target", "function", "src/gone.js", 1);
+        let caller_fn = insert_node(&conn, "callerA", "function", "src/a.js", 1);
+        let caller_file = insert_node(&conn, "src/c.js", "file", "src/c.js", 0);
+        conn.execute(
+            "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?1, ?2, 'calls', 1.0, 0)",
+            rusqlite::params![caller_fn, target],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges (source_id, target_id, kind, confidence, dynamic) VALUES (?1, ?2, 'calls', 1.0, 0)",
+            rusqlite::params![caller_file, target],
+        )
+        .unwrap();
+
+        record_deleted_export_advisories(&conn, &["src/gone.js".to_string()]);
+
+        let mut stmt = conn
+            .prepare("SELECT consumer_file, consumer_kind FROM deleted_export_advisories WHERE file = ?1 ORDER BY consumer_file")
+            .unwrap();
+        let rows: Vec<(String, Option<String>)> = stmt
+            .query_map(["src/gone.js"], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("src/a.js".to_string(), Some("symbol".to_string())),
+                ("src/c.js".to_string(), Some("topLevelCall".to_string())),
             ]
         );
     }
