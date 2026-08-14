@@ -189,7 +189,14 @@ describe.skipIf(BASH4 === null)(
 );
 
 describe.skipIf(BASH4 === null)('.claude/skills/fixer/SKILL.md itself (#2344 repro)', () => {
-  it('passes lint-skill.sh with no Cross-fence $COUNT error', () => {
+  // fixer/SKILL.md is by far the largest SKILL.md in the repo (~1600 lines,
+  // ~1000 non-comment bash-block lines), and Check 1 forks a handful of
+  // subprocesses per line. That's a few seconds on macOS/Linux but can blow
+  // past the 30s default testTimeout on Windows CI, where process creation
+  // is ~100x slower (see this script's own header comment) — this is the
+  // first test to run lint-skill.sh against this specific file directly, so
+  // it's the first to hit that pre-existing characteristic head-on.
+  it('passes lint-skill.sh with no Cross-fence $COUNT error', { timeout: 120_000 }, () => {
     const realSkillPath = path.join(REPO_ROOT, '.claude', 'skills', 'fixer', 'SKILL.md');
     const stdout = execFileSync(BASH4!, [LINT_SCRIPT, realSkillPath], { encoding: 'utf8' });
     expect(stdout).not.toContain('Cross-fence variable: $COUNT');

@@ -61,15 +61,26 @@ register_var() {
     REASSIGNED["${var}:${bnum}"]=1
   fi
 }
+# Finds every UPPER_CASE_VAR=/VAR+= assignment on a line using pure bash
+# builtins ([[ =~ ]] + parameter expansion) rather than forking echo|grep|sed
+# per line. This loop runs once per non-comment bash-block line — for a large
+# SKILL.md (fixer/SKILL.md is ~850 such lines) a per-line subprocess pipeline
+# is a few seconds on macOS/Linux but can blow well past CI's default test
+# timeout on Windows, where process creation is ~100x slower (see this
+# file's own performance note above; discovered via PR #2490/#2344 once a
+# test exercised lint-skill.sh against this specific large file directly).
+collect_assignments() {
+  local s="$1" bnum="$2"
+  while [[ "$s" =~ (^|[^A-Za-z0-9_])([A-Z][A-Z0-9_]+)\+?= ]]; do
+    register_var "${BASH_REMATCH[2]}" "$bnum"
+    s="${s#*"${BASH_REMATCH[0]}"}"
+  done
+}
 while IFS=$'\t' read -r bnum line; do
   # Skip comment lines — they document context but don't register variable assignments
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
   # Match UPPER_CASE_VAR= assignments (skip lowercase/mixed to reduce false positives)
-  # Use while-read instead of for-in-$() to avoid empty-string iteration when grep matches nothing
-  while IFS= read -r var; do
-    [ -z "$var" ] && continue
-    register_var "$var" "$bnum"
-  done < <(echo "$line" | grep -oE '\b[A-Z][A-Z0-9_]+\+?=' | sed -E 's/\+?=$//')
+  collect_assignments "$line" "$bnum"
   # `read`/`read -r VAR1 VAR2` binds variables just like VAR=, but with no '='
   # after the name — e.g. `while IFS=$'\t' read -r F COUNT LINE; do`. Without
   # this, a var re-derived via `read` in a later block (a legitimate, fresh,
