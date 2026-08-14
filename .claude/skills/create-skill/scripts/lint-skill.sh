@@ -52,6 +52,15 @@ awk '
 # Collect variable assignments per block and build reassignment lookup (O(1) per check)
 declare -A VAR_BLOCK
 declare -A REASSIGNED
+register_var() {
+  local var="$1" bnum="$2"
+  if [ -z "${VAR_BLOCK[$var]+x}" ]; then
+    VAR_BLOCK["$var"]="$bnum"
+  else
+    # Track re-assignments in later blocks for O(1) lookup
+    REASSIGNED["${var}:${bnum}"]=1
+  fi
+}
 while IFS=$'\t' read -r bnum line; do
   # Skip comment lines — they document context but don't register variable assignments
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -59,13 +68,24 @@ while IFS=$'\t' read -r bnum line; do
   # Use while-read instead of for-in-$() to avoid empty-string iteration when grep matches nothing
   while IFS= read -r var; do
     [ -z "$var" ] && continue
-    if [ -z "${VAR_BLOCK[$var]+x}" ]; then
-      VAR_BLOCK["$var"]="$bnum"
-    else
-      # Track re-assignments in later blocks for O(1) lookup
-      REASSIGNED["${var}:${bnum}"]=1
-    fi
+    register_var "$var" "$bnum"
   done < <(echo "$line" | grep -oE '\b[A-Z][A-Z0-9_]+\+?=' | sed -E 's/\+?=$//')
+  # `read`/`read -r VAR1 VAR2` binds variables just like VAR=, but with no '='
+  # after the name — e.g. `while IFS=$'\t' read -r F COUNT LINE; do`. Without
+  # this, a var re-derived via `read` in a later block (a legitimate, fresh,
+  # block-local binding) looks identical to a stale reference to an
+  # earlier block's same-named variable, producing a false Pattern-1 error
+  # (issue #2344 — fixer/SKILL.md's own I4 integrity check does exactly this
+  # with a loop-local $COUNT that collides in name only with the unrelated
+  # batch-size $COUNT set up in Phase 0).
+  if [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]]; then
+    read_args="${BASH_REMATCH[2]}"
+    read_args="${read_args%%;*}"
+    while IFS= read -r var; do
+      [ -z "$var" ] && continue
+      register_var "$var" "$bnum"
+    done < <(echo "$read_args" | grep -oE '\b[A-Z][A-Z0-9_]+\b')
+  fi
 done < "$BLOCKS_FILE"
 
 # Check for references in later blocks without file persistence
