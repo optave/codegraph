@@ -254,7 +254,37 @@ struct EdgeContext<'a> {
     /// `collect_cha_instantiated_types`'s doc comment (issue #2348) for why
     /// `resolve_cha_dispatch`'s receiver-own-type check needs this stricter
     /// bar instead of the merged `cha_instantiated_types` set.
+    ///
+    /// Still a bare, project-wide set, though — it carries the SAME
+    /// cross-file same-name collision risk `cha_implementors_by_file` was
+    /// built to fix for `cha_implementors` (Greptile review, PR #2494): two
+    /// unrelated files can each declare their own unrelated class named e.g.
+    /// `Handler`, and if only ONE of them is ever instantiated, this bare set
+    /// can't tell them apart. `cha_new_expression_types_by_file` below exists
+    /// for exactly that.
     cha_new_expression_types: HashSet<&'a str>,
+    /// `${type_name}|${file}` → present when `type_name`'s OWN `new X()`
+    /// evidence was recorded specifically WITHIN `file` — the file-scoped
+    /// counterpart to `cha_new_expression_types`, mirroring
+    /// `cha_implementors_by_file`'s relationship to `cha_implementors`.
+    /// Unlike `cha_implementors_by_file` (positive-evidence-only, falls back
+    /// to the bare map on a simple key miss), `resolve_cha_dispatch`'s
+    /// root-type check needs a scoped miss to be authoritative whenever the
+    /// caller's file is a declaring anchor (see `cha_declared_type_names_by_file`)
+    /// — otherwise falling back to the bare set would immediately re-admit
+    /// the exact cross-file collision this set exists to prevent.
+    cha_new_expression_types_by_file: HashSet<String>,
+    /// `${type_name}|${file}` → present when `file` locally declares a
+    /// class/interface/struct/type/module named `type_name` (the same anchor
+    /// check `build_cha_context` already computes locally for
+    /// `cha_implementors_by_file`, persisted here for reuse). Distinguishes
+    /// "the caller's file has its OWN local `type_name` to check against"
+    /// (trust `cha_new_expression_types_by_file` alone, even when it says
+    /// no) from "the caller's file has no local anchor at all" (fall back to
+    /// the bare, collision-prone `cha_new_expression_types` — the same
+    /// accepted limitation `cha_implementors_by_file` already has when no
+    /// local declaration exists).
+    cha_declared_type_names_by_file: HashSet<String>,
 }
 
 impl<'a> EdgeContext<'a> {
@@ -279,8 +309,12 @@ impl<'a> EdgeContext<'a> {
             .copied()
             .collect();
         let cha = build_cha_context(files);
-        let (cha_instantiated_types, cha_new_expression_types) =
-            collect_cha_instantiated_types(files);
+        let (
+            cha_instantiated_types,
+            cha_new_expression_types,
+            cha_new_expression_types_by_file,
+            cha_declared_type_names_by_file,
+        ) = collect_cha_instantiated_types(files);
         Self {
             nodes_by_name,
             nodes_by_name_and_file,
@@ -297,6 +331,8 @@ impl<'a> EdgeContext<'a> {
             cha_parents_by_file: cha.parents_by_file,
             cha_instantiated_types,
             cha_new_expression_types,
+            cha_new_expression_types_by_file,
+            cha_declared_type_names_by_file,
         }
     }
 }
@@ -409,27 +445,63 @@ fn add_to_file_scoped<'a>(
 /// cross-file return-type propagation) that never produces a literal
 /// `new X()` in this file.
 ///
-/// Returns `(instantiated, new_expression_only)` — the second set is the
-/// STRICT subset sourced from (a) alone, excluding the weaker (b)
-/// type-annotation heuristic. `resolve_cha_dispatch`'s receiver-own-type
-/// check (#2348) needs this stricter signal: unlike a subclass BFS hit
-/// (where the weaker, merged `instantiated` set was already the trusted
-/// bar before this fix), re-opening the receiver's OWN qualified method —
-/// which the earlier gated qualified-lookup tier already tried and rejected
-/// on proximity grounds — must not be justified by a MERE type annotation
-/// (e.g. a `db: SomeInterface` parameter), or every distant
-/// interface/abstract method would wrongly gain a "calls" edge whenever ANY
-/// concrete subclass elsewhere also happens to override the same method
-/// name (regression caught by
+/// Returns `(instantiated, new_expression_only, new_expression_only_by_file,
+/// declared_type_names_by_file)`. The second set is the STRICT subset
+/// sourced from (a) alone, excluding the weaker (b) type-annotation
+/// heuristic. `resolve_cha_dispatch`'s receiver-own-type check (#2348) needs
+/// this stricter signal: unlike a subclass BFS hit (where the weaker, merged
+/// `instantiated` set was already the trusted bar before this fix),
+/// re-opening the receiver's OWN qualified method — which the earlier gated
+/// qualified-lookup tier already tried and rejected on proximity grounds —
+/// must not be justified by a MERE type annotation (e.g. a `db:
+/// SomeInterface` parameter), or every distant interface/abstract method
+/// would wrongly gain a "calls" edge whenever ANY concrete subclass
+/// elsewhere also happens to override the same method name (regression
+/// caught by
 /// `cha_typed_dispatch_fallback_resolves_distant_interface_implementation`).
-fn collect_cha_instantiated_types(files: &[FileEdgeInput]) -> (HashSet<&str>, HashSet<&str>) {
+///
+/// The third and fourth sets (Greptile review, PR #2494) additionally break
+/// (a) and the local-declaration anchor check down PER FILE — see
+/// `EdgeContext::cha_new_expression_types_by_file`'s and
+/// `EdgeContext::cha_declared_type_names_by_file`'s doc comments for how
+/// `resolve_cha_dispatch` combines them to disambiguate two unrelated files
+/// that happen to declare the same bare class name. The local-declaration
+/// filter mirrors `build_cha_context`'s own `local_names` computation
+/// exactly (kept as a separate pass here rather than merged into that
+/// function's loop, since this function already has its own single pass
+/// over `files` for an unrelated purpose).
+fn collect_cha_instantiated_types(
+    files: &[FileEdgeInput],
+) -> (
+    HashSet<&str>,
+    HashSet<&str>,
+    HashSet<String>,
+    HashSet<String>,
+) {
     let mut instantiated = HashSet::new();
     let mut new_expression_only = HashSet::new();
+    let mut new_expression_only_by_file = HashSet::new();
+    let mut declared_type_names_by_file = HashSet::new();
     for file in files {
+        let local_names: HashSet<&str> = file
+            .definitions
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.kind.as_str(),
+                    "class" | "struct" | "interface" | "type" | "module"
+                )
+            })
+            .map(|d| d.name.as_str())
+            .collect();
+        for name in &local_names {
+            declared_type_names_by_file.insert(format!("{}|{}", name, file.file));
+        }
         if let Some(new_expressions) = &file.new_expressions {
             for type_name in new_expressions {
                 instantiated.insert(type_name.as_str());
                 new_expression_only.insert(type_name.as_str());
+                new_expression_only_by_file.insert(format!("{}|{}", type_name, file.file));
             }
         }
         for tm in &file.type_map {
@@ -438,7 +510,12 @@ fn collect_cha_instantiated_types(files: &[FileEdgeInput]) -> (HashSet<&str>, Ha
             }
         }
     }
-    (instantiated, new_expression_only)
+    (
+        instantiated,
+        new_expression_only,
+        new_expression_only_by_file,
+        declared_type_names_by_file,
+    )
 }
 
 /// Resolve `${method_name}` on `cls` or, if `cls` inherits it without
@@ -566,6 +643,24 @@ fn resolve_method_via_ancestors<'a>(
 /// to override the same method name (regression caught by
 /// `cha_typed_dispatch_fallback_resolves_distant_interface_implementation`).
 ///
+/// `ctx.cha_new_expression_types` is STILL a bare, project-wide set, though
+/// (Greptile review, PR #2494): two unrelated files can each declare their
+/// own unrelated class with the same bare name (e.g. both name a class
+/// `Handler`), and if only ONE of them is ever instantiated, a bare
+/// `cha_new_expression_types.contains(type_name)` can't tell them apart — it
+/// would treat that as proof THIS caller's `Handler` was instantiated too,
+/// and `resolve_method_via_ancestors`'s own bare/global fallback could then
+/// resolve to the OTHER file's `Handler.method`. So the check below prefers
+/// the file-scoped `cha_new_expression_types_by_file` whenever `caller_file`
+/// itself locally declares `type_name` (`cha_declared_type_names_by_file` —
+/// the same anchor `cha_implementors_by_file` uses) — in that case a scoped
+/// miss is trusted as an authoritative "not instantiated (in THIS file's
+/// sense of `type_name`)", never falling through to the bare set. Only when
+/// `caller_file` has no such local anchor at all (imports `type_name` from
+/// elsewhere, or `caller_file` is unknown) does this fall back to the bare,
+/// collision-prone `cha_new_expression_types` — the same accepted limitation
+/// `cha_implementors_by_file` already has for that exact situation.
+///
 /// `type_name` is deliberately NOT given an explicit `'a` bound here: at one
 /// call site (the inline-new-expression branch of `resolve_call_targets_core`)
 /// it can be a reference into a locally-computed `String` that does not live
@@ -584,13 +679,31 @@ fn resolve_cha_dispatch<'a>(
     let mut visited: HashSet<&str> = HashSet::new();
     visited.insert(type_name);
 
-    if let Some(&interned_type_name) = ctx.cha_new_expression_types.get(type_name) {
-        results.extend(resolve_method_via_ancestors(
-            ctx,
-            interned_type_name,
-            caller_file,
-            method_name,
-        ));
+    let has_local_declaration = caller_file
+        .map(|f| {
+            ctx.cha_declared_type_names_by_file
+                .contains(&format!("{}|{}", type_name, f))
+        })
+        .unwrap_or(false);
+    let is_root_instantiated = if has_local_declaration {
+        caller_file
+            .map(|f| {
+                ctx.cha_new_expression_types_by_file
+                    .contains(&format!("{}|{}", type_name, f))
+            })
+            .unwrap_or(false)
+    } else {
+        ctx.cha_new_expression_types.contains(type_name)
+    };
+    if is_root_instantiated {
+        if let Some(&interned_type_name) = ctx.cha_new_expression_types.get(type_name) {
+            results.extend(resolve_method_via_ancestors(
+                ctx,
+                interned_type_name,
+                caller_file,
+                method_name,
+            ));
+        }
     }
 
     while let Some((current, current_file)) = queue.pop_front() {
@@ -5690,6 +5803,71 @@ mod call_edge_tests {
         assert!(
             calls_edges.is_empty(),
             "expected no calls edge when the implementor has no RTA evidence; got: {:?}",
+            calls_edges
+                .iter()
+                .map(|e| (e.source_id, e.target_id))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// #2348 root-type check, cross-file same-name collision (Greptile review
+    /// on PR #2494): `src/domain/mod_a.ts` declares its OWN `Handler` class
+    /// AND instantiates it (`new_expressions` contains `Handler`).
+    /// `tests/unit/mod_b.ts` independently declares an UNRELATED `Handler`
+    /// with no `method` of its own, and never instantiates it anywhere.
+    /// Only mod_a's `Handler.method` exists under the bare qualified name
+    /// "Handler.method" project-wide. `useHandler` (in mod_b.ts) calls
+    /// `h.method()` on a parameter typed `Handler` — since mod_b.ts is far
+    /// enough from mod_a.ts that the proximity-gated qualified lookup (tier
+    /// 3, `typed`) rejects the cross-file match, resolution falls through to
+    /// the CHA fallback this test is guarding. Before the file-scoped fix,
+    /// the bare (project-wide) `cha_new_expression_types.contains("Handler")`
+    /// would have been true purely because of mod_a's UNRELATED instance,
+    /// wrongly admitting an edge to mod_a's `Handler.method` for a caller
+    /// whose own (never-instantiated) `Handler` has nothing to do with it.
+    #[test]
+    fn resolve_cha_dispatch_root_check_does_not_leak_across_same_named_unrelated_classes() {
+        let all_nodes = vec![
+            node(1, "useHandler", "function", "tests/unit/mod_b.ts", 5),
+            node(2, "Handler", "class", "src/domain/mod_a.ts", 1),
+            node(3, "Handler.method", "method", "src/domain/mod_a.ts", 2),
+            node(4, "Handler", "class", "tests/unit/mod_b.ts", 1),
+        ];
+
+        let mut mod_a = make_file(
+            "src/domain/mod_a.ts",
+            10,
+            vec![def("Handler", "class", 1, 3)],
+            vec![],
+            vec![],
+            vec![],
+        );
+        mod_a.new_expressions = Some(vec!["Handler".to_string()]);
+
+        let mod_b = make_file(
+            "tests/unit/mod_b.ts",
+            20,
+            vec![
+                def("Handler", "class", 1, 2),
+                def("useHandler", "function", 5, 8),
+            ],
+            vec![call("method", 6, Some("h"))],
+            vec![type_map_entry("h", "Handler", 0.9)],
+            vec![],
+        );
+
+        let edges = build_call_edges(
+            vec![mod_a, mod_b],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+        );
+
+        let calls_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
+        assert!(
+            calls_edges.iter().all(|e| e.target_id != 3),
+            "expected no calls edge to mod_a's unrelated Handler.method; got: {:?}",
             calls_edges
                 .iter()
                 .map(|e| (e.source_id, e.target_id))

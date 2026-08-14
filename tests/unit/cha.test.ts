@@ -69,6 +69,8 @@ function makeChaCtx(
     parentsByFile: new Map(Object.entries(parentsByFile)),
     instantiatedTypes: new Set(),
     newExpressionTypes: new Set(),
+    newExpressionTypesByFile: new Set(),
+    declaredTypeNamesByFile: new Set(),
   };
 }
 
@@ -81,6 +83,13 @@ function makeChaCtx(
  * intends its `instantiatedTypes` entries to mean genuine construction
  * evidence, so this keeps them passing unchanged. Pass `newExpressionTypes`
  * explicitly to exercise the strict-vs-merged distinction itself.
+ *
+ * `newExpressionTypesByFile`/`declaredTypeNamesByFile` (Greptile review, PR
+ * #2494) default to empty — every existing caller of this helper predates
+ * the file-scoped disambiguation split too, and an empty scoped set means
+ * `resolveChaTargets`'s root-type check always falls back to the bare
+ * `newExpressionTypes` set, exactly matching pre-#2494 behavior. Pass
+ * entries as `${typeName}|${file}` strings to exercise the scoping itself.
  */
 function makeChaTargetsCtx(opts: {
   implementors?: Record<string, string[]>;
@@ -89,6 +98,8 @@ function makeChaTargetsCtx(opts: {
   parentsByFile?: Record<string, string>;
   instantiatedTypes?: string[];
   newExpressionTypes?: string[];
+  newExpressionTypesByFile?: string[];
+  declaredTypeNamesByFile?: string[];
 }): ChaContext {
   return {
     implementors: new Map(Object.entries(opts.implementors ?? {})),
@@ -97,6 +108,8 @@ function makeChaTargetsCtx(opts: {
     parentsByFile: new Map(Object.entries(opts.parentsByFile ?? {})),
     instantiatedTypes: new Set(opts.instantiatedTypes ?? []),
     newExpressionTypes: new Set(opts.newExpressionTypes ?? opts.instantiatedTypes ?? []),
+    newExpressionTypesByFile: new Set(opts.newExpressionTypesByFile ?? []),
+    declaredTypeNamesByFile: new Set(opts.declaredTypeNamesByFile ?? []),
   };
 }
 
@@ -390,6 +403,61 @@ describe('resolveChaTargets — cross-file same-name collision (issue #2237, par
 
     const result = resolveChaTargets('Handler', 'run', chaCtx, lookup, 'file1.ts');
     expect(result).toEqual([{ id: 1, file: 'file1.ts', kind: 'method', line: 1 }]);
+  });
+});
+
+describe('resolveChaTargets — receiver-own-type cross-file same-name collision (issue #2348, Greptile review on PR #2494)', () => {
+  // mod_a.ts declares its OWN Handler AND instantiates it (`new Handler()`
+  // recorded within mod_a.ts itself). mod_b.ts independently declares an
+  // UNRELATED Handler with no `method` of its own, and NEVER instantiates
+  // it anywhere. Only mod_a's Handler.method exists under the bare qualified
+  // name "Handler.method" in the lookup. A caller inside mod_b.ts must not
+  // have its own (never-instantiated) Handler treated as instantiated just
+  // because some unrelated same-named Handler elsewhere happens to be.
+  const lookup = makeLookup({
+    'Handler.method': [{ id: 1, file: 'mod_a.ts', kind: 'method', line: 1 }],
+  });
+
+  it("does not treat the caller's own type as instantiated merely because an unrelated same-named type elsewhere is", () => {
+    const chaCtx = makeChaTargetsCtx({
+      instantiatedTypes: ['Handler'],
+      newExpressionTypes: ['Handler'],
+      newExpressionTypesByFile: ['Handler|mod_a.ts'],
+      declaredTypeNamesByFile: ['Handler|mod_a.ts', 'Handler|mod_b.ts'],
+    });
+
+    const result = resolveChaTargets('Handler', 'method', chaCtx, lookup, 'mod_b.ts');
+    expect(
+      result,
+      `Expected [] (mod_b's own Handler was never instantiated); got: ${JSON.stringify(result)}`,
+    ).toEqual([]);
+  });
+
+  it('still resolves when the caller IS the file whose own type was instantiated', () => {
+    const chaCtx = makeChaTargetsCtx({
+      instantiatedTypes: ['Handler'],
+      newExpressionTypes: ['Handler'],
+      newExpressionTypesByFile: ['Handler|mod_a.ts'],
+      declaredTypeNamesByFile: ['Handler|mod_a.ts', 'Handler|mod_b.ts'],
+    });
+
+    const result = resolveChaTargets('Handler', 'method', chaCtx, lookup, 'mod_a.ts');
+    expect(result).toEqual([{ id: 1, file: 'mod_a.ts', kind: 'method', line: 1 }]);
+  });
+
+  it('falls back to the bare set when the caller file has no local declaration to disambiguate against', () => {
+    // mod_c.ts never declares its own Handler at all (only imports one) — no
+    // scoped anchor exists to trust, so this keeps the pre-#2494 fallback
+    // behavior, same accepted limitation `implementorsByFile` already has.
+    const chaCtx = makeChaTargetsCtx({
+      instantiatedTypes: ['Handler'],
+      newExpressionTypes: ['Handler'],
+      newExpressionTypesByFile: ['Handler|mod_a.ts'],
+      declaredTypeNamesByFile: ['Handler|mod_a.ts'],
+    });
+
+    const result = resolveChaTargets('Handler', 'method', chaCtx, lookup, 'mod_c.ts');
+    expect(result).toEqual([{ id: 1, file: 'mod_a.ts', kind: 'method', line: 1 }]);
   });
 });
 
