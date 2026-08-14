@@ -129,23 +129,27 @@ describe('docs/examples/CLI.md commands and flags are real (#2212)', () => {
   });
 });
 
-describe('docs/examples/CLI.md — representative commands run successfully (#2212)', () => {
-  let tmpDir: string, tmpHome: string;
-
-  const FIXTURE_FILES = {
-    'math.js': `
+// Shared by both the "representative commands" (#2212) and the
+// "structural output labels" (#2369) describe blocks below — the latter
+// needs `helper` (an internal, non-exported symbol) so a real `audit
+// --quick` run produces a `## Internal` section, matching the documented
+// example's shape (which audits a real file with both exported and
+// internal symbols).
+const FIXTURE_FILES = {
+  'math.js': `
 export function add(a, b) { return a + b; }
 export function multiply(a, b) { return a * b; }
 export function square(x) { return multiply(x, x); }
+function helper(x) { return multiply(x, 1); }
 `.trimStart(),
-    'utils.js': `
+  'utils.js': `
 import { add, square } from './math.js';
 export function sumOfSquares(a, b) { return add(square(a), square(b)); }
 export class Calculator {
   compute(x, y) { return sumOfSquares(x, y); }
 }
 `.trimStart(),
-    'index.js': `
+  'index.js': `
 import { sumOfSquares, Calculator } from './utils.js';
 import { add } from './math.js';
 export function main() {
@@ -155,7 +159,10 @@ export function main() {
   console.log(calc.compute(5, 6));
 }
 `.trimStart(),
-  };
+};
+
+describe('docs/examples/CLI.md — representative commands run successfully (#2212)', () => {
+  let tmpDir: string, tmpHome: string;
 
   function run(...args: string[]): string {
     return execFileSync('node', [...NODE_TS_FLAGS, CLI, ...args], {
@@ -206,5 +213,108 @@ export function main() {
 
   it.each(REPRESENTATIVE_COMMANDS)('`codegraph %s` runs without error', (_label, args) => {
     expect(() => run(...args)).not.toThrow();
+  });
+});
+
+/**
+ * Tier 3 (#2369): a small step past Tier 1/2 toward the "harder half" of
+ * #2212's original ask (full output-content diffing) — deliberately scoped
+ * down to just the two commands whose documented output already uses clear
+ * markdown-style `## Section` headers (`context`, `audit --quick`), and
+ * comparing ONLY those header labels, not full content.
+ *
+ * Why headers only, not the rest of the output: CLI.md's examples are
+ * captured against codegraph's own (constantly growing) codebase, so exact
+ * file paths/line numbers/source snippets/dependency lists will never
+ * match a live re-run against a small fixture — diffing those would need
+ * real dynamic-content normalization rules, the explicitly-deferred harder
+ * half. Section header LABELS are different: for these two commands they
+ * are pure static text (`## Type/Shape Info`, `## Source`, ...) with only a
+ * trailing dynamic count (`## Callers (3)`) — normalizing away just that
+ * count gives a comparison that's still meaningful (it catches a renamed,
+ * added, or removed section) without needing any broader content-diffing
+ * design work.
+ *
+ * This tier already caught a real bug during development: the documented
+ * `context` example was missing the `## Children`/`## Complexity` sections
+ * (added to the CLI since the doc was last updated) and had stale names for
+ * two others (`## Dependencies` → `## Direct Dependencies (N)`, `##
+ * Callers` → `## Callers (N)`) — fixed in the same change that added this
+ * test, mirroring #2212's own precedent of fixing what its own new check
+ * found.
+ */
+describe('docs/examples/CLI.md — structural output labels match real re-runs (#2369)', () => {
+  let tmpDir: string, tmpHome: string;
+  const doc = fs.readFileSync(CLI_DOC_PATH, 'utf-8');
+
+  function run(...args: string[]): string {
+    return execFileSync('node', [...NODE_TS_FLAGS, CLI, ...args], {
+      cwd: tmpDir,
+      encoding: 'utf-8',
+      timeout: 30_000,
+      env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
+    });
+  }
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cli-drift-headers-'));
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cli-drift-headers-home-'));
+    for (const [name, content] of Object.entries(FIXTURE_FILES)) {
+      fs.writeFileSync(path.join(tmpDir, name), content);
+    }
+    run('build', '.', '--engine', 'wasm');
+  });
+
+  afterAll(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpHome) fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  /**
+   * Extract every `## Section Name` header from a block of text, in order,
+   * normalizing away a trailing dynamic count like ` (22)` — otherwise pure
+   * static text. Deliberately does NOT touch the `# <name> (<kind>) —
+   * <file>:<line>` H1 title line (fully embeds the symbol name/file/line
+   * range; comparing it fairly would need real normalization rules, out of
+   * scope here — see this describe block's own doc comment).
+   */
+  function extractSectionHeaders(text: string): string[] {
+    return [...text.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1].replace(/\s*\(\d+\)$/, '').trim());
+  }
+
+  /**
+   * Find the plain ``` output block immediately following a specific
+   * ```bash <commandLine> block — mirrors CLI.md's own established
+   * command/output pairing convention (a fenced bash block, a blank line,
+   * then a fenced plain-text output block).
+   */
+  function findDocumentedOutput(commandLine: string): string {
+    const marker = `\`\`\`bash\n${commandLine}\n\`\`\`\n\n\`\`\`\n`;
+    const idx = doc.indexOf(marker);
+    if (idx === -1) {
+      throw new Error(`documented command block not found: ${commandLine}`);
+    }
+    const after = doc.slice(idx + marker.length);
+    const end = after.indexOf('\n```');
+    if (end === -1) {
+      throw new Error(`documented output block has no closing fence: ${commandLine}`);
+    }
+    return after.slice(0, end);
+  }
+
+  it('`context <symbol> -T` section headers match the documented example', () => {
+    const documentedHeaders = extractSectionHeaders(
+      findDocumentedOutput('codegraph context buildGraph -T'),
+    );
+    const realHeaders = extractSectionHeaders(run('context', 'sumOfSquares', '-T'));
+    expect(realHeaders).toEqual(documentedHeaders);
+  });
+
+  it('`audit <file> --quick -T` section headers match the documented example', () => {
+    const documentedHeaders = extractSectionHeaders(
+      findDocumentedOutput('codegraph audit src/builder.js --quick -T'),
+    );
+    const realHeaders = extractSectionHeaders(run('audit', 'math.js', '--quick', '-T'));
+    expect(realHeaders).toEqual(documentedHeaders);
   });
 });
