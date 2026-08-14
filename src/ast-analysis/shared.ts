@@ -98,6 +98,7 @@ export const DATAFLOW_DEFAULTS: DataflowRulesConfig = {
   shorthandPropPattern: null,
   pairPatternType: null,
   extractParamName: null, // override: (node) => string[]
+  groupedParamTypes: new Set(), // node types grouping multiple separate param slots (Dart's optional_formal_parameters)
 
   // Return
   returnNode: null,

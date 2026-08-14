@@ -67,6 +67,30 @@ describe('extractDataflow — Dart', () => {
         ]),
       );
     });
+
+    it('gives each name in a named-parameter group its own paramIndex (#2358)', () => {
+      const data = parseAndExtract(
+        'int greet(String name, {int times = 1, bool loud = false}) {\n  return times;\n}\n',
+      );
+      expect(data!.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ funcName: 'greet', paramName: 'name', paramIndex: 0 }),
+          expect.objectContaining({ funcName: 'greet', paramName: 'times', paramIndex: 1 }),
+          expect.objectContaining({ funcName: 'greet', paramName: 'loud', paramIndex: 2 }),
+        ]),
+      );
+    });
+
+    it('gives each name in an optional-positional parameter group its own paramIndex', () => {
+      const data = parseAndExtract('int f(int a, [int b, int c]) {\n  return a;\n}\n');
+      expect(data!.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ funcName: 'f', paramName: 'a', paramIndex: 0 }),
+          expect.objectContaining({ funcName: 'f', paramName: 'b', paramIndex: 1 }),
+          expect.objectContaining({ funcName: 'f', paramName: 'c', paramIndex: 2 }),
+        ]),
+      );
+    });
   });
 
   describe('returns', () => {

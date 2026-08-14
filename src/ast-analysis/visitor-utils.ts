@@ -33,6 +33,16 @@ interface LanguageRules {
   memberObjectField: string;
   optionalChainNode?: string;
   extractParamName?(node: TreeSitterNode): string[] | null;
+  /**
+   * Node types where ONE child of the parameter list groups multiple
+   * logically separate parameter declarations — e.g. Dart's
+   * `optional_formal_parameters` for `{int times, bool loud}` (issue #2358).
+   * Unlike `objectDestructType`/`arrayDestructType`, where multiple bound
+   * names are extracted from a SINGLE argument slot and must share one
+   * index, each of this node's own named children is its own slot and gets
+   * its own index.
+   */
+  groupedParamTypes?: Set<string>;
 }
 
 /**
@@ -84,11 +94,20 @@ export function extractParams(
   const result: ParamInfo[] = [];
   let index = 0;
   for (const child of paramsNode.namedChildren) {
-    const names = extractParamNames(child, rules);
-    for (const name of names) {
-      result.push({ name, index });
+    // Grouped wrapper types (e.g. Dart's optional_formal_parameters) can mix
+    // real formal_parameter slots with unrelated named siblings — e.g. a
+    // default value's literal, which the grammar attaches as a flat sibling
+    // rather than nesting inside its formal_parameter (issue #2358). Only a
+    // slot that actually yields a name consumes an index.
+    const slots = rules.groupedParamTypes?.has(child.type) ? child.namedChildren : [child];
+    for (const slot of slots) {
+      const names = extractParamNames(slot, rules);
+      if (names.length === 0) continue;
+      for (const name of names) {
+        result.push({ name, index });
+      }
+      index++;
     }
-    index++;
   }
   return result;
 }

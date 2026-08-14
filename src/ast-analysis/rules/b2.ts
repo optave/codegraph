@@ -547,15 +547,9 @@ function extractDartParamName(node: TreeSitterNode): string[] | null {
   // groups wrap MULTIPLE formal_parameter children in one
   // optional_formal_parameters node (node-types.json — confirmed there is
   // no singular optional_formal_parameter/named_formal_parameter type in
-  // this grammar). Recurse to collect every name inside the group.
-  if (node.type === 'optional_formal_parameters') {
-    const names: string[] = [];
-    for (const child of node.namedChildren) {
-      const childNames = extractDartParamName(child);
-      if (childNames) names.push(...childNames);
-    }
-    return names.length > 0 ? names : null;
-  }
+  // this grammar). Each grandchild is its own parameter slot, so
+  // `groupedParamTypes` (issue #2358) makes `extractParams` iterate them
+  // directly rather than calling this function on the group node itself.
   if (node.type === 'formal_parameter') {
     const nameNode = node.childForFieldName('name');
     if (nameNode) return [nameNode.text];
@@ -657,6 +651,11 @@ export const dataflowDart: DataflowRulesConfig = makeDataflowRules({
   // parameter extraction "happened to work."
   getParamListNode: getDartParamListNode,
   extractParamName: extractDartParamName,
+  // `{int times, bool loud}` (named) / `[int x, int y]` (optional-positional)
+  // groups wrap multiple genuinely separate formal_parameter slots in one
+  // optional_formal_parameters node — each must get its own paramIndex, not
+  // the group's single index (issue #2358).
+  groupedParamTypes: new Set(['optional_formal_parameters']),
 
   // local_variable_declaration's ONLY child is initialized_variable_definition,
   // which has real `name`/`value` fields (confirmed via node-types.json) —

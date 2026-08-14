@@ -1359,6 +1359,16 @@ export interface DataflowRulesConfig {
   shorthandPropPattern: string | null;
   pairPatternType: string | null;
   extractParamName: ((node: TreeSitterNode) => string[] | null) | null;
+  /**
+   * Node types where ONE child of the parameter list groups multiple
+   * logically separate parameter declarations — e.g. Dart's
+   * `optional_formal_parameters` for `{int times, bool loud}` (issue #2358).
+   * Unlike `objectDestructType`/`arrayDestructType`, where multiple bound
+   * names are extracted from a SINGLE argument slot and must share one
+   * index, each of this node's own named children is its own slot and gets
+   * its own index.
+   */
+  groupedParamTypes: Set<string>;
   returnNode: string | null;
   varDeclaratorNode: string | null;
   varDeclaratorNodes: Set<string> | null;
