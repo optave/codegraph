@@ -269,4 +269,83 @@ describeOrSkip('Cross-engine dataflow parity', () => {
       expect(n.argFlows).toEqual(w.argFlows);
     });
   });
+
+  // ── Dart ───────────────────────────────────────────────────────────────
+  //
+  // Issue #2359: the native engine's tree_sitter_dart grammar differs
+  // structurally from the WASM tree-sitter-dart package TS uses (see
+  // crates/codegraph-core/src/ast_analysis/dataflow.rs's DART_DATAFLOW doc
+  // comment for the full list of divergences) — these tests confirm both
+  // engines still produce identical dataflow output despite that.
+
+  describe('Dart', () => {
+    const lang = 'dart';
+    const file = 'test.dart';
+
+    it('parameters — simple top-level function', ({ skip }) => {
+      if (!nativeHasDataflow) skip();
+      const code = 'int add(int a, int b) {\n  return a + b;\n}\n';
+      const w = normalizeWasm(wasmDataflow(code, file, lang));
+      const n = nativeDataflow(code, file);
+      expect(n.parameters).toEqual(w.parameters);
+    });
+
+    it('parameters — class method (no double-count via the nested signature)', ({ skip }) => {
+      if (!nativeHasDataflow) skip();
+      const code = 'class Calculator {\n  int add(int a, int b) {\n    return a + b;\n  }\n}\n';
+      const w = normalizeWasm(wasmDataflow(code, file, lang));
+      const n = nativeDataflow(code, file);
+      expect(n.parameters).toEqual(w.parameters);
+    });
+
+    it('parameters — named-parameter group gives each name a distinct index', ({ skip }) => {
+      if (!nativeHasDataflow) skip();
+      const code =
+        'int greet(String name, {int times = 1, bool loud = false}) {\n  return times;\n}\n';
+      const w = normalizeWasm(wasmDataflow(code, file, lang));
+      const n = nativeDataflow(code, file);
+      expect(n.parameters).toEqual(w.parameters);
+    });
+
+    it('returns — explicit return', ({ skip }) => {
+      if (!nativeHasDataflow) skip();
+      const code = 'int multiply(int x, int y) {\n  var result = x * y;\n  return result;\n}\n';
+      const w = normalizeWasm(wasmDataflow(code, file, lang));
+      const n = nativeDataflow(code, file);
+      expect(n.returns).toEqual(w.returns);
+    });
+
+    it('returns — arrow-body implicit return', ({ skip }) => {
+      if (!nativeHasDataflow) skip();
+      const code = 'int multiply(int x, int y) => x * y;\n';
+      const w = normalizeWasm(wasmDataflow(code, file, lang));
+      const n = nativeDataflow(code, file);
+      expect(n.returns).toEqual(w.returns);
+    });
+
+    it('assignments — var declaration from call', ({ skip }) => {
+      if (!nativeHasDataflow) skip();
+      const code = 'int square(int y) {\n  var x = helper(y);\n  return x;\n}\n';
+      const w = normalizeWasm(wasmDataflow(code, file, lang));
+      const n = nativeDataflow(code, file);
+      expect(n.assignments).toEqual(w.assignments);
+    });
+
+    it('argFlows — bare call argument flow', ({ skip }) => {
+      if (!nativeHasDataflow) skip();
+      const code = 'int square(int x) {\n  return helper(x);\n}\n';
+      const w = normalizeWasm(wasmDataflow(code, file, lang));
+      const n = nativeDataflow(code, file);
+      expect(n.argFlows).toEqual(w.argFlows);
+    });
+
+    it('argFlows — method call argument flow resolved via the receiver', ({ skip }) => {
+      if (!nativeHasDataflow) skip();
+      const code =
+        'class Obj {\n  int method(int x) => x;\n}\nint square(Obj obj, int x) {\n  return obj.method(x);\n}\n';
+      const w = normalizeWasm(wasmDataflow(code, file, lang));
+      const n = nativeDataflow(code, file);
+      expect(n.argFlows).toEqual(w.argFlows);
+    });
+  });
 });

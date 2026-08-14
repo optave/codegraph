@@ -24,14 +24,30 @@ enum ParamStrategy {
 
 // ─── DataflowRules ──────────────────────────────────────────────────────
 
+/// Override for languages where the standard `name_field` lookup can return
+/// nothing (Dart's `method_signature`, issue #2359 — see `name_extractor`).
+type NameExtractorFn = fn(&Node, &[u8]) -> Option<String>;
+
 /// Per-language AST node type names and field names for dataflow extraction.
 /// Mirrors `DATAFLOW_DEFAULTS` + per-language overrides in `src/dataflow.js`.
 pub struct DataflowRules {
     // Scope entry
     function_nodes: &'static [&'static str],
+    /// Node types where a function's actual body lives as a SIBLING of the
+    /// function boundary node, not a child (tree-sitter-dart's
+    /// function_signature/method_signature + function_body split, issue
+    /// #2359 — mirrors TS's `bodySiblingTypes`, #2182). Empty for every
+    /// language except Dart.
+    body_sibling_types: &'static [&'static str],
 
     // Function name extraction
     name_field: &'static str,
+    /// Override for languages where the standard `name_field` lookup can
+    /// return nothing (Dart's `method_signature` has no name field of its
+    /// own — the name lives on a nested signature child). Tried BEFORE the
+    /// standard `name_field` lookup in `function_name()`, mirroring TS's
+    /// `functionName()` order. `None` for every language except Dart.
+    name_extractor: Option<NameExtractorFn>,
     var_assigned_fn_parent: Option<&'static str>,
     assignment_fn_parent: Option<&'static str>,
     pair_fn_parent: Option<&'static str>,
@@ -40,6 +56,13 @@ pub struct DataflowRules {
     param_list_field: &'static str,
     param_identifier: &'static str,
     param_wrapper_types: &'static [&'static str],
+    /// Node types where ONE child of the parameter list groups multiple
+    /// logically separate parameter declarations — e.g. Dart's
+    /// `optional_formal_parameters` for `{int times, bool loud}` (issue
+    /// #2358). Each of this node's own named children is its own paramIndex
+    /// slot rather than sharing the group's single index. Empty for every
+    /// language except Dart.
+    grouped_param_types: &'static [&'static str],
     default_param_type: Option<&'static str>,
     rest_param_type: Option<&'static str>,
     object_destruct_type: Option<&'static str>,
@@ -50,6 +73,16 @@ pub struct DataflowRules {
 
     // Return
     return_node: Option<&'static str>,
+    /// Arrow/`=>`-style implicit-return body node (Dart's `function_body`,
+    /// issue #2356) — when this node's only named child is not
+    /// `block_body_node`, that lone child is treated as an implicit return
+    /// expression. `None` for every language except Dart.
+    implicit_return_body_node: Option<&'static str>,
+    /// The "real" block-statement body node type, used by
+    /// `implicit_return_body_node` to distinguish a block-wrapped body from
+    /// a bare implicit-return expression. Defaults to `"block"` for every
+    /// language (Dart's own block type is also named `"block"`).
+    block_body_node: &'static str,
 
     // Variable declarations
     var_declarator_node: Option<&'static str>,
@@ -110,13 +143,16 @@ static JS_TS_DATAFLOW: DataflowRules = DataflowRules {
         "generator_function_declaration",
         "generator_function",
     ],
+    body_sibling_types: &[],
     name_field: "name",
+    name_extractor: None,
     var_assigned_fn_parent: Some("variable_declarator"),
     assignment_fn_parent: Some("assignment_expression"),
     pair_fn_parent: Some("pair"),
     param_list_field: "parameters",
     param_identifier: "identifier",
     param_wrapper_types: &["required_parameter", "optional_parameter"],
+    grouped_param_types: &[],
     default_param_type: Some("assignment_pattern"),
     rest_param_type: Some("rest_pattern"),
     object_destruct_type: Some("object_pattern"),
@@ -125,6 +161,8 @@ static JS_TS_DATAFLOW: DataflowRules = DataflowRules {
     pair_pattern_type: Some("pair_pattern"),
     extract_param_strategy: ParamStrategy::Default,
     return_node: Some("return_statement"),
+    implicit_return_body_node: None,
+    block_body_node: "block",
     var_declarator_node: Some("variable_declarator"),
     var_declarator_nodes: &[],
     var_name_field: "name",
@@ -158,13 +196,16 @@ static JS_TS_DATAFLOW: DataflowRules = DataflowRules {
 
 static PYTHON_DATAFLOW: DataflowRules = DataflowRules {
     function_nodes: &["function_definition", "lambda"],
+    body_sibling_types: &[],
     name_field: "name",
+    name_extractor: None,
     var_assigned_fn_parent: None,
     assignment_fn_parent: None,
     pair_fn_parent: None,
     param_list_field: "parameters",
     param_identifier: "identifier",
     param_wrapper_types: &[],
+    grouped_param_types: &[],
     default_param_type: Some("default_parameter"),
     rest_param_type: Some("list_splat_pattern"),
     object_destruct_type: None,
@@ -173,6 +214,8 @@ static PYTHON_DATAFLOW: DataflowRules = DataflowRules {
     pair_pattern_type: None,
     extract_param_strategy: ParamStrategy::Python,
     return_node: Some("return_statement"),
+    implicit_return_body_node: None,
+    block_body_node: "block",
     var_declarator_node: None,
     var_declarator_nodes: &[],
     var_name_field: "name",
@@ -206,13 +249,16 @@ static PYTHON_DATAFLOW: DataflowRules = DataflowRules {
 
 static GO_DATAFLOW: DataflowRules = DataflowRules {
     function_nodes: &["function_declaration", "method_declaration", "func_literal"],
+    body_sibling_types: &[],
     name_field: "name",
+    name_extractor: None,
     var_assigned_fn_parent: None,
     assignment_fn_parent: None,
     pair_fn_parent: None,
     param_list_field: "parameters",
     param_identifier: "identifier",
     param_wrapper_types: &[],
+    grouped_param_types: &[],
     default_param_type: None,
     rest_param_type: None,
     object_destruct_type: None,
@@ -221,6 +267,8 @@ static GO_DATAFLOW: DataflowRules = DataflowRules {
     pair_pattern_type: None,
     extract_param_strategy: ParamStrategy::Go,
     return_node: Some("return_statement"),
+    implicit_return_body_node: None,
+    block_body_node: "block",
     var_declarator_node: None,
     // Only short_var_declaration uses left/right fields. var_declaration has
     // var_spec children with name/type/value fields — not yet supported.
@@ -253,13 +301,16 @@ static GO_DATAFLOW: DataflowRules = DataflowRules {
 
 static RUST_DATAFLOW: DataflowRules = DataflowRules {
     function_nodes: &["function_item", "closure_expression"],
+    body_sibling_types: &[],
     name_field: "name",
+    name_extractor: None,
     var_assigned_fn_parent: None,
     assignment_fn_parent: None,
     pair_fn_parent: None,
     param_list_field: "parameters",
     param_identifier: "identifier",
     param_wrapper_types: &[],
+    grouped_param_types: &[],
     default_param_type: None,
     rest_param_type: None,
     object_destruct_type: None,
@@ -268,6 +319,8 @@ static RUST_DATAFLOW: DataflowRules = DataflowRules {
     pair_pattern_type: None,
     extract_param_strategy: ParamStrategy::Rust,
     return_node: Some("return_expression"),
+    implicit_return_body_node: None,
+    block_body_node: "block",
     var_declarator_node: Some("let_declaration"),
     var_declarator_nodes: &[],
     var_name_field: "pattern",
@@ -304,13 +357,16 @@ static JAVA_DATAFLOW: DataflowRules = DataflowRules {
         "constructor_declaration",
         "lambda_expression",
     ],
+    body_sibling_types: &[],
     name_field: "name",
+    name_extractor: None,
     var_assigned_fn_parent: None,
     assignment_fn_parent: None,
     pair_fn_parent: None,
     param_list_field: "parameters",
     param_identifier: "identifier",
     param_wrapper_types: &[],
+    grouped_param_types: &[],
     default_param_type: None,
     rest_param_type: None,
     object_destruct_type: None,
@@ -319,6 +375,8 @@ static JAVA_DATAFLOW: DataflowRules = DataflowRules {
     pair_pattern_type: None,
     extract_param_strategy: ParamStrategy::Java,
     return_node: Some("return_statement"),
+    implicit_return_body_node: None,
+    block_body_node: "block",
     var_declarator_node: Some("variable_declarator"),
     var_declarator_nodes: &[],
     var_name_field: "name",
@@ -356,13 +414,16 @@ static CSHARP_DATAFLOW: DataflowRules = DataflowRules {
         "lambda_expression",
         "local_function_statement",
     ],
+    body_sibling_types: &[],
     name_field: "name",
+    name_extractor: None,
     var_assigned_fn_parent: None,
     assignment_fn_parent: None,
     pair_fn_parent: None,
     param_list_field: "parameters",
     param_identifier: "identifier",
     param_wrapper_types: &[],
+    grouped_param_types: &[],
     default_param_type: None,
     rest_param_type: None,
     object_destruct_type: None,
@@ -371,6 +432,8 @@ static CSHARP_DATAFLOW: DataflowRules = DataflowRules {
     pair_pattern_type: None,
     extract_param_strategy: ParamStrategy::CSharp,
     return_node: Some("return_statement"),
+    implicit_return_body_node: None,
+    block_body_node: "block",
     var_declarator_node: Some("variable_declarator"),
     var_declarator_nodes: &[],
     var_name_field: "name",
@@ -408,13 +471,16 @@ static PHP_DATAFLOW: DataflowRules = DataflowRules {
         "anonymous_function_creation_expression",
         "arrow_function",
     ],
+    body_sibling_types: &[],
     name_field: "name",
+    name_extractor: None,
     var_assigned_fn_parent: None,
     assignment_fn_parent: None,
     pair_fn_parent: None,
     param_list_field: "parameters",
     param_identifier: "variable_name",
     param_wrapper_types: &[],
+    grouped_param_types: &[],
     default_param_type: None,
     rest_param_type: None,
     object_destruct_type: None,
@@ -423,6 +489,8 @@ static PHP_DATAFLOW: DataflowRules = DataflowRules {
     pair_pattern_type: None,
     extract_param_strategy: ParamStrategy::Php,
     return_node: Some("return_statement"),
+    implicit_return_body_node: None,
+    block_body_node: "block",
     var_declarator_node: None,
     var_declarator_nodes: &[],
     var_name_field: "name",
@@ -459,13 +527,16 @@ static PHP_DATAFLOW: DataflowRules = DataflowRules {
 
 static RUBY_DATAFLOW: DataflowRules = DataflowRules {
     function_nodes: &["method", "singleton_method", "lambda"],
+    body_sibling_types: &[],
     name_field: "name",
+    name_extractor: None,
     var_assigned_fn_parent: None,
     assignment_fn_parent: None,
     pair_fn_parent: None,
     param_list_field: "parameters",
     param_identifier: "identifier",
     param_wrapper_types: &[],
+    grouped_param_types: &[],
     default_param_type: None,
     rest_param_type: None,
     object_destruct_type: None,
@@ -474,6 +545,8 @@ static RUBY_DATAFLOW: DataflowRules = DataflowRules {
     pair_pattern_type: None,
     extract_param_strategy: ParamStrategy::Ruby,
     return_node: Some("return"),
+    implicit_return_body_node: None,
+    block_body_node: "block",
     var_declarator_node: None,
     var_declarator_nodes: &[],
     var_name_field: "name",
@@ -505,18 +578,127 @@ static RUBY_DATAFLOW: DataflowRules = DataflowRules {
     extra_identifier_types: &[],
 };
 
-/// Get dataflow rules for a language ID string.
+/// Child node types that carry a Dart method's own `name`/parameter-list
+/// fields, nested one level inside a fieldless `method_signature` (mirrors
+/// TS's `DART_NESTED_SIGNATURE_TYPES`, b2.ts). Confirmed empirically against
+/// the Rust `tree_sitter_dart` crate (issue #2359): `method_signature`'s
+/// sole named child is one of these four, each with its own `name` field
+/// (and, for all but `getter_signature`, a `parameters` field too).
+const DART_NESTED_SIGNATURE_TYPES: &[&str] = &[
+    "function_signature",
+    "getter_signature",
+    "setter_signature",
+    "constructor_signature",
+];
+
+/// Resolve a Dart function/method's name.
 ///
-/// No "dart" arm — unlike the languages above, Dart dataflow only exists on
-/// the TS/WASM side today (`src/ast-analysis/rules/b2.ts`'s `dataflowDart`,
-/// fixed for the function_signature/function_body sibling-body split by
-/// #2182). Porting it here needs a `body_sibling_types`-aware `visit()`
-/// (see `crate::shared::ast_nodes::find_body_sibling_node`), and note tree-
-/// sitter-dart's Rust grammar differs structurally from the WASM one used
-/// by TS: function_signature/function_body are children of an intermediate
-/// `function_declaration` wrapper (not direct children of the top-level
-/// node), and function_signature DOES expose a `parameters` field here
-/// (TS's WASM grammar has no such field — confirmed while fixing #2182).
+/// `function_signature` has a direct `name` field. `method_signature` has
+/// none of its own — its name lives on the nested signature child described
+/// above. Mirrors TS's `extractDartFunctionName` (b2.ts).
+fn extract_dart_function_name(node: &Node, source: &[u8]) -> Option<String> {
+    if let Some(direct) = node.child_by_field_name("name") {
+        return Some(node_text(&direct, source).to_string());
+    }
+    let cursor = &mut node.walk();
+    for child in node.named_children(cursor) {
+        if DART_NESTED_SIGNATURE_TYPES.contains(&child.kind()) {
+            if let Some(nested_name) = child.child_by_field_name("name") {
+                return Some(node_text(&nested_name, source).to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Dart dataflow rules (issue #2359), porting TS's `dataflowDart`
+/// (`src/ast-analysis/rules/b2.ts`) to the native engine.
+///
+/// The Rust-native `tree_sitter_dart` crate's grammar shape differs from the
+/// WASM `tree-sitter-dart` npm package TS uses — confirmed empirically by
+/// dumping real parsed trees (not by trusting either side's grammar docs):
+///
+/// - `function_signature`/`method_signature` expose real `name`/`parameters`
+///   fields directly (WASM's grammar has no such fields for these node
+///   types) — so unlike TS, no `getParamListNode`-equivalent override is
+///   needed; the generic `param_list_field: "parameters"` lookup just works.
+/// - `call_expression` is a real, standard node with `function`/`arguments`
+///   fields (WASM has no `call_expression` node at all — calls are a flat
+///   sibling chain requiring `resolveCallParts`/`callChainSiblingType`
+///   hooks on the TS side). Rust needs none of that: plain `call_node`/
+///   `member_node` config works with the existing generic call-handling
+///   code, unmodified.
+/// - `arguments`' own children are bare expressions (WASM wraps each in an
+///   `argument` node) — so `argument_wrapper_type` stays `None`.
+/// - `initialized_variable_definition` exposes `name`/`value` fields
+///   directly, with `value` resolving straight to the `call_expression`
+///   (WASM's `value` field resolves to the bare callee identifier, needing
+///   `callChainSiblingType`'s forward sibling-walk) — so no var-declarator
+///   override is needed either.
+static DART_DATAFLOW: DataflowRules = DataflowRules {
+    function_nodes: &["function_signature", "method_signature"],
+    // function_signature/method_signature are children of an intermediate
+    // function_declaration/method_declaration wrapper; the actual body is a
+    // SIBLING of the signature node within that wrapper, not a child of it
+    // (mirrors TS's #2182 fix) — found via find_body_sibling_node().
+    body_sibling_types: &["function_body"],
+    name_field: "name",
+    // method_signature has no name field of its own — see
+    // extract_dart_function_name's doc comment above.
+    name_extractor: Some(extract_dart_function_name),
+    var_assigned_fn_parent: None,
+    assignment_fn_parent: None,
+    pair_fn_parent: None,
+    param_list_field: "parameters",
+    param_identifier: "identifier",
+    param_wrapper_types: &["formal_parameter"],
+    // `{int times, bool loud}` (named) / `[int x, int y]` (optional-positional)
+    // groups wrap multiple genuinely separate formal_parameter slots in one
+    // optional_formal_parameters node — each must get its own paramIndex,
+    // not the group's single index (mirrors TS's #2358 fix).
+    grouped_param_types: &["optional_formal_parameters"],
+    default_param_type: None,
+    rest_param_type: None,
+    object_destruct_type: None,
+    array_destruct_type: None,
+    shorthand_prop_pattern: None,
+    pair_pattern_type: None,
+    extract_param_strategy: ParamStrategy::Default,
+    return_node: Some("return_statement"),
+    // Arrow/`=>`-style implicit return (mirrors TS's #2356 fix):
+    // function_body's only NAMED child for `=> expr;` is the bare
+    // expression itself — no return_statement, no block wrapper.
+    implicit_return_body_node: Some("function_body"),
+    block_body_node: "block",
+    var_declarator_node: Some("initialized_variable_definition"),
+    var_declarator_nodes: &[],
+    var_name_field: "name",
+    var_value_field: Some("value"),
+    assignment_node: None,
+    assign_left_field: "left",
+    assign_right_field: "right",
+    call_node: Some("call_expression"),
+    call_nodes: &[],
+    call_function_field: "function",
+    call_args_field: "arguments",
+    spread_type: None,
+    member_node: Some("member_expression"),
+    member_object_field: "object",
+    member_property_field: "property",
+    optional_chain_node: None,
+    await_node: None,
+    mutating_methods: &[],
+    expression_stmt_node: "expression_statement",
+    call_object_field: None,
+    method_call_name_field: None,
+    method_call_receiver_field: None,
+    expression_list_type: None,
+    equals_clause_type: None,
+    argument_wrapper_type: None,
+    extra_identifier_types: &[],
+};
+
+/// Get dataflow rules for a language ID string.
 fn get_dataflow_rules(lang_id: &str) -> Option<&'static DataflowRules> {
     match lang_id {
         "javascript" | "typescript" | "tsx" => Some(&JS_TS_DATAFLOW),
@@ -527,6 +709,7 @@ fn get_dataflow_rules(lang_id: &str) -> Option<&'static DataflowRules> {
         "csharp" => Some(&CSHARP_DATAFLOW),
         "php" => Some(&PHP_DATAFLOW),
         "ruby" => Some(&RUBY_DATAFLOW),
+        "dart" => Some(&DART_DATAFLOW),
         _ => None,
     }
 }
@@ -573,6 +756,15 @@ fn node_line(node: &Node) -> u32 {
 
 /// Extract function name from a function AST node.
 fn function_name<'a>(fn_node: &Node<'a>, rules: &DataflowRules, source: &[u8]) -> Option<String> {
+    // Language-specific override, tried first — mirrors TS's functionName()
+    // order (Dart's method_signature has no name field of its own; the
+    // override resolves it via a nested signature child instead).
+    if let Some(extractor) = rules.name_extractor {
+        if let Some(extracted) = extractor(fn_node, source) {
+            return Some(extracted);
+        }
+    }
+
     // Try the standard name field
     if let Some(name_node) = fn_node.child_by_field_name(rules.name_field) {
         return Some(node_text(&name_node, source).to_string());
@@ -826,14 +1018,41 @@ fn extract_param_names(node: &Node, rules: &DataflowRules, source: &[u8]) -> Vec
 }
 
 /// Extract parameters: name + index pairs from formal_parameters node.
+///
+/// A top-level child whose kind is in `rules.grouped_param_types` (Dart's
+/// `optional_formal_parameters`, issue #2358) groups multiple genuinely
+/// separate parameter slots — each of ITS OWN named children gets its own
+/// index, and a slot yielding zero names (a flat default-value literal
+/// sibling, not a real parameter) does NOT consume an index. This does NOT
+/// apply to an ordinary (non-grouped) top-level child, which always
+/// consumes an index regardless of name count — an unnamed parameter
+/// (e.g. C/C++'s `void f(int, int value)`) is a real slot that must not
+/// collapse into the next one. Mirrors TS's `extractParams`
+/// (visitor-utils.ts).
 fn extract_params(params_node: &Node, rules: &DataflowRules, source: &[u8]) -> Vec<(String, u32)> {
     let mut result = Vec::new();
+    let mut index: u32 = 0;
     let cursor = &mut params_node.walk();
-    for (index, child) in params_node.named_children(cursor).enumerate() {
+    for child in params_node.named_children(cursor) {
+        if rules.grouped_param_types.contains(&child.kind()) {
+            let inner_cursor = &mut child.walk();
+            for slot in child.named_children(inner_cursor) {
+                let names = extract_param_names(&slot, rules, source);
+                if names.is_empty() {
+                    continue;
+                }
+                for name in names {
+                    result.push((name, index));
+                }
+                index += 1;
+            }
+            continue;
+        }
         let names = extract_param_names(&child, rules, source);
         for name in names {
-            result.push((name, index as u32));
+            result.push((name, index));
         }
+        index += 1;
     }
     result
 }
@@ -973,6 +1192,7 @@ pub fn extract_dataflow(tree: &Tree, source: &[u8], lang_id: &str) -> Option<Dat
     };
 
     let mut scope_stack: Vec<ScopeFrame> = Vec::new();
+    let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     visit(
         &tree.root_node(),
@@ -980,6 +1200,7 @@ pub fn extract_dataflow(tree: &Tree, source: &[u8], lang_id: &str) -> Option<Dat
         source,
         &mut scope_stack,
         &mut out,
+        &mut consumed,
         0,
     );
 
@@ -1007,6 +1228,15 @@ struct DataflowOutput {
 /// named children by calling `visit` directly. Children are walked inline to
 /// avoid a `visit` <-> `visit_children` mutual-recursion cycle (single entry
 /// point, single recursive call site).
+///
+/// `consumed` tracks node IDs (`Node::id()`) already walked explicitly as a
+/// function's body-sibling (see the `entered_scope` handling below) — a
+/// grammar like tree-sitter-dart's, where a function's body is a SIBLING of
+/// its signature node rather than a child, needs the body walked while the
+/// function's scope is still on `scope_stack`, BEFORE this call's own normal
+/// child recursion would otherwise reach it (as the signature node's
+/// PARENT's child, outside the function's scope). Mirrors TS's
+/// `walkNode`/`consumedSiblingIds` (visitor.ts).
 #[allow(clippy::too_many_arguments)]
 fn visit(
     node: &Node,
@@ -1014,9 +1244,13 @@ fn visit(
     source: &[u8],
     scope_stack: &mut Vec<ScopeFrame>,
     out: &mut DataflowOutput,
+    consumed: &mut std::collections::HashSet<usize>,
     depth: usize,
 ) {
     if depth >= MAX_WALK_DEPTH {
+        return;
+    }
+    if consumed.contains(&node.id()) {
         return;
     }
 
@@ -1028,6 +1262,18 @@ fn visit(
     if is_function_node(rules, t) {
         enter_scope(node, rules, source, scope_stack, &mut out.parameters);
         entered_scope = true;
+    } else if rules.implicit_return_body_node.is_some_and(|b| b == t) {
+        // Arrow/`=>`-style implicit return (Dart, issue #2356): when this
+        // node's only named child is not a "real" block body, treat that
+        // lone child as an implicit return expression.
+        let sole = if node.named_child_count() == 1 {
+            node.named_child(0)
+        } else {
+            None
+        };
+        if sole.is_some_and(|s| s.kind() != rules.block_body_node) {
+            handle_return_stmt(node, rules, source, scope_stack, &mut out.returns, depth);
+        }
     } else if rules.return_node.is_some_and(|r| r == t) {
         handle_return_stmt(node, rules, source, scope_stack, &mut out.returns, depth);
     } else if rules.var_declarator_node.is_some_and(|v| v == t)
@@ -1052,10 +1298,40 @@ fn visit(
     // Recurse into named children inline — no helper indirection, no cycle.
     let cursor = &mut node.walk();
     for child in node.named_children(cursor) {
-        visit(&child, rules, source, scope_stack, out, depth + 1);
+        visit(&child, rules, source, scope_stack, out, consumed, depth + 1);
     }
 
     if entered_scope {
+        // Some grammars (tree-sitter-dart's function_signature/
+        // method_signature) put the function's actual body in a SIBLING
+        // node instead of nesting it — the children loop above never
+        // reaches it. Walk it now, while this function's scope is still on
+        // scope_stack, before popping.
+        if !rules.body_sibling_types.is_empty() {
+            if let Some(body_sibling) =
+                crate::shared::ast_nodes::find_body_sibling_node(node, rules.body_sibling_types)
+            {
+                // Walk BEFORE marking consumed: the early-return guard above
+                // checks `consumed` unconditionally, so marking it first
+                // would make this very call a no-op. The mark only needs to
+                // be in place before the sibling's own PARENT later reaches
+                // it naturally via normal child recursion (comparing by
+                // `.id()`, not by reference, since separate `.child()` calls
+                // for the same AST position produce distinct Node values).
+                if !consumed.contains(&body_sibling.id()) {
+                    visit(
+                        &body_sibling,
+                        rules,
+                        source,
+                        scope_stack,
+                        out,
+                        consumed,
+                        depth + 1,
+                    );
+                    consumed.insert(body_sibling.id());
+                }
+            }
+        }
         scope_stack.pop();
     }
 }
@@ -1532,5 +1808,170 @@ fn handle_expr_stmt_mutation(
             mutating_expr: truncate(node_text(&expr, source), DATAFLOW_TRUNCATION_LIMIT),
             line: node_line(node),
         });
+    }
+}
+
+// ─── Tests: Dart (issue #2359) ───────────────────────────────────────────
+
+#[cfg(test)]
+mod dart_tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    fn extract(code: &str) -> DataflowResult {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_dart::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        extract_dataflow(&tree, code.as_bytes(), "dart").expect("dart dataflow rules must exist")
+    }
+
+    #[test]
+    fn top_level_function_params_have_correct_indices() {
+        let data = extract("int add(int a, int b) {\n  return a + b;\n}\n");
+        let names: Vec<(&str, &str, u32)> = data
+            .parameters
+            .iter()
+            .map(|p| (p.func_name.as_str(), p.param_name.as_str(), p.param_index))
+            .collect();
+        assert!(names.contains(&("add", "a", 0)));
+        assert!(names.contains(&("add", "b", 1)));
+    }
+
+    #[test]
+    fn class_method_params_extracted_exactly_once_no_double_count() {
+        // Regression test for the nested method_signature/function_signature
+        // double-count scenario described in issue #2359: method_signature's
+        // own field lookups must return None (no params pushed for it), and
+        // the walker's normal recursion into the nested function_signature
+        // must independently find+push the real params exactly once.
+        let data =
+            extract("class Calculator {\n  int add(int a, int b) {\n    return a + b;\n  }\n}\n");
+        let add_params: Vec<_> = data
+            .parameters
+            .iter()
+            .filter(|p| p.func_name == "add")
+            .collect();
+        assert_eq!(
+            add_params.len(),
+            2,
+            "expected exactly 2 param entries for 'add', got {add_params:?}"
+        );
+        assert!(add_params
+            .iter()
+            .any(|p| p.param_name == "a" && p.param_index == 0));
+        assert!(add_params
+            .iter()
+            .any(|p| p.param_name == "b" && p.param_index == 1));
+    }
+
+    #[test]
+    fn named_parameter_group_gives_each_name_its_own_index() {
+        let data = extract(
+            "int greet(String name, {int times = 1, bool loud = false}) {\n  return times;\n}\n",
+        );
+        let get = |n: &str| {
+            data.parameters
+                .iter()
+                .find(|p| p.func_name == "greet" && p.param_name == n)
+                .map(|p| p.param_index)
+        };
+        assert_eq!(get("name"), Some(0));
+        assert_eq!(get("times"), Some(1));
+        assert_eq!(get("loud"), Some(2));
+    }
+
+    #[test]
+    fn optional_positional_group_gives_each_name_its_own_index() {
+        let data = extract("int f(int a, [int b, int c]) {\n  return a;\n}\n");
+        let get = |n: &str| {
+            data.parameters
+                .iter()
+                .find(|p| p.func_name == "f" && p.param_name == n)
+                .map(|p| p.param_index)
+        };
+        assert_eq!(get("a"), Some(0));
+        assert_eq!(get("b"), Some(1));
+        assert_eq!(get("c"), Some(2));
+    }
+
+    #[test]
+    fn arrow_body_produces_an_implicit_return() {
+        let data = extract("int multiply(int x, int y) => x * y;\n");
+        let ret = data
+            .returns
+            .iter()
+            .find(|r| r.func_name == "multiply")
+            .expect("expected an implicit return for 'multiply'");
+        assert!(ret.referenced_names.contains(&"x".to_string()));
+        assert!(ret.referenced_names.contains(&"y".to_string()));
+    }
+
+    #[test]
+    fn block_bodied_function_does_not_double_count_as_implicit_return() {
+        let data = extract("int multiply(int x, int y) {\n  return x * y;\n}\n");
+        let multiply_returns: Vec<_> = data
+            .returns
+            .iter()
+            .filter(|r| r.func_name == "multiply")
+            .collect();
+        assert_eq!(multiply_returns.len(), 1);
+    }
+
+    #[test]
+    fn var_declaration_from_call_produces_an_assignment() {
+        let data = extract("int square(int y) {\n  var x = helper(y);\n  return x;\n}\n");
+        let assignment = data
+            .assignments
+            .iter()
+            .find(|a| a.var_name == "x")
+            .expect("expected an assignment entry for 'x'");
+        assert_eq!(assignment.source_call_name, "helper");
+        assert_eq!(assignment.caller_func, Some("square".to_string()));
+    }
+
+    #[test]
+    fn bare_call_produces_an_arg_flow() {
+        let data = extract("int square(int x) {\n  helper(x);\n  return x;\n}\n");
+        let flow = data
+            .arg_flows
+            .iter()
+            .find(|f| f.callee_name == "helper")
+            .expect("expected an argFlow entry for helper(x)");
+        assert_eq!(flow.arg_name, Some("x".to_string()));
+        assert_eq!(flow.caller_func, Some("square".to_string()));
+    }
+
+    #[test]
+    fn method_call_produces_an_arg_flow_resolved_via_the_receiver() {
+        let data = extract(
+            "class Obj {\n  int method(int x) => x;\n}\nint square(Obj obj, int x) {\n  return obj.method(x);\n}\n",
+        );
+        let flow = data
+            .arg_flows
+            .iter()
+            .find(|f| f.callee_name == "method")
+            .expect("expected an argFlow entry for obj.method(x)");
+        assert_eq!(flow.arg_name, Some("x".to_string()));
+        assert_eq!(flow.caller_func, Some("square".to_string()));
+    }
+
+    #[test]
+    fn returns_from_two_sibling_functions_do_not_bleed_scope() {
+        let data =
+            extract("int helper(int z) {\n  return z;\n}\nint caller(int a) {\n  return a;\n}\n");
+        let helper_ret = data
+            .returns
+            .iter()
+            .find(|r| r.func_name == "helper")
+            .unwrap();
+        let caller_ret = data
+            .returns
+            .iter()
+            .find(|r| r.func_name == "caller")
+            .unwrap();
+        assert_eq!(helper_ret.referenced_names, vec!["z".to_string()]);
+        assert_eq!(caller_ret.referenced_names, vec!["a".to_string()]);
     }
 }
