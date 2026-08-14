@@ -119,6 +119,32 @@ describe.skipIf(BASH4 === null)(
         'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
       );
     });
+
+    // Greptile review on PR #2490: the read-binding scan must not treat every
+    // uppercase token after `read` as a destination — a prompt string, or a
+    // value-taking flag's own argument, can contain an unrelated uppercase
+    // word that is not actually being bound.
+    it('still flags a leak past a `read -p` prompt string containing an unrelated uppercase word', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'FOO=hello',
+        'read -p "Enter FOO value: " BAR\necho "leak: $FOO"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
+      );
+    });
+
+    it('still flags a leak past a value-taking flag argument that is an uppercase word', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'FOO=hello',
+        'read -u FOO BAR\necho "leak: $FOO"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
+      );
+    });
   },
 );
 

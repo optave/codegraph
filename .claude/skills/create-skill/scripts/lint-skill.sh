@@ -80,11 +80,23 @@ while IFS=$'\t' read -r bnum line; do
   # batch-size $COUNT set up in Phase 0).
   if [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]]; then
     read_args="${BASH_REMATCH[2]}"
+    # Only the destination variable *names* on a `read` line are real
+    # bindings — strip everything else first so none of it is misread as
+    # one (Greptile review on PR #2490/#2344):
+    #   - a trailing command on the same line (`; do`)
+    #   - the input source (`< file`, `<<< "$X"` here-strings)
+    #   - quoted option arguments (`-p "prompt text"`, which may contain
+    #     arbitrary uppercase words that aren't destinations at all)
+    #   - a value-taking flag's own argument (`-t 5`, `-u FD`, `-d ':'`)
+    #   - a `$`-prefixed token, which REFERENCES a var rather than binding it
     read_args="${read_args%%;*}"
+    read_args="${read_args%%<*}"
+    read_args=$(printf '%s' "$read_args" | sed -E 's/"[^"]*"//g' | sed -E "s/'[^']*'//g")
+    read_args=$(printf '%s' "$read_args" | sed -E 's/-[ptnNdu][[:space:]]+[^[:space:]]+//g')
     while IFS= read -r var; do
       [ -z "$var" ] && continue
       register_var "$var" "$bnum"
-    done < <(echo "$read_args" | grep -oE '\b[A-Z][A-Z0-9_]+\b')
+    done < <(printf '%s' "$read_args" | grep -oE '(^|[^A-Za-z0-9_$])[A-Z][A-Z0-9_]+' | sed -E 's/^[^A-Za-z0-9_]//')
   fi
 done < "$BLOCKS_FILE"
 
