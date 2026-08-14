@@ -94,20 +94,31 @@ export function extractParams(
   const result: ParamInfo[] = [];
   let index = 0;
   for (const child of paramsNode.namedChildren) {
-    // Grouped wrapper types (e.g. Dart's optional_formal_parameters) can mix
-    // real formal_parameter slots with unrelated named siblings — e.g. a
-    // default value's literal, which the grammar attaches as a flat sibling
-    // rather than nesting inside its formal_parameter (issue #2358). Only a
-    // slot that actually yields a name consumes an index.
-    const slots = rules.groupedParamTypes?.has(child.type) ? child.namedChildren : [child];
-    for (const slot of slots) {
-      const names = extractParamNames(slot, rules);
-      if (names.length === 0) continue;
-      for (const name of names) {
-        result.push({ name, index });
+    if (rules.groupedParamTypes?.has(child.type)) {
+      // Grouped wrapper types (e.g. Dart's optional_formal_parameters) can
+      // mix real formal_parameter slots with unrelated named siblings —
+      // e.g. a default value's literal, which the grammar attaches as a
+      // flat sibling rather than nesting inside its formal_parameter
+      // (issue #2358). Only a slot that actually yields a name consumes an
+      // index; an ordinary (non-grouped) child still consumes one below
+      // even with zero names, since an unnamed parameter (e.g. C++'s
+      // `void f(int, int value)`) is a real slot that must not collapse
+      // into the next one.
+      for (const slot of child.namedChildren) {
+        const names = extractParamNames(slot, rules);
+        if (names.length === 0) continue;
+        for (const name of names) {
+          result.push({ name, index });
+        }
+        index++;
       }
-      index++;
+      continue;
     }
+    const names = extractParamNames(child, rules);
+    for (const name of names) {
+      result.push({ name, index });
+    }
+    index++;
   }
   return result;
 }
