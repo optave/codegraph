@@ -398,6 +398,23 @@ export function bootstrap() {
 }
 `,
   },
+  {
+    // Regression guard for Greptile's #2389 review finding: a call whose callee
+    // is itself an expression (not a bare identifier/member/subscript) has no
+    // dedicated query capture, so the value-ref extraction must be routed
+    // through a shape-agnostic capture rather than the shape-specific ones.
+    name: 'call-argument identifier value reference with expression-based callee (#2389)',
+    file: 'test.ts',
+    code: `
+class AppModule {}
+function getFactory() {
+  return (m: unknown) => m;
+}
+export function bootstrap() {
+  return getFactory()(AppModule);
+}
+`,
+  },
 ];
 
 describe('Query vs Walk parity', () => {

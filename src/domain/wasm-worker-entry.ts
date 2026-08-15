@@ -125,6 +125,13 @@ const COMMON_QUERY_PATTERNS: string[] = [
   '(call_expression function: (member_expression) @callmem_fn) @callmem_node',
   '(call_expression function: (subscript_expression) @callsub_fn) @callsub_node',
   '(call_expression function: (super) @callsuper_fn) @callsuper_node',
+  // Generic capture for call-argument identifier value-ref extraction (#2389) —
+  // matches every call_expression regardless of the callee's shape (chained,
+  // curried, or parenthesized callees like `getFactory()(AppModule)`), mirroring
+  // the walk path's unconditional `case 'call_expression'` dispatch. Named-call
+  // resolution stays on the shape-specific patterns above; this one only feeds
+  // dispatchQueryMatch's `callarg_node` branch.
+  '(call_expression) @callarg_node',
   '(new_expression constructor: (identifier) @newfn_name) @newfn_node',
   '(new_expression constructor: (member_expression) @newmem_fn) @newmem_node',
   '(expression_statement (assignment_expression left: (member_expression) @assign_left right: (_) @assign_right)) @assign_node',

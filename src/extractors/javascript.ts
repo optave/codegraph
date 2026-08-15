@@ -399,7 +399,6 @@ function dispatchQueryMatch(
     const callfnInfo = extractCallInfo(c.callfn_name!, c.callfn_node);
     if (callfnInfo) calls.push(callfnInfo);
     calls.push(...extractCallbackReferenceCalls(c.callfn_node, callbackParamShapes));
-    calls.push(...extractCallArgumentIdentifierRefs(c.callfn_node));
   } else if (c.callmem_node) {
     // extractCallInfo → extractMemberExprCallInfo tags .call/.apply/.bind (e.g. `fn.call(ctx)`)
     // as dynamic/reflection regardless of receiver shape, matching the walk path and native
@@ -411,12 +410,10 @@ function dispatchQueryMatch(
     const cbDef = extractCallbackDefinition(c.callmem_node, c.callmem_fn);
     if (cbDef) definitions.push(cbDef);
     calls.push(...extractCallbackReferenceCalls(c.callmem_node, callbackParamShapes));
-    calls.push(...extractCallArgumentIdentifierRefs(c.callmem_node));
   } else if (c.callsub_node) {
     const callInfo = extractCallInfo(c.callsub_fn!, c.callsub_node, arrayElemBindings);
     if (callInfo) calls.push(callInfo);
     calls.push(...extractCallbackReferenceCalls(c.callsub_node, callbackParamShapes));
-    calls.push(...extractCallArgumentIdentifierRefs(c.callsub_node));
   } else if (c.jsxid_node) {
     handleJsxElementRef(c.jsxid_node, calls);
   } else if (c.jsxmem_node) {
@@ -446,6 +443,17 @@ function dispatchQueryMatch(
     // scope. Mirrors the explicit early return in the Rust handle_call_expr super branch.
     const callInfo = extractCallInfo(c.callsuper_fn!, c.callsuper_node);
     if (callInfo) calls.push(callInfo);
+  } else if (c.callarg_node) {
+    // Generic call_expression capture (#2389) — fires for every call regardless
+    // of the callee's shape, so chained/curried/parenthesized callees like
+    // `getFactory()(AppModule)` still get call-argument identifier value-ref
+    // extraction, matching the walk path's unconditional `handleCallExpr` dispatch.
+    // `super(...)`/`this(...)` are excluded to mirror handleCallExpr's early
+    // returns for those two shapes.
+    const fn = c.callarg_node.childForFieldName('function');
+    if (fn?.type !== 'super' && fn?.type !== 'this') {
+      calls.push(...extractCallArgumentIdentifierRefs(c.callarg_node));
+    }
   } else if (c.assign_node) {
     handleCommonJSAssignment(c.assign_left!, c.assign_right!, c.assign_node, imports);
     handleFuncPropAssignment(c.assign_left!, c.assign_right!, definitions);
