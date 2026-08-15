@@ -32,12 +32,15 @@ beforeAll(() => {
   //     secret.js        (hidden dir, ignored)
   //   vendor/
   //     third.js         (in IGNORE_DIRS)
+  //   target/
+  //     debug/build.rs   (Rust build output, in IGNORE_DIRS)
   fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, 'node_modules', 'pkg'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, '.hidden'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, 'vendor'), { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'target', 'debug'), { recursive: true });
 
   fs.writeFileSync(path.join(tmpDir, 'src', 'app.js'), 'export default {}');
   fs.writeFileSync(path.join(tmpDir, 'src', 'utils.ts'), 'export const x = 1;');
@@ -48,6 +51,7 @@ beforeAll(() => {
   fs.writeFileSync(path.join(tmpDir, '.git', 'config'), '[core]');
   fs.writeFileSync(path.join(tmpDir, '.hidden', 'secret.js'), 'export const s = 1;');
   fs.writeFileSync(path.join(tmpDir, 'vendor', 'third.js'), 'export const t = 1;');
+  fs.writeFileSync(path.join(tmpDir, 'target', 'debug', 'build.rs'), 'fn main() {}');
 });
 
 afterAll(() => {
@@ -95,6 +99,12 @@ describe('collectFiles', () => {
     const files = collectFiles(tmpDir);
     const inVendor = files.filter((f) => f.includes('vendor'));
     expect(inVendor).toHaveLength(0);
+  });
+
+  it('skips target directory (Rust build output)', () => {
+    const files = collectFiles(tmpDir);
+    const inTarget = files.filter((f) => f.includes('target'));
+    expect(inTarget).toHaveLength(0);
   });
 
   it('respects config.ignoreDirs', () => {
