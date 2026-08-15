@@ -9,6 +9,7 @@ import {
 import { debug } from '../../infrastructure/logger.js';
 import { outputResult } from '../../infrastructure/result-formatter.js';
 import { toErrorMessage } from '../../shared/errors.js';
+import { DEAD_ROLE_PREFIX } from '../../shared/kinds.js';
 
 interface OutputOpts {
   json?: boolean;
@@ -95,6 +96,7 @@ interface StatsData {
   embeddings?: EmbeddingsInfo;
   quality?: QualityInfo;
   roles?: Record<string, number>;
+  deadTotal?: number;
   complexity?: ComplexityInfo;
   communities?: CommunityInfo;
 }
@@ -130,7 +132,10 @@ function printCountGrid(entries: [string, number][], padWidth: number): void {
   for (let i = 0; i < parts.length; i += 3) {
     const row = parts
       .slice(i, i + 3)
-      .map((p) => p.padEnd(padWidth))
+      // A part at or beyond padWidth would otherwise run straight into the next
+      // column with no separator, since padEnd is a no-op once the string already
+      // meets the target width.
+      .map((p) => (p.length >= padWidth ? `${p} ` : p.padEnd(padWidth)))
       .join('');
     console.log(`  ${row}`);
   }
@@ -225,11 +230,22 @@ function printRoles(data: StatsData): void {
   if (data.roles && Object.keys(data.roles).length > 0) {
     const total = Object.values(data.roles).reduce((a, b) => a + b, 0);
     console.log(`\nRoles:     ${total} classified symbols`);
-    const roleEntries = Object.entries(data.roles).sort((a, b) => b[1] - a[1]) as [
-      string,
-      number,
-    ][];
-    printCountGrid(roleEntries, 18);
+    const liveEntries = Object.entries(data.roles).filter(
+      ([role]) => !role.startsWith(DEAD_ROLE_PREFIX),
+    ) as [string, number][];
+    printCountGrid(
+      liveEntries.sort((a, b) => b[1] - a[1]),
+      18,
+    );
+    if (data.deadTotal) {
+      console.log(`  dead ${data.deadTotal}`);
+      const deadEntries = Object.entries(data.roles).filter(([role]) =>
+        role.startsWith(DEAD_ROLE_PREFIX),
+      ) as [string, number][];
+      for (const [role, count] of deadEntries.sort((a, b) => b[1] - a[1])) {
+        console.log(`    ${role} ${count}`);
+      }
+    }
   }
 }
 

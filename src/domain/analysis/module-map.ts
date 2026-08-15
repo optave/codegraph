@@ -265,14 +265,13 @@ function countRoles(db: BetterSqlite3Database, noTests: boolean) {
       `SELECT role, COUNT(*) as c FROM nodes WHERE role IS NOT NULL ${testFilter} GROUP BY role`,
     )
     .all() as Array<{ role: string; c: number }>;
-  const roles: Record<string, number> & { dead?: number } = {};
+  const roles: Record<string, number> = {};
   let deadTotal = 0;
   for (const r of roleRows) {
     roles[r.role] = r.c;
     if (r.role.startsWith(DEAD_ROLE_PREFIX)) deadTotal += r.c;
   }
-  if (deadTotal > 0) roles.dead = deadTotal;
-  return roles;
+  return { roles, deadTotal };
 }
 
 function getComplexitySummary(db: BetterSqlite3Database, testFilter: string) {
@@ -424,14 +423,13 @@ function computeQualityScore(
 
 /** Aggregate role counts and derive the `dead` total. */
 function aggregateRolesFromNative(roleCounts: Array<{ role: string; count: number }>) {
-  const roles: Record<string, number> & { dead?: number } = {};
+  const roles: Record<string, number> = {};
   let deadTotal = 0;
   for (const r of roleCounts) {
     roles[r.role] = r.count;
     if (r.role.startsWith(DEAD_ROLE_PREFIX)) deadTotal += r.count;
   }
-  if (deadTotal > 0) roles.dead = deadTotal;
-  return roles;
+  return { roles, deadTotal };
 }
 
 type NativeGraphStatsFn = NonNullable<NativeDatabase['getGraphStats']>;
@@ -454,7 +452,7 @@ function buildStatsFromNative(
   for (const k of s.nodesByKind) nodesByKind[k.kind] = k.count;
   const edgesByKind: Record<string, number> = {};
   for (const k of s.edgesByKind) edgesByKind[k.kind] = k.count;
-  const roles = aggregateRolesFromNative(s.roleCounts);
+  const { roles, deadTotal } = aggregateRolesFromNative(s.roleCounts);
 
   const callerCoverage =
     s.quality.callableTotal > 0 ? s.quality.callableWithCallers / s.quality.callableTotal : 0;
@@ -508,6 +506,7 @@ function buildStatsFromNative(
       falsePositiveWarnings,
     },
     roles,
+    deadTotal: deadTotal > 0 ? deadTotal : undefined,
     complexity: s.complexity
       ? {
           analyzed: s.complexity.analyzed,
@@ -542,7 +541,7 @@ function buildStatsFromJs(
   const embeddings = getEmbeddingsInfo(db);
   const fpThreshold = config.analysis?.falsePositiveCallers ?? FALSE_POSITIVE_CALLER_THRESHOLD;
   const quality = computeQualityMetrics(db, testFilter, fpThreshold);
-  const roles = countRoles(db, noTests);
+  const { roles, deadTotal } = countRoles(db, noTests);
   const complexity = getComplexitySummary(db, testFilter);
 
   return {
@@ -554,6 +553,7 @@ function buildStatsFromJs(
     embeddings,
     quality,
     roles,
+    deadTotal: deadTotal > 0 ? deadTotal : undefined,
     complexity,
   };
 }

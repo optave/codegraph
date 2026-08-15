@@ -455,8 +455,8 @@ describe('statsData with roles', () => {
     const data = statsData(dbPath);
     expect(data.roles).toBeDefined();
     expect(Object.keys(data.roles).length).toBeGreaterThan(0);
-    // Should have dead for the unused function
-    expect(data.roles.dead).toBeGreaterThanOrEqual(1);
+    // Should have a dead sub-role for the unused function
+    expect(data.deadTotal).toBeGreaterThanOrEqual(1);
   });
 
   test('roles distribution respects noTests filter', () => {
@@ -465,6 +465,18 @@ describe('statsData with roles', () => {
     const totalWith = Object.values(withTests.roles).reduce((a, b) => a + b, 0);
     const totalWithout = Object.values(withoutTests.roles).reduce((a, b) => a + b, 0);
     expect(totalWithout).toBeLessThanOrEqual(totalWith);
+  });
+
+  test('roles map does not carry an aggregate "dead" peer key', () => {
+    // Regression test for #2383: `dead` used to be injected into the flat
+    // roles map as the sum of its own dead-* sub-roles, double-counting
+    // every dead symbol in any total over the map.
+    const data = statsData(dbPath);
+    expect(data.roles.dead).toBeUndefined();
+    const deadSubRoleTotal = Object.entries(data.roles)
+      .filter(([role]) => role.startsWith('dead-'))
+      .reduce((sum, [, count]) => sum + count, 0);
+    expect(data.deadTotal).toBe(deadSubRoleTotal);
   });
 });
 
