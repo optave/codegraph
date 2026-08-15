@@ -23,9 +23,14 @@ The proxy read "commit newer than trigger" -> stale -> posted `@greptileai` agai
 produced review #9 of a commit Greptile had already scored 5/5. The fix prefers Greptile's
 own `Last reviewed commit` marker and falls back to the proxy only when it can't parse it.
 
-`test_mutation_*` are the load-bearing tests: they mutate the gate back to the pre-fix
-behaviour and assert the #930 scenario FLIPS to posting. Without them, the regression
-assertion could pass with and against the bug it names.
+`test_mutation_*` are the load-bearing tests: they mutate the gate back to a pre-fix
+behaviour and assert the affected scenario FLIPS. Without them, the corresponding
+regression assertion could pass with and against the bug it names. Three cover the
+#930 marker-vs-timestamp regression above; two more (added in #2486) cover a pair of
+comment-fetch failures that used to defeat this gate's own fail-safe design — one
+aborted the whole gate instead of posting, the other let a failed marker fetch look
+identical to "no marker yet" and fall through to a timestamp proxy that could
+conclude satisfied.
 
 Run: python -m pytest .github/scripts/test_sweep_greptile_gate.py
  or: cd .github/scripts && python3 test_sweep_greptile_gate.py   (stdlib runner below)
@@ -254,7 +259,20 @@ if argv[0] == "api":
         cid = re.search(r"/issues/comments/(\d+)/reactions$", url).group(1)
         sys.exit(jq(filt, fx["reactions"].get(cid, [])))
     if re.search(r"/issues/\d+/comments$", url):
-        fail_if("issue_comments")
+        # Three call sites in the gate hit this SAME endpoint with different `--jq` filters:
+        # the trigger-candidates scan (`!=`), condition (3)'s after-trigger count (`.id >`),
+        # and condition (4)'s reviewed-commit marker fetch (selects `.body`, neither of the
+        # others' substrings). Distinguishing by filter content lets a test fail exactly ONE
+        # call site instead of every call to this URL, so fail-safe coverage can isolate each
+        # of the gate's three independent guards on this endpoint.
+        f = filt or ""
+        if "!=" in f:
+            fail_if("trigger_fetch")
+        elif ".id >" in f:
+            fail_if("issue_raw_fetch")
+        elif ".body" in f:
+            fail_if("reviewed_shas_fetch")
+        fail_if("issue_comments")  # blanket: fail every call to this endpoint
         sys.exit(jq(filt, fx["issue_comments"]))
     if re.search(r"/pulls/\d+/comments$", url):
         fail_if("inline_comments")
@@ -390,6 +408,19 @@ SCENARIOS = [
         True,
         "no marker and no commit time -> post (fail safe)",
     ),
+    (
+        "trigger_candidates_fetch_fails",
+        {"fail": ["trigger_fetch"]},
+        True,
+        "cannot fetch trigger comments -> post rather than abort the gate outright (#2486)",
+    ),
+    (
+        "reviewed_shas_fetch_fails_must_not_fall_through",
+        {"fail": ["reviewed_shas_fetch"], "marker_sha": None, "commit_ts": COMMIT_BEFORE_TRIGGER},
+        True,
+        "marker fetch fails -> must post, NOT silently fall through to the timestamp proxy "
+        "(which would read 'nothing pushed since trigger' here and wrongly conclude satisfied) (#2486)",
+    ),
     # ── THE OTHER THREE CONDITIONS MUST STILL BITE ─────────────────────────────────────
     (
         "no_trigger_comment_at_all",
@@ -514,6 +545,89 @@ def test_mutation_ignoring_a_marker_mismatch_is_caught():
     )
 
 
+# ── Fail-safe regression coverage (#2486) ────────────────────────────────────────────
+# Two comment-fetch failures in the gate used to defeat its own stated fail-safe design:
+# a failed trigger-comments fetch aborted the whole gate instead of posting, and a failed
+# marker fetch was indistinguishable from "no marker yet", so it could fall through to the
+# timestamp proxy and conclude satisfied. Both are exercised in SCENARIOS above; the mutants
+# below prove that coverage is load-bearing by reverting each fix and requiring the flip.
+
+
+def test_mutation_trigger_fetch_abort_reintroduces_the_stall():
+    """Pre-#2486 behaviour: a failed trigger-comments fetch aborted the gate outright rather
+    than failing safe by posting. On Step 2i's mandatory final run, that meant a transient
+    API hiccup could stop the sweep having never sent the required last trigger. Revert to
+    the abort-only shape and require `trigger_candidates_fetch_fails` to flip away from POST."""
+    src = _gate_source()
+    pattern = re.compile(
+        r"  \|\| \{\n    # Fail safe \(same reasoning as every guard below\):.*?\n  \}\n",
+        re.S,
+    )
+    mutated, n = pattern.subn(
+        '  || { echo "FATAL: could not fetch trigger comments — aborting gate"; exit 1; }\n',
+        src,
+    )
+    assert n == 1, f"expected to mutate exactly one trigger-fetch guard, matched {n}"
+    fixture = _fixture(fail=["trigger_fetch"])
+    if shutil.which("jq") is None:
+        raise AssertionError("this test needs `jq`")
+    with tempfile.TemporaryDirectory() as td:
+        td_p = Path(td)
+        bindir = td_p / "bin"
+        bindir.mkdir()
+        gh = bindir / "gh"
+        gh.write_text(GH_STUB, "utf-8")
+        gh.chmod(0o755)
+        (td_p / "fixture.json").write_text(json.dumps(fixture), "utf-8")
+        posts = td_p / "posts.txt"
+        posts.write_text("", "utf-8")
+        script = td_p / "gate.sh"
+        script.write_text(mutated, "utf-8")
+        env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "GH_STUB_FIXTURE": str(td_p / "fixture.json"),
+            "GH_STUB_POSTS": str(posts),
+        }
+        proc = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env)
+        posted = [ln for ln in posts.read_text("utf-8").splitlines() if ln.strip()]
+        # MUTATION NOT DETECTED would mean the mutant still posts (proc exits 0 with a post)
+        # exactly like the fixed gate — i.e. the scenario doesn't actually depend on the fix.
+        assert not (proc.returncode == 0 and posted == ["body=@greptileai"]), (
+            "MUTATION NOT DETECTED: reverting to the old abort-on-failure shape still "
+            f"produced the same outcome as the fix. exit={proc.returncode} posted={posted!r} "
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
+def test_mutation_reviewed_fetch_failure_silently_falls_through():
+    """Pre-#2486 behaviour: the reviewed-commit marker fetch piped `gh api` straight into
+    `grep`, so a failed API call was indistinguishable from a successful call that found no
+    marker yet — both left `reviewed_shas` empty and fell into the timestamp-proxy fallback.
+    Revert to that direct-pipe shape and require `reviewed_shas_fetch_fails_must_not_fall_through`
+    (fetch fails, but the fallback's own timestamp check would otherwise read 'satisfied') to
+    flip from POST to SKIP, proving the separate fetch-then-extract shape is load-bearing."""
+    src = _gate_source()
+    pattern = re.compile(r"  reviewed_bodies=\$\(gh api.*?tr 'A-Z' 'a-z'\)\n", re.S)
+    replacement = (
+        "  reviewed_shas=$(gh api repos/" + REPO_SLUG + "/issues/" + PR + "/comments --paginate \\\n"
+        "    --jq '.[] | select(.user.login == \"greptile-apps[bot]\") | .body' 2>/dev/null \\\n"
+        "    | grep -o 'Last reviewed commit:.*/commit/[0-9a-fA-F]\\{40\\}' \\\n"
+        "    | grep -o '[0-9a-fA-F]\\{40\\}$' | tr 'A-Z' 'a-z')\n"
+    )
+    mutated, n = pattern.subn(replacement, src)
+    assert n == 1, f"expected to mutate exactly one reviewed-fetch guard, matched {n}"
+    out, posted = _run_gate(
+        _fixture(fail=["reviewed_shas_fetch"], marker_sha=None, commit_ts=COMMIT_BEFORE_TRIGGER),
+        source=mutated,
+    )
+    assert posted == [], (
+        "MUTATION NOT DETECTED: reverting to the direct gh-api-into-grep pipe still posted "
+        f"even though the fetch fails — the fixed guard is not actually load-bearing. "
+        f"Gate said: {out.strip()}"
+    )
+
+
 TESTS = [
     test_gate_scenarios,
     test_regression_skip_cites_the_marker_not_the_proxy,
@@ -521,6 +635,8 @@ TESTS = [
     test_mutation_removing_the_marker_lookup_reintroduces_the_930_bug,
     test_mutation_breaking_the_sha_regex_reintroduces_the_930_bug,
     test_mutation_ignoring_a_marker_mismatch_is_caught,
+    test_mutation_trigger_fetch_abort_reintroduces_the_stall,
+    test_mutation_reviewed_fetch_failure_silently_falls_through,
 ]
 
 

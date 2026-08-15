@@ -6,10 +6,11 @@
 # re-reviews and makes a converged sweep look unconverged (posted when it should skip).
 #
 # The suite extracts the real fenced block from SKILL.md — no copy — and drives it with a
-# stub `gh`, so a change to the gate is a change to the tested code. Three of its cases are
-# mutation tests that revert the gate to the pre-fix timestamp proxy and REQUIRE the
+# stub `gh`, so a change to the gate is a change to the tested code. Several of its cases
+# are mutation tests that revert the gate to a pre-fix shape and REQUIRE the corresponding
 # regression assertion to fail, so that assertion cannot rot into one that passes with and
-# without the bug it names.
+# without the bug it names — covering both the #930 marker-vs-timestamp regression and the
+# #2486 comment-fetch fail-safe gaps.
 #
 # zsh is installed and REQUIRED rather than skipped: it is the maintainers' interactive
 # shell, and a /sweep guard in a sibling repo once silently PASSED under zsh while failing

@@ -381,7 +381,15 @@ echo "All Greptile comments have replies — safe to re-trigger."
 # binary — same rationale as Step 0's guard).
 trigger_candidates=$(gh api repos/<repo>/issues/<number>/comments --paginate \
   --jq '.[] | select(.user.login != "greptile-apps[bot]") | "\(.id)\t\(.created_at)\t\((.body // "") | @json)"') \
-  || { echo "FATAL: could not fetch trigger comments — aborting gate"; exit 1; }
+  || {
+    # Fail safe (same reasoning as every guard below): a failed fetch can't prove a trigger
+    # doesn't already exist, but it *also* can't prove one does — and aborting here used to
+    # exit the gate outright without posting, which on Step 2i's mandatory final run meant
+    # the sweep could stop having never sent the required last review trigger. Post instead.
+    echo "Could not fetch trigger comments — posting @greptileai (fail safe)."
+    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+    exit 0
+  }
 
 # <!-- greptile-trigger:decision:start -->
 # ── Decision half: pure text, NO network. Reads ONLY $trigger_candidates (newline-separated,
@@ -558,9 +566,25 @@ else
   # `--jq` only SELECTS the bodies; grep does the extraction, so this needs neither a standalone
   # `jq` binary nor jq-flavour named-capture regex. grep is line-oriented and the footer is a
   # single line, so `.*` cannot run past it into another comment's link.
+  #
+  # The fetch is captured SEPARATELY from the grep extraction below, and ITS OWN exit status
+  # checked directly with `||` — piping straight into `grep -o` would erase the difference
+  # between "the API call failed" and "the API call succeeded and legitimately found no marker
+  # yet" (Greptile hasn't summarised, or the footer format changed): `grep` exits 1 on "no
+  # match" either way, so a guard on the whole pipeline would misfire on that ordinary, non-error
+  # case too and defeat itself. A genuine fetch failure must fail safe by posting — it must NOT
+  # fall through to the timestamp-proxy branch below as if no marker existed, because the proxy
+  # can read "nothing pushed since the trigger" and conclude satisfied, silently permitting a
+  # skip of a head Greptile's marker was never actually checked against.
+  reviewed_bodies=$(gh api repos/<repo>/issues/<number>/comments --paginate \
+    --jq '.[] | select(.user.login == "greptile-apps[bot]") | .body' 2>/dev/null) \
+    || {
+      echo "Could not fetch Greptile comments for the reviewed-commit marker — posting @greptileai (fail safe)."
+      gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+      exit 0
+    }
   # inline-sweep GREPTILE-LAST-REVIEWED extractor [#930]
-  reviewed_shas=$(gh api repos/<repo>/issues/<number>/comments --paginate \
-    --jq '.[] | select(.user.login == "greptile-apps[bot]") | .body' 2>/dev/null \
+  reviewed_shas=$(printf '%s\n' "$reviewed_bodies" \
     | grep -o 'Last reviewed commit:.*/commit/[0-9a-fA-F]\{40\}' \
     | grep -o '[0-9a-fA-F]\{40\}$' | tr 'A-Z' 'a-z')
 
