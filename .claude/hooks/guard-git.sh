@@ -21,6 +21,20 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
+# The actual directory the Bash tool will run this command in — a top-level
+# field on every PreToolUse payload, independent of whatever cd/-C text
+# happens to appear in $COMMAND. This is what a bare `git push` (relying on
+# the Bash tool's persistent cwd from an earlier, separate tool call) must
+# resolve against; the hook's own process cwd is unrelated to it (#2386).
+HOOK_CWD=$(echo "$INPUT" | node -e "
+  let d='';
+  process.stdin.on('data',c=>d+=c);
+  process.stdin.on('end',()=>{
+    const p=JSON.parse(d).cwd||'';
+    if(p)process.stdout.write(p);
+  });
+" 2>/dev/null) || true
+
 # Act on git and gh commands (may appear after cd "..." &&, inside a quoted
 # nested-shell invocation like `bash -c "git clean -fd"`, or inside a command
 # substitution like `"message $(git clean -fd)"` — #2099 Greptile review).
@@ -169,7 +183,8 @@ fi
 # Resolve the working directory a git command targets:
 # - `git -C "<dir>" ...`   → the -C target (takes precedence — explicit git-level override)
 # - `cd "<dir>" && git ...` → the cd target
-# Falls back to empty string (caller uses cwd).
+# Falls back to empty string when neither appears in the command text —
+# callers then fall back further to the hook's own $HOOK_CWD (#2386).
 #
 # Optional arg: target subcommand hint (e.g. `push`, `commit`). When given,
 # narrows the search to the `&&`-separated segment whose git invocation runs
@@ -220,18 +235,33 @@ validate_branch_name() {
   local work_dir
   work_dir=$(detect_work_dir "$subcmd")
 
+  # No explicit -C/cd in the command text — fall back to the Bash tool's
+  # actual cwd for this call (reported by the harness on every PreToolUse
+  # payload), NOT the hook process's own ambient cwd. A bare `git push`
+  # relying on a `cd` from an earlier, separate tool call has no directory
+  # hint in $COMMAND at all; substituting the hook's own cwd there validates
+  # a completely unrelated repo's branch (#2386).
+  if [ -z "$work_dir" ] && [ -n "$HOOK_CWD" ] && [ -d "$HOOK_CWD" ]; then
+    work_dir="$HOOK_CWD"
+  fi
+
   local BRANCH=""
   if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
     BRANCH=$(git -C "$work_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || true
   fi
+
+  # Still unresolved — we genuinely don't know which repo this command
+  # targets. A false deny on valid work (validating an unrelated repo's
+  # branch, as happened in #2386) is worse than a missed check here: decline
+  # to validate rather than guessing.
   if [ -z "$BRANCH" ]; then
-    BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+    return 0
   fi
 
-  if [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "HEAD" ]; then
+  if [ "$BRANCH" != "main" ] && [ "$BRANCH" != "HEAD" ]; then
     local PATTERN="^(feat|fix|docs|refactor|test|chore|ci|perf|build|release|dependabot|revert)/"
     if [[ ! "$BRANCH" =~ $PATTERN ]]; then
-      deny "BLOCKED: Branch '$BRANCH' does not match required pattern. Branch names must start with: feat/, fix/, docs/, refactor/, test/, chore/, ci/, perf/, build/, release/, revert/"
+      deny "BLOCKED: Branch '$BRANCH' (resolved from $work_dir) does not match required pattern. Branch names must start with: feat/, fix/, docs/, refactor/, test/, chore/, ci/, perf/, build/, release/, dependabot/, revert/"
     fi
   fi
 }
