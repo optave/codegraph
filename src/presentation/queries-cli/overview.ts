@@ -124,6 +124,7 @@ interface RoleSymbol {
 
 interface RolesData {
   count: number;
+  totalClassified: number;
   summary: Record<string, number>;
   symbols: RoleSymbol[];
 }
@@ -369,7 +370,14 @@ export function roles(customDbPath: string, opts: OutputOpts = {}): void {
   if (outputResult(data, 'symbols', opts, customDbPath)) return;
 
   if (data.count === 0) {
-    console.log('No classified symbols found. Run "codegraph build" first.');
+    if (opts.role && data.totalClassified > 0) {
+      // The graph is fine — this role filter simply matched nothing (#2390).
+      console.log(
+        `No symbols with role "${opts.role}". (${data.totalClassified} classified symbols in graph.)`,
+      );
+    } else {
+      console.log('No classified symbols found. Run "codegraph build" first.');
+    }
     return;
   }
 

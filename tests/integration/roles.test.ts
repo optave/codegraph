@@ -446,6 +446,34 @@ describe('rolesData', () => {
       expect(s.file).not.toMatch(/\.test\./);
     }
   });
+
+  // Regression guard for #2390: `--role <X>` with zero matches must be able to
+  // tell "this role has no matches" apart from "the graph has no classified
+  // symbols at all" — both cases return count:0, but only totalClassified
+  // distinguishes them.
+  test('totalClassified reflects the full graph, unaffected by an unmatched role filter', () => {
+    const unfiltered = rolesData(dbPath);
+    const noMatches = rolesData(dbPath, { role: 'entry-fixture-nonexistent-role' });
+    expect(noMatches.count).toBe(0);
+    expect(noMatches.totalClassified).toBe(unfiltered.count);
+    expect(noMatches.totalClassified).toBeGreaterThan(0);
+  });
+
+  test('totalClassified equals count when no role filter is applied', () => {
+    const data = rolesData(dbPath);
+    expect(data.totalClassified).toBe(data.count);
+  });
+
+  test('totalClassified respects the file filter (matches the same-file unfiltered count)', () => {
+    const unfilteredForFile = rolesData(dbPath, { file: 'lib.js' });
+    const noMatchesForFile = rolesData(dbPath, {
+      file: 'lib.js',
+      role: 'entry-fixture-nonexistent-role',
+    });
+    expect(noMatchesForFile.count).toBe(0);
+    expect(noMatchesForFile.totalClassified).toBe(unfilteredForFile.count);
+    expect(noMatchesForFile.totalClassified).toBeGreaterThan(0);
+  });
 });
 
 // ─── statsData includes roles ───────────────────────────────────────────

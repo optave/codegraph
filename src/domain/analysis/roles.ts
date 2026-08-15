@@ -51,9 +51,20 @@ export function rolesData(
   try {
     const noTests = opts.noTests || false;
     const filterRole = opts.role || null;
-    const conditions = ['role IS NOT NULL'];
-    const params: (string | number)[] = [];
 
+    const baseConditions = ['role IS NOT NULL'];
+    const baseParams: (string | number)[] = [];
+    {
+      const fc = buildFileConditionSQL(opts.file || '', 'file');
+      if (fc.sql) {
+        // Strip leading ' AND ' since we're using conditions array
+        baseConditions.push(fc.sql.replace(/^ AND /, ''));
+        baseParams.push(...fc.params);
+      }
+    }
+
+    const conditions = [...baseConditions];
+    const params = [...baseParams];
     if (filterRole) {
       if (filterRole === DEAD_ROLE_PREFIX) {
         conditions.push('role LIKE ?');
@@ -61,14 +72,6 @@ export function rolesData(
       } else {
         conditions.push('role = ?');
         params.push(filterRole);
-      }
-    }
-    {
-      const fc = buildFileConditionSQL(opts.file || '', 'file');
-      if (fc.sql) {
-        // Strip leading ' AND ' since we're using conditions array
-        conditions.push(fc.sql.replace(/^ AND /, ''));
-        params.push(...fc.params);
       }
     }
 
@@ -86,6 +89,21 @@ export function rolesData(
 
     if (noTests) rows = rows.filter((r) => !isTestFile(r.file));
 
+    // Issue #2390: total classified-symbol count ignoring the --role filter
+    // (but respecting the file filter and noTests, same as the row query
+    // above), so the CLI can tell "this role has no matches" apart from "the
+    // graph has no classified symbols at all" and stop recommending a rebuild
+    // when the graph is actually fine. Only queried when a role filter is
+    // active — otherwise it's identical to `rows.length` and free to reuse.
+    let totalClassified = rows.length;
+    if (filterRole) {
+      let totalRows = db
+        .prepare(`SELECT file FROM nodes WHERE ${baseConditions.join(' AND ')}`)
+        .all(...baseParams) as Pick<NodeRow, 'file'>[];
+      if (noTests) totalRows = totalRows.filter((r) => !isTestFile(r.file));
+      totalClassified = totalRows.length;
+    }
+
     const summary: Record<string, number> = {};
     for (const r of rows) {
       // SQL guarantees role IS NOT NULL
@@ -95,7 +113,7 @@ export function rolesData(
 
     const hc = new Map();
     const symbols = rows.map((r) => normalizeSymbol(r, db, hc));
-    const base = { count: symbols.length, summary, symbols };
+    const base = { count: symbols.length, totalClassified, summary, symbols };
     return paginateResult(base, 'symbols', { limit: opts.limit, offset: opts.offset });
   } finally {
     db.close();

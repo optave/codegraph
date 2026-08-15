@@ -675,9 +675,27 @@ describe('roles', () => {
   });
 
   it('prints message when no symbols classified', () => {
-    mocks.rolesData.mockReturnValue({ count: 0, summary: {}, symbols: [] });
+    mocks.rolesData.mockReturnValue({ count: 0, totalClassified: 0, summary: {}, symbols: [] });
     roles('/db', {});
     expect(output()).toContain('No classified symbols found');
+  });
+
+  // Regression guard for #2390: a --role filter with zero matches on a fully
+  // classified graph must not tell the user to rebuild — that's only correct
+  // when the graph itself has no classified symbols at all.
+  it('reports a role-specific zero-match message instead of "run build first" when the graph is otherwise classified (#2390)', () => {
+    mocks.rolesData.mockReturnValue({ count: 0, totalClassified: 548, summary: {}, symbols: [] });
+    roles('/db', { role: 'entry' });
+    const out = output();
+    expect(out).toContain('No symbols with role "entry"');
+    expect(out).toContain('548 classified symbols in graph');
+    expect(out).not.toContain('Run "codegraph build" first');
+  });
+
+  it('still recommends a rebuild for a --role filter when the graph genuinely has no classified symbols (#2390)', () => {
+    mocks.rolesData.mockReturnValue({ count: 0, totalClassified: 0, summary: {}, symbols: [] });
+    roles('/db', { role: 'entry' });
+    expect(output()).toContain('No classified symbols found. Run "codegraph build" first.');
   });
 });
 
