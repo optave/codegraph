@@ -135,6 +135,10 @@
       "optional": true
     }
   },
+  "overrides": {
+    "adm-zip": "^0.6.0",
+    "sharp": "^0.35.3"
+  },
   "optionalDependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@optave/codegraph-darwin-arm64": "3.16.0",
