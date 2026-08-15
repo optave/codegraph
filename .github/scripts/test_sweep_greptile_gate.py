@@ -26,11 +26,14 @@ own `Last reviewed commit` marker and falls back to the proxy only when it can't
 `test_mutation_*` are the load-bearing tests: they mutate the gate back to a pre-fix
 behaviour and assert the affected scenario FLIPS. Without them, the corresponding
 regression assertion could pass with and against the bug it names. Three cover the
-#930 marker-vs-timestamp regression above; two more (added in #2486) cover a pair of
-comment-fetch failures that used to defeat this gate's own fail-safe design — one
+#930 marker-vs-timestamp regression above; four more (added in #2486) cover the gate's
+own fail-safe design: two comment-fetch failures that used to defeat it outright — one
 aborted the whole gate instead of posting, the other let a failed marker fetch look
-identical to "no marker yet" and fall through to a timestamp proxy that could
-conclude satisfied.
+identical to "no marker yet" and fall through to a timestamp proxy that could conclude
+satisfied — and two covering the shared `post_trigger_or_die` recovery-post itself,
+which a Greptile review round on this same PR pointed out could fail silently: posting
+`@greptileai` without checking whether that post succeeded before exiting 0, so a
+double failure (the original fetch AND the recovery post) still reported success.
 
 Run: python -m pytest .github/scripts/test_sweep_greptile_gate.py
  or: cd .github/scripts && python3 test_sweep_greptile_gate.py   (stdlib runner below)
@@ -249,6 +252,7 @@ if argv[0] == "api":
     url = next(a for a in argv[1:] if not a.startswith("-"))
     # A POST: `gh api <url> -f body=@greptileai`
     if "-f" in argv:
+        fail_if("trigger_post")
         body = opt(["-f"])
         with open(os.environ["GH_STUB_POSTS"], "a") as fh:
             fh.write(body + "\n")
@@ -323,9 +327,18 @@ def _shells() -> list[str]:
 
 
 def _run_gate(
-    fixture: dict, source: str | None = None, shell: str = "bash"
-) -> tuple[str, list[str]]:
-    """Run the gate under `shell` with a stub `gh` on PATH. Returns (stdout, posted bodies)."""
+    fixture: dict,
+    source: str | None = None,
+    shell: str = "bash",
+    expect_returncode: int | None = 0,
+) -> tuple[str, list[str], int]:
+    """Run the gate under `shell` with a stub `gh` on PATH. Returns (stdout, posted bodies, returncode).
+
+    `expect_returncode` defaults to 0 (the gate's normal, ever-successful exit) and asserts it —
+    every scenario before #2486 only ever exercised that path. Pass `None` to skip the assertion
+    entirely (the caller checks `returncode` itself), which the fail-safe-post-failure tests below
+    need: they deliberately drive the gate into its one legitimate non-zero exit.
+    """
     if shutil.which("jq") is None:
         raise AssertionError("this test needs `jq` to evaluate the gate's real --jq filters")
     src = _gate_source() if source is None else source
@@ -348,12 +361,13 @@ def _run_gate(
             "GH_STUB_POSTS": str(posts),
         }
         proc = subprocess.run([shell, str(script)], capture_output=True, text=True, env=env)
-        assert proc.returncode == 0, (
-            f"gate exited {proc.returncode} under {shell}\n"
-            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        )
+        if expect_returncode is not None:
+            assert proc.returncode == expect_returncode, (
+                f"gate exited {proc.returncode} (expected {expect_returncode}) under {shell}\n"
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            )
         posted = [ln for ln in posts.read_text("utf-8").splitlines() if ln.strip()]
-        return proc.stdout, posted
+        return proc.stdout, posted, proc.returncode
 
 
 # (name, fixture kwargs, expect_post, why)
@@ -446,7 +460,7 @@ SCENARIOS = [
 def test_gate_scenarios():
     for shell in _shells():
         for name, kwargs, expect_post, why in SCENARIOS:
-            out, posted = _run_gate(_fixture(**kwargs), shell=shell)
+            out, posted, _rc = _run_gate(_fixture(**kwargs), shell=shell)
             got_post = len(posted) > 0
             assert got_post == expect_post, (
                 f"[{shell}/{name}] expected {'POST' if expect_post else 'SKIP'}, got "
@@ -462,7 +476,7 @@ def test_regression_skip_cites_the_marker_not_the_proxy():
     """The #930 case must be decided BY THE MARKER. A skip reached via the timestamp
     proxy would be the right answer for the wrong reason and would not survive a real
     push, so pin the basis the gate reports."""
-    out, posted = _run_gate(_fixture())
+    out, posted, _rc = _run_gate(_fixture())
     assert not posted
     assert "basis" not in out, f"a satisfied gate should not report a not-satisfied basis: {out}"
     assert "head reviewed per marker" in out, (
@@ -472,7 +486,7 @@ def test_regression_skip_cites_the_marker_not_the_proxy():
 
 
 def test_fallback_skip_cites_the_proxy():
-    out, posted = _run_gate(_fixture(marker_sha=None, commit_ts=COMMIT_BEFORE_TRIGGER))
+    out, posted, _rc = _run_gate(_fixture(marker_sha=None, commit_ts=COMMIT_BEFORE_TRIGGER))
     assert not posted
     assert "head reviewed per timestamp-proxy" in out, f"expected the proxy basis, got: {out}"
 
@@ -500,7 +514,7 @@ def test_mutation_removing_the_marker_lookup_reintroduces_the_930_bug():
     """Pre-fix behaviour: with no marker SHA the gate falls back to the committedDate proxy,
     which is byte-identical to the code that shipped the bug. The #930 scenario must POST."""
     mutated = _mutate_extractor('  reviewed_shas=""\n')
-    out, posted = _run_gate(_fixture(), source=mutated)
+    out, posted, _rc = _run_gate(_fixture(), source=mutated)
     assert posted == ["body=@greptileai"], (
         "MUTATION NOT DETECTED: with the marker lookup removed, the #930 scenario still "
         f"skipped the re-trigger — the regression assertion is not load-bearing. "
@@ -517,7 +531,7 @@ def test_mutation_breaking_the_sha_regex_reintroduces_the_930_bug():
     broken = _gate_source()
     assert broken.count(r"[0-9a-fA-F]\{40\}") == 2, "expected two 40-hex patterns in the extractor"
     mutated = broken.replace(r"[0-9a-fA-F]\{40\}", r"[0-9a-fA-F]\{41\}")
-    out, posted = _run_gate(_fixture(), source=mutated)
+    out, posted, _rc = _run_gate(_fixture(), source=mutated)
     assert posted == ["body=@greptileai"], (
         "MUTATION NOT DETECTED: a broken SHA pattern still produced a satisfied gate — the "
         f"extractor is not actually being exercised. Gate said: {out.strip()}"
@@ -537,7 +551,7 @@ def test_mutation_ignoring_a_marker_mismatch_is_caught():
     # The mutant accepts ANY marker as satisfaction, so it SKIPS where the real gate POSTs.
     # Seeing the mutant skip is what proves `marker_names_other_commit`'s POST is produced by
     # the equality check and not by some other condition incidentally failing.
-    out, posted = _run_gate(_fixture(marker_sha=OTHER), source=mutated)
+    out, posted, _rc = _run_gate(_fixture(marker_sha=OTHER), source=mutated)
     assert posted == [], (
         "MUTATION NOT DETECTED: dropping the marker==head equality check still produced a "
         f"re-trigger, so `marker_names_other_commit` passes for some other reason and is not "
@@ -568,36 +582,13 @@ def test_mutation_trigger_fetch_abort_reintroduces_the_stall():
         src,
     )
     assert n == 1, f"expected to mutate exactly one trigger-fetch guard, matched {n}"
-    fixture = _fixture(fail=["trigger_fetch"])
-    if shutil.which("jq") is None:
-        raise AssertionError("this test needs `jq`")
-    with tempfile.TemporaryDirectory() as td:
-        td_p = Path(td)
-        bindir = td_p / "bin"
-        bindir.mkdir()
-        gh = bindir / "gh"
-        gh.write_text(GH_STUB, "utf-8")
-        gh.chmod(0o755)
-        (td_p / "fixture.json").write_text(json.dumps(fixture), "utf-8")
-        posts = td_p / "posts.txt"
-        posts.write_text("", "utf-8")
-        script = td_p / "gate.sh"
-        script.write_text(mutated, "utf-8")
-        env = {
-            **os.environ,
-            "PATH": f"{bindir}:{os.environ['PATH']}",
-            "GH_STUB_FIXTURE": str(td_p / "fixture.json"),
-            "GH_STUB_POSTS": str(posts),
-        }
-        proc = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env)
-        posted = [ln for ln in posts.read_text("utf-8").splitlines() if ln.strip()]
-        # MUTATION NOT DETECTED would mean the mutant still posts (proc exits 0 with a post)
-        # exactly like the fixed gate — i.e. the scenario doesn't actually depend on the fix.
-        assert not (proc.returncode == 0 and posted == ["body=@greptileai"]), (
-            "MUTATION NOT DETECTED: reverting to the old abort-on-failure shape still "
-            f"produced the same outcome as the fix. exit={proc.returncode} posted={posted!r} "
-            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        )
+    out, posted, rc = _run_gate(_fixture(fail=["trigger_fetch"]), source=mutated, expect_returncode=None)
+    # MUTATION NOT DETECTED would mean the mutant still posts (proc exits 0 with a post)
+    # exactly like the fixed gate — i.e. the scenario doesn't actually depend on the fix.
+    assert not (rc == 0 and posted == ["body=@greptileai"]), (
+        "MUTATION NOT DETECTED: reverting to the old abort-on-failure shape still "
+        f"produced the same outcome as the fix. exit={rc} posted={posted!r} gate said: {out.strip()}"
+    )
 
 
 def test_mutation_reviewed_fetch_failure_silently_falls_through():
@@ -617,7 +608,7 @@ def test_mutation_reviewed_fetch_failure_silently_falls_through():
     )
     mutated, n = pattern.subn(replacement, src)
     assert n == 1, f"expected to mutate exactly one reviewed-fetch guard, matched {n}"
-    out, posted = _run_gate(
+    out, posted, _rc = _run_gate(
         _fixture(fail=["reviewed_shas_fetch"], marker_sha=None, commit_ts=COMMIT_BEFORE_TRIGGER),
         source=mutated,
     )
@@ -625,6 +616,52 @@ def test_mutation_reviewed_fetch_failure_silently_falls_through():
         "MUTATION NOT DETECTED: reverting to the direct gh-api-into-grep pipe still posted "
         f"even though the fetch fails — the fixed guard is not actually load-bearing. "
         f"Gate said: {out.strip()}"
+    )
+
+
+# ── Recovery-POST fail-safe coverage (Greptile review round 2, PR #2486) ────────────────────
+# Every fail-safe branch above posts `@greptileai` through the shared `post_trigger_or_die`
+# helper — but Greptile pointed out that the helper itself, as first written, didn't check
+# whether THAT post succeeded before exiting 0. A double failure (the original fetch AND the
+# recovery post) would still silently report success, reproducing the exact bug this PR fixes
+# at one remove: the sweep believing the mandatory trigger reached Greptile when it never left
+# this machine. `trigger_post` is a fixture fail-key matching ANY `-f`-flagged POST call.
+
+
+def test_post_failure_after_fetch_failure_exits_loudly_not_silently():
+    """When BOTH the original fetch and the fail-safe recovery POST fail, the gate must not
+    silently report success. `post_trigger_or_die` must exit non-zero and record no post."""
+    out, posted, rc = _run_gate(
+        _fixture(fail=["trigger_fetch", "trigger_post"]), expect_returncode=None
+    )
+    assert rc != 0, (
+        f"expected a non-zero exit when the recovery POST itself fails, got {rc}. "
+        f"Gate said: {out.strip()}"
+    )
+    assert posted == [], f"expected no successful post recorded, got {posted!r}"
+
+
+def test_mutation_ignoring_post_failure_silently_reports_success():
+    """Revert `post_trigger_or_die` to the shape Greptile flagged: post without checking
+    success, then unconditionally exit 0. The double-failure scenario above must flip from a
+    loud non-zero exit back to a silent 0, proving the success check is load-bearing."""
+    src = _gate_source()
+    pattern = re.compile(r"post_trigger_or_die\(\) \{\n.*?\n\}\n", re.S)
+    replacement = (
+        "post_trigger_or_die() {\n"
+        '  echo "$1"\n'
+        "  gh api repos/" + REPO_SLUG + "/issues/" + PR + '/comments -f body="@greptileai" > /dev/null\n'
+        "  exit 0\n"
+        "}\n"
+    )
+    mutated, n = pattern.subn(replacement, src)
+    assert n == 1, f"expected to mutate exactly one post_trigger_or_die definition, matched {n}"
+    out, posted, rc = _run_gate(
+        _fixture(fail=["trigger_fetch", "trigger_post"]), source=mutated, expect_returncode=None
+    )
+    assert rc == 0, (
+        "MUTATION NOT DETECTED: reverting to the unchecked-POST shape still exited non-zero — "
+        f"the fix is not actually load-bearing. exit={rc}. Gate said: {out.strip()}"
     )
 
 
@@ -637,6 +674,8 @@ TESTS = [
     test_mutation_ignoring_a_marker_mismatch_is_caught,
     test_mutation_trigger_fetch_abort_reintroduces_the_stall,
     test_mutation_reviewed_fetch_failure_silently_falls_through,
+    test_post_failure_after_fetch_failure_exits_loudly_not_silently,
+    test_mutation_ignoring_post_failure_silently_reports_success,
 ]
 
 

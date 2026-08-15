@@ -374,6 +374,24 @@ echo "All Greptile comments have replies — safe to re-trigger."
 # TRIGGER comment counts. If ANY condition fails, post `@greptileai`. Same idempotent gate is
 # safe to re-run, so Step 2i calls it verbatim as the final mandatory check.
 
+# Posts the mandatory `@greptileai` trigger and terminates the gate. EVERY branch below that
+# needs to post — a fail-safe fetch-failure fallback, "no trigger has ever existed", or the
+# ordinary "not satisfied" verdict — calls this instead of posting inline and falling through.
+# A failed fetch can't prove a trigger already exists, so the gate must attempt to notify
+# Greptile; but if THIS post also fails, silently letting the script end with its default exit 0
+# would reproduce the exact bug it fixes at one remove (Greptile review, PR #2486): the sweep
+# would believe the mandatory trigger landed when it never left this machine. That double
+# failure is rare, but the caller (a human or the sweep session) needs a LOUD signal instead of
+# false confidence, so a failed post here exits non-zero rather than swallowing the error.
+post_trigger_or_die() {
+  echo "$1"
+  if gh api repos/<repo>/issues/<number>/comments -f body="@greptileai" > /dev/null; then
+    exit 0
+  fi
+  echo "FATAL: the @greptileai POST itself failed — Greptile was NOT notified. Investigate (network/auth/rate-limit) and retrigger manually." >&2
+  exit 1
+}
+
 # Candidate issue-stream comments, oldest first: `<id><TAB><created_at><TAB><body as a JSON string>`.
 # The body rides through jq's `@json` so every record stays ONE line — a raw multi-line body would
 # break the line-oriented classifier below. `@json` is core jq needing no regex, so this does not
@@ -386,9 +404,7 @@ trigger_candidates=$(gh api repos/<repo>/issues/<number>/comments --paginate \
     # doesn't already exist, but it *also* can't prove one does — and aborting here used to
     # exit the gate outright without posting, which on Step 2i's mandatory final run meant
     # the sweep could stop having never sent the required last review trigger. Post instead.
-    echo "Could not fetch trigger comments — posting @greptileai (fail safe)."
-    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
-    exit 0
+    post_trigger_or_die "Could not fetch trigger comments — posting @greptileai (fail safe)."
   }
 
 # <!-- greptile-trigger:decision:start -->
@@ -480,8 +496,7 @@ trigger_ts=$(printf '%s' "$trigger_pair" | cut -f2)
 if [ -z "$trigger_id" ]; then
   # (1) fails — no trigger has ever reflected this PR. This is the case the old reply-reaction
   # shortcut got wrong: a 👍 on a reply is not a trigger, so we MUST post one.
-  echo "No @greptileai trigger comment exists — posting trigger."
-  gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+  post_trigger_or_die "No @greptileai trigger comment exists — posting trigger."
 else
   # Trigger timestamp (ISO-8601 → lexicographically comparable as a string) came from the same
   # record as the id, so it needs no second fetch. Keep the guard anyway: an empty created_at
@@ -490,9 +505,7 @@ else
     # Fail safe: we found a trigger id but could not resolve its timestamp, so the
     # after-trigger inline-comment check (3) and the push-staleness check (4) can't
     # run. Never assume the conditions they control are met — post the trigger.
-    echo "Could not resolve trigger timestamp — posting @greptileai (fail safe)."
-    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
-    exit 0
+    post_trigger_or_die "Could not resolve trigger timestamp — posting @greptileai (fail safe)."
   fi
 
   # (2) positive reaction ON THE TRIGGER (never on a reply).
@@ -512,9 +525,7 @@ else
   if [ -z "$issue_raw" ] || [ -z "$inline_raw" ]; then
     # Fail safe (same reasoning as the trigger_ts/head_ts guards): a failed fetch can't prove
     # "no new comments" — post the trigger rather than assume condition (3) is met.
-    echo "Could not fetch after-trigger comments — posting @greptileai (fail safe)."
-    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
-    exit 0
+    post_trigger_or_die "Could not fetch after-trigger comments — posting @greptileai (fail safe)."
   fi
   # Sum the per-page counts from each stream. Shell arithmetic, NOT `awk '{s+=$1}'`: a positional
   # awk variable in skill text is rewritten by argument substitution before the agent ever sees it
@@ -532,9 +543,7 @@ else
     [ -n "$page_count" ] || continue
     case "$page_count" in
       *[!0-9]*)
-        echo "Non-numeric after-trigger count ('$page_count') — posting @greptileai (fail safe)."
-        gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
-        exit 0
+        post_trigger_or_die "Non-numeric after-trigger count ('$page_count') — posting @greptileai (fail safe)."
         ;;
     esac
     comments_after=$((comments_after + page_count))
@@ -557,9 +566,7 @@ else
     # Fail safe (same reasoning as the trigger_ts guard above): with no head SHA, neither the
     # marker comparison nor the timestamp fallback can prove the trigger reflects the current
     # head. Post rather than assume — a failed fetch must never count as satisfied.
-    echo "Could not resolve PR head SHA — posting @greptileai (fail safe)."
-    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
-    exit 0
+    post_trigger_or_die "Could not resolve PR head SHA — posting @greptileai (fail safe)."
   fi
 
   # Every SHA Greptile has published as "last reviewed" (normally one — the sticky summary).
@@ -578,11 +585,7 @@ else
   # skip of a head Greptile's marker was never actually checked against.
   reviewed_bodies=$(gh api repos/<repo>/issues/<number>/comments --paginate \
     --jq '.[] | select(.user.login == "greptile-apps[bot]") | .body' 2>/dev/null) \
-    || {
-      echo "Could not fetch Greptile comments for the reviewed-commit marker — posting @greptileai (fail safe)."
-      gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
-      exit 0
-    }
+    || post_trigger_or_die "Could not fetch Greptile comments for the reviewed-commit marker — posting @greptileai (fail safe)."
   # inline-sweep GREPTILE-LAST-REVIEWED extractor [#930]
   reviewed_shas=$(printf '%s\n' "$reviewed_bodies" \
     | grep -o 'Last reviewed commit:.*/commit/[0-9a-fA-F]\{40\}' \
@@ -611,9 +614,7 @@ else
       # Fail safe (same reasoning as the trigger_ts guard above): if the head commit time
       # can't be fetched, the staleness check (4) can't run. Don't let it short-circuit to
       # "not stale" — post the trigger so a failed fetch never silently counts as satisfied.
-      echo "Could not resolve head commit time — posting @greptileai (fail safe)."
-      gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
-      exit 0
+      post_trigger_or_die "Could not resolve head commit time — posting @greptileai (fail safe)."
     fi
     # awk does the string compare (portable across bash/zsh; avoids `[ \> ]`, which zsh rejects).
     # ISO-8601 values are non-numeric, so awk compares them lexically = chronologically.
@@ -625,8 +626,7 @@ else
   if [ "$positive" -gt 0 ] && [ "$comments_after" -eq 0 ] && [ "$pushed_after" -eq 0 ]; then
     echo "Greptile satisfied with current head $head_sha (reacted to trigger $trigger_id; no new comments; head reviewed per $head_basis) — skipping re-trigger."
   else
-    echo "Not satisfied (positive=$positive comments_after=$comments_after pushed_after=$pushed_after basis=$head_basis) — posting @greptileai."
-    gh api repos/<repo>/issues/<number>/comments -f body="@greptileai"
+    post_trigger_or_die "Not satisfied (positive=$positive comments_after=$comments_after pushed_after=$pushed_after basis=$head_basis) — posting @greptileai."
   fi
 fi
 ```
