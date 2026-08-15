@@ -1492,6 +1492,9 @@ async function runPostNativeThisDispatch(
     parents,
     parentsByFile,
     instantiatedTypes: new Set(), // not needed for this/super resolution
+    newExpressionTypes: new Set(), // not needed for this/super resolution
+    newExpressionTypesByFile: new Set(), // not needed for this/super resolution
+    declaredTypeNamesByFile: new Set(), // not needed for this/super resolution
   };
 
   const relFiles = selectThisDispatchFiles(db, changedFiles, isFullBuild);

@@ -547,15 +547,9 @@ function extractDartParamName(node: TreeSitterNode): string[] | null {
   // groups wrap MULTIPLE formal_parameter children in one
   // optional_formal_parameters node (node-types.json — confirmed there is
   // no singular optional_formal_parameter/named_formal_parameter type in
-  // this grammar). Recurse to collect every name inside the group.
-  if (node.type === 'optional_formal_parameters') {
-    const names: string[] = [];
-    for (const child of node.namedChildren) {
-      const childNames = extractDartParamName(child);
-      if (childNames) names.push(...childNames);
-    }
-    return names.length > 0 ? names : null;
-  }
+  // this grammar). Each grandchild is its own parameter slot, so
+  // `groupedParamTypes` (issue #2358) makes `extractParams` iterate them
+  // directly rather than calling this function on the group node itself.
   if (node.type === 'formal_parameter') {
     const nameNode = node.childForFieldName('name');
     if (nameNode) return [nameNode.text];
@@ -568,6 +562,69 @@ function extractDartParamName(node: TreeSitterNode): string[] | null {
   }
   if (node.type === 'identifier') return [node.text];
   return null;
+}
+
+/** Walk backward past any unnamed (anonymous token) siblings to the nearest named one. */
+function prevNamedSibling(node: TreeSitterNode): TreeSitterNode | null {
+  let p = node.previousSibling;
+  while (p && !p.isNamed) p = p.previousSibling;
+  return p;
+}
+
+/**
+ * Resolve a Dart call's callee name and argument-list node (issue #2357).
+ *
+ * tree-sitter-dart has no `call_expression` node type at all — confirmed via
+ * node-types.json — AND, contrary to this fix's first attempt, the grammar's
+ * own `postfix_expression` node (which node-types.json lists as the
+ * conceptual wrapper) never actually appears in a parsed tree either:
+ * tree-sitter elides/inlines it, so a call is a FLAT SEQUENCE OF SIBLINGS
+ * under whatever encloses it (`return_statement`, `expression_statement`,
+ * `initialized_variable_definition`, etc.) — confirmed empirically by
+ * dumping real parse trees for `return helper(x);`, `helper(x);`, and
+ * `obj.method(x);`. `helper(x)` is `[identifier "helper", selector "(x)"]`;
+ * `obj.method(x)` is `[identifier "obj", selector ".method", selector "(x)"]`
+ * — TWO sibling selectors, not one node containing both. `selector` itself
+ * IS a real, distinctly-dispatchable node (unlike postfix_expression), so
+ * `node` here is the CALL selector (the one wrapping `argument_part`) —
+ * `callNode: 'selector'` dispatches this function once per selector the
+ * generic walk visits; a non-call selector (bare `.prop` access, `[index]`)
+ * returns null via the argument_part check below. The callee is resolved by
+ * walking BACKWARD to this selector's preceding sibling: another selector
+ * (a `.property` access — the method-call case) or a bare `identifier` (the
+ * base — the bare-call case).
+ *
+ * Only resolves the OUTERMOST call in a chain (`a.b().c()` resolves `.c()`
+ * only) — there is no separate node for each intermediate call in Dart's
+ * flat sibling chain, matching this issue's own scope (a single call, not
+ * chained calls).
+ */
+function resolveDartCallParts(
+  node: TreeSitterNode,
+): { callee: string; argsNode: TreeSitterNode } | null {
+  const argumentPart = node.namedChildren.find((c) => c.type === 'argument_part');
+  if (!argumentPart) return null;
+  const argsNode = argumentPart.namedChildren.find((c) => c.type === 'arguments');
+  if (!argsNode) return null;
+
+  const prev = prevNamedSibling(node);
+  if (!prev) return null;
+
+  let calleeNode: TreeSitterNode | null = null;
+  if (prev.type === 'selector') {
+    // obj.method(x): the preceding selector wraps the property identifier.
+    const propWrapper = prev.namedChildren[0];
+    calleeNode =
+      propWrapper?.type === 'unconditional_assignable_selector'
+        ? (propWrapper.namedChildren[0] ?? null)
+        : null;
+  } else if (prev.type === 'identifier') {
+    // helper(x): the preceding identifier IS the callee.
+    calleeNode = prev;
+  }
+  if (calleeNode?.type !== 'identifier') return null;
+
+  return { callee: calleeNode.text, argsNode };
 }
 
 export const dataflowDart: DataflowRulesConfig = makeDataflowRules({
@@ -594,12 +651,49 @@ export const dataflowDart: DataflowRulesConfig = makeDataflowRules({
   // parameter extraction "happened to work."
   getParamListNode: getDartParamListNode,
   extractParamName: extractDartParamName,
+  // `{int times, bool loud}` (named) / `[int x, int y]` (optional-positional)
+  // groups wrap multiple genuinely separate formal_parameter slots in one
+  // optional_formal_parameters node — each must get its own paramIndex, not
+  // the group's single index (issue #2358).
+  groupedParamTypes: new Set(['optional_formal_parameters']),
+
+  // local_variable_declaration's ONLY child is initialized_variable_definition,
+  // which has real `name`/`value` fields (confirmed via node-types.json) —
+  // this was left entirely unconfigured (issue #2357), so `var sum = ...;`
+  // never produced an assignment entry regardless of the sibling-body fix.
+  varDeclaratorNode: 'initialized_variable_definition',
+  varNameField: 'name',
+  varValueField: 'value',
 
   returnNode: 'return_statement',
+  // Arrow/`=>`-style implicit return (issue #2356): tree-sitter-dart's
+  // function_body node's ONLY child is either a `block` (`{ ... }`) or one
+  // of many bare expression types directly (`int f() => x + 1;` — no
+  // return_statement at all). blockBodyNode defaults to 'block', which
+  // already matches Dart's own block type name.
+  implicitReturnBodyNode: 'function_body',
 
-  callNode: 'call_expression',
-  // tree-sitter-dart does not have standard named fields for calls;
-  // the extractor uses `selector` nodes instead. Leave defaults.
+  // tree-sitter-dart has no call_expression node type at all, and its
+  // conceptual postfix_expression wrapper never actually materializes in a
+  // parsed tree either — a call is a flat sequence of siblings (see
+  // resolveDartCallParts's doc comment, issue #2357). `selector` is the one
+  // node in that sequence that's reliably, distinctly dispatchable — it
+  // wraps `argument_part` exactly when this specific selector is a call.
+  callNode: 'selector',
+  resolveCallParts: resolveDartCallParts,
+  // A call-sourced var declarator's `value` field resolves to the CALLEE's
+  // own base expression (an `identifier`), not the call itself — the call's
+  // argument-list selector is a SIBLING, found by walking forward through
+  // this same chain of selectors (findCallSelector, dataflow-visitor.ts).
+  // Without this, `var x = helper(y);` never registers an assignment entry
+  // even though the standalone call `helper(y)` is correctly tracked above.
+  callChainSiblingType: 'selector',
+  // `arguments`'s own children wrap each argument in an `argument` node
+  // (confirmed via node-types.json — same wrapper name PHP's config already
+  // unwraps), not a bare expression directly — without this, unwrapArg never
+  // finds the identifier inside and argFlows stays empty regardless of the
+  // callNode/resolveCallParts fix above.
+  argumentWrapperType: 'argument',
 });
 
 // ─── Groovy ───────────────────────────────────────────────────────────────────

@@ -51,6 +51,17 @@ describe('extractDataflow — JavaScript', () => {
       );
     });
 
+    it('keeps destructured names sharing one argument slot at the same paramIndex (#2358)', () => {
+      const data = parseAndExtract(`function greet({ name, age }, city) { return name; }`);
+      expect(data.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ funcName: 'greet', paramName: 'name', paramIndex: 0 }),
+          expect.objectContaining({ funcName: 'greet', paramName: 'age', paramIndex: 0 }),
+          expect.objectContaining({ funcName: 'greet', paramName: 'city', paramIndex: 1 }),
+        ]),
+      );
+    });
+
     it('extracts default parameters', () => {
       const data = parseAndExtract(`function inc(x, step = 1) { return x + step; }`);
       expect(data.parameters).toEqual(

@@ -184,7 +184,7 @@ function exportsFileImpl(
   const consumersStmt = cachedStmt(
     _consumersStmtCache,
     db,
-    `SELECT n.name, n.file, n.line, e.kind AS edgeKind FROM edges e JOIN nodes n ON e.source_id = n.id
+    `SELECT n.name, n.file, n.line, n.kind AS callerKind, e.kind AS edgeKind FROM edges e JOIN nodes n ON e.source_id = n.id
          WHERE e.target_id = ? AND e.kind IN ('calls', 'imports-type')`,
   );
   const reexportsFromStmt = cachedStmt(
@@ -232,6 +232,7 @@ function exportsFileImpl(
         name: string;
         file: string;
         line: number;
+        callerKind: string;
         edgeKind: string;
       }>;
       if (noTests) consumers = consumers.filter((c) => !isTestFile(c.file));
@@ -244,24 +245,29 @@ function exportsFileImpl(
         role: s.role || null,
         signature: fileLines ? extractSignature(fileLines, s.line, displayOpts) : null,
         summary: fileLines ? extractSummary(fileLines, s.line, displayOpts) : null,
-        // `consumerKind` discriminates a real caller/constructor symbol (a
-        // genuine `calls` edge, with a real call-site line) from a
-        // whole-file reference such as `import type { X }` (an
-        // `imports-type` edge, always sourced from the importing file node
-        // itself — see emitNamedSymbolEdges). Keyed off the *edge* kind,
-        // not the source node's kind: findCaller falls back to the file
-        // node as a call's source for a genuine top-level call with no
-        // enclosing function/binding (e.g. a bare statement at module
-        // scope), so a `calls` edge can legitimately have a file-kind
-        // source too — using source kind alone would misclassify that real
-        // call as a type-only import (Greptile, #1973/#2189). Renderers
-        // must not treat `name`/`line` on a `'file'` entry as a caller
-        // symbol/call-site (#1830).
+        // `consumerKind` discriminates three cases. Keyed primarily off the
+        // *edge* kind, not the source node's kind: findCaller falls back to
+        // the file node as a call's source for a genuine top-level call
+        // with no enclosing function/binding (e.g. a bare statement at
+        // module scope), so a `calls` edge can legitimately have a
+        // file-kind source too — using source kind alone would misclassify
+        // that real call as a type-only import (Greptile, #1973/#2189).
+        // That file-sourced `calls` case gets its own `'topLevelCall'` kind
+        // (#2365) rather than being lumped in with `'symbol'`, since
+        // `name`/`line` there are the file node's own values, not a real
+        // caller symbol/call-site. Renderers must not present either
+        // `'file'` or `'topLevelCall'` entries as if they were a named
+        // caller (#1830).
         consumers: consumers.map((c) => ({
           name: c.name,
           file: c.file,
           line: c.line,
-          consumerKind: c.edgeKind === 'imports-type' ? ('file' as const) : ('symbol' as const),
+          consumerKind:
+            c.edgeKind === 'imports-type'
+              ? ('file' as const)
+              : c.callerKind === 'file'
+                ? ('topLevelCall' as const)
+                : ('symbol' as const),
         })),
         consumerCount: consumers.length,
       };

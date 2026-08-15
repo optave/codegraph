@@ -120,11 +120,11 @@ function findBarrelCandidates(
  * them for the next level of barrel candidates.
  *
  * A re-parsed file is marked `barrel-only` only when it really is one (the
- * `isBarrelFile` check — reexports >= ownDefs). The previous unconditional
- * `.add(relPath)` caused hybrid barrels with many local defs (e.g. a file
- * with one `export type ... from` and dozens of internal functions) to drop
- * all their non-reexport imports in build-edges, since the barrel-only branch
- * skips them (#1174).
+ * `isBarrelFile` check — reexports strictly outnumber ownDefs, #2339). The
+ * previous unconditional `.add(relPath)` caused hybrid barrels with many
+ * local defs (e.g. a file with one `export type ... from` and dozens of
+ * internal functions) to drop all their non-reexport imports in
+ * build-edges, since the barrel-only branch skips them (#1174).
  */
 async function reparseBarrelFiles(
   ctx: PipelineContext,
@@ -146,6 +146,22 @@ async function reparseBarrelFiles(
   // candidates are merged here *after* insertNodes, so wiping those kinds
   // would permanently drop them (mirrors the Rust orchestrator's Stage 6b
   // delete in domain/graph/builder/pipeline.rs).
+  //
+  // Clear dataflow rows that reference these outgoing edges via call_edge_id
+  // BEFORE deleting the edges — avoids a FOREIGN KEY constraint failure when
+  // `PRAGMA foreign_keys` is on (`dataflow.call_edge_id REFERENCES edges.id`).
+  // Discovered while writing #2339's regression test: this delete previously
+  // threw on every barrel candidate whose own call edges were also tracked by
+  // interprocedural dataflow, and the exception was silently swallowed by the
+  // catch below (only surfaced via `debug()`, which is a no-op unless
+  // verbose), so the barrel simply never got reparsed — the Rust engine
+  // already had this exact fix (#979); the JS engine never got the mirror.
+  const deleteReferencingDataflow = db.prepare(
+    `DELETE FROM dataflow WHERE call_edge_id IN (
+       SELECT id FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)
+       AND kind NOT IN ('contains', 'parameter_of')
+     )`,
+  );
   const deleteOutgoingEdges = db.prepare(
     `DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE file = ?)
      AND kind NOT IN ('contains', 'parameter_of')`,
@@ -155,6 +171,7 @@ async function reparseBarrelFiles(
   try {
     const barrelSymbols = await parseFilesAuto(barrelPaths, rootDir, engineOpts);
     for (const [relPath, fileSym] of barrelSymbols) {
+      deleteReferencingDataflow.run(relPath);
       deleteOutgoingEdges.run(relPath);
       fileSymbols.set(relPath, fileSym);
       if (isBarrelFile(ctx, relPath)) {
@@ -330,13 +347,24 @@ export function getResolved(ctx: PipelineContext, absFile: string, importSource:
   return resolveImportPath(absFile, importSource, ctx.rootDir, ctx.aliases, ctx.allFiles);
 }
 
+/**
+ * A file is a barrel file when its reexport count strictly exceeds its
+ * definition count. Strict `>`, not `>=` (issue #2339): a file with exactly
+ * one reexport and one own definition is a genuine hybrid (real logic plus
+ * a reexport), not a pure barrel — `>=` misclassified it as barrel-only,
+ * silently dropping its own outgoing call/receiver edges whenever it got
+ * pulled into `reparseBarrelFiles`' transient reparse. Orthogonal to
+ * #1848's fix, which scopes *which files* are even eligible for this check
+ * (only transient barrel-candidate reparses, never a file genuinely part of
+ * this build's changed set) — not the comparison itself.
+ */
 export function isBarrelFile(ctx: PipelineContext, relPath: string): boolean {
   const symbols = ctx.fileSymbols.get(relPath);
   if (!symbols) return false;
   const reexports = symbols.imports.filter((imp) => imp.reexport);
   if (reexports.length === 0) return false;
   const ownDefs = symbols.definitions.length;
-  return reexports.length >= ownDefs;
+  return reexports.length > ownDefs;
 }
 
 /** Check if a re-export source directly defines the symbol. */

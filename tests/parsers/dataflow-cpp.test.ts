@@ -73,6 +73,15 @@ describe('extractDataflow — C++', () => {
         ]),
       );
     });
+
+    it('keeps a named parameter at its true position after a preceding unnamed parameter (#2358)', () => {
+      const data = parseAndExtract('void f(int, int value) { value; }');
+      expect(data?.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ funcName: 'f', paramName: 'value', paramIndex: 1 }),
+        ]),
+      );
+    });
   });
 
   // ── Return statements ─────────────────────────────────────────────────

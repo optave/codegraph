@@ -52,6 +52,56 @@ export interface ChaContext {
   readonly parentsByFile: ReadonlyMap<string, string>;
   /** RTA: class names that appear in `new X()` anywhere in the project */
   readonly instantiatedTypes: ReadonlySet<string>;
+  /**
+   * STRICT subset of `instantiatedTypes`: class names backed ONLY by a
+   * literal `new X()` expression somewhere in the project, never by the
+   * weaker type-annotation (confidence >= 0.9) heuristic that also feeds
+   * `instantiatedTypes`. `resolveChaTargets`'s receiver-own-type check
+   * (#2348) needs this stricter bar: unlike a subclass BFS hit (which is
+   * additionally gated by actually walking the hierarchy to reach that
+   * child), the root has no such gate — its own type name is exactly what
+   * the earlier, proximity-gated qualified lookup already tried and
+   * rejected one tier up, so re-admitting it ungated on nothing more than a
+   * type annotation would wrongly resurrect a distant interface's own
+   * (bodyless) method purely because some unrelated concrete subclass
+   * happens to override the same method name.
+   *
+   * `newExpressionTypes` is STILL a bare, project-wide set, though — it
+   * carries the SAME cross-file same-name collision risk `implementorsByFile`
+   * was built to fix for the implementors map (Greptile review, PR #2494):
+   * two unrelated files can each declare their own unrelated class named
+   * e.g. `Handler`, and if only ONE of them is ever instantiated, this bare
+   * set can't tell them apart — `newExpressionTypesByFile` below exists for
+   * exactly that.
+   */
+  readonly newExpressionTypes: ReadonlySet<string>;
+  /**
+   * `${typeName}|${file}` → present when `typeName`'s OWN `new X()` evidence
+   * was recorded specifically WITHIN `file` (i.e. `file`'s own
+   * `newExpressions` list contains `typeName`) — the file-scoped counterpart
+   * to `newExpressionTypes`, mirroring `implementorsByFile`'s relationship to
+   * `implementors`. Unlike `implementorsByFile` (a positive-evidence-only
+   * map that falls back to the bare map when a key is simply absent),
+   * `resolveChaTargets`'s root-type check needs to treat a scoped MISS as an
+   * authoritative "no" whenever the caller's file is a declaring anchor (see
+   * `declaredTypeNamesByFile`) — otherwise the bare `newExpressionTypes`
+   * fallback would immediately re-admit the exact cross-file collision this
+   * set exists to prevent.
+   */
+  readonly newExpressionTypesByFile: ReadonlySet<string>;
+  /**
+   * `${typeName}|${file}` → present when `file` locally declares a
+   * class/interface/struct/type/module named `typeName` (mirrors the
+   * `localClassNames` anchor check already used by `recordImplements`/
+   * `recordExtends` for `implementorsByFile`, persisted here for reuse by
+   * `resolveChaTargets`'s root-type check). This is the signal that
+   * distinguishes "the caller's file has its OWN local `typeName` to check
+   * against" (trust `newExpressionTypesByFile` alone, even when it says no)
+   * from "the caller's file has no local anchor at all" (fall back to the
+   * bare, collision-prone `newExpressionTypes`, same accepted limitation
+   * `implementorsByFile` already has when no local declaration exists).
+   */
+  readonly declaredTypeNamesByFile: ReadonlySet<string>;
 }
 
 export const EMPTY_CHA_CONTEXT: ChaContext = {
@@ -60,6 +110,9 @@ export const EMPTY_CHA_CONTEXT: ChaContext = {
   parents: new Map(),
   parentsByFile: new Map(),
   instantiatedTypes: new Set(),
+  newExpressionTypes: new Set(),
+  newExpressionTypesByFile: new Set(),
+  declaredTypeNamesByFile: new Set(),
 };
 
 /**
@@ -143,11 +196,37 @@ function addToFileScoped(
  * 8.5 dedicated `newExpressions` list (all `new X()` in the file), plus the
  * constructor-confidence typeMap fallback (confidence >= 0.9) that covers
  * codebases that haven't been re-parsed since Phase 8.5 was added.
+ *
+ * `newExpressionTypes` collects ONLY the first (strict) source — see
+ * `ChaContext.newExpressionTypes`'s doc comment for why the receiver-own-type
+ * check in `resolveChaTargets` (#2348) needs that stricter signal instead of
+ * the merged `instantiatedTypes` set.
+ *
+ * `newExpressionTypesByFile` and `declaredTypeNamesByFile` (Greptile review,
+ * PR #2494) additionally record, for THIS file specifically: which type
+ * names it locally declares (`localClassNames`, the same anchor set
+ * `recordImplements`/`recordExtends` already use), and which type names its
+ * own `newExpressions` evidence names — see their doc comments on
+ * `ChaContext` for how `resolveChaTargets` combines the two to disambiguate
+ * two unrelated files that happen to declare the same bare class name.
  */
-function collectInstantiatedTypes(symbols: ExtractorOutput, instantiatedTypes: Set<string>): void {
+function collectInstantiatedTypes(
+  symbols: ExtractorOutput,
+  instantiatedTypes: Set<string>,
+  newExpressionTypes: Set<string>,
+  file: string,
+  localClassNames: ReadonlySet<string>,
+  newExpressionTypesByFile: Set<string>,
+  declaredTypeNamesByFile: Set<string>,
+): void {
+  for (const name of localClassNames) {
+    declaredTypeNamesByFile.add(`${name}|${file}`);
+  }
   if (symbols.newExpressions) {
     for (const typeName of symbols.newExpressions) {
       instantiatedTypes.add(typeName);
+      newExpressionTypes.add(typeName);
+      newExpressionTypesByFile.add(`${typeName}|${file}`);
     }
   }
   if (symbols.typeMap instanceof Map) {
@@ -171,6 +250,9 @@ export function buildChaContext(fileSymbols: ReadonlyMap<string, ExtractorOutput
   const parents = new Map<string, string>();
   const parentsByFile = new Map<string, string>();
   const instantiatedTypes = new Set<string>();
+  const newExpressionTypes = new Set<string>();
+  const newExpressionTypesByFile = new Set<string>();
+  const declaredTypeNamesByFile = new Set<string>();
 
   for (const [file, symbols] of fileSymbols) {
     // `symbols.classes` only lists class RELATIONS (entries with an extends/
@@ -195,10 +277,27 @@ export function buildChaContext(fileSymbols: ReadonlyMap<string, ExtractorOutput
         localClassNames,
       );
     }
-    collectInstantiatedTypes(symbols, instantiatedTypes);
+    collectInstantiatedTypes(
+      symbols,
+      instantiatedTypes,
+      newExpressionTypes,
+      file,
+      localClassNames,
+      newExpressionTypesByFile,
+      declaredTypeNamesByFile,
+    );
   }
 
-  return { implementors, implementorsByFile, parents, parentsByFile, instantiatedTypes };
+  return {
+    implementors,
+    implementorsByFile,
+    parents,
+    parentsByFile,
+    instantiatedTypes,
+    newExpressionTypes,
+    newExpressionTypesByFile,
+    declaredTypeNamesByFile,
+  };
 }
 
 /**
@@ -282,17 +381,45 @@ export function buildChaContextFromDb(db: BetterSqlite3Database): ChaContext {
     }
   }
 
+  // `src.file` (the constructor call's OWN caller/enclosing scope) doubles as
+  // the "which file recorded this instantiation" signal `newExpressionTypesByFile`
+  // needs (Greptile review, PR #2494) — see that field's doc comment on
+  // `ChaContext`.
   const rtaRows = db
     .prepare(`
-      SELECT DISTINCT tgt.name
+      SELECT DISTINCT src.file AS file, tgt.name AS name
       FROM edges e
+      JOIN nodes src ON e.source_id = src.id
       JOIN nodes tgt ON e.target_id = tgt.id
       WHERE e.kind = 'calls' AND tgt.kind = 'class'
     `)
-    .all() as Array<{ name: string }>;
+    .all() as Array<{ file: string; name: string }>;
   const instantiatedTypes = new Set(rtaRows.map((r) => r.name));
+  // This path's RTA evidence is ALREADY strict (a resolved constructor call
+  // in the DB, not a bare type-annotation heuristic — see this function's
+  // doc comment), so `newExpressionTypes` can safely reuse the same set
+  // rather than needing a separately-collected one (contrast
+  // `buildChaContext`, whose in-memory `instantiatedTypes` is a weaker
+  // merged signal and therefore needs a distinct strict subset).
+  const newExpressionTypes = instantiatedTypes;
+  const newExpressionTypesByFile = new Set(rtaRows.map((r) => `${r.name}|${r.file}`));
+  const declaredTypeNamesByFile = new Set<string>();
+  for (const [file, names] of localNamesByFile) {
+    for (const name of names) {
+      declaredTypeNamesByFile.add(`${name}|${file}`);
+    }
+  }
 
-  return { implementors, implementorsByFile, parents, parentsByFile, instantiatedTypes };
+  return {
+    implementors,
+    implementorsByFile,
+    parents,
+    parentsByFile,
+    instantiatedTypes,
+    newExpressionTypes,
+    newExpressionTypesByFile,
+    declaredTypeNamesByFile,
+  };
 }
 
 /**
@@ -641,6 +768,52 @@ function resolveMethodViaAncestors(
  * scoped lookup falls back to the bare one when it finds nothing, so this is
  * never a regression — only a precision gain when file identity happens to
  * be known.
+ *
+ * The receiver's own declared type (`typeName`) is a valid dispatch target
+ * too, not just its subclasses. Previously this function only walked
+ * `chaCtx.implementors`/`implementorsByFile` starting FROM `typeName` to
+ * find children — it never checked whether `typeName` itself is
+ * instantiated. When the receiver's own type is instantiated directly and
+ * ALSO has an unrelated subclass overriding the same method (even a
+ * test-file-local one), the base type's own method was silently dropped
+ * from the result set while the unrelated subclass's override leaked in
+ * instead (#2348). Resolving `typeName` via the same
+ * `resolveMethodViaAncestors` helper used for children fixes this
+ * symmetrically — a duplicate resolution of an already-correctly-resolved
+ * edge is a no-op thanks to `emitChaCallEdgesForCall`'s `seenCallEdges`
+ * dedup, so this can only add a missing edge, never introduce a wrong one.
+ *
+ * This root-type check deliberately uses `chaCtx.newExpressionTypes`
+ * (STRICT: literal `new X()` evidence only) rather than the merged
+ * `chaCtx.instantiatedTypes` (which also credits a bare high-confidence
+ * type annotation, e.g. a `db: SomeInterface` parameter, as "instantiated").
+ * A child's BFS hit can safely trust the weaker merged signal because it is
+ * additionally gated by actually walking the class hierarchy to reach that
+ * child in the first place; the root has no such gate — `typeName` here is
+ * exactly what the earlier, proximity-gated qualified lookup already tried
+ * (and rejected) one tier up (see `CHA_TYPED_DISPATCH_CONFIDENCE`'s call
+ * site in `build-edges.ts`), so re-admitting it ungated on nothing more than
+ * a type annotation would wrongly resurrect a distant interface's own
+ * (bodyless) method purely because some unrelated concrete subclass happens
+ * to override the same method name.
+ *
+ * `newExpressionTypes` is STILL a bare, project-wide set, though (Greptile
+ * review, PR #2494): two unrelated files can each declare their own
+ * unrelated class with the same bare name (e.g. both name a class
+ * `Handler`), and if only ONE of them is ever instantiated, a bare
+ * `newExpressionTypes.has(typeName)` can't tell them apart — it would treat
+ * that as proof THIS caller's `Handler` was instantiated too, and
+ * `resolveMethodViaAncestors`'s own bare/global fallback could then resolve
+ * to the OTHER file's `Handler.method`. So the check below prefers the
+ * file-scoped `newExpressionTypesByFile` whenever `callerFile` itself
+ * locally declares `typeName` (`declaredTypeNamesByFile` — the same anchor
+ * `implementorsByFile` uses) — in that case a scoped MISS is trusted as an
+ * authoritative "not instantiated (in THIS file's sense of `typeName`)",
+ * never falling through to the bare set. Only when `callerFile` has no such
+ * local anchor at all (imports `typeName` from elsewhere, or `callerFile` is
+ * unknown) does this fall back to the bare, collision-prone
+ * `newExpressionTypes` — the same accepted limitation `implementorsByFile`
+ * already has for that exact situation.
  */
 export function resolveChaTargets(
   typeName: string,
@@ -656,6 +829,18 @@ export function resolveChaTargets(
   ];
   const visited = new Set<string>();
   visited.add(typeName);
+
+  const hasLocalDeclaration = callerFile
+    ? chaCtx.declaredTypeNamesByFile.has(`${typeName}|${callerFile}`)
+    : false;
+  const isRootInstantiated = hasLocalDeclaration
+    ? chaCtx.newExpressionTypesByFile.has(`${typeName}|${callerFile}`)
+    : chaCtx.newExpressionTypes.has(typeName);
+  if (isRootInstantiated) {
+    results.push(
+      ...resolveMethodViaAncestors(typeName, callerFile ?? null, methodName, chaCtx, lookup),
+    );
+  }
 
   while (queue.length > 0) {
     const { name: current, file: currentFile } = queue.shift()!;

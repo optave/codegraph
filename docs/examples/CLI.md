@@ -172,6 +172,13 @@ codegraph context buildGraph -T
 ## Type/Shape Info
   Parameters: (rootDir, opts = {})
 
+## Children (2)
+  p rootDir  :335
+  p opts  :335
+
+## Complexity
+  Cognitive: 4 | Cyclomatic: 3 | Max Nesting: 2 | MI: 82.3
+
 ## Source
   export async function buildGraph(rootDir, opts = {}) {
     const dbPath = path.join(rootDir, '.codegraph', 'graph.db');
@@ -187,14 +194,14 @@ codegraph context buildGraph -T
     ...
   }
 
-## Dependencies
+## Direct Dependencies (4)
   -> openDb (src/db.js:76)
   -> initSchema (src/db.js:84)
   -> loadConfig (src/config.js:33)
   -> collectFiles (src/builder.js:45)
   ...
 
-## Callers
+## Callers (1)
   <- resolveNoTests (src/cli.js:59)
 ```
 

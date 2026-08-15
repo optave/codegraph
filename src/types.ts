@@ -232,19 +232,25 @@ export interface ExportedDefRow {
  * A cross-file consumer of an exported symbol (from findExternalConsumers),
  * or a persisted deleted-export advisory's consumer row (#1938).
  *
- * `consumerKind` discriminates a real caller/constructor symbol (`name`/`line`
- * are a genuine call-site) from a whole-file reference such as
- * `import type { X}` (`name` equals `file`, `line` is always `0` because there
- * is no specific call-site to report) — mirrors the same discriminator on
- * exports' consumer rows (#1830). Optional because the persisted
- * deleted-export-advisories snapshot (#1938) doesn't store this discriminator;
- * only `findExternalConsumers`'s live-DB query populates it (#1973).
+ * `consumerKind` discriminates three cases: `'symbol'` — a real
+ * caller/constructor (`name`/`line` are a genuine call-site); `'file'` — a
+ * whole-file reference such as `import type { X }` (`name` equals `file`,
+ * `line` is always `0` because there is no specific call-site to report,
+ * #1830); `'topLevelCall'` — a genuine `calls` edge whose source is a bare
+ * top-level statement with no enclosing function/binding, so `findCaller`
+ * falls back to the FILE node itself as the edge's source (#2365) — `name`
+ * and `line` are the file node's own values (the file's basename, line `0`),
+ * not a real caller symbol/call-site, but this is still a genuine call
+ * (unlike `'file'`, which is never sourced from an actual `calls` edge).
+ * Optional because the persisted deleted-export-advisories snapshot (#1938)
+ * doesn't store this discriminator; only `findExternalConsumers`'s live-DB
+ * query populates it (#1973).
  */
 export interface ExternalConsumerRow {
   name: string;
   file: string;
   line: number;
-  consumerKind?: 'file' | 'symbol';
+  consumerKind?: 'file' | 'symbol' | 'topLevelCall';
 }
 
 /** Import target/source row. */
@@ -1359,6 +1365,16 @@ export interface DataflowRulesConfig {
   shorthandPropPattern: string | null;
   pairPatternType: string | null;
   extractParamName: ((node: TreeSitterNode) => string[] | null) | null;
+  /**
+   * Node types where ONE child of the parameter list groups multiple
+   * logically separate parameter declarations — e.g. Dart's
+   * `optional_formal_parameters` for `{int times, bool loud}` (issue #2358).
+   * Unlike `objectDestructType`/`arrayDestructType`, where multiple bound
+   * names are extracted from a SINGLE argument slot and must share one
+   * index, each of this node's own named children is its own slot and gets
+   * its own index.
+   */
+  groupedParamTypes: Set<string>;
   returnNode: string | null;
   varDeclaratorNode: string | null;
   varDeclaratorNodes: Set<string> | null;
@@ -1384,6 +1400,48 @@ export interface DataflowRulesConfig {
   equalsClauseType: string | null;
   argumentWrapperType: string | null;
   extraIdentifierTypes: Set<string> | null;
+  /**
+   * Node type whose grammar allows EITHER a `blockBodyNode`-wrapped statement
+   * body OR a bare expression directly as its child (an arrow/`=>`-style
+   * implicit return, e.g. tree-sitter-dart's `function_body` in
+   * `int f() => x + 1;`). When set and the node's only named child is not
+   * `blockBodyNode`, that child is recorded as an implicit `returns` entry
+   * (issue #2356) — mirrors what a `return_statement` around the same
+   * expression would have produced.
+   */
+  implicitReturnBodyNode: string | null;
+  /** The "real" statement-block wrapper type `implicitReturnBodyNode` is compared against. */
+  blockBodyNode: string;
+  /**
+   * Override for grammars where a call has no field-based (`callFunctionField`/
+   * `callArgsField`) structure to read from a single self-contained node —
+   * e.g. tree-sitter-dart, which has no `call_expression` node type, AND
+   * whose grammar-documented `postfix_expression` wrapper never actually
+   * appears in a parsed tree either: a call is a FLAT SEQUENCE OF SIBLINGS
+   * (a base expression followed by a chain of `selector` siblings, one of
+   * which wraps an `argument_part` when it's a call — issue #2357). When
+   * set, this replaces the default `resolveCalleeName` +
+   * `childForFieldName(callArgsField)` lookup everywhere a call's
+   * callee/argument-list is resolved. Returns `null` when `node` isn't
+   * actually a call (e.g. Dart's `selector` also represents non-call member
+   * access and `x++`/`x--`).
+   */
+  resolveCallParts:
+    | ((node: TreeSitterNode) => { callee: string; argsNode: TreeSitterNode } | null)
+    | null;
+  /**
+   * The sibling node type `resolveCallParts`-style grammars chain calls
+   * through (Dart: `'selector'`). Lets `findCallSelector` (dataflow-visitor.ts)
+   * walk FORWARD from a call's base expression — resolved via the normal
+   * `varValueField`/`callFunctionField` lookup, landing on the base rather
+   * than the call itself in these grammars — to the trailing call-node
+   * sibling, so a call-sourced variable assignment (`var x = helper(y);`)
+   * is recognized the same way it already is for languages whose call node
+   * IS the value node directly (issue #2357). `null` for those languages:
+   * `findCallSelector` short-circuits via `isCallNode(node.type)` before
+   * ever consulting this field.
+   */
+  callChainSiblingType: string | null;
 }
 
 /** Language rule module: exports from each language rule file. */
@@ -2383,19 +2441,23 @@ export interface FileExportEntry {
 }
 
 /**
- * A single caller of an exported symbol. `consumerKind` discriminates two
+ * A single caller of an exported symbol. `consumerKind` discriminates three
  * shapes that share this same struct:
  *   - `'symbol'` — a real caller/constructor: `name` is the calling
  *     function/method/class, `line` is the actual call-site line.
  *   - `'file'` — a whole-file reference such as `import type { X }`, where
  *     there is no specific calling symbol: `name` equals `file` and `line`
  *     is always `0` (no real call-site exists to report; see #1830).
+ *   - `'topLevelCall'` — a genuine `calls` edge sourced from a bare
+ *     top-level statement with no enclosing function/binding: `findCaller`
+ *     falls back to the file node itself, so `name`/`line` are the file
+ *     node's own values, not a real caller symbol/call-site (#2365).
  */
 export interface FileExportConsumer {
   name: string;
   file: string;
   line: number;
-  consumerKind: 'file' | 'symbol';
+  consumerKind: 'file' | 'symbol' | 'topLevelCall';
 }
 
 // ── Path ─────────────────────────────────────────────────────────────

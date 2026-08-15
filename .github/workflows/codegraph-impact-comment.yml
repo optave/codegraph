@@ -56,7 +56,7 @@ jobs:
               repo: context.repo.repo,
               issue_number: prNumber,
             });
-            const existing = comments.find(c => c.body.startsWith('## Codegraph Impact Analysis'));
+            const existing = comments.find(c => c.body.startsWith('## Codegraph Impact Analysis') && c.user.login === 'github-actions[bot]');
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,

@@ -80,7 +80,7 @@ beforeAll(() => {
   insertEdge(db, orchestrator, leafHelper, 'calls');
 
   db.close();
-});
+}, 60_000); // Windows CI runners have hit the default 30s hook timeout on slow tmpdir I/O (#2368)
 
 afterAll(() => {
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -126,7 +126,11 @@ describe('selectHubTargets', () => {
     expect(second).toEqual(first);
   });
 
-  it('throws when the graph has no qualifying nodes with edges', () => {
+  // Windows CI runners have hit the default 30s test timeout here on slow
+  // tmpdir/DB-file I/O (#2368) — this test does its own mkdtempSync + a
+  // fresh better-sqlite3 file, unlike the other tests in this file which
+  // reuse the single DB `beforeAll` already built.
+  it('throws when the graph has no qualifying nodes with edges', { timeout: 60_000 }, () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-hub-selection-empty-'));
     const emptyDbPath = path.join(emptyDir, 'graph.db');
     const db = new Database(emptyDbPath);

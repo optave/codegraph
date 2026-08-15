@@ -744,8 +744,8 @@ pub fn run_pipeline(
     // `barrel_candidates_added` (empty on full builds) rather than every key
     // in `file_symbols` — a file that's genuinely part of this build's
     // changed set must always get its own non-reexport imports emitted,
-    // regardless of whether it happens to satisfy the reexports>=ownDefs
-    // heuristic (#1848).
+    // regardless of whether it happens to satisfy the reexports-outnumber-
+    // ownDefs heuristic (#1848, #2339).
     import_ctx.reexport_map = import_edges::build_reexport_map(&import_ctx);
     import_ctx.barrel_only_files =
         import_edges::detect_barrel_only_files(&import_ctx, &barrel_candidates_added);
@@ -2120,6 +2120,7 @@ fn build_and_insert_call_edges(
             object_rest_param_bindings: non_empty(&symbols.object_rest_param_bindings),
             object_prop_bindings: non_empty(&symbols.object_prop_bindings),
             computed_dispatch_table_evidence: non_empty(&symbols.computed_dispatch_table_evidence),
+            new_expressions: non_empty(&symbols.new_expressions),
         });
     }
 

@@ -979,7 +979,7 @@ describe('checkNoDeletedExportsInUse', () => {
     const violation = result.violations.find((v) => v.name === 'topLevelTarget');
     expect(violation).toBeDefined();
     expect(violation.consumers).toEqual([
-      expect.objectContaining({ file: 'src/handler.js', consumerKind: 'symbol' }),
+      expect.objectContaining({ file: 'src/handler.js', consumerKind: 'topLevelCall' }),
     ]);
   });
 });

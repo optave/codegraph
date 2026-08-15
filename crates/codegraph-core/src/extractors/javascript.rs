@@ -2887,6 +2887,17 @@ fn handle_call_expr(
 }
 
 fn handle_new_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    // RTA instantiation evidence (issue #2346): record every constructor type
+    // name that appears in a `new X()` expression, regardless of whether the
+    // result is ever assigned to anything — mirrors the WASM engine's
+    // unconditional `newExpressions` collection in `src/extractors/javascript.ts`,
+    // and gives `collect_cha_instantiated_types` (build_edges.rs) coverage for
+    // instantiation shapes (e.g. object-literal property values, bare
+    // non-`this.` assignments) that never produce a confidence>=0.9 typeMap
+    // entry.
+    if let Some(type_name) = extract_new_expr_type_name(node, source) {
+        symbols.new_expressions.push(type_name.to_string());
+    }
     let ctor = node
         .child_by_field_name("constructor")
         .or_else(|| node.child(1));

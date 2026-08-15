@@ -537,6 +537,34 @@ describe('fileExports', () => {
     expect(out).not.toContain('consumer.ts:0');
   });
 
+  it('renders a top-level-call consumer without presenting the file name as a caller symbol (#2365)', () => {
+    mocks.exportsData.mockReturnValue({
+      file: 'helper.js',
+      totalExported: 1,
+      totalInternal: 0,
+      totalUnused: 0,
+      results: [
+        {
+          name: 'run',
+          kind: 'function',
+          line: 1,
+          role: null,
+          signature: null,
+          consumers: [
+            { name: 'consumer.js', file: 'consumer.js', line: 0, consumerKind: 'topLevelCall' },
+          ],
+        },
+      ],
+      reexportedSymbols: [],
+      reexports: [],
+    });
+    fileExports('helper.js', '/db');
+    const out = output();
+    expect(out).toContain('consumer.js (top-level call)');
+    // Must not render the file's own name/fabricated line as if it were a real caller symbol.
+    expect(out).not.toContain('consumer.js (consumer.js:0)');
+  });
+
   it('renders barrel file header when no direct exports', () => {
     mocks.exportsData.mockReturnValue({
       file: 'index.js',

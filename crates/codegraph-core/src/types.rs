@@ -576,6 +576,14 @@ pub struct FileSymbols {
     /// `src/types.ts`.
     #[napi(js_name = "computedDispatchTableEvidence")]
     pub computed_dispatch_table_evidence: Vec<String>,
+    /// Every constructor type name that appears in ANY `new X()` expression in
+    /// this file, regardless of whether the result is assigned to anything —
+    /// RTA (Rapid Type Analysis) instantiation evidence for CHA dispatch
+    /// (issue #2346). Mirrors `ExtractorOutput.newExpressions` in
+    /// `src/types.ts` / `symbols.newExpressions` populated by
+    /// `new_expression` handling in `src/extractors/javascript.ts`.
+    #[napi(js_name = "newExpressions")]
+    pub new_expressions: Vec<String>,
 }
 
 impl FileSymbols {
@@ -603,6 +611,7 @@ impl FileSymbols {
             object_rest_param_bindings: Vec::new(),
             object_prop_bindings: Vec::new(),
             computed_dispatch_table_evidence: Vec::new(),
+            new_expressions: Vec::new(),
         }
     }
 }
