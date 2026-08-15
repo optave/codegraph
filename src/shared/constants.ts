@@ -31,6 +31,7 @@ export const IGNORE_DIRS: ArrayCompatSet<string> = withArrayCompat(
     'venv',
     'env',
     '.env',
+    'target',
   ]),
 );
 
