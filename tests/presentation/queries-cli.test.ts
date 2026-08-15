@@ -39,7 +39,7 @@ const { where, queryName, context, children, explain, implementations, interface
 );
 const { symbolPath } = await import('../../src/presentation/queries-cli/path.js');
 const { fileExports } = await import('../../src/presentation/queries-cli/exports.js');
-const { moduleMap, roles } = await import('../../src/presentation/queries-cli/overview.js');
+const { moduleMap, roles, stats } = await import('../../src/presentation/queries-cli/overview.js');
 
 // ── Helpers ────────────────────────────────────────────────────────
 let lines: any;
@@ -678,5 +678,32 @@ describe('roles', () => {
     mocks.rolesData.mockReturnValue({ count: 0, summary: {}, symbols: [] });
     roles('/db', {});
     expect(output()).toContain('No classified symbols found');
+  });
+});
+
+// ── overview.js: stats ─────────────────────────────────────────────
+
+describe('stats', () => {
+  it('prints max cyclomatic alongside max cognitive', async () => {
+    mocks.statsData.mockReturnValue({
+      nodes: { total: 1, byKind: { function: 1 } },
+      edges: { total: 0, byKind: {} },
+      files: { total: 1, languages: 1, byLanguage: { javascript: 1 } },
+      cycles: { fileLevel: 0, functionLevel: 0 },
+      hotspots: [],
+      complexity: {
+        analyzed: 4633,
+        avgCognitive: 4.1,
+        avgCyclomatic: 4,
+        maxCognitive: 74,
+        maxCyclomatic: 40,
+        avgMI: 65.1,
+        minMI: 24.7,
+      },
+    });
+    await stats('/db', {});
+    const out = output();
+    expect(out).toContain('max cognitive: 74');
+    expect(out).toContain('max cyclomatic: 40');
   });
 });

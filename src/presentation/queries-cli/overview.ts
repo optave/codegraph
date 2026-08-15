@@ -77,6 +77,7 @@ interface ComplexityInfo {
   avgCognitive: number;
   avgCyclomatic: number;
   maxCognitive: number;
+  maxCyclomatic: number;
   avgMI?: number;
   minMI?: number;
 }
@@ -254,7 +255,7 @@ function printComplexity(data: StatsData): void {
     const cx = data.complexity;
     const miPart = cx.avgMI != null ? ` | avg MI: ${cx.avgMI} | min MI: ${cx.minMI}` : '';
     console.log(
-      `\nComplexity: ${cx.analyzed} functions | avg cognitive: ${cx.avgCognitive} | avg cyclomatic: ${cx.avgCyclomatic} | max cognitive: ${cx.maxCognitive}${miPart}`,
+      `\nComplexity: ${cx.analyzed} functions | avg cognitive: ${cx.avgCognitive} | avg cyclomatic: ${cx.avgCyclomatic} | max cognitive: ${cx.maxCognitive} | max cyclomatic: ${cx.maxCyclomatic}${miPart}`,
     );
   }
 }
