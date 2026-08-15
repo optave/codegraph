@@ -28,6 +28,7 @@ pub(crate) const DEFAULT_IGNORE_DIRS: &[&str] = &[
     "venv",
     "env",
     ".env",
+    "target",
 ];
 
 /// All supported file extensions (mirrors the JS `EXTENSIONS` set).
@@ -469,6 +470,24 @@ mod tests {
         let result = collect_files(tmp.to_str().unwrap(), &[], &[], &[]);
         assert_eq!(result.files.len(), 1);
         assert!(result.files[0].contains("app.ts"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn collect_skips_target_dir() {
+        let tmp = std::env::temp_dir().join("codegraph_collect_target_test");
+        let _ = fs::remove_dir_all(&tmp);
+        let build_out = tmp.join("target").join("debug");
+        fs::create_dir_all(&build_out).unwrap();
+        fs::write(build_out.join("build.rs"), "").unwrap();
+        let src = tmp.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("app.rs"), "").unwrap();
+
+        let result = collect_files(tmp.to_str().unwrap(), &[], &[], &[]);
+        assert_eq!(result.files.len(), 1);
+        assert!(result.files[0].contains("app.rs"));
 
         let _ = fs::remove_dir_all(&tmp);
     }
