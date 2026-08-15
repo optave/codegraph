@@ -30,6 +30,10 @@
  * never gain inbound call edges by construction, so call-graph reachability
  * doesn't apply to them either (#1723).
  *
+ * Every node whose file belongs to a declarative-only language (currently
+ * just Terraform/HCL) is likewise classified `leaf` unconditionally, via
+ * `isDeclarativeLanguageNode` — see its doc comment (#2385).
+ *
  * `entry` requires `kind IN ('function', 'method')` (plus the framework-prefix/
  * Commander-dispatch shortcuts, which are already kind-appropriate by
  * construction). An exported interface/type/constant/class with zero fan-in is
@@ -71,6 +75,26 @@ const LEAF_KINDS = new Set(['parameter', 'property', 'constant']);
 const TYPE_DEF_KINDS = new Set(['struct', 'enum', 'trait', 'type', 'interface', 'record']);
 
 const FFI_EXTENSIONS = new Set(['.rs', '.c', '.cpp', '.h', '.go', '.java', '.cs']);
+
+/**
+ * Extensions of declarative-only languages that have no functions, classes,
+ * or call graph by design (e.g. Terraform/HCL — everything is a
+ * resource/module/data/variable/output block; nothing is ever invoked or
+ * invokes anything). A `fanIn === 0` reading for these carries zero
+ * dead-code signal, unlike a language where call resolution is merely not
+ * implemented yet (see the resolution-benchmark's 0.0/0.0 thresholds for
+ * e.g. bash/ruby/lua, which DO have real dead code a future resolver could
+ * find). Emitting `dead-*` anyway invited destructive action on live
+ * infrastructure (#2385).
+ */
+const DECLARATIVE_EXTENSIONS = new Set(['.tf', '.hcl']);
+
+/** True when `node.file`'s extension belongs to a declarative-only language (#2385). */
+function isDeclarativeLanguageNode(node: { file?: string }): boolean {
+  if (!node.file) return false;
+  const dotIdx = node.file.lastIndexOf('.');
+  return dotIdx !== -1 && DECLARATIVE_EXTENSIONS.has(node.file.slice(dotIdx));
+}
 
 /** Path patterns indicating framework-dispatched entry points. */
 const ENTRY_PATH_PATTERNS: readonly RegExp[] = [
@@ -345,6 +369,10 @@ function classifyNodeRole(
   medFanOut: number,
   typeDefNamesByFile: Map<string, Set<string>>,
 ): Role {
+  // Declarative-only language (#2385) — never subject to call-graph dead-code
+  // detection; there is no call graph for it by design.
+  if (isDeclarativeLanguageNode(node)) return 'leaf';
+
   // Interface/type members (#1723) — never subject to call-graph dead-code
   // detection, regardless of fan-in/fan-out/export status.
   if (isTypeDeclarationMember(node, typeDefNamesByFile)) return 'leaf';

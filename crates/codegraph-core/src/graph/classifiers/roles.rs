@@ -217,6 +217,16 @@ fn classify_node(
     median_fan_in: f64,
     median_fan_out: f64,
 ) -> &'static str {
+    // Declarative-only language (#2385) — never subject to call-graph
+    // dead-code detection; there is no call graph for it by design (e.g.
+    // Terraform/HCL — everything is a resource/module/data/variable/output
+    // block, never invoked or invoking anything). Distinct from a language
+    // where call resolution is merely not implemented yet.
+    let declarative_exts = [".tf", ".hcl"];
+    if declarative_exts.iter().any(|ext| file.ends_with(ext)) {
+        return "leaf";
+    }
+
     // Interface/type members (#1723) — never subject to call-graph dead-code
     // detection, regardless of fan-in/fan-out/export status.
     if is_type_member {
@@ -1794,6 +1804,23 @@ mod tests {
         do_classify_full(conn).expect("do_classify_full should succeed");
 
         assert_eq!(role_of(conn, 1).as_deref(), Some("dead-unresolved"));
+    }
+
+    // ── Declarative-only language carve-out (#2385) ─────────────────────
+
+    #[test]
+    fn hcl_resource_with_zero_fan_in_is_leaf_not_dead() {
+        let db = setup_db();
+        let conn = db.conn().expect("connection should still be open");
+
+        // A Terraform resource with no incoming call edges — HCL never
+        // produces call edges by design, so fan_in == 0 carries no
+        // dead-code signal here, unlike a real function/method.
+        insert_node(conn, 1, "aws_kms_key.state", "resource", "main.tf", 0);
+
+        do_classify_full(conn).expect("do_classify_full should succeed");
+
+        assert_eq!(role_of(conn, 1).as_deref(), Some("leaf"));
     }
 
     #[test]

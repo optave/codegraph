@@ -213,6 +213,34 @@ describe('classifyRoles', () => {
     expect(roles.get('1')).toBe('dead-ffi');
   });
 
+  it('classifies HCL resources as leaf, never dead-* (#2385)', () => {
+    // Terraform never produces call edges by design — a fanIn === 0 reading
+    // carries zero dead-code signal here, unlike a real function/method.
+    const nodes = [
+      {
+        id: '1',
+        name: 'aws_kms_key.state',
+        kind: 'resource',
+        file: 'main.tf',
+        fanIn: 0,
+        fanOut: 0,
+        isExported: false,
+      },
+      {
+        id: '2',
+        name: 'bucket_name',
+        kind: 'output',
+        file: 'outputs.hcl',
+        fanIn: 0,
+        fanOut: 0,
+        isExported: true,
+      },
+    ];
+    const roles = classifyRoles(nodes);
+    expect(roles.get('1')).toBe('leaf');
+    expect(roles.get('2')).toBe('leaf');
+  });
+
   it('classifies execute/validate as entry (not dead-entry) in CLI command files (#1585)', () => {
     // Commander.js dispatch methods (execute, validate) in cli/commands/ are
     // confirmed entry points — promoted directly to `entry` so they don't
