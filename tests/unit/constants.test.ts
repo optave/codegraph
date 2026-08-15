@@ -47,7 +47,16 @@ describe('EXTENSIONS', () => {
 
 describe('IGNORE_DIRS', () => {
   it('contains expected directory names', () => {
-    const expected = ['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__', 'vendor'];
+    const expected = [
+      'node_modules',
+      '.git',
+      'dist',
+      'build',
+      'coverage',
+      '__pycache__',
+      'vendor',
+      'target',
+    ];
     for (const dir of expected) {
       expect(IGNORE_DIRS.has(dir)).toBe(true);
     }
@@ -91,6 +100,10 @@ describe('shouldIgnore', () => {
 
   it('returns true for .git', () => {
     expect(shouldIgnore('.git')).toBe(true);
+  });
+
+  it('returns true for target (Rust build output)', () => {
+    expect(shouldIgnore('target')).toBe(true);
   });
 
   it('returns true for hidden directories (dot prefix)', () => {
