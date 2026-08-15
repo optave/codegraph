@@ -82,6 +82,15 @@ export const STRUCTURAL_EDGE_KINDS: readonly StructuralEdgeKind[] = [
 // Full set for MCP enum and validation
 export const EVERY_EDGE_KIND: readonly EdgeKind[] = [...CORE_EDGE_KINDS, ...STRUCTURAL_EDGE_KINDS];
 
+// Edge kinds that represent structural containment rather than cross-symbol
+// coupling (a parent declaring a child, a function declaring its own
+// parameter, a method's implicit receiver) — excluded from fan-in/fan-out
+// coupling metrics (`codegraph map`, `stats`' coupling hotspots) so a file
+// that merely declares many symbols doesn't outrank one with genuine
+// cross-file dependencies (#2388). Single source of truth for both the
+// native and TypeScript aggregation paths in module-map.ts.
+export const NON_COUPLING_EDGE_KINDS: readonly EdgeKind[] = ['contains', ...STRUCTURAL_EDGE_KINDS];
+
 // Dead sub-categories — refine the coarse "dead" bucket
 export const DEAD_ROLE_PREFIX = 'dead';
 export const DEAD_SUB_ROLES: readonly DeadSubRole[] = [

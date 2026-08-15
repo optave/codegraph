@@ -903,6 +903,28 @@ describe('expanded edge types', () => {
     expect(authNode.inEdges).toBe(2);
   });
 
+  test('statsData hotspots exclude structural edges from coupling, matching moduleMapData (#2388)', () => {
+    // Regression test for #2388: the native `stats` path counted every edge
+    // touching a file node (including contains/parameter_of/receiver), while
+    // moduleMapData's JS path correctly excluded them — same graph, two
+    // different fan-in/fan-out numbers for the same file. auth.js has a
+    // `contains` edge as its SOURCE (auth.js -> UserService) that must not
+    // inflate fanOut, exactly mirroring the moduleMapData test above.
+    const mapData = moduleMapData(dbPath);
+    const authMapNode = mapData.topNodes.find((n) => n.file === 'auth.js');
+    expect(authMapNode).toBeDefined();
+
+    const stats = statsData(dbPath);
+    const authHotspot = stats.hotspots.find((h) => h.file === 'auth.js');
+    expect(authHotspot).toBeDefined();
+    expect(authHotspot.fanIn).toBe(authMapNode.inEdges);
+    expect(authHotspot.fanOut).toBe(authMapNode.outEdges);
+    // auth.js is imported by middleware.js and auth.test.js → fanIn = 2;
+    // its only outgoing edge is the structural contains edge → fanOut = 0.
+    expect(authHotspot.fanIn).toBe(2);
+    expect(authHotspot.fanOut).toBe(0);
+  });
+
   test('queryNameData returns new edge kinds in callers/callees', () => {
     // authenticate has a parameter_of edge from userId
     const authData = queryNameData('authenticate', dbPath);

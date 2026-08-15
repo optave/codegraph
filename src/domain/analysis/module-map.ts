@@ -8,10 +8,17 @@ import {
 } from '../../db/index.js';
 import { debug } from '../../infrastructure/logger.js';
 import { isTestFile } from '../../infrastructure/test-filter.js';
-import { DEAD_ROLE_PREFIX } from '../../shared/kinds.js';
+import { DEAD_ROLE_PREFIX, NON_COUPLING_EDGE_KINDS } from '../../shared/kinds.js';
 import type { BetterSqlite3Database, NativeDatabase } from '../../types.js';
 import { findCycles } from '../graph/cycles.js';
 import { LANGUAGE_REGISTRY } from '../parser.js';
+
+// SQL fragment excluding structural-containment edges from coupling counts —
+// built once from the shared NON_COUPLING_EDGE_KINDS constant so this file's
+// four fan-in/fan-out queries (findHotspots, moduleMapData) and the native
+// path (crates/codegraph-core/src/db/repository/graph_read.rs) cannot drift
+// out of sync again (#2388).
+const NON_COUPLING_EDGE_FILTER = `kind NOT IN (${NON_COUPLING_EDGE_KINDS.map((k) => `'${k}'`).join(', ')})`;
 
 export const FALSE_POSITIVE_NAMES = new Set([
   'run',
@@ -123,12 +130,12 @@ function findHotspots(db: BetterSqlite3Database, noTests: boolean, limit: number
       FROM nodes n
       LEFT JOIN (
         SELECT target_id, COUNT(*) AS cnt FROM edges
-        WHERE kind NOT IN ('contains', 'parameter_of', 'receiver')
+        WHERE ${NON_COUPLING_EDGE_FILTER}
         GROUP BY target_id
       ) fi ON fi.target_id = n.id
       LEFT JOIN (
         SELECT source_id, COUNT(*) AS cnt FROM edges
-        WHERE kind NOT IN ('contains', 'parameter_of', 'receiver')
+        WHERE ${NON_COUPLING_EDGE_FILTER}
         GROUP BY source_id
       ) fo ON fo.source_id = n.id
       WHERE n.kind = 'file' ${testFilter}
@@ -325,12 +332,12 @@ export function moduleMapData(customDbPath: string, limit = 20, opts: { noTests?
       FROM nodes n
       LEFT JOIN (
         SELECT source_id, COUNT(*) AS cnt FROM edges
-        WHERE kind NOT IN ('contains', 'parameter_of', 'receiver')
+        WHERE ${NON_COUPLING_EDGE_FILTER}
         GROUP BY source_id
       ) fo ON fo.source_id = n.id
       LEFT JOIN (
         SELECT target_id, COUNT(*) AS cnt FROM edges
-        WHERE kind NOT IN ('contains', 'parameter_of', 'receiver')
+        WHERE ${NON_COUPLING_EDGE_FILTER}
         GROUP BY target_id
       ) fi ON fi.target_id = n.id
       WHERE n.kind = 'file'

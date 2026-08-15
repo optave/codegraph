@@ -597,17 +597,31 @@ fn fetch_quality_metrics(
     })
 }
 
+/// Edge kinds representing structural containment rather than cross-symbol
+/// coupling (a parent declaring a child, a function declaring its own
+/// parameter, a method's implicit receiver) — excluded from fan-in/fan-out
+/// hotspot counts so a file that merely declares many symbols doesn't
+/// outrank one with genuine cross-file dependencies. Mirrors
+/// `NON_COUPLING_EDGE_KINDS` in `src/shared/kinds.ts` (#2388) — keep both
+/// lists in sync.
+const NON_COUPLING_EDGE_KINDS: &[&str] = &["contains", "parameter_of", "receiver"];
+
 fn fetch_file_hotspots(
     conn: &rusqlite::Connection,
     tf_n_file: &str,
 ) -> napi::Result<Vec<FileHotspot>> {
+    let edge_filter = NON_COUPLING_EDGE_KINDS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
         "SELECT n.file, \
-         (SELECT COUNT(*) FROM edges WHERE target_id = n.id) as fan_in, \
-         (SELECT COUNT(*) FROM edges WHERE source_id = n.id) as fan_out \
+         (SELECT COUNT(*) FROM edges WHERE target_id = n.id AND kind NOT IN ({edge_filter})) as fan_in, \
+         (SELECT COUNT(*) FROM edges WHERE source_id = n.id AND kind NOT IN ({edge_filter})) as fan_out \
          FROM nodes n WHERE n.kind = 'file' {tf_n_file} \
-         ORDER BY (SELECT COUNT(*) FROM edges WHERE target_id = n.id) \
-                + (SELECT COUNT(*) FROM edges WHERE source_id = n.id) DESC \
+         ORDER BY (SELECT COUNT(*) FROM edges WHERE target_id = n.id AND kind NOT IN ({edge_filter})) \
+                + (SELECT COUNT(*) FROM edges WHERE source_id = n.id AND kind NOT IN ({edge_filter})) DESC \
          LIMIT 5",
     );
     let mut stmt = conn
