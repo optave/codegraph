@@ -1756,6 +1756,9 @@ fn match_js_node(
         "enum_declaration" => handle_enum_decl(node, source, symbols),
         "lexical_declaration" | "variable_declaration" => handle_var_decl(node, source, symbols),
         "call_expression" => handle_call_expr(node, source, symbols, callback_param_shapes),
+        "jsx_opening_element" | "jsx_self_closing_element" => {
+            handle_jsx_element_ref(node, source, &mut symbols.calls)
+        }
         "new_expression" => handle_new_expr(node, source, symbols),
         "decorator" => handle_decorator(node, source, symbols),
         "import_statement" => handle_import_stmt(node, source, symbols),
@@ -2874,6 +2877,9 @@ fn handle_call_expr(
                 callback_param_shapes,
                 &mut symbols.calls,
             );
+            symbols
+                .calls
+                .extend(extract_call_argument_identifier_refs(node, source));
             return;
         }
     }
@@ -2884,6 +2890,9 @@ fn handle_call_expr(
         symbols.definitions.push(cb_def);
     }
     extract_callback_reference_calls(node, source, callback_param_shapes, &mut symbols.calls);
+    symbols
+        .calls
+        .extend(extract_call_argument_identifier_refs(node, source));
 }
 
 fn handle_new_expr(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
@@ -4357,6 +4366,118 @@ fn handle_object_literal_shorthand_value_ref(node: &Node, source: &[u8], calls: 
 /// `build_edges.rs` accepts `class`-kind targets in addition to
 /// function/method for this reason.
 ///
+/// A JSX element's opening/self-closing tag name is a reference to the
+/// component it renders — `<Header />` is exactly as much a use of `Header`
+/// as `Header()` would be, but produces no call edge by construction since
+/// it's not a `call_expression` (issue #2389). Emitted as a `value-ref`
+/// dynamic call, the same mechanism already used for object-literal
+/// property values, `instanceof` operands, and logical-or/ternary fallbacks.
+///
+/// Only a capitalized bare identifier is treated as a component reference,
+/// matching JSX's own convention: a lowercase-first tag name (`<div>`,
+/// `<span>`) compiles to a DOM/intrinsic element (not an identifier
+/// reference) and must not be credited as a symbol use. A `member_expression`
+/// name (`<Namespace.Component />`) credits the base object identifier.
+///
+/// Mirrors `handleJsxElementRef` in `src/extractors/javascript.ts`.
+fn handle_jsx_element_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let line = start_line(node);
+    match name_node.kind() {
+        "identifier" => {
+            let text = node_text(&name_node, source);
+            if !text.starts_with(|c: char| c.is_ascii_uppercase())
+                || JS_BUILTIN_GLOBALS.contains(&text)
+            {
+                return;
+            }
+            calls.push(Call {
+                name: text.to_string(),
+                line,
+                dynamic: Some(true),
+                dynamic_kind: Some("value-ref".to_string()),
+                ..Default::default()
+            });
+        }
+        "member_expression" => {
+            let Some(obj_node) = name_node.child_by_field_name("object") else {
+                return;
+            };
+            if obj_node.kind() != "identifier" {
+                return;
+            }
+            let text = node_text(&obj_node, source);
+            if JS_BUILTIN_GLOBALS.contains(&text) {
+                return;
+            }
+            calls.push(Call {
+                name: text.to_string(),
+                line,
+                dynamic: Some(true),
+                dynamic_kind: Some("value-ref".to_string()),
+                ..Default::default()
+            });
+        }
+        _ => {}
+    }
+}
+
+/// A capitalized bare identifier passed as a call argument is a value
+/// reference to whatever it names — `Factory.create(AppModule)` is a
+/// genuine use of `AppModule` (issue #2389; the NestJS module/controller
+/// registration idiom, `NestFactory.create(AppModule)`, relies on exactly
+/// this pattern).
+///
+/// Restricted to capitalized identifiers — the same class/component-naming
+/// convention already used to gate JSX element references
+/// (`handle_jsx_element_ref`) — deliberately, not merely for style: issue
+/// #1741 is a regression guard proving that crediting an arbitrary
+/// lowercase DATA argument (e.g. `analyzeDrift(communities, communityDirs)`)
+/// as any kind of reference risks the global-fallback resolver binding it
+/// to an unrelated same-named function elsewhere in the repo, fabricating a
+/// call edge and, transitively, a phantom cycle. A class/component
+/// reference passed by value is overwhelmingly PascalCase in JS/TS
+/// convention, so this restriction captures the pattern #2389 asks for
+/// while leaving #1741's already-diagnosed false-positive risk exactly as
+/// closed as it was.
+///
+/// Restricted to direct-child bare identifiers of the arguments list,
+/// mirroring this file's "restrict to the simplest syntactic shape"
+/// precedent (#1771/#1784).
+///
+/// Mirrors `extractCallArgumentIdentifierRefs` in `src/extractors/javascript.ts`.
+fn extract_call_argument_identifier_refs(call_node: &Node, source: &[u8]) -> Vec<Call> {
+    let mut result = Vec::new();
+    let Some(args) = call_node
+        .child_by_field_name("arguments")
+        .or_else(|| find_child(call_node, "arguments"))
+    else {
+        return result;
+    };
+    let line = start_line(call_node);
+    for i in 0..args.child_count() {
+        let Some(child) = args.child(i) else { continue };
+        if child.kind() != "identifier" {
+            continue;
+        }
+        let text = node_text(&child, source);
+        if !text.starts_with(|c: char| c.is_ascii_uppercase()) || JS_BUILTIN_GLOBALS.contains(&text)
+        {
+            continue;
+        }
+        result.push(Call {
+            name: text.to_string(),
+            line,
+            dynamic: Some(true),
+            dynamic_kind: Some("value-ref".to_string()),
+            ..Default::default()
+        });
+    }
+    result
+}
+
 /// Mirrors `collectInstanceofValueRefCall` in `src/extractors/javascript.ts`.
 fn handle_instanceof_value_ref(node: &Node, source: &[u8], calls: &mut Vec<Call>) {
     let Some(operator_n) = node.child_by_field_name("operator") else {
@@ -8463,6 +8584,74 @@ mod tests {
             .filter(|c| c.dynamic_kind.as_deref() == Some("value-ref"))
             .collect();
         assert!(value_refs.iter().any(|c| c.name == "someFunction"));
+    }
+
+    // ── #2389: JSX element value-ref extraction ──────────────────────────────
+
+    #[test]
+    fn extracts_value_ref_call_for_self_closing_jsx_component() {
+        let s = parse_js("function App() { return <Header title=\"x\" />; }");
+        assert!(s
+            .calls
+            .iter()
+            .any(|c| c.name == "Header" && c.dynamic_kind.as_deref() == Some("value-ref")));
+    }
+
+    #[test]
+    fn extracts_value_ref_call_for_jsx_component_with_children() {
+        let s = parse_js("function App() { return <Wrapper><span /></Wrapper>; }");
+        assert!(s
+            .calls
+            .iter()
+            .any(|c| c.name == "Wrapper" && c.dynamic_kind.as_deref() == Some("value-ref")));
+    }
+
+    #[test]
+    fn does_not_extract_value_ref_call_for_lowercase_intrinsic_jsx_tag() {
+        let s = parse_js("function App() { return <div className=\"x\"><span /></div>; }");
+        assert!(!s
+            .calls
+            .iter()
+            .any(|c| c.dynamic_kind.as_deref() == Some("value-ref")));
+    }
+
+    #[test]
+    fn credits_base_identifier_for_namespaced_jsx_component() {
+        let s = parse_js("function App() { return <NS.Header />; }");
+        assert!(s
+            .calls
+            .iter()
+            .any(|c| c.name == "NS" && c.dynamic_kind.as_deref() == Some("value-ref")));
+    }
+
+    // ── #2389: call-argument identifier value-ref extraction ────────────────
+
+    #[test]
+    fn extracts_value_ref_call_for_capitalized_call_argument() {
+        let s = parse_js("Factory.create(AppModule);");
+        assert!(s
+            .calls
+            .iter()
+            .any(|c| c.name == "AppModule" && c.dynamic_kind.as_deref() == Some("value-ref")));
+    }
+
+    #[test]
+    fn does_not_extract_value_ref_call_for_lowercase_data_argument_regression_1741() {
+        // Regression guard mirroring #1741: a lowercase DATA argument must
+        // never be credited as any kind of reference, or the global-fallback
+        // resolver can bind it to an unrelated same-named function elsewhere
+        // in the repo, fabricating a call edge and a phantom cycle.
+        let s = parse_js("analyzeDrift(communities, communityDirs);");
+        assert!(!s.calls.iter().any(|c| c.dynamic == Some(true)));
+    }
+
+    #[test]
+    fn does_not_extract_value_ref_call_for_builtin_global_argument() {
+        let s = parse_js("register(console);");
+        assert!(!s
+            .calls
+            .iter()
+            .any(|c| c.dynamic_kind.as_deref() == Some("value-ref")));
     }
 
     // ── #2257: logical-or/nullish-coalescing/ternary value-ref extraction ───

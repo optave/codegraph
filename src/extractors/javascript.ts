@@ -399,6 +399,7 @@ function dispatchQueryMatch(
     const callfnInfo = extractCallInfo(c.callfn_name!, c.callfn_node);
     if (callfnInfo) calls.push(callfnInfo);
     calls.push(...extractCallbackReferenceCalls(c.callfn_node, callbackParamShapes));
+    calls.push(...extractCallArgumentIdentifierRefs(c.callfn_node));
   } else if (c.callmem_node) {
     // extractCallInfo → extractMemberExprCallInfo tags .call/.apply/.bind (e.g. `fn.call(ctx)`)
     // as dynamic/reflection regardless of receiver shape, matching the walk path and native
@@ -410,10 +411,16 @@ function dispatchQueryMatch(
     const cbDef = extractCallbackDefinition(c.callmem_node, c.callmem_fn);
     if (cbDef) definitions.push(cbDef);
     calls.push(...extractCallbackReferenceCalls(c.callmem_node, callbackParamShapes));
+    calls.push(...extractCallArgumentIdentifierRefs(c.callmem_node));
   } else if (c.callsub_node) {
     const callInfo = extractCallInfo(c.callsub_fn!, c.callsub_node, arrayElemBindings);
     if (callInfo) calls.push(callInfo);
     calls.push(...extractCallbackReferenceCalls(c.callsub_node, callbackParamShapes));
+    calls.push(...extractCallArgumentIdentifierRefs(c.callsub_node));
+  } else if (c.jsxid_node) {
+    handleJsxElementRef(c.jsxid_node, calls);
+  } else if (c.jsxmem_node) {
+    handleJsxElementRef(c.jsxmem_node, calls);
   } else if (c.newfn_node) {
     if (c.newfn_name!.text === 'Function') {
       // new Function(body) — dynamic code execution; classify as eval kind
@@ -1507,6 +1514,10 @@ function walkJavaScriptNode(
     case 'call_expression':
       handleCallExpr(node, ctx, callbackParamShapes);
       break;
+    case 'jsx_opening_element':
+    case 'jsx_self_closing_element':
+      handleJsxElementRef(node, ctx.calls);
+      break;
     case 'new_expression':
       handleNewExpr(node, ctx);
       break;
@@ -2225,7 +2236,83 @@ function handleCallExpr(
       }
     }
     ctx.calls.push(...extractCallbackReferenceCalls(node, callbackParamShapes));
+    ctx.calls.push(...extractCallArgumentIdentifierRefs(node));
   }
+}
+
+/**
+ * A JSX element's opening/self-closing tag name is a reference to the
+ * component it renders — `<Header />` is exactly as much a use of `Header`
+ * as `Header()` would be, but produces no call edge by construction since
+ * it's not a `call_expression` (issue #2389). Emitted as a `value-ref`
+ * dynamic call, the same mechanism already used for object-literal
+ * property values, `instanceof` operands, and logical-or/ternary fallbacks
+ * (#1771/#1895/#2257).
+ *
+ * Only a capitalized bare identifier is treated as a component reference,
+ * matching JSX's own convention: a lowercase-first tag name (`<div>`,
+ * `<span>`) compiles to a DOM/intrinsic element (a string, not an
+ * identifier reference) and must not be credited as a symbol use. A
+ * `member_expression` name (`<Namespace.Component />`) credits the base
+ * object identifier, mirroring `extractReceiverName`'s handling of
+ * member-expression receivers elsewhere in this file.
+ */
+function handleJsxElementRef(node: TreeSitterNode, calls: Call[]): void {
+  const nameNode = node.childForFieldName('name');
+  if (!nameNode) return;
+  const line = nodeStartLine(node);
+  if (nameNode.type === 'identifier') {
+    const name = nameNode.text;
+    if (!name || !/^[A-Z]/.test(name) || BUILTIN_GLOBALS.has(name)) return;
+    calls.push({ name, line, dynamic: true, dynamicKind: 'value-ref' });
+  } else if (nameNode.type === 'member_expression') {
+    const objNode = nameNode.childForFieldName('object');
+    if (objNode?.type === 'identifier' && !BUILTIN_GLOBALS.has(objNode.text)) {
+      calls.push({ name: objNode.text, line, dynamic: true, dynamicKind: 'value-ref' });
+    }
+  }
+}
+
+/**
+ * A capitalized bare identifier passed as a call argument is a value
+ * reference to whatever it names — `Factory.create(AppModule)` is a
+ * genuine use of `AppModule`, the same as an object-literal property value
+ * or a logical-or fallback (#1771/#2257), but arguments in ordinary call
+ * position produce no edge at all today (issue #2389; the NestJS
+ * module/controller registration idiom, `NestFactory.create(AppModule)`,
+ * relies on exactly this pattern).
+ *
+ * Restricted to capitalized identifiers — the same class/component-naming
+ * convention already used to gate JSX element references
+ * (`handleJsxElementRef`) — deliberately, not merely for style: issue
+ * #1741 is a regression guard proving that crediting an arbitrary
+ * lowercase DATA argument (e.g. `analyzeDrift(communities, communityDirs)`)
+ * as any kind of reference risks the global-fallback resolver binding it
+ * to an unrelated same-named function elsewhere in the repo, fabricating a
+ * call edge and, transitively, a phantom cycle. A class/component
+ * reference passed by value is overwhelmingly PascalCase in JS/TS
+ * convention, so this restriction captures the pattern #2389 asks for
+ * while leaving #1741's already-diagnosed false-positive risk exactly as
+ * closed as it was.
+ *
+ * Restricted to direct-child bare identifiers of the arguments list (not
+ * nested inside member/call expressions), matching this file's established
+ * "restrict to the simplest syntactic shape" precedent (#1771/#1784).
+ */
+function extractCallArgumentIdentifierRefs(callNode: TreeSitterNode): Call[] {
+  const args = callNode.childForFieldName('arguments') || findChild(callNode, 'arguments');
+  if (!args) return [];
+  const result: Call[] = [];
+  const line = nodeStartLine(callNode);
+  for (let i = 0; i < args.childCount; i++) {
+    const child = args.child(i);
+    if (!child) continue;
+    if (child.type !== 'identifier') continue;
+    const name = child.text;
+    if (!name || !/^[A-Z]/.test(name) || BUILTIN_GLOBALS.has(name)) continue;
+    result.push({ name, line, dynamic: true, dynamicKind: 'value-ref' });
+  }
+  return result;
 }
 
 function handleNewExpr(node: TreeSitterNode, ctx: ExtractorOutput): void {

@@ -2034,6 +2034,62 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('JSX element value-ref extraction (#2389)', () => {
+    it('extracts a value-ref call for a self-closing component reference', () => {
+      const symbols = parseJS(`function App() { return <Header title="x" />; }`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'Header', dynamic: true, dynamicKind: 'value-ref' }),
+      );
+    });
+
+    it('extracts a value-ref call for a component with children', () => {
+      const symbols = parseJS(`function App() { return <Wrapper><span /></Wrapper>; }`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'Wrapper', dynamic: true, dynamicKind: 'value-ref' }),
+      );
+    });
+
+    it('does not extract a value-ref call for a lowercase intrinsic HTML tag', () => {
+      const symbols = parseJS(`function App() { return <div className="x"><span /></div>; }`);
+      expect(symbols.calls.filter((c) => c.dynamicKind === 'value-ref')).toHaveLength(0);
+    });
+
+    it('credits the base object identifier for a namespaced component reference', () => {
+      const symbols = parseJS(`function App() { return <NS.Header />; }`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'NS', dynamic: true, dynamicKind: 'value-ref' }),
+      );
+    });
+  });
+
+  describe('call-argument identifier value-ref extraction (#2389)', () => {
+    it('extracts a value-ref call for a bare identifier passed as a call argument', () => {
+      const symbols = parseJS(`Factory.create(AppModule);`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'AppModule', dynamic: true, dynamicKind: 'value-ref' }),
+      );
+    });
+
+    it('extracts a value-ref call for every bare identifier argument', () => {
+      const symbols = parseJS(`register(ModuleA, ModuleB);`);
+      for (const name of ['ModuleA', 'ModuleB']) {
+        expect(symbols.calls).toContainEqual(
+          expect.objectContaining({ name, dynamic: true, dynamicKind: 'value-ref' }),
+        );
+      }
+    });
+
+    it('does not extract a value-ref call for undefined/null/builtin-global arguments', () => {
+      const symbols = parseJS(`register(undefined, null, console);`);
+      expect(symbols.calls.filter((c) => c.dynamicKind === 'value-ref')).toHaveLength(0);
+    });
+
+    it('does not extract a value-ref call for a member-expression or call-expression argument', () => {
+      const symbols = parseJS(`register(obj.Module, makeModule());`);
+      expect(symbols.calls.filter((c) => c.dynamicKind === 'value-ref')).toHaveLength(0);
+    });
+  });
+
   describe('object-literal value-ref keyExpr capture (#1895)', () => {
     it('captures the property key, distinct from the referenced value name', () => {
       const symbols = parseJS(`const table = { resolve: someFunction };`);

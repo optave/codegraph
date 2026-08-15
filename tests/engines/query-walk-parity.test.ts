@@ -366,6 +366,38 @@ export function useIt(): number {
 }
 `,
   },
+  // Issue #2389: JSX component references and call-argument identifiers
+  {
+    name: 'JSX self-closing component reference (#2389)',
+    file: 'test.jsx',
+    code: `
+import { Header } from './comp.jsx';
+export function App() {
+  return <Header title="x" />;
+}
+`,
+  },
+  {
+    name: 'JSX component with children and a namespaced reference (#2389)',
+    file: 'test.tsx',
+    code: `
+import * as NS from './comp';
+export function App() {
+  return <Wrapper><NS.Header /><span /></Wrapper>;
+}
+`,
+  },
+  {
+    name: 'call-argument identifier value reference (#2389)',
+    file: 'test.ts',
+    code: `
+class AppModule {}
+const Factory = { create(m: unknown) { return m; } };
+export function bootstrap() {
+  return Factory.create(AppModule);
+}
+`,
+  },
 ];
 
 describe('Query vs Walk parity', () => {

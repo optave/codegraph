@@ -145,6 +145,18 @@ const TS_EXTRA_PATTERNS: string[] = [
   '(type_alias_declaration name: (type_identifier) @type_name) @type_node',
 ];
 
+// JSX element tag names — only javascript and tsx grammars define these node
+// types; plain typescript (.ts, no JSX) does not, so this must never be
+// folded into COMMON_QUERY_PATTERNS or TS_EXTRA_PATTERNS (shared with plain
+// typescript) — Query() compilation throws on an unknown node type, which
+// would break all .ts parsing (#2389).
+const JSX_QUERY_PATTERNS: string[] = [
+  '(jsx_opening_element name: (identifier) @jsxid_name) @jsxid_node',
+  '(jsx_self_closing_element name: (identifier) @jsxid_name) @jsxid_node',
+  '(jsx_opening_element name: (member_expression) @jsxmem_name) @jsxmem_node',
+  '(jsx_self_closing_element name: (member_expression) @jsxmem_name) @jsxmem_node',
+];
+
 // ── Local language registry ─────────────────────────────────────────────────
 // Local copy — re-using parser.ts's registry would drag in its process-wide
 // parser/grammar caches, which are not safe to share across worker threads.
@@ -444,9 +456,12 @@ async function loadLanguageLazy(entry: LanguageRegistryEntry): Promise<Parser | 
     // Build the JS/TS/TSX query (mirrors parser.ts::doLoadLanguage)
     if (entry.extractor === extractSymbols && !_queries.has(entry.id)) {
       const isTS = entry.id === 'typescript' || entry.id === 'tsx';
-      const patterns = isTS
-        ? [...COMMON_QUERY_PATTERNS, ...TS_EXTRA_PATTERNS]
-        : [...COMMON_QUERY_PATTERNS, ...JS_CLASS_PATTERNS];
+      const supportsJsx = entry.id === 'javascript' || entry.id === 'tsx';
+      const patterns = [
+        ...COMMON_QUERY_PATTERNS,
+        ...(isTS ? TS_EXTRA_PATTERNS : JS_CLASS_PATTERNS),
+        ...(supportsJsx ? JSX_QUERY_PATTERNS : []),
+      ];
       _queries.set(entry.id, new Query(lang, patterns.join('\n')));
     }
     return parser;
