@@ -97,10 +97,13 @@ export function extractPythonSymbols(tree: TreeSitterTree, filePath: string): Ex
  * leaving no room for the two engines to disagree about a given call site.
  */
 function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: ExtractorOutput): void {
-  const lines = collectEntrypointCallLines(root, filePath);
+  const { lines, wrappedBy } = collectEntrypointCallLines(root, filePath);
   if (lines.size === 0) return;
   for (const call of ctx.calls) {
-    if (lines.has(call.line)) call.entrypoint = true;
+    if (!lines.has(call.line)) continue;
+    call.entrypoint = true;
+    const wrapper = wrappedBy.get(`${call.line}:${call.name}`);
+    if (wrapper) call.entrypointWrappedBy = wrapper;
   }
 }
 
@@ -132,8 +135,12 @@ function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: Extrac
  * Like `guarded`, entering a class does not turn this off either, for the
  * same immediate-execution reason.
  */
-function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set<number> {
+function collectEntrypointCallLines(
+  root: TreeSitterNode,
+  filePath: string,
+): { lines: Set<number>; wrappedBy: Map<string, string> } {
   const lines = new Set<number>();
+  const wrappedBy = new Map<string, string>();
 
   const visit = (
     node: TreeSitterNode,
@@ -142,7 +149,13 @@ function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set
     atModuleLevel: boolean,
   ): void => {
     if (depth >= MAX_WALK_DEPTH) return;
-    if (node.type === 'call' && guarded) lines.add(node.startPosition.row + 1);
+    if (node.type === 'call' && guarded) {
+      const line = node.startPosition.row + 1;
+      lines.add(line);
+      const name = getCallName(node);
+      const wrapper = name ? findEnclosingCallName(node) : null;
+      if (name && wrapper) wrappedBy.set(`${line}:${name}`, wrapper);
+    }
 
     // Only a function defers its body — a class body is executed immediately
     // while evaluating the `class` statement, so it must not be treated the
@@ -176,7 +189,56 @@ function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set
   };
 
   visit(root, 0, filePath.endsWith('__main__.py'), true);
-  return lines;
+  return { lines, wrappedBy };
+}
+
+/**
+ * The bare callee name of a `call` node, matching `handlePyCall`'s own naming
+ * exactly (identifier, or an attribute call's `.attribute` half) — so a
+ * wrapper name recorded here matches what `entrypoint_calls`/projection
+ * later look up by the same bare-name convention. Returns `null` for a
+ * shape `handlePyCall` itself would skip (e.g. a computed/subscript callee).
+ */
+function getCallName(node: TreeSitterNode): string | null {
+  const fn = node.childForFieldName('function');
+  if (!fn) return null;
+  if (fn.type === 'identifier') return fn.text;
+  if (fn.type === 'attribute') {
+    const attr = fn.childForFieldName('attribute');
+    return attr ? attr.text : null;
+  }
+  return null;
+}
+
+/**
+ * The name of the nearest enclosing `call` whose arguments directly or
+ * transitively contain `node` — e.g. `main` for the `configure()` call
+ * inside `main(configure())` — or `null` if `node` is not nested inside
+ * another call within the same statement (#2420).
+ *
+ * Bounded to the current statement: stops (returns `null`) at the first
+ * `expression_statement`/`block`/`module` ancestor, since a call can only be
+ * "wrapped" by another call textually enclosing it in the same expression —
+ * walking past a statement boundary would find an unrelated, merely
+ * lexically-outer call (e.g. the `if __name__ == "__main__":` guard's own
+ * body statement list is a `block`, not a call, and must stop the walk).
+ */
+function findEnclosingCallName(node: TreeSitterNode): string | null {
+  let parent = node.parent;
+  let hops = 0;
+  while (parent && hops < MAX_WALK_DEPTH) {
+    if (parent.type === 'call') return getCallName(parent);
+    if (
+      parent.type === 'expression_statement' ||
+      parent.type === 'block' ||
+      parent.type === 'module'
+    ) {
+      return null;
+    }
+    parent = parent.parent;
+    hops++;
+  }
+  return null;
 }
 
 /** True for the `__name__ == "__main__"` test of an `if` statement. */

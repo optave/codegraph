@@ -42,13 +42,17 @@ impl SymbolExtractor for PythonExtractor {
 /// the same AST and mark the same calls, leaving no room to disagree about a
 /// given call site.
 fn mark_entrypoint_calls(root: &Node, source: &[u8], file_path: &str, symbols: &mut FileSymbols) {
-    let lines = collect_entrypoint_call_lines(root, source, file_path);
+    let (lines, wrapped_by) = collect_entrypoint_call_lines(root, source, file_path);
     if lines.is_empty() {
         return;
     }
     for call in &mut symbols.calls {
-        if lines.contains(&call.line) {
-            call.entrypoint = Some(true);
+        if !lines.contains(&call.line) {
+            continue;
+        }
+        call.entrypoint = Some(true);
+        if let Some(wrapper) = wrapped_by.get(&(call.line, call.name.clone())) {
+            call.entrypoint_wrapped_by = Some(wrapper.clone());
         }
     }
 }
@@ -94,12 +98,15 @@ fn is_main_guard_condition(condition: Option<Node>, source: &[u8]) -> bool {
 /// `false` too") are indistinguishable without this separate flag (review
 /// finding on #2411). Like `guarded`, entering a class does not turn this off
 /// either, for the same immediate-execution reason.
+type EntrypointWrappedBy = std::collections::HashMap<(u32, String), String>;
+
 fn collect_entrypoint_call_lines(
     root: &Node,
     source: &[u8],
     file_path: &str,
-) -> std::collections::HashSet<u32> {
+) -> (std::collections::HashSet<u32>, EntrypointWrappedBy) {
     let mut lines = std::collections::HashSet::new();
+    let mut wrapped_by = EntrypointWrappedBy::new();
     visit_entrypoint_calls(
         root,
         source,
@@ -107,8 +114,45 @@ fn collect_entrypoint_call_lines(
         file_path.ends_with("__main__.py"),
         true,
         &mut lines,
+        &mut wrapped_by,
     );
-    lines
+    (lines, wrapped_by)
+}
+
+/// The bare callee name of a `call` node, matching `handle_call`'s own naming
+/// exactly — so a wrapper name recorded here matches what `entrypoint_calls`/
+/// projection later look up by the same bare-name convention.
+fn get_call_name(node: &Node, source: &[u8]) -> Option<String> {
+    let fn_node = node.child_by_field_name("function")?;
+    match fn_node.kind() {
+        "identifier" => Some(node_text(&fn_node, source).to_string()),
+        "attribute" => named_child_text(&fn_node, "attribute", source).map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// The name of the nearest enclosing `call` whose arguments directly or
+/// transitively contain `node` — e.g. `main` for the `configure()` call
+/// inside `main(configure())` — or `None` if `node` is not nested inside
+/// another call within the same statement (#2420). Mirrors TS
+/// `findEnclosingCallName` — see that function's doc comment for why the
+/// walk stops at a statement boundary.
+fn find_enclosing_call_name(node: &Node, source: &[u8]) -> Option<String> {
+    let mut parent = node.parent();
+    let mut hops = 0;
+    while let Some(p) = parent {
+        if hops >= MAX_WALK_DEPTH {
+            return None;
+        }
+        match p.kind() {
+            "call" => return get_call_name(&p, source),
+            "expression_statement" | "block" | "module" => return None,
+            _ => {}
+        }
+        parent = p.parent();
+        hops += 1;
+    }
+    None
 }
 
 fn visit_entrypoint_calls(
@@ -118,12 +162,19 @@ fn visit_entrypoint_calls(
     guarded: bool,
     at_module_level: bool,
     lines: &mut std::collections::HashSet<u32>,
+    wrapped_by: &mut EntrypointWrappedBy,
 ) {
     if depth >= MAX_WALK_DEPTH {
         return;
     }
     if node.kind() == "call" && guarded {
-        lines.insert(start_line(node));
+        let line = start_line(node);
+        lines.insert(line);
+        if let Some(name) = get_call_name(node, source) {
+            if let Some(wrapper) = find_enclosing_call_name(node, source) {
+                wrapped_by.insert((line, name), wrapper);
+            }
+        }
     }
 
     // Only a function defers its body — a class body is a normal statement
@@ -157,6 +208,7 @@ fn visit_entrypoint_calls(
             if is_guard_body { true } else { child_guarded },
             child_at_module_level,
             lines,
+            wrapped_by,
         );
     }
 }
@@ -838,6 +890,40 @@ mod tests {
             .find(|c| c.name == "main")
             .expect("main() call should be extracted");
         assert_eq!(main_call.entrypoint, Some(true));
+    }
+
+    #[test]
+    fn records_the_wrapper_name_for_a_nested_entrypoint_call() {
+        // #2420: main(configure()) — configure is an argument to main, not a
+        // standalone top-level entrypoint call.
+        let s = parse_py(
+            "def configure():\n    return 1\n\ndef main(x):\n    return x\n\nif __name__ == \"__main__\":\n    main(configure())\n",
+        );
+        let main_call = s.calls.iter().find(|c| c.name == "main").unwrap();
+        assert_eq!(main_call.entrypoint, Some(true));
+        assert_eq!(main_call.entrypoint_wrapped_by, None);
+        let configure_call = s.calls.iter().find(|c| c.name == "configure").unwrap();
+        assert_eq!(configure_call.entrypoint, Some(true));
+        assert_eq!(
+            configure_call.entrypoint_wrapped_by,
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn records_the_wrapper_name_through_an_unresolvable_stdlib_passthrough() {
+        // #2420: sys.exit(main()) — the outer call is a bare-name-extracted
+        // "exit" (receiver "sys"), an external stdlib passthrough; main is
+        // still the call that matters and still gets a wrapper recorded.
+        let s = parse_py(
+            "import sys\n\ndef main():\n    return 1\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n",
+        );
+        let exit_call = s.calls.iter().find(|c| c.name == "exit").unwrap();
+        assert_eq!(exit_call.entrypoint, Some(true));
+        assert_eq!(exit_call.entrypoint_wrapped_by, None);
+        let main_call = s.calls.iter().find(|c| c.name == "main").unwrap();
+        assert_eq!(main_call.entrypoint, Some(true));
+        assert_eq!(main_call.entrypoint_wrapped_by, Some("exit".to_string()));
     }
 
     #[test]

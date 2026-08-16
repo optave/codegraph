@@ -268,13 +268,33 @@ export interface RoleClassificationNode {
    * extractor-flagged call site (Python's `if __name__ == "__main__":` guard
    * and `__main__.py` module level).
    *
+   * Consumed ONLY by `isLiveRoot` (reachability seeding) — NOT by role
+   * classification's `'entry'` label, which reads `isEntrypointRole` instead
+   * (#2420). `main(configure())` sets `isEntrypoint` on both `main` and
+   * `configure`: both genuinely run at module load and both need the same
+   * dead-code-downgrade protection, so reachability treats them identically.
+   * But only one of them should visibly appear as `role: 'entry'` — see
+   * `isEntrypointRole`'s own doc comment for which one and why.
+   */
+  isEntrypoint?: boolean;
+  /**
+   * True when this node is not merely reachable via a program-entrypoint call
+   * (`isEntrypoint`) but is specifically the one classification should label
+   * `role: 'entry'` (#2420). Sourced from the `nodes.entrypoint_role` column,
+   * which `projectEntrypointAttribution` computes from the wrapper-chain rule
+   * documented there: the outermost call on a qualifying line always wins;
+   * a nested call only wins if its wrapper does NOT resolve to an in-repo
+   * target (e.g. `sys.exit(main())`, where `sys.exit` never resolves, so
+   * `main` — the call that matters — gets the label instead of `configure`
+   * silently winning in `main(configure())`, where `main` DOES resolve).
+   *
    * Checked before the `fanIn === 0` gate, unlike the export-based `entry`
    * rule: an entrypoint invoked from its own module's guard *does* have an
    * inbound call edge (the module-level call, attributed to the file node),
    * so a zero-fan-in requirement would never fire for the very convention
    * this exists to recognize.
    */
-  isEntrypoint?: boolean;
+  isEntrypointRole?: boolean;
 }
 
 /**
@@ -380,8 +400,12 @@ function classifyNodeRole(
   if (FRAMEWORK_ENTRY_PREFIXES.some((p) => node.name.startsWith(p))) return 'entry';
 
   // A confirmed program entrypoint (#2392) — the runtime invokes it, so its
-  // in-repo fan-in shape says nothing about how it is reached.
-  if (node.isEntrypoint) return 'entry';
+  // in-repo fan-in shape says nothing about how it is reached. Narrower than
+  // `isEntrypoint` (#2420): a call nested inside another on the same
+  // qualifying line (`main(configure())`'s `configure`) is still reachable
+  // via `isLiveRoot`, but doesn't win this label unless it's the one call on
+  // the line that actually matters — see `isEntrypointRole`'s doc comment.
+  if (node.isEntrypointRole) return 'entry';
 
   if (node.fanIn === 0) {
     if (!node.isExported) {
