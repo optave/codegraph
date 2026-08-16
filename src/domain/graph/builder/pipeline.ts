@@ -461,12 +461,13 @@ export async function buildGraph(
         }
       } catch (err) {
         // "Prior state exists but is unreadable" is the one failure that must
-        // not fall through. The orchestrator's own detection is the Rust
-        // `load_file_hashes`, which still collapses a read failure into "no
-        // prior state" and rebuilds from scratch — deleting the graph and
-        // embeddings this error is raised to protect. Falling through would
-        // therefore route around the safeguard and produce exactly the wipe it
-        // prevents on the JS path (see `loadFileHashes` in detect-changes.ts).
+        // not fall through. Falling through here would route around this
+        // JS-side detection and hand the decision to the orchestrator's own
+        // Rust `load_file_hashes` (#2418: now also correctly propagates a
+        // read failure rather than reporting "no prior state" — but that's a
+        // second, independent line of defense, not a reason to skip this one)
+        // — deleting the graph and embeddings this error exists to protect
+        // (see `loadFileHashes` in detect-changes.ts).
         if (isUnreadableBuildStateError(err)) throw err;
         // Every other pre-flight failure stays best-effort — fall through to
         // the orchestrator, which performs its own complete detection.

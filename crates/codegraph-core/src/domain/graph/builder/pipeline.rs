@@ -647,7 +647,7 @@ pub fn run_pipeline(
         incremental,
         force_full_rebuild,
         scoped_rel_paths.as_ref(),
-    );
+    )?;
     timing.detect_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     // Filter out metadata-only changes

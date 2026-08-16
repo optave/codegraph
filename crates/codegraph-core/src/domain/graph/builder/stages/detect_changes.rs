@@ -85,8 +85,27 @@ fn relative_path(root_dir: &str, abs_path: &str) -> String {
 }
 
 /// Load all file_hashes rows from the database.
-fn load_file_hashes(conn: &Connection) -> Option<HashMap<String, FileHashRow>> {
-    // Check table exists
+///
+/// Returns `Ok(None)` when there is no prior build state to diff against —
+/// the table is either missing (a DB predating the `file_hashes` migration)
+/// or present but empty; both mean "nothing has ever been indexed here" and
+/// both callers treat identically as a from-scratch build.
+///
+/// A read that *fails* is not one of those cases and must never be reported
+/// as one: `Ok(None)` is what makes `detect_changes` return
+/// `is_full_build: true`, which `clear_all_graph_data` acts on by `DELETE`-ing
+/// every graph table (`nodes`, `edges`, `file_hashes`, `embeddings`). Inferring
+/// that answer from an exception means a transient `SQLITE_BUSY` (a concurrent
+/// build, or the MCP server holding the DB) or a schema fault would silently
+/// discard a healthy graph and its expensive embeddings instead of retrying.
+/// So an unreadable table (or a failed existence probe) returns `Err` and lets
+/// the caller decide; `--no-incremental` remains the explicit way to ask for
+/// a wipe-and-rebuild. Mirrors `loadFileHashes` in `detect-changes.ts`.
+fn load_file_hashes(conn: &Connection) -> Result<Option<HashMap<String, FileHashRow>>, String> {
+    // Read from `sqlite_master` rather than inferring existence from a failed
+    // `SELECT` below, so a genuinely-absent table stays distinguishable from
+    // one that exists but cannot be read. A failure determining existence is
+    // itself unreadable state, not evidence of an absent table.
     let has_table: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='file_hashes'",
@@ -94,16 +113,32 @@ fn load_file_hashes(conn: &Connection) -> Option<HashMap<String, FileHashRow>> {
             |row| row.get::<_, i64>(0),
         )
         .map(|c| c > 0)
-        .unwrap_or(false);
+        .map_err(|e| {
+            format!(
+                "Could not determine whether the file_hashes table exists: {e}. Refusing to \
+                 fall back to a from-scratch build, which would delete the existing graph and \
+                 its embeddings. Retry once the database is readable, or pass --no-incremental \
+                 to rebuild deliberately."
+            )
+        })?;
 
     if !has_table {
-        return None;
+        return Ok(None);
     }
 
-    let mut stmt = match conn.prepare("SELECT file, hash, mtime, size FROM file_hashes") {
-        Ok(s) => s,
-        Err(_) => return None,
+    let unreadable = |e: rusqlite::Error| -> String {
+        format!(
+            "Could not read the file_hashes table: {e}. The table exists, so this is a \
+             database failure rather than a first build. Refusing to fall back to a \
+             from-scratch build, which would delete the existing graph and its embeddings. \
+             Retry once the database is readable, or pass --no-incremental to rebuild \
+             deliberately."
+        )
     };
+
+    let mut stmt = conn
+        .prepare("SELECT file, hash, mtime, size FROM file_hashes")
+        .map_err(unreadable)?;
 
     let rows: Vec<FileHashRow> = stmt
         .query_map([], |row| {
@@ -114,15 +149,17 @@ fn load_file_hashes(conn: &Connection) -> Option<HashMap<String, FileHashRow>> {
                 size: row.get(3)?,
             })
         })
-        .ok()?
-        .filter_map(|r| r.ok())
-        .collect();
+        .map_err(unreadable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(unreadable)?;
 
     if rows.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    Some(rows.into_iter().map(|r| (r.file.clone(), r)).collect())
+    Ok(Some(
+        rows.into_iter().map(|r| (r.file.clone(), r)).collect(),
+    ))
 }
 
 /// Detect removed files: files in DB but not in current file list.
@@ -1230,7 +1267,13 @@ pub fn heal_metadata(conn: &Connection, updates: &[MetadataUpdate]) {
 
 /// Main entry point: detect changes using the tiered strategy.
 ///
-/// Returns `None` for full builds (no file_hashes table or force flag).
+/// Returns `is_full_build: true` for full builds (no file_hashes table, an
+/// empty one, or the force flag).
+///
+/// `Err` propagates a failure actually *reading* prior build state (as
+/// opposed to it being genuinely absent) — see `load_file_hashes`'s doc
+/// comment for why that distinction must never collapse into "no prior
+/// state" and trigger a full-build wipe.
 ///
 /// When `scoped_rel_paths` is provided, removal detection is limited to files
 /// within that scope — non-scoped files in the DB are left untouched.
@@ -1241,9 +1284,9 @@ pub fn detect_changes(
     incremental: bool,
     force_full_rebuild: bool,
     scoped_rel_paths: Option<&HashSet<String>>,
-) -> ChangeResult {
+) -> Result<ChangeResult, String> {
     if !incremental || force_full_rebuild {
-        return ChangeResult {
+        return Ok(ChangeResult {
             changed: all_files
                 .iter()
                 .map(|f| ChangedFile {
@@ -1260,13 +1303,13 @@ pub fn detect_changes(
             removed: Vec::new(),
             is_full_build: true,
             metadata_updates: Vec::new(),
-        };
+        });
     }
 
-    let existing = match load_file_hashes(conn) {
+    let existing = match load_file_hashes(conn)? {
         Some(h) => h,
         None => {
-            return ChangeResult {
+            return Ok(ChangeResult {
                 changed: all_files
                     .iter()
                     .map(|f| ChangedFile {
@@ -1283,7 +1326,7 @@ pub fn detect_changes(
                 removed: Vec::new(),
                 is_full_build: true,
                 metadata_updates: Vec::new(),
-            };
+            });
         }
     };
 
@@ -1291,11 +1334,13 @@ pub fn detect_changes(
 
     // Try Tier 0 (journal) first
     if let Some(result) = try_journal_tier(conn, &existing, root_dir, &removed) {
-        return result;
+        return Ok(result);
     }
 
     // Fall back to Tier 1+2 (mtime/size then hash)
-    mtime_and_hash_tiers(&existing, all_files, root_dir, removed)
+    Ok(mtime_and_hash_tiers(
+        &existing, all_files, root_dir, removed,
+    ))
 }
 
 #[cfg(test)]
@@ -1320,6 +1365,64 @@ mod tests {
         let h2 = file_hash_sha256("hello world");
         assert_eq!(h1, h2);
         assert_ne!(h1, file_hash_sha256("different content"));
+    }
+
+    #[test]
+    fn load_file_hashes_returns_none_when_table_missing() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(load_file_hashes(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_file_hashes_returns_none_when_table_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (file TEXT, hash TEXT, mtime INTEGER, size INTEGER);",
+        )
+        .unwrap();
+        assert!(load_file_hashes(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_file_hashes_returns_rows_when_present() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (file TEXT, hash TEXT, mtime INTEGER, size INTEGER);
+             INSERT INTO file_hashes VALUES ('src/a.ts', 'abc', 100, 10);",
+        )
+        .unwrap();
+        let rows = load_file_hashes(&conn).unwrap().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows["src/a.ts"].hash, "abc");
+    }
+
+    #[test]
+    fn load_file_hashes_errs_rather_than_reporting_no_prior_state_on_a_read_failure() {
+        // The table exists (sqlite_master sees it) but is missing the columns
+        // the SELECT needs, so the query itself fails — simulating corruption
+        // or a schema mismatch without needing a real lock/I/O fault. Must
+        // return Err, never Ok(None): the latter is indistinguishable from a
+        // genuinely first build and would let a caller wipe a healthy graph.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (file TEXT);")
+            .unwrap();
+        assert!(load_file_hashes(&conn).is_err());
+    }
+
+    #[test]
+    fn detect_changes_propagates_a_read_failure_instead_of_reporting_a_full_build() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (file TEXT);")
+            .unwrap();
+        let result = detect_changes(
+            &conn,
+            &["/project/src/a.ts".to_string()],
+            "/project",
+            true,
+            false,
+            None,
+        );
+        assert!(result.is_err());
     }
 
     #[test]
