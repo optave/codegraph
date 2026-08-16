@@ -44,6 +44,7 @@
  */
 
 import type { BetterSqlite3Database } from '../../../types.js';
+import { resolvePyprojectScriptEntrypoints } from '../resolve.js';
 
 /** The subset of an extracted call this module needs. */
 interface EntrypointCall {
@@ -202,6 +203,81 @@ export function projectEntrypointAttribution(db: BetterSqlite3Database): string[
       if (currentIds.has(id)) continue;
       markStmt.run(want.sourceFile, id);
       touchedFiles.add(want.file);
+    }
+  });
+  tx();
+
+  return [...touchedFiles];
+}
+
+/**
+ * Flag pyproject.toml-declared console/GUI/Poetry script entrypoints (#2408)
+ * directly on their target nodes — `nodes.entrypoint = 1`,
+ * `entrypoint_source_file = 'pyproject.toml'`.
+ *
+ * Unlike the guard-call evidence above, this has no cross-file lifecycle
+ * problem to solve with a persisted evidence table: `pyproject.toml` is a
+ * single, cheap-to-reread file, so it is re-parsed fresh on every build
+ * (regardless of incremental scope) via `resolvePyprojectScriptEntrypoints`
+ * rather than diffed from a prior parse. The target side still needs the
+ * same "clear stale, then re-mark" treatment as the guard mechanism, since a
+ * target's node row is deleted and re-inserted with a new id whenever ITS
+ * file rebuilds.
+ *
+ * Must run after `projectEntrypointAttribution` and takes precedence over
+ * it: an explicit packaging declaration is a stronger signal than an
+ * inferred guard call, so a node flagged by both ends up attributed to
+ * `pyproject.toml`. The "clear stale" step is scoped to
+ * `entrypoint_source_file = 'pyproject.toml'`, so it can only ever touch
+ * rows this function itself previously set — it never clobbers a
+ * guard-attributed node that happens not to (or no longer) be a script
+ * target.
+ *
+ * Mirrored in `crates/codegraph-core/src/domain/graph/builder/entrypoints.rs`.
+ */
+export function applyPyprojectScriptAttribution(
+  db: BetterSqlite3Database,
+  rootDir: string,
+  knownFiles?: readonly string[] | null,
+): string[] {
+  const desired = resolvePyprojectScriptEntrypoints(rootDir, knownFiles);
+
+  const current = db
+    .prepare(`SELECT id, file FROM nodes WHERE entrypoint_source_file = 'pyproject.toml'`)
+    .all() as Array<{ id: number; file: string }>;
+
+  if (desired.length === 0 && current.length === 0) return [];
+
+  const clearStmt = db.prepare(
+    'UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL WHERE id = ?',
+  );
+  const markStmt = db.prepare(
+    "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'pyproject.toml' WHERE id = ?",
+  );
+  const findCandidates = db.prepare(
+    `SELECT id, name FROM nodes WHERE file = ? AND kind IN ('function', 'method')`,
+  );
+
+  const touchedFiles = new Set<string>();
+  const currentIds = new Map(current.map((r) => [r.id, r.file]));
+  const desiredIds = new Set<number>();
+
+  const tx = db.transaction(() => {
+    for (const { file, attr } of desired) {
+      const candidates = findCandidates.all(file) as Array<{ id: number; name: string }>;
+      const target =
+        candidates.find((c) => c.name === attr) ??
+        candidates.find((c) => c.name.length > attr.length && c.name.endsWith(`.${attr}`));
+      if (!target) continue;
+      desiredIds.add(target.id);
+      markStmt.run(target.id);
+      if (!currentIds.has(target.id)) touchedFiles.add(file);
+    }
+    for (const [id, file] of currentIds) {
+      if (!desiredIds.has(id)) {
+        clearStmt.run(id);
+        touchedFiles.add(file);
+      }
     }
   });
   tx();

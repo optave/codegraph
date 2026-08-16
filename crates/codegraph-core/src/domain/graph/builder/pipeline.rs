@@ -463,6 +463,7 @@ fn run_role_classification(
     file_symbols: &BTreeMap<String, FileSymbols>,
     removal_reverse_deps: Vec<String>,
     is_full_build: bool,
+    root_dir: &str,
 ) {
     // Program-entrypoint flags must be current before roles are computed, and
     // the edges they are derived from are complete by this stage — the same
@@ -470,7 +471,19 @@ fn run_role_classification(
     // The returned files are folded in below alongside `removal_reverse_deps`
     // — same reason: a touched target's role can't be trusted to be
     // rediscovered by neighbour expansion.
-    let entrypoint_touched_files = entrypoints::apply_entrypoint_attribution(conn, file_symbols);
+    let mut entrypoint_touched_files =
+        entrypoints::apply_entrypoint_attribution(conn, file_symbols);
+    // #2408: pyproject.toml is re-read fresh every build (no evidence table),
+    // so this must run unconditionally regardless of which files changed —
+    // a script target's own file rebuilding, or nothing changing at all
+    // and only pyproject.toml being edited, are both cases that need it.
+    // `known_files: None` falls back to real filesystem checks — correct for
+    // an actual build, where a resolved target genuinely exists on disk, and
+    // avoids threading the collected-file set through an extra parameter for
+    // what is a once-per-build (not once-per-file) resolution.
+    entrypoint_touched_files.extend(entrypoints::apply_pyproject_script_attribution(
+        conn, root_dir, None,
+    ));
 
     let changed_files: Vec<String> = file_symbols.keys().cloned().collect();
     let changed_file_list: Option<Vec<String>> = if is_full_build {
@@ -843,6 +856,7 @@ pub fn run_pipeline(
         &file_symbols,
         removal_reverse_deps,
         change_result.is_full_build,
+        root_dir,
     );
     timing.roles_ms = t0.elapsed().as_secs_f64() * 1000.0;
 

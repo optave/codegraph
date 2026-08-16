@@ -59,7 +59,11 @@ import {
 import type { ChaContext } from '../cha.js';
 import { buildChaContext, resolveChaTargets, resolveThisDispatch } from '../cha.js';
 import type { PipelineContext } from '../context.js';
-import { persistEntrypointCalls, projectEntrypointAttribution } from '../entrypoints.js';
+import {
+  applyPyprojectScriptAttribution,
+  persistEntrypointCalls,
+  projectEntrypointAttribution,
+} from '../entrypoints.js';
 import {
   BUILTIN_RECEIVERS,
   batchInsertEdges,
@@ -1225,7 +1229,10 @@ function buildImportedNamesForNative(
 
 /**
  * Persist this build's Python entrypoint-call evidence (#2392) and re-project
- * it onto `nodes.entrypoint` (#2428).
+ * it onto `nodes.entrypoint` (#2428), then layer pyproject.toml-declared
+ * script entrypoints on top (#2408) — see `applyPyprojectScriptAttribution`
+ * for why that second step takes precedence and needs no evidence table of
+ * its own.
  *
  * `persistEntrypointCalls` skips non-Python files itself. The projection then
  * runs over the whole graph — it is driven by `entrypoint_calls`, which is
@@ -1244,6 +1251,9 @@ function applyEntrypointAttribution(ctx: PipelineContext): void {
     [...fileSymbols].map(([relPath, symbols]) => [relPath, symbols.calls] as const),
   );
   ctx.entrypointTouchedFiles.push(...projectEntrypointAttribution(db));
+  ctx.entrypointTouchedFiles.push(
+    ...applyPyprojectScriptAttribution(db, ctx.rootDir, ctx.allFiles),
+  );
 }
 
 /**
@@ -3088,10 +3098,11 @@ export async function buildEdges(ctx: PipelineContext): Promise<void> {
   // tryNativeOrchestrator; this phase covers the WASM and native-fallback paths.
   runChaPostPass(ctx.db);
 
-  // Phase 5: flag program entrypoints (#2392). Must follow every edge-insert
-  // path above — it identifies its targets from the committed `calls` edges,
-  // including the reverse-dep edges Phase 3 just reconnected — and must
-  // precede role classification, which reads the column it sets.
+  // Phase 5: flag program entrypoints (#2392) and pyproject.toml-declared
+  // scripts (#2408). The guard-call half must follow every edge-insert path
+  // above — it identifies its targets from the committed `calls` edges,
+  // including the reverse-dep edges Phase 3 just reconnected — and both
+  // halves must precede role classification, which reads the column they set.
   applyEntrypointAttribution(ctx);
 
   ctx.timing.edgesMs = performance.now() - t0;

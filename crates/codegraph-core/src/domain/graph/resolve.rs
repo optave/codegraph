@@ -707,6 +707,111 @@ pub fn clear_python_import_roots_cache() {
         .clear();
 }
 
+/// A single `name = "module:attr"` script entry, pre-resolution.
+struct PyprojectScriptEntry {
+    module: String,
+    attr: String,
+}
+
+/// Console/GUI-script and Poetry script entrypoints declared by
+/// `pyproject.toml` (#2408) — `[project.scripts]`, `[project.gui-scripts]`,
+/// and `[tool.poetry.scripts]`. Mirrors TS `parsePyprojectScripts` exactly,
+/// including only handling the plain string shape (Poetry's rarer
+/// extras-table script shape is skipped rather than guessed at) and the
+/// same best-effort "malformed TOML yields nothing" precedent as
+/// `parse_pyproject_import_roots`.
+fn parse_pyproject_scripts(root_dir: &str) -> Vec<PyprojectScriptEntry> {
+    let manifest = Path::new(root_dir).join("pyproject.toml");
+    let Ok(content) = std::fs::read_to_string(&manifest) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = toml::from_str::<toml::Value>(&content) else {
+        return Vec::new();
+    };
+
+    let mut entries = Vec::new();
+    let mut add_from = |table: Option<&toml::Value>| {
+        let Some(table) = table.and_then(|v| v.as_table()) else {
+            return;
+        };
+        for value in table.values() {
+            let Some(s) = value.as_str() else {
+                continue; // skip Poetry's rarer table-shaped entries
+            };
+            let Some(colon_idx) = s.find(':') else {
+                continue;
+            };
+            if colon_idx == 0 || colon_idx == s.len() - 1 {
+                continue;
+            }
+            entries.push(PyprojectScriptEntry {
+                module: s[..colon_idx].to_string(),
+                attr: s[colon_idx + 1..].to_string(),
+            });
+        }
+    };
+
+    let project = parsed.get("project");
+    add_from(project.and_then(|p| p.get("scripts")));
+    add_from(project.and_then(|p| p.get("gui-scripts")));
+    add_from(
+        parsed
+            .get("tool")
+            .and_then(|t| t.get("poetry"))
+            .and_then(|p| p.get("scripts")),
+    );
+    entries
+}
+
+/// A pyproject-declared script entry, resolved to the file that declares its
+/// target.
+pub struct ResolvedPyprojectScriptEntrypoint {
+    /// Root-relative path to the file declaring `attr`.
+    pub file: String,
+    /// The target symbol name — a bare function name, or `Class.method`.
+    pub attr: String,
+}
+
+/// Resolve every pyproject-declared script (#2408) to the file that declares
+/// its target. Mirrors TS `resolvePyprojectScriptEntrypoints` exactly,
+/// including the synthetic `<root_dir>/pyproject.toml` anchor path used to
+/// reuse `resolve_python_import_path`'s ordinary absolute-import resolution
+/// (`module:attr` is always an absolute dotted path, never relative) — see
+/// the TS doc comment for why the anchor's exact identity beyond "some file
+/// at `root_dir`" doesn't otherwise matter.
+pub fn resolve_pyproject_script_entrypoints(
+    root_dir: &str,
+    known_files: Option<&HashSet<String>>,
+) -> Vec<ResolvedPyprojectScriptEntrypoint> {
+    let scripts = parse_pyproject_scripts(root_dir);
+    if scripts.is_empty() {
+        return Vec::new();
+    }
+
+    let anchor = Path::new(root_dir)
+        .join("pyproject.toml")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let mut seen = HashSet::new();
+    let mut resolved = Vec::new();
+    for entry in scripts.iter() {
+        let Some(file) = resolve_python_import_path(&anchor, &entry.module, root_dir, known_files)
+        else {
+            continue;
+        };
+        let key = format!("{file} {}", entry.attr);
+        if !seen.insert(key) {
+            continue;
+        }
+        resolved.push(ResolvedPyprojectScriptEntrypoint {
+            file,
+            attr: entry.attr.clone(),
+        });
+    }
+    resolved
+}
+
 fn get_python_configured_roots(root_dir: &str) -> Vec<String> {
     let mut cache = python_configured_roots_cache()
         .lock()
@@ -2501,6 +2606,144 @@ mod tests {
             ),
             None
         );
+    }
+
+    // ── pyproject.toml script entrypoints (#2408) ──────────────────
+    //
+    // Unlike the synthetic-root tests above, `resolve_pyproject_script_entrypoints`
+    // reads a real `pyproject.toml` off disk (there is no `known_files` bypass
+    // for that read), so these use a real temp directory for the manifest —
+    // but the resolved target `.py` files themselves stay synthetic, declared
+    // only in `known_files`, exactly like the tests above.
+
+    #[test]
+    fn resolves_a_console_script_target_via_src_layout() {
+        let tmp = std::env::temp_dir().join("codegraph_pyproject_scripts_basic_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("pyproject.toml"),
+            "[project.scripts]\ningest = \"pipeline.cli:main\"\n",
+        )
+        .unwrap();
+        let root = tmp.to_str().unwrap();
+        let known: HashSet<String> = ["src/pipeline/__init__.py", "src/pipeline/cli.py"]
+            .iter()
+            .map(|f| format!("{root}/{f}"))
+            .collect();
+
+        let resolved = resolve_pyproject_script_entrypoints(root, Some(&known));
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].file, "src/pipeline/cli.py");
+        assert_eq!(resolved[0].attr, "main");
+    }
+
+    #[test]
+    fn resolves_gui_scripts_and_poetry_scripts_alongside_console_scripts() {
+        let tmp = std::env::temp_dir().join("codegraph_pyproject_scripts_all_tables_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("pyproject.toml"),
+            "[project.scripts]\ncli = \"pipeline.cli:main\"\n\
+             [project.gui-scripts]\ngui = \"pipeline.gui:launch\"\n\
+             [tool.poetry.scripts]\npoetry-cli = \"pipeline.poetry_entry:run\"\n",
+        )
+        .unwrap();
+        let root = tmp.to_str().unwrap();
+        let known: HashSet<String> = [
+            "src/pipeline/__init__.py",
+            "src/pipeline/cli.py",
+            "src/pipeline/gui.py",
+            "src/pipeline/poetry_entry.py",
+        ]
+        .iter()
+        .map(|f| format!("{root}/{f}"))
+        .collect();
+
+        let resolved = resolve_pyproject_script_entrypoints(root, Some(&known));
+        let attrs: HashSet<&str> = resolved.iter().map(|e| e.attr.as_str()).collect();
+
+        assert_eq!(resolved.len(), 3);
+        assert!(attrs.contains("main"));
+        assert!(attrs.contains("launch"));
+        assert!(attrs.contains("run"));
+    }
+
+    #[test]
+    fn skips_a_table_shaped_poetry_script_entry() {
+        // Poetry's extras-conditional shape: `{ callable = "...", extras = [...] }`.
+        // Skipped rather than guessed at.
+        let tmp = std::env::temp_dir().join("codegraph_pyproject_scripts_table_shape_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("pyproject.toml"),
+            "[tool.poetry.scripts]\nfoo = { callable = \"pipeline.cli:main\", extras = [\"x\"] }\n",
+        )
+        .unwrap();
+        let root = tmp.to_str().unwrap();
+
+        let resolved = resolve_pyproject_script_entrypoints(root, None);
+
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn deduplicates_two_script_names_pointing_at_the_same_target() {
+        let tmp = std::env::temp_dir().join("codegraph_pyproject_scripts_dedup_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("pyproject.toml"),
+            "[project.scripts]\ncli = \"pipeline.cli:main\"\n\
+             [project.gui-scripts]\ngui = \"pipeline.cli:main\"\n",
+        )
+        .unwrap();
+        let root = tmp.to_str().unwrap();
+        let known: HashSet<String> = ["src/pipeline/__init__.py", "src/pipeline/cli.py"]
+            .iter()
+            .map(|f| format!("{root}/{f}"))
+            .collect();
+
+        let resolved = resolve_pyproject_script_entrypoints(root, Some(&known));
+
+        assert_eq!(resolved.len(), 1);
+    }
+
+    #[test]
+    fn returns_empty_when_pyproject_toml_is_missing_or_declares_no_scripts() {
+        let tmp = std::env::temp_dir().join("codegraph_pyproject_scripts_missing_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        assert!(resolve_pyproject_script_entrypoints(tmp.to_str().unwrap(), None).is_empty());
+
+        fs::write(
+            tmp.join("pyproject.toml"),
+            "[project]\nname = \"pipeline\"\n",
+        )
+        .unwrap();
+        assert!(resolve_pyproject_script_entrypoints(tmp.to_str().unwrap(), None).is_empty());
+    }
+
+    #[test]
+    fn drops_a_script_entry_whose_module_does_not_resolve_under_any_root() {
+        let tmp = std::env::temp_dir().join("codegraph_pyproject_scripts_unresolvable_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("pyproject.toml"),
+            "[project.scripts]\ningest = \"third_party_pkg.cli:main\"\n",
+        )
+        .unwrap();
+        let root = tmp.to_str().unwrap();
+        let known: HashSet<String> = HashSet::new(); // nothing exists
+
+        let resolved = resolve_pyproject_script_entrypoints(root, Some(&known));
+
+        assert!(resolved.is_empty());
     }
 
     #[test]

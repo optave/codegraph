@@ -22,6 +22,7 @@ import {
   parseBareSpecifier,
   resolveImportPathJS,
   resolveImportsBatch,
+  resolvePyprojectScriptEntrypoints,
   resolvePythonSubmodule,
   resolveViaExports,
   resolveViaWorkspace,
@@ -1354,6 +1355,87 @@ describe('resolveImportPathJS - Python module paths (#2387)', () => {
       fs.rmSync(cfgDir, { recursive: true, force: true });
       clearPythonImportRootsCache();
     }
+  });
+});
+
+describe('resolvePyprojectScriptEntrypoints (#2408)', () => {
+  let scriptDir: string;
+
+  afterEach(() => {
+    if (scriptDir) fs.rmSync(scriptDir, { recursive: true, force: true });
+    clearPythonImportRootsCache();
+  });
+
+  function writeScriptFixture(pyproject: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-pyscript-'));
+    fs.mkdirSync(path.join(dir, 'src/pipeline'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src/pipeline/__init__.py'), '');
+    fs.writeFileSync(path.join(dir, 'src/pipeline/cli.py'), 'def main():\n    pass\n');
+    fs.writeFileSync(path.join(dir, 'src/pipeline/gui.py'), 'def launch():\n    pass\n');
+    fs.writeFileSync(path.join(dir, 'pyproject.toml'), pyproject);
+    return dir;
+  }
+
+  it('resolves a console-script target via a src-layout package root', () => {
+    scriptDir = writeScriptFixture(
+      '[project.scripts]\ningest = "pipeline.cli:main"\n\n' +
+        '[tool.setuptools.package-dir]\n"" = "src"\n',
+    );
+    clearPythonImportRootsCache();
+
+    const resolved = resolvePyprojectScriptEntrypoints(scriptDir);
+
+    expect(resolved).toEqual([{ file: 'src/pipeline/cli.py', attr: 'main' }]);
+  });
+
+  it('resolves gui-scripts and poetry scripts alongside console scripts', () => {
+    scriptDir = writeScriptFixture(
+      '[project.scripts]\ncli = "pipeline.cli:main"\n' +
+        '[project.gui-scripts]\ngui = "pipeline.gui:launch"\n' +
+        '[tool.poetry.scripts]\npoetry-cli = "pipeline.cli:main"\n\n' +
+        '[tool.setuptools.package-dir]\n"" = "src"\n',
+    );
+    clearPythonImportRootsCache();
+
+    const resolved = resolvePyprojectScriptEntrypoints(scriptDir);
+    const files = resolved.map((e) => `${e.file}:${e.attr}`).sort();
+
+    // The poetry entry duplicates the console-script target, so it dedupes
+    // away rather than producing a second identical entry.
+    expect(files).toEqual(['src/pipeline/cli.py:main', 'src/pipeline/gui.py:launch']);
+  });
+
+  it('skips a table-shaped poetry script entry', () => {
+    // Poetry's extras-conditional shape: `{ callable = "...", extras = [...] }`.
+    scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-pyscript-table-'));
+    fs.writeFileSync(
+      path.join(scriptDir, 'pyproject.toml'),
+      '[tool.poetry.scripts]\nfoo = { callable = "pipeline.cli:main", extras = ["x"] }\n',
+    );
+    clearPythonImportRootsCache();
+
+    expect(resolvePyprojectScriptEntrypoints(scriptDir)).toEqual([]);
+  });
+
+  it('returns empty when pyproject.toml is missing or declares no scripts', () => {
+    scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-pyscript-missing-'));
+    clearPythonImportRootsCache();
+    expect(resolvePyprojectScriptEntrypoints(scriptDir)).toEqual([]);
+
+    fs.writeFileSync(path.join(scriptDir, 'pyproject.toml'), '[project]\nname = "pipeline"\n');
+    clearPythonImportRootsCache();
+    expect(resolvePyprojectScriptEntrypoints(scriptDir)).toEqual([]);
+  });
+
+  it('drops a script entry whose module does not resolve under any root', () => {
+    scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolve-pyscript-unresolved-'));
+    fs.writeFileSync(
+      path.join(scriptDir, 'pyproject.toml'),
+      '[project.scripts]\ningest = "nonexistent.cli:main"\n',
+    );
+    clearPythonImportRootsCache();
+
+    expect(resolvePyprojectScriptEntrypoints(scriptDir)).toEqual([]);
   });
 });
 

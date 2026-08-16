@@ -43,6 +43,7 @@
 use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::domain::graph::resolve::resolve_pyproject_script_entrypoints;
 use crate::types::FileSymbols;
 
 /// Replace each reparsed Python file's persisted entrypoint-call evidence
@@ -255,6 +256,95 @@ pub fn apply_entrypoint_attribution(
     project_entrypoint_attribution(conn)
 }
 
+/// Flag pyproject.toml-declared console/GUI/Poetry script entrypoints
+/// (#2408) directly on their target nodes. Mirrors TS
+/// `applyPyprojectScriptAttribution` exactly, including the precedence over
+/// guard-call attribution and the "clear stale, scoped to rows this function
+/// itself set" safety property — see the TS doc comment for the full
+/// rationale. `pyproject.toml` is re-parsed fresh on every call (no evidence
+/// table needed): it is a single, cheap-to-reread file, so there is no
+/// cross-file lifecycle problem to solve the way there is for guard calls.
+pub fn apply_pyproject_script_attribution(
+    conn: &Connection,
+    root_dir: &str,
+    known_files: Option<&HashSet<String>>,
+) -> HashSet<String> {
+    let desired = resolve_pyproject_script_entrypoints(root_dir, known_files);
+
+    let mut current: HashMap<i64, String> = HashMap::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT id, file FROM nodes WHERE entrypoint_source_file = 'pyproject.toml'")
+    {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        }) {
+            current.extend(rows.flatten());
+        }
+    }
+
+    if desired.is_empty() && current.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut touched_files = HashSet::new();
+    let mut desired_ids: HashSet<i64> = HashSet::new();
+
+    let Ok(tx) = conn.unchecked_transaction() else {
+        return touched_files;
+    };
+    {
+        let Ok(mut find_candidates) = tx.prepare(
+            "SELECT id, name FROM nodes WHERE file = ?1 AND kind IN ('function', 'method')",
+        ) else {
+            return touched_files;
+        };
+        let Ok(mut mark_stmt) = tx.prepare(
+            "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'pyproject.toml' WHERE id = ?1",
+        ) else {
+            return touched_files;
+        };
+
+        for entry in &desired {
+            let mut candidates: Vec<(i64, String)> = Vec::new();
+            if let Ok(rows) = find_candidates.query_map(rusqlite::params![entry.file], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            }) {
+                candidates.extend(rows.flatten());
+            }
+            let target = candidates
+                .iter()
+                .find(|(_, name)| *name == entry.attr)
+                .or_else(|| {
+                    candidates.iter().find(|(_, name)| {
+                        name.len() > entry.attr.len() && name.ends_with(&format!(".{}", entry.attr))
+                    })
+                });
+            let Some((id, _)) = target else { continue };
+            desired_ids.insert(*id);
+            let _ = mark_stmt.execute(rusqlite::params![id]);
+            if !current.contains_key(id) {
+                touched_files.insert(entry.file.clone());
+            }
+        }
+    }
+    {
+        let Ok(mut clear_stmt) = tx.prepare(
+            "UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL WHERE id = ?1",
+        ) else {
+            return touched_files;
+        };
+        for (id, file) in &current {
+            if !desired_ids.contains(id) {
+                let _ = clear_stmt.execute(rusqlite::params![id]);
+                touched_files.insert(file.clone());
+            }
+        }
+    }
+    let _ = tx.commit();
+
+    touched_files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +506,180 @@ mod tests {
         project_entrypoint_attribution(&conn);
 
         assert_eq!(flag_of(&conn, tgt), (1, Some("a_run.py".to_string())));
+    }
+
+    /// Schema plus fixtures for `apply_pyproject_script_attribution`: a
+    /// `src/pipeline/cli.py` file with `main` and `helper` functions, matching
+    /// the shape a `[project.scripts]` entry actually resolves against — the
+    /// resolver returns paths relative to `root_dir`, so this must match
+    /// `write_pyproject`'s `src/pipeline/cli.py` layout exactly.
+    fn script_test_conn() -> Connection {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO nodes (name, kind, file, line) VALUES ('main', 'function', 'src/pipeline/cli.py', 5)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nodes (name, kind, file, line) VALUES ('helper', 'function', 'src/pipeline/cli.py', 1)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn write_pyproject(dir: &std::path::Path, body: &str) {
+        std::fs::create_dir_all(dir.join("src/pipeline")).unwrap();
+        std::fs::write(dir.join("src/pipeline/__init__.py"), "").unwrap();
+        std::fs::write(
+            dir.join("src/pipeline/cli.py"),
+            "def helper():\n    pass\n\n\ndef main():\n    pass\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("pyproject.toml"), body).unwrap();
+    }
+
+    fn node_id_by_name(conn: &Connection, name: &str) -> i64 {
+        conn.query_row(
+            "SELECT id FROM nodes WHERE name = ?1",
+            rusqlite::params![name],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn marks_a_console_script_target_as_an_entrypoint() {
+        let tmp = std::env::temp_dir().join(format!(
+            "codegraph-pyproject-script-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        write_pyproject(
+            &tmp,
+            "[project.scripts]\ningest = \"pipeline.cli:main\"\n\n[tool.setuptools.package-dir]\n\"\" = \"src\"\n",
+        );
+
+        let conn = script_test_conn();
+        let touched = apply_pyproject_script_attribution(&conn, tmp.to_str().unwrap(), None);
+
+        let main_id = node_id_by_name(&conn, "main");
+        assert_eq!(
+            flag_of(&conn, main_id),
+            (1, Some("pyproject.toml".to_string()))
+        );
+        assert_eq!(flag_of(&conn, node_id_by_name(&conn, "helper")).0, 0);
+        assert!(touched.contains("src/pipeline/cli.py"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn clears_a_stale_script_attribution_when_the_script_is_removed() {
+        let tmp = std::env::temp_dir().join(format!(
+            "codegraph-pyproject-script-test-clear-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        write_pyproject(
+            &tmp,
+            "[project.scripts]\ningest = \"pipeline.cli:main\"\n\n[tool.setuptools.package-dir]\n\"\" = \"src\"\n",
+        );
+
+        let conn = script_test_conn();
+        apply_pyproject_script_attribution(&conn, tmp.to_str().unwrap(), None);
+        let main_id = node_id_by_name(&conn, "main");
+        assert_eq!(flag_of(&conn, main_id).0, 1);
+
+        // The script entry is removed from pyproject.toml on a later build.
+        // Every real rebuild clears the pyproject-scripts cache before calling
+        // this function (see incremental.ts's clearPythonImportRootsCache()
+        // call ahead of refreshEntrypointAttribution on its common path), so
+        // this test must too — without it, the cache keyed on `tmp` would
+        // still hold the first write's parsed scripts.
+        crate::domain::graph::resolve::clear_python_import_roots_cache();
+        write_pyproject(&tmp, "[project]\nname = \"pipeline\"\n");
+        let touched = apply_pyproject_script_attribution(&conn, tmp.to_str().unwrap(), None);
+
+        assert_eq!(flag_of(&conn, main_id), (0, None));
+        assert!(touched.contains("src/pipeline/cli.py"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn does_not_clobber_a_guard_attributed_entrypoint() {
+        // A target already flagged by guard-call evidence (project_entrypoint_attribution)
+        // must survive a pyproject.toml pass that declares no scripts at all —
+        // the "clear stale" step is scoped to entrypoint_source_file = 'pyproject.toml'.
+        let tmp = std::env::temp_dir().join(format!(
+            "codegraph-pyproject-script-test-noclobber-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        write_pyproject(&tmp, "[project]\nname = \"pipeline\"\n");
+
+        let conn = script_test_conn();
+        let main_id = node_id_by_name(&conn, "main");
+        conn.execute(
+            "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'guard.py' WHERE id = ?1",
+            rusqlite::params![main_id],
+        )
+        .unwrap();
+
+        let touched = apply_pyproject_script_attribution(&conn, tmp.to_str().unwrap(), None);
+
+        assert_eq!(flag_of(&conn, main_id), (1, Some("guard.py".to_string())));
+        assert!(touched.is_empty());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn takes_precedence_over_an_existing_guard_attribution_on_the_same_target() {
+        let tmp = std::env::temp_dir().join(format!(
+            "codegraph-pyproject-script-test-precedence-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        write_pyproject(
+            &tmp,
+            "[project.scripts]\ningest = \"pipeline.cli:main\"\n\n[tool.setuptools.package-dir]\n\"\" = \"src\"\n",
+        );
+
+        let conn = script_test_conn();
+        let main_id = node_id_by_name(&conn, "main");
+        conn.execute(
+            "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'guard.py' WHERE id = ?1",
+            rusqlite::params![main_id],
+        )
+        .unwrap();
+
+        apply_pyproject_script_attribution(&conn, tmp.to_str().unwrap(), None);
+
+        assert_eq!(
+            flag_of(&conn, main_id),
+            (1, Some("pyproject.toml".to_string()))
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn returns_empty_and_touches_nothing_when_no_scripts_and_no_prior_attribution() {
+        let tmp = std::env::temp_dir().join(format!(
+            "codegraph-pyproject-script-test-empty-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        write_pyproject(&tmp, "[project]\nname = \"pipeline\"\n");
+
+        let conn = script_test_conn();
+        let touched = apply_pyproject_script_attribution(&conn, tmp.to_str().unwrap(), None);
+
+        assert!(touched.is_empty());
+        assert_eq!(flag_of(&conn, node_id_by_name(&conn, "main")).0, 0);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

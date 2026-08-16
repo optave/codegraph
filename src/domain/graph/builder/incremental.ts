@@ -59,7 +59,11 @@ import {
   resolveChaTargets,
   resolveThisDispatch,
 } from './cha.js';
-import { persistEntrypointCalls, projectEntrypointAttribution } from './entrypoints.js';
+import {
+  applyPyprojectScriptAttribution,
+  persistEntrypointCalls,
+  projectEntrypointAttribution,
+} from './entrypoints.js';
 import {
   BUILTIN_RECEIVERS,
   CHA_DISPATCH_PENALTY,
@@ -2277,6 +2281,7 @@ async function applyChaDispatchPostPass(
  */
 function refreshEntrypointAttribution(
   db: BetterSqlite3Database,
+  rootDir: string,
   relPath: string,
   symbols: ExtractorOutput | null,
 ): void {
@@ -2286,6 +2291,12 @@ function refreshEntrypointAttribution(
     persistEntrypointCalls(db, [[relPath, symbols.calls]]);
   }
   const touchedFiles = projectEntrypointAttribution(db);
+  // #2408: pyproject.toml is re-read fresh every rebuild (no evidence table),
+  // so this must run on every call regardless of which file changed — a
+  // script target's own file rebuilding is exactly the case that needs it.
+  // `null` knownFiles falls back to real filesystem checks, which is fine at
+  // single-file-rebuild scale.
+  touchedFiles.push(...applyPyprojectScriptAttribution(db, rootDir, null));
   if (touchedFiles.length === 0) return;
   // The target's file is frequently not the file being rebuilt, so its cached
   // `nodes.role` would otherwise stay stale at whatever the last full build
@@ -2354,7 +2365,7 @@ export async function rebuildFile(
     // re-projecting is what clears a target it was attributing — including
     // one declared in a different file, which nothing else in this rebuild
     // touches.
-    refreshEntrypointAttribution(db, relPath, null);
+    refreshEntrypointAttribution(db, rootDir, relPath, null);
     return buildDeletionResult(relPath, oldNodes, edgesBefore, oldSymbols, diffSymbols);
   }
 
@@ -2391,7 +2402,7 @@ export async function rebuildFile(
   if (!fileNodeRow) {
     // Same invariant, but the parse succeeded — so this file's fresh evidence
     // is known and worth writing, even though no edges get built below.
-    refreshEntrypointAttribution(db, relPath, symbols);
+    refreshEntrypointAttribution(db, rootDir, relPath, symbols);
     // Unreachable in practice (`insertFileNodes` just inserted this exact row),
     // but the purge above has already run, so bailing out here leaves the file
     // with nodes and no edges. Drop its `file_hashes` row so the next
@@ -2498,7 +2509,7 @@ export async function rebuildFile(
   // #2428: must follow every edge-insert path above — the projection reads
   // targets back off the committed `calls` edges, including the ones the
   // reverse-dep cascade just rebuilt.
-  refreshEntrypointAttribution(db, relPath, symbols);
+  refreshEntrypointAttribution(db, rootDir, relPath, symbols);
 
   // Include pre-deletion edge counts from reverse deps so the net delta
   // (edgesAdded - edgesBefore) is correct even when the cascade re-inserts

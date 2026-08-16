@@ -934,6 +934,109 @@ export function clearPythonImportRootsCache(): void {
   loadNative()?.clearPythonImportRootsCache?.();
 }
 
+/** A single `name = "module:attr"` script entry, pre-resolution. */
+interface PyprojectScriptEntry {
+  module: string;
+  attr: string;
+}
+
+/**
+ * Console/GUI-script and Poetry script entrypoints declared by
+ * `pyproject.toml` (#2408) — `[project.scripts]`, `[project.gui-scripts]`,
+ * and `[tool.poetry.scripts]`. Each maps a command name to a `module:attr`
+ * target string; the command name itself is discarded here since attribution
+ * only cares about the target.
+ *
+ * Only the plain string shape is handled. Poetry also allows a table shape
+ * (`{ callable = "module:attr", extras = [...] }`, for extras-conditional
+ * scripts) — skipped rather than guessed at, matching
+ * `parsePyprojectImportRoots`'s best-effort precedent of contributing nothing
+ * for a shape it doesn't understand rather than failing the build.
+ *
+ * Best-effort like `parsePyprojectImportRoots`: unreadable or malformed TOML
+ * yields no scripts rather than failing resolution.
+ */
+function parsePyprojectScripts(rootDir: string): PyprojectScriptEntry[] {
+  const manifest = path.join(rootDir, 'pyproject.toml');
+  let parsed: unknown;
+  try {
+    parsed = parseToml(fs.readFileSync(manifest, 'utf8'));
+  } catch (e) {
+    debug(`parsePyprojectScripts: cannot read ${manifest}: ${toErrorMessage(e)}`);
+    return [];
+  }
+  if (typeof parsed !== 'object' || parsed === null) return [];
+  const root = parsed as Record<string, any>;
+
+  const entries: PyprojectScriptEntry[] = [];
+  const addFrom = (table: unknown): void => {
+    if (typeof table !== 'object' || table === null) return;
+    for (const value of Object.values(table as Record<string, unknown>)) {
+      if (typeof value !== 'string') continue; // skip Poetry's rarer table-shaped entries
+      const colonIdx = value.indexOf(':');
+      if (colonIdx <= 0 || colonIdx === value.length - 1) continue;
+      entries.push({ module: value.slice(0, colonIdx), attr: value.slice(colonIdx + 1) });
+    }
+  };
+
+  addFrom(root.project?.scripts);
+  addFrom(root.project?.['gui-scripts']);
+  addFrom(root.tool?.poetry?.scripts);
+  return entries;
+}
+
+/** A pyproject-declared script entry, resolved to the file that declares its target. */
+export interface ResolvedPyprojectScriptEntrypoint {
+  /** Root-relative path to the file declaring `attr`. */
+  file: string;
+  /** The target symbol name — a bare function name, or `Class.method`. */
+  attr: string;
+}
+
+/**
+ * Resolve every pyproject-declared script (#2408) to the file that declares
+ * its target, reusing the same import-root machinery `resolvePythonSubmodule`
+ * uses for ordinary imports (#2387) — `pythonPackageRoot`, the conventional
+ * `src/` directory, the repo root, and anything `pyproject.toml` itself
+ * declares as an extra root.
+ *
+ * Anchored at a synthetic `<rootDir>/pyproject.toml` path rather than a real
+ * source file: `pyproject.toml` lives at the repo root, so
+ * `pythonPackageRoot`'s `__init__.py` walk starting there immediately bottoms
+ * out at `rootDir` (its first candidate), leaving `pythonImportRoots`'s other
+ * three candidates — `rootDir/src`, `rootDir`, and the configured roots — to
+ * do the actual resolution. `module:attr` is always an absolute dotted path
+ * (never relative, unlike a source-level `from . import x`), so the anchor's
+ * exact identity beyond "some file at `rootDir`" doesn't otherwise matter.
+ *
+ * Entries whose module doesn't resolve under any known root are silently
+ * dropped, same as an ordinary unresolvable import — most commonly a script
+ * pointing at a third-party console-script shim rather than this project's
+ * own code. Results are deduplicated by (file, attr): several script names
+ * commonly point at the same target (e.g. a GUI and CLI variant).
+ */
+export function resolvePyprojectScriptEntrypoints(
+  rootDir: string,
+  knownFiles?: readonly string[] | null,
+): ResolvedPyprojectScriptEntrypoint[] {
+  const scripts = parsePyprojectScripts(rootDir);
+  if (scripts.length === 0) return [];
+
+  const knownFilesSet = toKnownFilesSet(knownFiles);
+  const anchor = path.join(rootDir, 'pyproject.toml');
+  const seen = new Set<string>();
+  const resolved: ResolvedPyprojectScriptEntrypoint[] = [];
+  for (const { module, attr } of scripts) {
+    const file = resolvePythonImportPath(anchor, module, rootDir, knownFilesSet);
+    if (!file) continue;
+    const key = `${file} ${attr}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    resolved.push({ file, attr });
+  }
+  return resolved;
+}
+
 /** Cache: file directory → its derived package root. */
 const _pythonPackageRootCache: Map<string, string> = new Map();
 
