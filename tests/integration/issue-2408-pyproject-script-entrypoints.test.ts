@@ -22,8 +22,11 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { initSchema, openDb } from '../../src/db/index.js';
+import { rebuildFile } from '../../src/domain/graph/builder/incremental.js';
 import { buildGraph } from '../../src/domain/graph/builder.js';
 import type { EngineMode } from '../../src/types.js';
+import { createIncrementalStmts } from '../helpers/incremental-stmts.js';
 
 const PYPROJECT = `
 [project.scripts]
@@ -229,6 +232,97 @@ if __name__ == "__main__":
         expect(after?.entrypoint).toBe(0);
         expect(after?.role).not.toBe('entry');
         expect(after?.entrypointSourceFile).toBeNull();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  },
+);
+
+/** Run exactly what `codegraph watch` runs for one changed file. */
+async function watchRebuild(dir: string, relFile: string, engine: EngineMode): Promise<void> {
+  const db = openDb(path.join(dir, '.codegraph', 'graph.db'));
+  try {
+    initSchema(db);
+    await rebuildFile(
+      db,
+      dir,
+      path.join(dir, relFile),
+      createIncrementalStmts(db),
+      { engine },
+      null,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+describe.each(ENGINES)(
+  'codegraph watch (rebuildFile): stale Python roots must not corrupt script attribution (#2408 review) — engine: %s',
+  (engine) => {
+    it('resolves a pyproject-configured root freshly on a deletion-triggered rebuild, not from a stale cache', async () => {
+      // Two pre-existing, already-parsed files declare the SAME dotted module
+      // ("vendored.helper") under two different roots, so switching which
+      // root pythonpath names is a pure configured-roots change — neither
+      // file needs (re)parsing at a new location, isolating the cache itself
+      // as the only variable.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2408-staleroots-${engine}-`));
+      try {
+        fs.mkdirSync(path.join(dir, 'lib/vendored'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'lib/vendored/helper.py'),
+          'def helper_main():\n    return 1\n',
+        );
+        fs.mkdirSync(path.join(dir, 'altlib/vendored'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'altlib/vendored/helper.py'),
+          'def helper_main():\n    return 2\n',
+        );
+        fs.writeFileSync(path.join(dir, 'other.py'), 'def other():\n    return 9\n');
+        fs.writeFileSync(
+          path.join(dir, 'pyproject.toml'),
+          '[project.scripts]\ningest = "vendored.helper:helper_main"\n\n' +
+            '[tool.pytest.ini_options]\npythonpath = ["lib"]\n',
+        );
+
+        await buildGraph(dir, { incremental: false, skipRegistry: true, engine });
+        const nodesBefore = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db')).filter(
+          (n) => n.name === 'helper_main',
+        );
+        const libBefore = nodesBefore.find((n) => n.file === 'lib/vendored/helper.py');
+        const altBefore = nodesBefore.find((n) => n.file === 'altlib/vendored/helper.py');
+        expect(libBefore?.entrypoint).toBe(1);
+        expect(libBefore?.entrypointSourceFile).toBe('pyproject.toml');
+        expect(altBefore?.entrypoint).toBe(0);
+
+        // Repoint pythonpath at "altlib" instead — a realistic root-config
+        // edit. This process has cached "lib" as the resolved root from the
+        // full build above; nothing has touched an unrelated file yet to
+        // naturally refresh it.
+        fs.writeFileSync(
+          path.join(dir, 'pyproject.toml'),
+          '[project.scripts]\ningest = "vendored.helper:helper_main"\n\n' +
+            '[tool.pytest.ini_options]\npythonpath = ["altlib"]\n',
+        );
+
+        // Delete an unrelated file — this hits rebuildFile's deletion branch,
+        // which runs BEFORE the common path's cache clear. Pre-fix, this
+        // resolves "vendored.helper" against the stale "lib" root: the
+        // now-superseded lib/ target wrongly keeps its attribution, and the
+        // now-correct altlib/ target is never marked.
+        fs.rmSync(path.join(dir, 'other.py'));
+        await watchRebuild(dir, 'other.py', engine);
+
+        const nodesAfter = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db')).filter(
+          (n) => n.name === 'helper_main',
+        );
+        const libAfter = nodesAfter.find((n) => n.file === 'lib/vendored/helper.py');
+        const altAfter = nodesAfter.find((n) => n.file === 'altlib/vendored/helper.py');
+        expect(libAfter?.entrypoint).toBe(0);
+        expect(libAfter?.entrypointSourceFile).toBeNull();
+        expect(altAfter?.entrypoint).toBe(1);
+        expect(altAfter?.role).toBe('entry');
+        expect(altAfter?.entrypointSourceFile).toBe('pyproject.toml');
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }

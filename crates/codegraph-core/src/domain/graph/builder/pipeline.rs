@@ -167,10 +167,17 @@ fn pipeline_setup(
     // calls `resolve::resolve_imports_batch` directly, bypassing lib.rs's
     // NAPI `resolve_imports` wrapper (and its own cache-clearing) entirely —
     // so the Cargo target-override cache needs the same explicit reset here
-    // for repeated native full builds in the same process (issue #2217).
+    // for repeated native full builds in the same process (issue #2217), and
+    // likewise the Python import-root caches (pyproject-configured roots and
+    // layout-derived package roots) for the same reason: a repeated native
+    // full build in the same process (MCP server, or any programmatic caller
+    // invoking the native pipeline more than once) could otherwise resolve
+    // `apply_pyproject_script_attribution`'s script targets against roots
+    // that predate a `pyproject.toml` root-config edit (issue #2408 review).
     resolve::reset_workspace_resolved_paths();
     resolve::clear_exports_cache();
     resolve::clear_cargo_target_overrides_cache();
+    resolve::clear_python_import_roots_cache();
 
     Ok(PipelineSetup {
         config,
