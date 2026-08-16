@@ -498,7 +498,18 @@ export async function buildGraph(
       // produce. `isUnreadableBuildStateError` recognizes this even though
       // a native-thrown error crosses the napi boundary as a plain `Error`,
       // never a `DbError` instance — see its doc comment.
-      if (isUnreadableBuildStateError(err)) throw err;
+      if (isUnreadableBuildStateError(err)) {
+        // `runBuildGraph()` threw before `tryNativeOrchestrator` reached its
+        // own `session.close()` call, so `ctx.nativeDb` is still open —
+        // closing it here (rather than leaving it for whatever cleanup the
+        // success path would have run) avoids leaking the native handle on
+        // this early-throw exit. Windows in particular cannot unlink a
+        // `graph.db` file out from under a still-open handle (#2418 CI: a
+        // reproduction test's own temp-dir cleanup hit `EBUSY` on
+        // windows-2022 for exactly this reason).
+        closeNativeDb(ctx, 'unreadable-build-state early exit');
+        throw err;
+      }
       warn(`Native build orchestrator failed, falling back to JS pipeline: ${toErrorMessage(err)}`);
       // The version gate in checkEngineSchemaMismatch was skipped because
       // nativeAvailable was true. Now that we're falling back to the JS
