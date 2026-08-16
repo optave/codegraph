@@ -2627,10 +2627,11 @@ mod tests {
         )
         .unwrap();
         let root = tmp.to_str().unwrap();
-        let known: HashSet<String> = ["src/pipeline/__init__.py", "src/pipeline/cli.py"]
+        let known: Vec<String> = ["src/pipeline/__init__.py", "src/pipeline/cli.py"]
             .iter()
             .map(|f| format!("{root}/{f}"))
             .collect();
+        let known = normalize_known_files(known);
 
         let resolved = resolve_pyproject_script_entrypoints(root, Some(&known));
 
@@ -2652,7 +2653,7 @@ mod tests {
         )
         .unwrap();
         let root = tmp.to_str().unwrap();
-        let known: HashSet<String> = [
+        let known: Vec<String> = [
             "src/pipeline/__init__.py",
             "src/pipeline/cli.py",
             "src/pipeline/gui.py",
@@ -2661,6 +2662,7 @@ mod tests {
         .iter()
         .map(|f| format!("{root}/{f}"))
         .collect();
+        let known = normalize_known_files(known);
 
         let resolved = resolve_pyproject_script_entrypoints(root, Some(&known));
         let attrs: HashSet<&str> = resolved.iter().map(|e| e.attr.as_str()).collect();
@@ -2702,10 +2704,11 @@ mod tests {
         )
         .unwrap();
         let root = tmp.to_str().unwrap();
-        let known: HashSet<String> = ["src/pipeline/__init__.py", "src/pipeline/cli.py"]
+        let known: Vec<String> = ["src/pipeline/__init__.py", "src/pipeline/cli.py"]
             .iter()
             .map(|f| format!("{root}/{f}"))
             .collect();
+        let known = normalize_known_files(known);
 
         let resolved = resolve_pyproject_script_entrypoints(root, Some(&known));
 
