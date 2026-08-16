@@ -989,6 +989,48 @@ const Foo = class {
     ).toBeUndefined();
   });
 
+  // Explicit guard for issue #2396: the native engine had no equivalent of
+  // TS handleCallExprTypeMap's factory-method heuristic at all (only the
+  // narrower Object.create branch), so `const x = Foo.create()` typed `x` on
+  // WASM but not on native — a real dual-engine divergence, not just a test
+  // gap. The normalize() loop above strips typeMap from the structural
+  // comparison, so this regression would otherwise slip through undetected.
+  it('JS — factory method call seeds typeMap at 0.7 on both engines (issue #2396)', () => {
+    const code = `const client = HttpClient.create();`;
+    const wasm = wasmExtract(code, 'service.js');
+    expect(wasm?.typeMap).toBeInstanceOf(Map);
+    expect(wasm?.typeMap?.get('client')).toEqual({ type: 'HttpClient', confidence: 0.7 });
+
+    if (!hasNative) return;
+    const raw = nativeExtract(code, 'service.js');
+    if (raw?.typeMap === undefined) return;
+    const entries = raw?.typeMap as Array<{ name: string; typeName: string; confidence: number }>;
+    expect(Array.isArray(entries)).toBe(true);
+    const clientEntry = entries?.find((e) => e.name === 'client');
+    expect(clientEntry, 'native typeMap missing "client" key').toBeDefined();
+    expect(clientEntry).toMatchObject({
+      name: 'client',
+      typeName: 'HttpClient',
+      confidence: 0.7,
+    });
+  });
+
+  it('JS — factory method heuristic ignores Object.create and lowercase receivers on both engines (issue #2396)', () => {
+    const code = `
+const o = Object.create({});
+const result = utils.create();
+`;
+    const wasm = wasmExtract(code, 'service.js');
+    expect(wasm?.typeMap?.has('result')).toBe(false);
+
+    if (!hasNative) return;
+    const raw = nativeExtract(code, 'service.js');
+    if (raw?.typeMap === undefined) return;
+    const entries = raw?.typeMap as Array<{ name: string; typeName: string; confidence: number }>;
+    expect(entries?.find((e) => e.name === 'o')).toBeUndefined();
+    expect(entries?.find((e) => e.name === 'result')).toBeUndefined();
+  });
+
   // Explicit guard for the WASM Python fix in #1189. The structural parity
   // loop above strips `self` from both sides via normalize(), so a regression
   // where WASM re-emits self/cls would slip through. Assert it directly.

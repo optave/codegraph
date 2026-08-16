@@ -325,6 +325,30 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
                         );
                     }
                 }
+            } else if fn_n.kind() == "member_expression" {
+                // Factory method heuristic: `const x = Foo.create()` → type Foo,
+                // confidence 0.7 (#2396). Mirrors TS handleCallExprTypeMap's
+                // identical fallback. No explicit exclusion of Object.create is
+                // needed here — "Object" is itself in JS_BUILTIN_GLOBALS, and this
+                // branch is mutually exclusive with the identifier-callee
+                // return-type-propagation branch above (a call's `function` field
+                // is one node, never both kinds).
+                if let Some(obj_n) = fn_n.child_by_field_name("object") {
+                    if obj_n.kind() == "identifier" {
+                        let obj_name = node_text(&obj_n, source);
+                        let starts_uppercase =
+                            obj_name.chars().next().is_some_and(|c| c.is_uppercase());
+                        if starts_uppercase && !JS_BUILTIN_GLOBALS.contains(&obj_name) {
+                            push_scoped_type_map_entry(
+                                symbols,
+                                enclosing_qualifier.as_deref(),
+                                var_name,
+                                obj_name.to_string(),
+                                0.7,
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -10400,6 +10424,42 @@ mod tests {
         );
         assert_eq!(tm.unwrap().type_name, "Logger");
         assert_eq!(tm.unwrap().confidence, 1.0);
+    }
+
+    /// Issue #2396: `const x = Foo.create()` must type `x` as `Foo` at
+    /// confidence 0.7 — the same factory-method heuristic TS's
+    /// `handleCallExprTypeMap` already implements, previously missing here.
+    #[test]
+    fn factory_method_call_seeds_type_map_at_point_seven_confidence() {
+        let s = parse_js("const client = HttpClient.create();");
+        let tm = s.type_map.iter().find(|t| t.name == "client");
+        assert!(
+            tm.is_some(),
+            "type_map should contain 'client'; got: {:?}",
+            s.type_map
+        );
+        assert_eq!(tm.unwrap().type_name, "HttpClient");
+        assert_eq!(tm.unwrap().confidence, 0.7);
+    }
+
+    #[test]
+    fn factory_method_heuristic_ignores_lowercase_receiver() {
+        let s = parse_js("const result = utils.create();");
+        assert!(s.type_map.iter().all(|t| t.name != "result"));
+    }
+
+    #[test]
+    fn factory_method_heuristic_ignores_object_create_and_other_builtin_globals() {
+        let s = parse_js(
+            "const r = Math.random();\n\
+             const d = JSON.parse('{}');\n\
+             const p = Promise.resolve(42);\n\
+             const o = Object.create({});",
+        );
+        assert!(s.type_map.iter().all(|t| t.name != "r"));
+        assert!(s.type_map.iter().all(|t| t.name != "d"));
+        assert!(s.type_map.iter().all(|t| t.name != "p"));
+        assert!(s.type_map.iter().all(|t| t.name != "o"));
     }
 
     /// `this.prop = new Ctor()` outside any class declaration (function-style
