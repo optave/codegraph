@@ -138,6 +138,43 @@ if __name__ == "__main__":
       });
     });
 
+    it('sys.exit(main()) keeps the entry role even when an unrelated local "exit" resolves in the same file (Greptile review)', async () => {
+      // A same-file namesake collision: `sys.exit` is an attribute call, so
+      // its bare attribute name ("exit") is stripped of the "sys" qualifier
+      // before any resolution is attempted. Without the dotted-wrapper
+      // exclusion, a file-wide bare-name lookup for "exit" would find this
+      // unrelated local `exit` function (called here entirely independently
+      // of the guard) and wrongly conclude the sys.exit wrapper "resolved
+      // in-repo," suppressing main's entry role.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2420-collision-${engine}-`));
+      try {
+        writeFixture(dir, {
+          'run.py': `
+import sys
+
+def exit(status):
+    print(status)
+
+exit(0)
+
+def main():
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+`,
+        });
+        await buildGraph(dir, { incremental: false, skipRegistry: true, engine });
+        const row = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db')).find(
+          (n) => n.name === 'main',
+        );
+        expect(row?.entrypoint).toBe(1);
+        expect(row?.role).toBe('entry');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('an entrypoint with no wrapping ambiguity is unaffected', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2420-plain-${engine}-`));
       try {

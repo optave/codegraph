@@ -137,6 +137,13 @@ fn get_call_name(node: &Node, source: &[u8]) -> Option<String> {
 /// another call within the same statement (#2420). Mirrors TS
 /// `findEnclosingCallName` — see that function's doc comment for why the
 /// walk stops at a statement boundary.
+///
+/// Only a bare-identifier wrapper is reported at all — an attribute/dotted
+/// wrapper (`sys.exit(...)`, `asyncio.run(...)`) returns `None` here, same as
+/// no wrapper, since its bare attribute name is too likely to coincidentally
+/// collide with an unrelated same-named in-repo symbol for the file-wide
+/// bare-name lookup in `project_entrypoint_attribution` to trust (#2420
+/// review — Greptile). See TS's doc comment for the full rationale.
 fn find_enclosing_call_name(node: &Node, source: &[u8]) -> Option<String> {
     let mut parent = node.parent();
     let mut hops = 0;
@@ -145,7 +152,14 @@ fn find_enclosing_call_name(node: &Node, source: &[u8]) -> Option<String> {
             return None;
         }
         match p.kind() {
-            "call" => return get_call_name(&p, source),
+            "call" => {
+                let fn_node = p.child_by_field_name("function")?;
+                return if fn_node.kind() == "identifier" {
+                    get_call_name(&p, source)
+                } else {
+                    None
+                };
+            }
             "expression_statement" | "block" | "module" => return None,
             _ => {}
         }
@@ -911,10 +925,15 @@ mod tests {
     }
 
     #[test]
-    fn records_the_wrapper_name_through_an_unresolvable_stdlib_passthrough() {
-        // #2420: sys.exit(main()) — the outer call is a bare-name-extracted
-        // "exit" (receiver "sys"), an external stdlib passthrough; main is
-        // still the call that matters and still gets a wrapper recorded.
+    fn does_not_record_a_wrapper_for_a_dotted_stdlib_passthrough_call() {
+        // #2420 review (Greptile): sys.exit(main()) — the outer call is a
+        // bare-name-extracted "exit" (receiver "sys"), an external stdlib
+        // passthrough. Its bare attribute name is too likely to
+        // coincidentally collide with an unrelated same-named in-repo symbol
+        // elsewhere in the file for the projection's file-wide bare-name
+        // lookup to trust, so no wrapper is recorded at all here — main is
+        // extracted as if unwrapped, which is always eligible for the entry
+        // role regardless of anything else in the file.
         let s = parse_py(
             "import sys\n\ndef main():\n    return 1\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n",
         );
@@ -923,7 +942,7 @@ mod tests {
         assert_eq!(exit_call.entrypoint_wrapped_by, None);
         let main_call = s.calls.iter().find(|c| c.name == "main").unwrap();
         assert_eq!(main_call.entrypoint, Some(true));
-        assert_eq!(main_call.entrypoint_wrapped_by, Some("exit".to_string()));
+        assert_eq!(main_call.entrypoint_wrapped_by, None);
     }
 
     #[test]

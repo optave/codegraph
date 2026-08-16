@@ -222,12 +222,31 @@ function getCallName(node: TreeSitterNode): string | null {
  * walking past a statement boundary would find an unrelated, merely
  * lexically-outer call (e.g. the `if __name__ == "__main__":` guard's own
  * body statement list is a `block`, not a call, and must stop the walk).
+ *
+ * Only a bare-identifier wrapper (`main(...)`) is reported at all — an
+ * attribute/dotted wrapper (`sys.exit(...)`, `asyncio.run(...)`,
+ * `os._exit(...)`) returns `null` here, same as no wrapper. This is exactly
+ * the stdlib-passthrough idiom #2420 exists to protect, and its bare
+ * attribute name (`exit`, `run`) is a plain identifier stripped of its
+ * qualifier — far too likely to coincidentally match an unrelated same-named
+ * symbol elsewhere in the file for `projectEntrypointAttribution`'s
+ * file-wide bare-name lookup to trust (#2420 review — Greptile: a second,
+ * unrelated `exit`-named call elsewhere in the file that DOES resolve
+ * in-repo would otherwise make this wrapper look "resolved" and wrongly
+ * suppress the real entrypoint's role). Treating it as unwrapped is always
+ * the safe default: silently losing a real entrypoint's role is worse than
+ * an over-inclusive label on its wrapper, which is the same trade-off the
+ * feature already accepts for reachability (see this file's `Call`-marking
+ * doc comment).
  */
 function findEnclosingCallName(node: TreeSitterNode): string | null {
   let parent = node.parent;
   let hops = 0;
   while (parent && hops < MAX_WALK_DEPTH) {
-    if (parent.type === 'call') return getCallName(parent);
+    if (parent.type === 'call') {
+      const fn = parent.childForFieldName('function');
+      return fn?.type === 'identifier' ? getCallName(parent) : null;
+    }
     if (
       parent.type === 'expression_statement' ||
       parent.type === 'block' ||
