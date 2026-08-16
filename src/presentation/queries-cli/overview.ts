@@ -373,8 +373,16 @@ export function roles(customDbPath: string, opts: OutputOpts = {}): void {
   if (data.count === 0) {
     if (opts.role && data.totalClassified > 0) {
       // The graph is fine — this role filter simply matched nothing (#2390).
+      // totalClassified is itself scoped by --file/--no-tests, so the count
+      // shown must be labeled accordingly instead of always claiming "in
+      // graph" (Greptile review on #2531).
+      const roleScopeParts: string[] = [];
+      if (opts.file) roleScopeParts.push(`file "${opts.file}"`);
+      if (opts.noTests) roleScopeParts.push('non-test files');
+      const roleScopeDesc =
+        roleScopeParts.length > 0 ? `in ${roleScopeParts.join(' and ')}` : 'in graph';
       console.log(
-        `No symbols with role "${opts.role}". (${data.totalClassified} classified symbols in graph.)`,
+        `No symbols with role "${opts.role}". (${data.totalClassified} classified symbols ${roleScopeDesc}.)`,
       );
     } else if (data.totalClassifiedUnscoped) {
       // The --file/--no-tests scope excluded every classified symbol, but the

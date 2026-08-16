@@ -698,6 +698,26 @@ describe('roles', () => {
     expect(output()).toContain('No classified symbols found. Run "codegraph build" first.');
   });
 
+  // Regression guard for Greptile's second #2531 review finding: totalClassified
+  // is scoped by --file/--no-tests even in the role-specific branch, so the
+  // count must be labeled as belonging to that scope, not "in graph".
+  it('labels the count by scope instead of "in graph" when --role is combined with --file (#2390)', () => {
+    mocks.rolesData.mockReturnValue({ count: 0, totalClassified: 12, summary: {}, symbols: [] });
+    roles('/db', { role: 'entry', file: 'src/utils.ts' });
+    const out = output();
+    expect(out).toContain('No symbols with role "entry"');
+    expect(out).toContain('12 classified symbols in file "src/utils.ts"');
+    expect(out).not.toContain('12 classified symbols in graph');
+  });
+
+  it('labels the count by scope instead of "in graph" when --role is combined with --no-tests (#2390)', () => {
+    mocks.rolesData.mockReturnValue({ count: 0, totalClassified: 500, summary: {}, symbols: [] });
+    roles('/db', { role: 'entry', noTests: true });
+    const out = output();
+    expect(out).toContain('500 classified symbols in non-test files');
+    expect(out).not.toContain('500 classified symbols in graph');
+  });
+
   // Regression guard for Greptile's #2531 review finding: a --file/--no-tests
   // scope that excludes every classified symbol must not be reported as an
   // unbuilt graph either, when the graph is healthy outside that scope.
