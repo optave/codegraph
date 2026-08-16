@@ -488,6 +488,17 @@ export async function buildGraph(
       if (nativeResult === 'early-exit') return;
       if (nativeResult) return nativeResult;
     } catch (err) {
+      // Same "must not fall through" case as the pre-flight's own catch
+      // above, one layer further out (#2418 Greptile review): a scoped
+      // build skips that pre-flight entirely and, once here, would
+      // otherwise fall through to `handleScopedBuild`, which trusts the
+      // caller-provided scope list and writes without ever re-reading
+      // `file_hashes` itself — silently completing with partial, possibly
+      // inconsistent data instead of the loud failure this error exists to
+      // produce. `isUnreadableBuildStateError` recognizes this even though
+      // a native-thrown error crosses the napi boundary as a plain `Error`,
+      // never a `DbError` instance — see its doc comment.
+      if (isUnreadableBuildStateError(err)) throw err;
       warn(`Native build orchestrator failed, falling back to JS pipeline: ${toErrorMessage(err)}`);
       // The version gate in checkEngineSchemaMismatch was skipped because
       // nativeAvailable was true. Now that we're falling back to the JS

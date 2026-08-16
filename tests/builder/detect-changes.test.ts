@@ -290,6 +290,21 @@ describe('detectNoChanges fast-skip', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('recognizes a native-thrown plain Error carrying the DB_STATE_UNREADABLE marker (#2418)', () => {
+    // A native (Rust) error crosses the napi boundary as a plain Error, never
+    // a DbError instance — tryNativeOrchestrator's catch in pipeline.ts still
+    // needs to single it out, so isUnreadableBuildStateError also matches on
+    // the same literal marker embedded in the message.
+    const nativeErr = new Error(
+      'DB_STATE_UNREADABLE: Could not read the file_hashes table: no such column: hash.',
+    );
+    expect(isUnreadableBuildStateError(nativeErr)).toBe(true);
+  });
+
+  it('does not tag an ordinary Error without the marker as unreadable state', () => {
+    expect(isUnreadableBuildStateError(new Error('some unrelated native failure'))).toBe(false);
+  });
+
   it('returns false when file_hashes is empty (first build)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-noChange-empty-'));
     const dbDir = path.join(dir, '.codegraph');

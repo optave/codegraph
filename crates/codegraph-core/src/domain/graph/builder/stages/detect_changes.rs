@@ -101,6 +101,12 @@ fn relative_path(root_dir: &str, abs_path: &str) -> String {
 /// So an unreadable table (or a failed existence probe) returns `Err` and lets
 /// the caller decide; `--no-incremental` remains the explicit way to ask for
 /// a wipe-and-rebuild. Mirrors `loadFileHashes` in `detect-changes.ts`.
+///
+/// The `Err` message always embeds the literal `DB_STATE_UNREADABLE` marker
+/// (matching TS `UNREADABLE_BUILD_STATE`) — `tryNativeOrchestrator`'s catch in
+/// `pipeline.ts` greps for it via `isUnreadableBuildStateError`, since this
+/// error crosses the napi boundary as a plain `Error`, never a `DbError`
+/// instance carrying a `.code` (#2418 Greptile review).
 fn load_file_hashes(conn: &Connection) -> Result<Option<HashMap<String, FileHashRow>>, String> {
     // Read from `sqlite_master` rather than inferring existence from a failed
     // `SELECT` below, so a genuinely-absent table stays distinguishable from
@@ -115,10 +121,10 @@ fn load_file_hashes(conn: &Connection) -> Result<Option<HashMap<String, FileHash
         .map(|c| c > 0)
         .map_err(|e| {
             format!(
-                "Could not determine whether the file_hashes table exists: {e}. Refusing to \
-                 fall back to a from-scratch build, which would delete the existing graph and \
-                 its embeddings. Retry once the database is readable, or pass --no-incremental \
-                 to rebuild deliberately."
+                "DB_STATE_UNREADABLE: Could not determine whether the file_hashes table exists: \
+                 {e}. Refusing to fall back to a from-scratch build, which would delete the \
+                 existing graph and its embeddings. Retry once the database is readable, or \
+                 pass --no-incremental to rebuild deliberately."
             )
         })?;
 
@@ -126,11 +132,17 @@ fn load_file_hashes(conn: &Connection) -> Result<Option<HashMap<String, FileHash
         return Ok(None);
     }
 
+    // "DB_STATE_UNREADABLE" must match TS `UNREADABLE_BUILD_STATE`
+    // (`detect-changes.ts`) verbatim — `tryNativeOrchestrator`'s catch in
+    // `pipeline.ts` greps a native-thrown error's message for this literal
+    // via `isUnreadableBuildStateError`, since an error crossing the napi
+    // boundary is a plain `Error`, never a `DbError` instance carrying a
+    // `.code`. Keep both copies in sync.
     let unreadable = |e: rusqlite::Error| -> String {
         format!(
-            "Could not read the file_hashes table: {e}. The table exists, so this is a \
-             database failure rather than a first build. Refusing to fall back to a \
-             from-scratch build, which would delete the existing graph and its embeddings. \
+            "DB_STATE_UNREADABLE: Could not read the file_hashes table: {e}. The table exists, \
+             so this is a database failure rather than a first build. Refusing to fall back to \
+             a from-scratch build, which would delete the existing graph and its embeddings. \
              Retry once the database is readable, or pass --no-incremental to rebuild \
              deliberately."
         )
@@ -1406,7 +1418,11 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE file_hashes (file TEXT);")
             .unwrap();
-        assert!(load_file_hashes(&conn).is_err());
+        let err = load_file_hashes(&conn).unwrap_err();
+        // Must match TS UNREADABLE_BUILD_STATE verbatim — tryNativeOrchestrator's
+        // catch in pipeline.ts greps a native-thrown error's message for this
+        // literal, since it crosses the napi boundary as a plain Error.
+        assert!(err.contains("DB_STATE_UNREADABLE"));
     }
 
     #[test]

@@ -709,12 +709,27 @@ function makeFastSkipLogger(fastSkipDiag: boolean): (reason: string) => void {
  * own failures as best-effort and falls through to the Rust orchestrator, and
  * falling through here would hand the decision to a loader that still answers
  * "no prior state" — wiping the graph this error exists to protect.
+ *
+ * Also embedded verbatim in the native `load_file_hashes`'s own error messages
+ * (`crates/codegraph-core/.../detect_changes.rs`) for exactly the same
+ * reason, one layer further out: `tryNativeOrchestrator`'s own catch in
+ * `pipeline.ts` needs to single this case out too — a native-thrown error
+ * crossing the napi boundary is a plain `Error`, never a `DbError` instance,
+ * so `isUnreadableBuildStateError` below also matches on this marker in
+ * `e.message` to recognize it. Keep the two copies of this literal in sync.
  */
 export const UNREADABLE_BUILD_STATE = 'DB_STATE_UNREADABLE';
 
-/** True for the error `loadFileHashes` raises when prior state exists but is unreadable. */
+/**
+ * True for the error `loadFileHashes` raises when prior state exists but is
+ * unreadable, OR for a native-thrown error carrying the same marker in its
+ * message (see `UNREADABLE_BUILD_STATE`'s doc comment) — `tryNativeOrchestrator`
+ * needs this to single out the same failure crossing the napi boundary as a
+ * plain `Error`, not a `DbError` instance.
+ */
 export function isUnreadableBuildStateError(e: unknown): boolean {
-  return e instanceof DbError && e.code === UNREADABLE_BUILD_STATE;
+  if (e instanceof DbError && e.code === UNREADABLE_BUILD_STATE) return true;
+  return e instanceof Error && e.message.includes(UNREADABLE_BUILD_STATE);
 }
 
 /**
