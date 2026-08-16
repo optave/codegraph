@@ -1031,6 +1031,49 @@ const result = utils.create();
     expect(entries?.find((e) => e.name === 'result')).toBeUndefined();
   });
 
+  // Explicit guard for issue #2397: the real-world repro that motivated #2235
+  // was still divergent after that fix landed, because neither engine's
+  // handleVarDeclaratorTypeMap had a branch for `as`-cast values at all —
+  // `const db = new Database(...) as unknown as BetterSqlite3Database` (this
+  // repo's own src/db/connection.ts:389) contributed NOTHING to the typeMap
+  // on either engine, leaving `db`'s resolution dependent on fragile
+  // bare-key propagation luck that happened to differ between engines. The
+  // normalize() loop above strips typeMap from the structural comparison, so
+  // this regression would otherwise slip through undetected.
+  it('TS — as-cast seeds typeMap at 0.9 on both engines, using the FINAL target type (issue #2397)', () => {
+    const code = `const db = new Database(path) as unknown as BetterSqlite3Database;`;
+    const wasm = wasmExtract(code, 'service.ts');
+    expect(wasm?.typeMap).toBeInstanceOf(Map);
+    expect(wasm?.typeMap?.get('db')).toEqual({ type: 'BetterSqlite3Database', confidence: 0.9 });
+
+    if (!hasNative) return;
+    const raw = nativeExtract(code, 'service.ts');
+    if (raw?.typeMap === undefined) return;
+    const entries = raw?.typeMap as Array<{ name: string; typeName: string; confidence: number }>;
+    expect(Array.isArray(entries)).toBe(true);
+    const dbEntry = entries?.find((e) => e.name === 'db');
+    expect(dbEntry, 'native typeMap missing "db" key').toBeDefined();
+    expect(dbEntry).toMatchObject({
+      name: 'db',
+      typeName: 'BetterSqlite3Database',
+      confidence: 0.9,
+    });
+  });
+
+  it('TS — as-cast wins over a same-declaration type annotation on both engines (issue #2397)', () => {
+    const code = `const db: RawHandle = new Database(path) as BetterSqlite3Database;`;
+    const wasm = wasmExtract(code, 'service.ts');
+    expect(wasm?.typeMap?.get('db')).toEqual({ type: 'BetterSqlite3Database', confidence: 0.9 });
+
+    if (!hasNative) return;
+    const raw = nativeExtract(code, 'service.ts');
+    if (raw?.typeMap === undefined) return;
+    const entries = raw?.typeMap as Array<{ name: string; typeName: string; confidence: number }>;
+    const dbEntry = entries?.find((e) => e.name === 'db');
+    expect(dbEntry, 'native typeMap missing "db" key').toBeDefined();
+    expect(dbEntry?.typeName).toBe('BetterSqlite3Database');
+  });
+
   // Explicit guard for the WASM Python fix in #1189. The structural parity
   // loop above strips `self` from both sides via normalize(), so a regression
   // where WASM re-emits self/cls would slip through. Assert it directly.

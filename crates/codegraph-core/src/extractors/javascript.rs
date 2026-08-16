@@ -213,6 +213,41 @@ fn extract_simple_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a
     None
 }
 
+/// Extract the target type name from an `as_expression` (`value as Type`),
+/// mirroring TS `extractAsExpressionTypeName`.
+///
+/// `as_expression` has no named fields in tree-sitter-typescript's grammar —
+/// its two named children (the expression and the type) are distinguished
+/// only by kind, not a field name. Scanning from the END and matching on
+/// `type_identifier`/`generic_type`/`parenthesized_type` (never plain
+/// `identifier`, unlike `extract_simple_type_name`) is safe because the
+/// expression side can never produce those node kinds — TS's grammar keeps
+/// "type" and "expression" as disjoint node-kind namespaces — so there is no
+/// risk of matching the cast's INPUT instead of its target type, even when
+/// that input is itself a bare identifier.
+///
+/// `X as unknown as Y` parses as nested as_expressions, `(X as unknown) as
+/// Y` — called on the outermost node, this naturally extracts `Y` (the
+/// final, intended type) without needing to special-case the `unknown` hop;
+/// called on a bare `X as unknown`, it correctly finds no nameable type
+/// (`unknown` is a `predefined_type`, not handled here) and returns `None`.
+fn extract_as_expression_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
+    for i in (0..node.child_count()).rev() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "type_identifier" => return Some(node_text(&child, source)),
+                "generic_type" => {
+                    let base = child.child(0).map(|n| node_text(&n, source));
+                    return base.filter(|b| !OPAQUE_TYPE_TRANSFORM_WRAPPERS.contains(b));
+                }
+                "parenthesized_type" => return extract_simple_type_name(&child, source),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// Extract constructor type name from a new_expression node.
 fn extract_new_expr_type_name<'a>(node: &Node<'a>, source: &'a [u8]) -> Option<&'a str> {
     if node.kind() != "new_expression" {
@@ -293,33 +328,64 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
     // differently-typed local of this same name would otherwise silently
     // collide under the bare key. Mirrors TS handleVarDeclaratorTypeMap.
     let enclosing_qualifier = find_enclosing_function_qualifier(node, source);
-    // Type annotation: confidence 0.9
-    if let Some(type_anno) = find_child(node, "type_annotation") {
-        if let Some(type_name) = extract_simple_type_name(&type_anno, source) {
-            push_scoped_type_map_entry(
-                symbols,
-                enclosing_qualifier.as_deref(),
-                var_name,
-                type_name.to_string(),
-                0.9,
-            );
+    let value_n = node.child_by_field_name("value");
+
+    // Constructor and `as`-cast both win over a same-declaration type
+    // annotation (checked first, before the annotation push below) — mirrors
+    // TS handleVarDeclaratorTypeMap's early-return priority exactly. This
+    // isn't just style: dedup_type_map is first-write-wins on confidence
+    // TIES, and the cast is pushed at the SAME 0.9 tier as the annotation
+    // (#2397 — `const db = new Database(...) as unknown as BetterSqlite3Database`
+    // must resolve to BetterSqlite3Database, not whatever an unrelated
+    // annotation on the same declarator might say), so simply pushing both
+    // and relying on confidence comparison — as the constructor branch's
+    // unambiguous 1.0-vs-0.9 gap already could — would silently let the
+    // annotation win the tie instead of the cast.
+    let mut explicit_initializer_seeded = false;
+    if let Some(v) = &value_n {
+        if v.kind() == "new_expression" {
+            // Constructor: confidence 1.0 (overrides annotation in edge builder)
+            if let Some(type_name) = extract_new_expr_type_name(v, source) {
+                push_scoped_type_map_entry(
+                    symbols,
+                    enclosing_qualifier.as_deref(),
+                    var_name,
+                    type_name.to_string(),
+                    1.0,
+                );
+                explicit_initializer_seeded = true;
+            }
+        } else if v.kind() == "as_expression" {
+            if let Some(type_name) = extract_as_expression_type_name(v, source) {
+                push_scoped_type_map_entry(
+                    symbols,
+                    enclosing_qualifier.as_deref(),
+                    var_name,
+                    type_name.to_string(),
+                    0.9,
+                );
+                explicit_initializer_seeded = true;
+            }
         }
     }
-    let Some(value_n) = node.child_by_field_name("value") else {
+    // Type annotation: confidence 0.9 — only when neither of the above
+    // already seeded a more authoritative entry from the initializer itself.
+    if !explicit_initializer_seeded {
+        if let Some(type_anno) = find_child(node, "type_annotation") {
+            if let Some(type_name) = extract_simple_type_name(&type_anno, source) {
+                push_scoped_type_map_entry(
+                    symbols,
+                    enclosing_qualifier.as_deref(),
+                    var_name,
+                    type_name.to_string(),
+                    0.9,
+                );
+            }
+        }
+    }
+    let Some(value_n) = value_n else {
         return;
     };
-    // Constructor: confidence 1.0 (overrides annotation in edge builder)
-    if value_n.kind() == "new_expression" {
-        if let Some(type_name) = extract_new_expr_type_name(&value_n, source) {
-            push_scoped_type_map_entry(
-                symbols,
-                enclosing_qualifier.as_deref(),
-                var_name,
-                type_name.to_string(),
-                1.0,
-            );
-        }
-    }
     // Phase 8.3e: Object.create({ key: fn }) → composite pts key per property
     if value_n.kind() == "call_expression" {
         seed_object_create_entries(var_name, &value_n, source, symbols);
@@ -10548,6 +10614,75 @@ mod tests {
         );
         assert_eq!(tm.unwrap().type_name, "\u{1C5}omega");
         assert_eq!(tm.unwrap().confidence, 0.7);
+    }
+
+    // Issue #2397: `as`-cast target must seed the typeMap directly, at the
+    // source, rather than leaving the local unresolvable and dependent on
+    // fragile bare-key propagation from an unrelated function in the file —
+    // exactly the divergence #2235's scoping fix didn't reach for
+    // `src/db/connection.ts`'s `openReadonlyOrFail`.
+    #[test]
+    fn as_cast_seeds_type_map_at_point_nine_confidence() {
+        let s = parse_ts("const db = new Database(path) as BetterSqlite3Database;");
+        let tm = s.type_map.iter().find(|t| t.name == "db");
+        assert!(
+            tm.is_some(),
+            "expected 'db' to be typed; got {:?}",
+            s.type_map
+        );
+        assert_eq!(tm.unwrap().type_name, "BetterSqlite3Database");
+        assert_eq!(tm.unwrap().confidence, 0.9);
+    }
+
+    #[test]
+    fn as_cast_extracts_final_target_type_from_a_chained_as_unknown_as_x() {
+        let s = parse_ts("const db = new Database(path) as unknown as BetterSqlite3Database;");
+        let tm = s.type_map.iter().find(|t| t.name == "db");
+        assert!(
+            tm.is_some(),
+            "expected 'db' to be typed; got {:?}",
+            s.type_map
+        );
+        assert_eq!(tm.unwrap().type_name, "BetterSqlite3Database");
+        assert_eq!(tm.unwrap().confidence, 0.9);
+    }
+
+    #[test]
+    fn as_cast_seeds_nothing_for_a_bare_as_unknown_with_no_further_cast() {
+        let s = parse_ts("const db = new Database(path) as unknown;");
+        assert!(s.type_map.iter().all(|t| t.name != "db"));
+    }
+
+    #[test]
+    fn as_cast_wins_over_a_same_declaration_type_annotation() {
+        // dedup_type_map is first-write-wins on confidence TIES — this proves
+        // the cast is checked (and skips the annotation push) BEFORE the
+        // annotation branch, not merely pushed alongside it at the same 0.9
+        // and left to an ambiguous tie.
+        let s = parse_ts("const db: RawHandle = new Database(path) as BetterSqlite3Database;");
+        let tm = s.type_map.iter().find(|t| t.name == "db");
+        assert!(
+            tm.is_some(),
+            "expected 'db' to be typed; got {:?}",
+            s.type_map
+        );
+        assert_eq!(tm.unwrap().type_name, "BetterSqlite3Database");
+    }
+
+    #[test]
+    fn as_cast_does_not_mistake_a_bare_identifier_cast_input_for_the_target_type() {
+        // Regression guard: extract_as_expression_type_name must scan for
+        // type_identifier specifically, not identifier, or `raw` (the cast's
+        // INPUT, an ordinary identifier) would be wrongly returned instead of
+        // the actual target type `Handle`.
+        let s = parse_ts("const db = raw as Handle;");
+        let tm = s.type_map.iter().find(|t| t.name == "db");
+        assert!(
+            tm.is_some(),
+            "expected 'db' to be typed; got {:?}",
+            s.type_map
+        );
+        assert_eq!(tm.unwrap().type_name, "Handle");
     }
 
     /// `this.prop = new Ctor()` outside any class declaration (function-style

@@ -2727,6 +2727,40 @@ function extractSimpleTypeName(typeAnnotationNode: TreeSitterNode): string | nul
   return null;
 }
 
+/**
+ * Extract the target type name from an `as_expression` (`value as Type`).
+ *
+ * `as_expression` has no named fields in tree-sitter-typescript's grammar —
+ * its two named children (the expression and the type) are distinguished
+ * only by position/kind, not a field name. Scanning from the END and
+ * matching on `type_identifier`/`generic_type`/`parenthesized_type` (never
+ * `identifier`, unlike `extractSimpleTypeName`) is safe because the
+ * expression side can never produce those node kinds — TS's grammar keeps
+ * "type" and "expression" as disjoint node-kind namespaces — so there is no
+ * risk of matching the cast's INPUT instead of its target type, even when
+ * that input is itself a bare identifier.
+ *
+ * `X as unknown as Y` parses as nested as_expressions, `(X as unknown) as
+ * Y` — called on the outermost node, this naturally extracts `Y` (the final,
+ * intended type) without needing to special-case the `unknown` hop; called
+ * on a bare `X as unknown`, it correctly finds no nameable type (`unknown`
+ * is a `predefined_type`, not handled here) and returns null.
+ */
+function extractAsExpressionTypeName(asExprNode: TreeSitterNode): string | null {
+  for (let i = asExprNode.childCount - 1; i >= 0; i--) {
+    const child = asExprNode.child(i);
+    if (!child) continue;
+    const t = child.type;
+    if (t === 'type_identifier') return child.text;
+    if (t === 'generic_type') {
+      const base = child.child(0)?.text || null;
+      return base && OPAQUE_TYPE_TRANSFORM_WRAPPERS.has(base) ? null : base;
+    }
+    if (t === 'parenthesized_type') return extractSimpleTypeName(child);
+  }
+  return null;
+}
+
 function extractNewExprTypeName(newExprNode: TreeSitterNode): string | null {
   if (newExprNode?.type !== 'new_expression') return null;
   const ctor = newExprNode.childForFieldName('constructor') || newExprNode.child(1);
@@ -3674,6 +3708,21 @@ function handleVarDeclaratorTypeMap(
     const ctorType = extractNewExprTypeName(valueN);
     if (ctorType) {
       setScopedTypeMapEntry(typeMap, enclosingQualifier, nameN.text, ctorType, 1.0);
+      return;
+    }
+  }
+
+  // 2b. `as`-cast wins over annotation too, same rationale as the constructor
+  // branch above: `const db = new Database(...) as unknown as BetterSqlite3Database`
+  // must resolve to the CAST's target type, not the annotation (there usually
+  // isn't one) or the inner constructor's own name — the cast is what the rest
+  // of the file actually treats the value as from this point on (#2397).
+  // Confidence 0.9, matching the type-annotation tier below: both are explicit,
+  // developer-declared types, just via different syntax.
+  if (valueN?.type === 'as_expression') {
+    const castType = extractAsExpressionTypeName(valueN);
+    if (castType) {
+      setScopedTypeMapEntry(typeMap, enclosingQualifier, nameN.text, castType, 0.9);
       return;
     }
   }

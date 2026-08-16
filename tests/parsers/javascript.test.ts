@@ -713,6 +713,47 @@ describe('JavaScript parser', () => {
       expect(symbols.typeMap.get('x')).toEqual({ type: 'Derived', confidence: 1.0 });
     });
 
+    // Issue #2397: `as`-cast target must seed the typeMap directly, at the
+    // source, rather than leaving `db` unresolvable and dependent on
+    // fragile bare-key propagation from an unrelated function in the file.
+    it('extracts the target type from a single as-cast at confidence 0.9', () => {
+      const symbols = parseTS(`const db = new Database(path) as BetterSqlite3Database;`);
+      expect(symbols.typeMap.get('db')).toEqual({
+        type: 'BetterSqlite3Database',
+        confidence: 0.9,
+      });
+    });
+
+    it('extracts the FINAL target type from a chained "as unknown as X" cast', () => {
+      const symbols = parseTS(`const db = new Database(path) as unknown as BetterSqlite3Database;`);
+      expect(symbols.typeMap.get('db')).toEqual({
+        type: 'BetterSqlite3Database',
+        confidence: 0.9,
+      });
+    });
+
+    it('does not seed anything for a bare "as unknown" cast with no further cast', () => {
+      const symbols = parseTS(`const db = new Database(path) as unknown;`);
+      expect(symbols.typeMap.has('db')).toBe(false);
+    });
+
+    it('as-cast wins over a same-declaration type annotation', () => {
+      const symbols = parseTS(`const db: RawHandle = new Database(path) as BetterSqlite3Database;`);
+      expect(symbols.typeMap.get('db')).toEqual({
+        type: 'BetterSqlite3Database',
+        confidence: 0.9,
+      });
+    });
+
+    it('does not mistake a bare-identifier cast input for the target type', () => {
+      // Regression guard: extractAsExpressionTypeName must scan for
+      // type_identifier specifically, not identifier, or `raw` (the cast's
+      // INPUT, an ordinary identifier) would be wrongly returned instead of
+      // the actual target type `Handle`.
+      const symbols = parseTS(`const db = raw as Handle;`);
+      expect(symbols.typeMap.get('db')).toEqual({ type: 'Handle', confidence: 0.9 });
+    });
+
     it('extracts factory method patterns with confidence 0.7', () => {
       const symbols = parseJS(`const client = HttpClient.create();`);
       expect(symbols.typeMap.get('client')).toEqual({ type: 'HttpClient', confidence: 0.7 });
