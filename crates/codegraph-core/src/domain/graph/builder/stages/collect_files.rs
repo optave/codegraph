@@ -265,8 +265,16 @@ pub fn collect_files(
     let mut directories = HashSet::new();
 
     // Use the `ignore` crate for gitignore-aware walking.
+    //
+    // `.hidden()` is deliberately `false`: the crate's own built-in hidden
+    // filter blanket-skips both hidden files AND hidden directories, but
+    // dotfile-named source files are common and legitimate (`.terraform.lock.hcl`,
+    // `.pa11yci.authed.cjs`) — mirrors the JS/TS collector (`shouldIgnore` in
+    // `shared/constants.ts`), which only ever skips hidden *directories*, never
+    // files (issue #2391). Hidden directories are still skipped below via the
+    // explicit `filter_entry` closure, so this only changes file-level behavior.
     let walker = ignore::WalkBuilder::new(root_dir)
-        .hidden(true) // skip hidden files/dirs by default
+        .hidden(false)
         .git_ignore(true) // respect .gitignore
         .git_global(false) // skip global gitignore
         .git_exclude(true) // respect .git/info/exclude
@@ -452,6 +460,75 @@ mod tests {
         assert!(names.contains("esm.mts"));
         assert!(names.contains("cjs.cts"));
         assert!(!names.contains("readme.md"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn collect_finds_dotfile_named_source_files() {
+        // Issue #2391: dotfile-named source files are common and legitimate
+        // (Terraform's `.terraform.lock.hcl`, pa11y's `.pa11yci.authed.cjs`
+        // config) — the `ignore` crate's own `.hidden()` filter must not
+        // blanket-skip them the way it does for genuinely-hidden files.
+        let tmp = std::env::temp_dir().join("codegraph_collect_dotfile_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join(".terraform.lock.hcl"),
+            "provider \"registry.terraform.io/hashicorp/aws\" {\n  version = \"5.31.0\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.join(".pa11yci.authed.cjs"),
+            "module.exports = { greet() {} };",
+        )
+        .unwrap();
+        fs::write(tmp.join("main.tf"), "provider \"aws\" {}").unwrap();
+
+        let result = collect_files(tmp.to_str().unwrap(), &[], &[], &[]);
+        let names: HashSet<String> = result
+            .files
+            .iter()
+            .filter_map(|f| {
+                Path::new(f)
+                    .file_name()
+                    .map(|n| n.to_str().unwrap().to_string())
+            })
+            .collect();
+
+        assert!(names.contains(".terraform.lock.hcl"));
+        assert!(names.contains(".pa11yci.authed.cjs"));
+        assert!(names.contains("main.tf"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn collect_still_skips_hidden_directories() {
+        // The fix only changes file-level hidden behavior — hidden
+        // directories (`.git`, `.next`, arbitrary dotdirs) must remain
+        // excluded via the explicit `filter_entry` closure.
+        let tmp = std::env::temp_dir().join("codegraph_collect_hidden_dir_test");
+        let _ = fs::remove_dir_all(&tmp);
+        let hidden = tmp.join(".hidden_dir");
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(hidden.join("should_be_excluded.py"), "def f(): pass").unwrap();
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("app.py"), "def g(): pass").unwrap();
+
+        let result = collect_files(tmp.to_str().unwrap(), &[], &[], &[]);
+        let names: HashSet<String> = result
+            .files
+            .iter()
+            .filter_map(|f| {
+                Path::new(f)
+                    .file_name()
+                    .map(|n| n.to_str().unwrap().to_string())
+            })
+            .collect();
+
+        assert!(names.contains("app.py"));
+        assert!(!names.contains("should_be_excluded.py"));
 
         let _ = fs::remove_dir_all(&tmp);
     }

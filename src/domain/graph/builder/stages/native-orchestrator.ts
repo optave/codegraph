@@ -2574,6 +2574,12 @@ async function runPostNativePasses(
   // Rust orchestrator's counts are still accurate — no re-count needed.
   let finalNodeCount = result.nodeCount ?? 0;
   let finalEdgeCount = result.edgeCount ?? 0;
+  // Issue #2391: same under-report as #1452, but for the file count — the
+  // Rust orchestrator's fileCount reflects only the files it natively parsed
+  // itself, captured before the WASM dropped-file backfill (above) inserts
+  // file nodes for anything it had to backfill. Re-derived the same way
+  // `codegraph stats` counts files (kind = 'file'), so the two never diverge.
+  let finalFileCount = result.fileCount ?? 0;
   const postPassWroteData =
     backfillHappened ||
     chaEdgeCount > 0 ||
@@ -2582,19 +2588,22 @@ async function runPostNativePasses(
   if (postPassWroteData) {
     try {
       const counts = (ctx.db as unknown as BetterSqlite3Database)
-        .prepare('SELECT (SELECT COUNT(*) FROM nodes) AS n, (SELECT COUNT(*) FROM edges) AS e')
-        .get() as { n: number; e: number };
+        .prepare(
+          "SELECT (SELECT COUNT(*) FROM nodes) AS n, (SELECT COUNT(*) FROM edges) AS e, (SELECT COUNT(*) FROM nodes WHERE kind = 'file') AS f",
+        )
+        .get() as { n: number; e: number; f: number };
       if (counts.n !== finalNodeCount || counts.e !== finalEdgeCount) {
         finalNodeCount = counts.n;
         finalEdgeCount = counts.e;
         setBuildMeta(ctx.db, { node_count: finalNodeCount, edge_count: finalEdgeCount });
       }
+      finalFileCount = counts.f;
     } catch (err) {
       debug(`Post-pass node/edge re-count failed: ${toErrorMessage(err)}`);
     }
   }
   info(
-    `Native build orchestrator completed: ${finalNodeCount} nodes, ${finalEdgeCount} edges, ${result.fileCount ?? 0} files`,
+    `Native build orchestrator completed: ${finalNodeCount} nodes, ${finalEdgeCount} edges, ${finalFileCount} files`,
   );
 
   return {
