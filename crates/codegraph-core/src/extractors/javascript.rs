@@ -74,16 +74,20 @@ const JS_BUILTIN_GLOBALS: &[&str] = &[
 
 /// Mirrors JS `name[0] !== name[0].toLowerCase()` exactly — the check TS's
 /// factory-method heuristic (`handleCallExprTypeMap`) uses to decide whether
-/// an identifier "starts with an uppercase letter". JS string indexing
-/// operates on UTF-16 code units, not full Unicode scalars: for an
-/// astral-plane leading character (code point > U+FFFF, e.g. a Deseret
-/// capital letter), `name[0]` is a lone UTF-16 surrogate, which doesn't
-/// case-fold and so is never treated as uppercase in JS. Using Rust's
-/// `char::is_uppercase()` on the full decoded scalar instead would recognize
-/// such characters as uppercase, silently diverging from the WASM engine for
-/// this parity-sensitive heuristic (#2396) — so this replicates the
-/// UTF-16-code-unit semantics precisely rather than the "more correct" full-
-/// scalar check.
+/// an identifier "starts with an uppercase letter". Two JS-specific quirks
+/// this must replicate precisely, not approximate, or the two engines
+/// silently diverge on this parity-sensitive heuristic (#2396):
+///
+/// - JS string indexing operates on UTF-16 code units, not full Unicode
+///   scalars: for an astral-plane leading character (code point > U+FFFF,
+///   e.g. a Deseret capital letter), `name[0]` is a lone UTF-16 surrogate,
+///   which doesn't case-fold and so is never treated as uppercase in JS.
+/// - The condition is "does lowercasing change this character", not "is
+///   this character in Unicode's Uppercase category" — those differ for
+///   titlecase letters (Unicode category Lt, e.g. `ǅ`), which lowercase to
+///   a different character but are neither uppercase nor lowercase per
+///   `char::is_uppercase()`/`is_lowercase()`. JS's `.toLowerCase()`-based
+///   check treats them as "uppercase-like"; Rust's `is_uppercase()` does not.
 fn starts_with_uppercase_like_js(name: &str) -> bool {
     let Some(unit) = name.encode_utf16().next() else {
         return false;
@@ -91,7 +95,10 @@ fn starts_with_uppercase_like_js(name: &str) -> bool {
     if (0xD800..=0xDFFF).contains(&unit) {
         return false;
     }
-    char::from_u32(unit as u32).is_some_and(|c| c.is_uppercase())
+    let Some(c) = char::from_u32(unit as u32) else {
+        return false;
+    };
+    c.to_lowercase().ne(std::iter::once(c))
 }
 
 pub struct JsExtractor;
@@ -10521,6 +10528,26 @@ mod tests {
             "must not type 'conn' — matches TS's UTF-16-surrogate semantics; got {:?}",
             s.type_map
         );
+    }
+
+    // Greptile's second review round on #2396: `char::is_uppercase()` and
+    // "does lowercasing change this character" (what JS's `.toLowerCase()`
+    // check actually implements) disagree for Unicode titlecase letters.
+    #[test]
+    fn factory_method_heuristic_matches_js_utf16_semantics_for_a_titlecase_letter() {
+        // 'ǅ' (U+01C5 LATIN CAPITAL LETTER D WITH SMALL LETTER Z WITH CARON)
+        // is Unicode category Lt (titlecase) — `char::is_uppercase()` is
+        // false for it, but JS's `'ǅ'.toLowerCase()` ('ǆ') differs from 'ǅ',
+        // so TS's heuristic DOES fire. Rust must fire here too.
+        let s = parse_js("const conn = \u{1C5}omega.create();");
+        let tm = s.type_map.iter().find(|t| t.name == "conn");
+        assert!(
+            tm.is_some(),
+            "expected 'conn' to be typed for a titlecase receiver; got {:?}",
+            s.type_map
+        );
+        assert_eq!(tm.unwrap().type_name, "\u{1C5}omega");
+        assert_eq!(tm.unwrap().confidence, 0.7);
     }
 
     /// `this.prop = new Ctor()` outside any class declaration (function-style
