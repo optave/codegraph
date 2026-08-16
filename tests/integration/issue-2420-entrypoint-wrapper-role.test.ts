@@ -212,6 +212,41 @@ if __name__ == "__main__":
       }
     });
 
+    it('import runner; runner.run(main()) still suppresses the wrapped call for an in-repo module import (Greptile review, round 3)', async () => {
+      // Unlike sys/asyncio, "runner" here is a plain `import runner` of a
+      // SAME-REPO module, not a curated stdlib process-launcher module —
+      // its dotted wrapper ("run") must still resolve normally and win the
+      // label over main, same as the local-instance case above.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2420-local-module-import-${engine}-`));
+      try {
+        writeFixture(dir, {
+          'runner.py': `
+def run(x):
+    return x
+`,
+          'run.py': `
+import runner
+
+def main():
+    return 0
+
+if __name__ == "__main__":
+    runner.run(main())
+`,
+        });
+        await buildGraph(dir, { incremental: false, skipRegistry: true, engine });
+        const nodes = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db'));
+        const mainRow = nodes.find((n) => n.name === 'main');
+        const runRow = nodes.find((n) => n.name === 'run');
+        expect(mainRow?.entrypoint).toBe(1);
+        expect(mainRow?.role).not.toBe('entry');
+        expect(runRow?.entrypoint).toBe(1);
+        expect(runRow?.role).toBe('entry');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('an entrypoint with no wrapping ambiguity is unaffected', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2420-plain-${engine}-`));
       try {
