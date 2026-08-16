@@ -1770,9 +1770,17 @@ fn process_file<'a>(
         // Sink edge: flag-only dynamic calls with no resolved target are emitted as
         // a (caller → file_node) edge at confidence=0.0 with dynamic_kind set.
         // This makes them queryable (`codegraph roles --dynamic`) instead of silent drops.
+        // Mirrors TS `FLAG_ONLY_DYNAMIC_KINDS` (shared/kinds.ts) — keep both lists in
+        // sync; a kind missing here silently drops the sink edge WASM still emits
+        // (issue #2413: `reflection` — a `.call`/`.apply`/`.bind` invocation whose
+        // wrapped function doesn't resolve — was missing from this list).
         if targets.is_empty() {
             if let Some(ref dk) = call.dynamic_kind {
-                if dk == "eval" || dk == "computed-key" || dk == "unresolved-dynamic" {
+                if dk == "eval"
+                    || dk == "computed-key"
+                    || dk == "reflection"
+                    || dk == "unresolved-dynamic"
+                {
                     let sink_key = (caller_id, fc.file_node_id, dk.clone());
                     if !seen_sink_edges.contains(&sink_key) {
                         seen_sink_edges.insert(sink_key);
