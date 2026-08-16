@@ -37,9 +37,9 @@ describe('scoped native incremental build with unreadable file_hashes (#2418)', 
       await buildGraph(dir, { incremental: false, skipRegistry: true, engine: 'native' });
 
       const dbPath = path.join(dir, '.codegraph', 'graph.db');
-      const before = new Database(dbPath, { readonly: true })
-        .prepare('SELECT COUNT(*) c FROM nodes')
-        .get() as { c: number };
+      const readDb = new Database(dbPath, { readonly: true });
+      const before = readDb.prepare('SELECT COUNT(*) c FROM nodes').get() as { c: number };
+      readDb.close();
       expect(before.c).toBeGreaterThan(0);
 
       // Corrupt file_hashes: drop and recreate with an incompatible schema —
