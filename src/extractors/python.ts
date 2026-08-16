@@ -68,6 +68,17 @@ const BUILTIN_GLOBALS_PY: Set<string> = new Set([
  * of modules this exact idiom uses. See `findEnclosingCallName`'s doc
  * comment for why a wrapper resolving to any OTHER module (or no import at
  * all) takes a different path.
+ *
+ * Known residual gap (#2543, deliberately not fixed here): this matches by
+ * import *source name* only, not by whether the import actually resolved to
+ * a stdlib module. A repository that defines its own top-level module
+ * literally named `sys.py`/`os.py`/`asyncio.py` would have a call like
+ * `asyncio.run(main())` still treated as the external passthrough even
+ * though it resolves in-repo. Closing that gap needs real resolved-import
+ * data (an `imports` edge), only available after the build's import
+ * resolution phase — i.e. in `projectEntrypointAttribution`, not here at
+ * extraction time. Left for #2543 given a repository shadowing a stdlib
+ * module name this way is already unusual, independent of this tool.
  */
 const STDLIB_PROCESS_LAUNCHER_MODULES: ReadonlySet<string> = new Set(['sys', 'os', 'asyncio']);
 

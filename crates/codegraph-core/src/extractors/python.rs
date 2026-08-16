@@ -34,7 +34,9 @@ impl SymbolExtractor for PythonExtractor {
 /// `asyncio.run(main())`, `os._exit(main())`) — deliberately narrow and
 /// non-exhaustive, mirrors TS `STDLIB_PROCESS_LAUNCHER_MODULES`. See that
 /// constant's doc comment for why it's scoped this narrowly rather than
-/// attempting a general external-vs-local import classification.
+/// attempting a general external-vs-local import classification, and for
+/// the known residual gap (#2543, deliberately not fixed here) when a
+/// repository shadows one of these module names with its own file.
 const STDLIB_PROCESS_LAUNCHER_MODULES: [&str; 3] = ["sys", "os", "asyncio"];
 
 /// Flag every call that starts the program rather than being invoked by other
