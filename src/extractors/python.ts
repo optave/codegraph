@@ -97,7 +97,16 @@ export function extractPythonSymbols(tree: TreeSitterTree, filePath: string): Ex
  * leaving no room for the two engines to disagree about a given call site.
  */
 function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: ExtractorOutput): void {
-  const { lines, wrappedBy } = collectEntrypointCallLines(root, filePath);
+  // Plain `import X` / `import X as Y` bindings only (`handlePyImport`'s
+  // `namespaceBindings`) — never a `from X import Y` binding, which names a
+  // symbol pulled out of a module, not the module namespace itself. Runs
+  // after `walkPythonNode`, so `ctx.imports` is already fully populated by
+  // the time this reads it (see `extractPythonSymbols`'s call order).
+  const moduleBoundNames = new Set<string>();
+  for (const imp of ctx.imports) {
+    for (const name of imp.namespaceBindings ?? []) moduleBoundNames.add(name);
+  }
+  const { lines, wrappedBy } = collectEntrypointCallLines(root, filePath, moduleBoundNames);
   if (lines.size === 0) return;
   for (const call of ctx.calls) {
     if (!lines.has(call.line)) continue;
@@ -138,6 +147,7 @@ function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: Extrac
 function collectEntrypointCallLines(
   root: TreeSitterNode,
   filePath: string,
+  moduleBoundNames: ReadonlySet<string>,
 ): { lines: Set<number>; wrappedBy: Map<string, string> } {
   const lines = new Set<number>();
   const wrappedBy = new Map<string, string>();
@@ -153,7 +163,7 @@ function collectEntrypointCallLines(
       const line = node.startPosition.row + 1;
       lines.add(line);
       const name = getCallName(node);
-      const wrapper = name ? findEnclosingCallName(node) : null;
+      const wrapper = name ? findEnclosingCallName(node, moduleBoundNames) : null;
       if (name && wrapper) wrappedBy.set(`${line}:${name}`, wrapper);
     }
 
@@ -223,29 +233,47 @@ function getCallName(node: TreeSitterNode): string | null {
  * lexically-outer call (e.g. the `if __name__ == "__main__":` guard's own
  * body statement list is a `block`, not a call, and must stop the walk).
  *
- * Only a bare-identifier wrapper (`main(...)`) is reported at all — an
- * attribute/dotted wrapper (`sys.exit(...)`, `asyncio.run(...)`,
- * `os._exit(...)`) returns `null` here, same as no wrapper. This is exactly
- * the stdlib-passthrough idiom #2420 exists to protect, and its bare
- * attribute name (`exit`, `run`) is a plain identifier stripped of its
- * qualifier — far too likely to coincidentally match an unrelated same-named
- * symbol elsewhere in the file for `projectEntrypointAttribution`'s
- * file-wide bare-name lookup to trust (#2420 review — Greptile: a second,
- * unrelated `exit`-named call elsewhere in the file that DOES resolve
- * in-repo would otherwise make this wrapper look "resolved" and wrongly
- * suppress the real entrypoint's role). Treating it as unwrapped is always
- * the safe default: silently losing a real entrypoint's role is worse than
- * an over-inclusive label on its wrapper, which is the same trade-off the
- * feature already accepts for reachability (see this file's `Call`-marking
- * doc comment).
+ * A wrapper whose receiver is bound by a plain `import X` / `import X as Y`
+ * statement (`moduleBoundNames`) — e.g. `sys.exit(...)`, `asyncio.run(...)`
+ * — is reported as `null` here, same as no wrapper, rather than its bare
+ * attribute name. This is exactly the stdlib-passthrough idiom #2420 exists
+ * to protect: `sys`/`asyncio` are external modules, so `sys.exit`/`asyncio.run`
+ * can never resolve to a same-file symbol, yet their bare attribute name
+ * (`exit`, `run`) is a plain identifier stripped of its module qualifier —
+ * far too likely to coincidentally match an unrelated same-named in-repo
+ * symbol for `projectEntrypointAttribution`'s file-wide bare-name lookup to
+ * trust (#2420 review — Greptile: a second, unrelated `exit`-named call
+ * elsewhere in the file that DOES resolve in-repo would otherwise make this
+ * wrapper look "resolved" and wrongly suppress the real entrypoint's role).
+ * Treating it as unwrapped is always the safe default here: silently losing
+ * a real entrypoint's role is worse than an over-inclusive label on its
+ * wrapper, the same trade-off the feature already accepts for reachability
+ * (see this file's `Call`-marking doc comment).
+ *
+ * A wrapper whose receiver is NOT a recognized module import — a plain
+ * identifier call (`main(...)`), or a dotted call on a local
+ * object/instance (`runner.run(...)`) — reports its bare name as usual and
+ * goes through the normal bare-name resolution check instead: unlike a
+ * module attribute, `runner.run` plausibly IS a same-file (or same-repo)
+ * method, and #2420 review (Greptile, second round) confirmed that
+ * unconditionally treating every dotted wrapper as unresolvable regresses
+ * to the original bug for exactly this case — both `run` and `main` would
+ * wrongly receive the entry label.
  */
-function findEnclosingCallName(node: TreeSitterNode): string | null {
+function findEnclosingCallName(
+  node: TreeSitterNode,
+  moduleBoundNames: ReadonlySet<string>,
+): string | null {
   let parent = node.parent;
   let hops = 0;
   while (parent && hops < MAX_WALK_DEPTH) {
     if (parent.type === 'call') {
       const fn = parent.childForFieldName('function');
-      return fn?.type === 'identifier' ? getCallName(parent) : null;
+      if (fn?.type === 'attribute') {
+        const receiver = fn.childForFieldName('object')?.text;
+        if (receiver && moduleBoundNames.has(receiver)) return null;
+      }
+      return getCallName(parent);
     }
     if (
       parent.type === 'expression_statement' ||

@@ -175,6 +175,43 @@ if __name__ == "__main__":
       }
     });
 
+    it('runner.run(main()) still suppresses the wrapped call in favor of a resolvable dotted wrapper (Greptile review, round 2)', async () => {
+      // Unlike sys.exit, "runner" here is a local instance, not a module
+      // import — its dotted wrapper ("run") really does resolve to an
+      // in-repo method, so main must NOT get the entry label, same as the
+      // plain-identifier main(configure()) case. Treating every dotted
+      // wrapper as always-unresolvable would regress to the original #2420
+      // bug for exactly this shape.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2420-dotted-resolves-${engine}-`));
+      try {
+        writeFixture(dir, {
+          'run.py': `
+class Runner:
+    def run(self, x):
+        return x
+
+def main():
+    return 0
+
+runner = Runner()
+
+if __name__ == "__main__":
+    runner.run(main())
+`,
+        });
+        await buildGraph(dir, { incremental: false, skipRegistry: true, engine });
+        const nodes = readFunctionNodes(path.join(dir, '.codegraph', 'graph.db'));
+        const mainRow = nodes.find((n) => n.name === 'main');
+        const runRow = nodes.find((n) => n.name.endsWith('.run'));
+        expect(mainRow?.entrypoint).toBe(1);
+        expect(mainRow?.role).not.toBe('entry');
+        expect(runRow?.entrypoint).toBe(1);
+        expect(runRow?.role).toBe('entry');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('an entrypoint with no wrapping ambiguity is unaffected', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2420-plain-${engine}-`));
       try {

@@ -42,7 +42,21 @@ impl SymbolExtractor for PythonExtractor {
 /// the same AST and mark the same calls, leaving no room to disagree about a
 /// given call site.
 fn mark_entrypoint_calls(root: &Node, source: &[u8], file_path: &str, symbols: &mut FileSymbols) {
-    let (lines, wrapped_by) = collect_entrypoint_call_lines(root, source, file_path);
+    // Plain `import X` / `import X as Y` bindings only (`handle_py_import`'s
+    // `namespace_bindings`) — never a `from X import Y` binding, which names
+    // a symbol pulled out of a module, not the module namespace itself. Runs
+    // after `walk_tree`, so `symbols.imports` is already fully populated by
+    // the time this reads it (see `PythonExtractor::extract`'s call order).
+    let mut module_bound_names = std::collections::HashSet::new();
+    for imp in &symbols.imports {
+        if let Some(bindings) = &imp.namespace_bindings {
+            for name in bindings {
+                module_bound_names.insert(name.clone());
+            }
+        }
+    }
+    let (lines, wrapped_by) =
+        collect_entrypoint_call_lines(root, source, file_path, &module_bound_names);
     if lines.is_empty() {
         return;
     }
@@ -100,16 +114,30 @@ fn is_main_guard_condition(condition: Option<Node>, source: &[u8]) -> bool {
 /// either, for the same immediate-execution reason.
 type EntrypointWrappedBy = std::collections::HashMap<(u32, String), String>;
 
+/// Read-only context threaded through the recursive entrypoint-call scan —
+/// bundled into one struct purely to keep `visit_entrypoint_calls` under
+/// clippy's argument-count limit; `source` and `module_bound_names` never
+/// change across the recursion, unlike `guarded`/`at_module_level`, which do.
+struct EntrypointScanCtx<'a> {
+    source: &'a [u8],
+    module_bound_names: &'a std::collections::HashSet<String>,
+}
+
 fn collect_entrypoint_call_lines(
     root: &Node,
     source: &[u8],
     file_path: &str,
+    module_bound_names: &std::collections::HashSet<String>,
 ) -> (std::collections::HashSet<u32>, EntrypointWrappedBy) {
     let mut lines = std::collections::HashSet::new();
     let mut wrapped_by = EntrypointWrappedBy::new();
+    let ctx = EntrypointScanCtx {
+        source,
+        module_bound_names,
+    };
     visit_entrypoint_calls(
         root,
-        source,
+        &ctx,
         0,
         file_path.ends_with("__main__.py"),
         true,
@@ -138,13 +166,28 @@ fn get_call_name(node: &Node, source: &[u8]) -> Option<String> {
 /// `findEnclosingCallName` — see that function's doc comment for why the
 /// walk stops at a statement boundary.
 ///
-/// Only a bare-identifier wrapper is reported at all — an attribute/dotted
-/// wrapper (`sys.exit(...)`, `asyncio.run(...)`) returns `None` here, same as
-/// no wrapper, since its bare attribute name is too likely to coincidentally
-/// collide with an unrelated same-named in-repo symbol for the file-wide
-/// bare-name lookup in `project_entrypoint_attribution` to trust (#2420
-/// review — Greptile). See TS's doc comment for the full rationale.
-fn find_enclosing_call_name(node: &Node, source: &[u8]) -> Option<String> {
+/// A wrapper whose receiver is bound by a plain `import X` / `import X as Y`
+/// statement (`module_bound_names`) — e.g. `sys.exit(...)`, `asyncio.run(...)`
+/// — returns `None` here, same as no wrapper, rather than its bare attribute
+/// name: `sys`/`asyncio` are external modules, so such a call can never
+/// resolve to a same-file symbol, yet its bare attribute name (`exit`, `run`)
+/// is too likely to coincidentally collide with an unrelated same-named
+/// in-repo symbol for the file-wide bare-name lookup in
+/// `project_entrypoint_attribution` to trust (#2420 review — Greptile,
+/// first round).
+///
+/// A wrapper whose receiver is NOT a recognized module import — a plain
+/// identifier call, or a dotted call on a local object/instance
+/// (`runner.run(...)`) — reports its bare name as usual: unlike a module
+/// attribute, `runner.run` plausibly IS a same-file method, and
+/// unconditionally treating every dotted wrapper as unresolvable regresses
+/// to the original bug for exactly this case (#2420 review — Greptile,
+/// second round). See TS's doc comment for the full rationale.
+fn find_enclosing_call_name(
+    node: &Node,
+    source: &[u8],
+    module_bound_names: &std::collections::HashSet<String>,
+) -> Option<String> {
     let mut parent = node.parent();
     let mut hops = 0;
     while let Some(p) = parent {
@@ -154,11 +197,14 @@ fn find_enclosing_call_name(node: &Node, source: &[u8]) -> Option<String> {
         match p.kind() {
             "call" => {
                 let fn_node = p.child_by_field_name("function")?;
-                return if fn_node.kind() == "identifier" {
-                    get_call_name(&p, source)
-                } else {
-                    None
-                };
+                if fn_node.kind() == "attribute" {
+                    if let Some(receiver) = fn_node.child_by_field_name("object") {
+                        if module_bound_names.contains(node_text(&receiver, source)) {
+                            return None;
+                        }
+                    }
+                }
+                return get_call_name(&p, source);
             }
             "expression_statement" | "block" | "module" => return None,
             _ => {}
@@ -171,7 +217,7 @@ fn find_enclosing_call_name(node: &Node, source: &[u8]) -> Option<String> {
 
 fn visit_entrypoint_calls(
     node: &Node,
-    source: &[u8],
+    ctx: &EntrypointScanCtx,
     depth: usize,
     guarded: bool,
     at_module_level: bool,
@@ -184,8 +230,10 @@ fn visit_entrypoint_calls(
     if node.kind() == "call" && guarded {
         let line = start_line(node);
         lines.insert(line);
-        if let Some(name) = get_call_name(node, source) {
-            if let Some(wrapper) = find_enclosing_call_name(node, source) {
+        if let Some(name) = get_call_name(node, ctx.source) {
+            if let Some(wrapper) =
+                find_enclosing_call_name(node, ctx.source, ctx.module_bound_names)
+            {
                 wrapped_by.insert((line, name), wrapper);
             }
         }
@@ -203,7 +251,7 @@ fn visit_entrypoint_calls(
     let child_at_module_level = at_module_level && !leaves_runtime_scope;
     let guard_consequence = if at_module_level
         && node.kind() == "if_statement"
-        && is_main_guard_condition(node.child_by_field_name("condition"), source)
+        && is_main_guard_condition(node.child_by_field_name("condition"), ctx.source)
     {
         node.child_by_field_name("consequence")
             .or_else(|| find_child(node, "block"))
@@ -217,7 +265,7 @@ fn visit_entrypoint_calls(
         let is_guard_body = guard_start.is_some_and(|p| child.start_position() == p);
         visit_entrypoint_calls(
             &child,
-            source,
+            ctx,
             depth + 1,
             if is_guard_body { true } else { child_guarded },
             child_at_module_level,
@@ -943,6 +991,22 @@ mod tests {
         let main_call = s.calls.iter().find(|c| c.name == "main").unwrap();
         assert_eq!(main_call.entrypoint, Some(true));
         assert_eq!(main_call.entrypoint_wrapped_by, None);
+    }
+
+    #[test]
+    fn records_the_wrapper_name_for_a_dotted_wrapper_whose_receiver_is_not_a_module_import() {
+        // #2420 review (Greptile, second round): runner.run(main()) — "runner"
+        // is a local instance, not bound via `import`, so unlike sys.exit its
+        // dotted wrapper name ("run") is still reported and can go through
+        // the normal bare-name resolution check at projection time, where it
+        // correctly resolves and suppresses main's entry role in favor of
+        // run's.
+        let s = parse_py(
+            "class Runner:\n    def run(self, x):\n        return x\n\ndef main():\n    return 1\n\nrunner = Runner()\n\nif __name__ == \"__main__\":\n    runner.run(main())\n",
+        );
+        let main_call = s.calls.iter().find(|c| c.name == "main").unwrap();
+        assert_eq!(main_call.entrypoint, Some(true));
+        assert_eq!(main_call.entrypoint_wrapped_by, Some("run".to_string()));
     }
 
     #[test]
