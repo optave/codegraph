@@ -72,6 +72,28 @@ const JS_BUILTIN_GLOBALS: &[&str] = &[
     "Stream",
 ];
 
+/// Mirrors JS `name[0] !== name[0].toLowerCase()` exactly — the check TS's
+/// factory-method heuristic (`handleCallExprTypeMap`) uses to decide whether
+/// an identifier "starts with an uppercase letter". JS string indexing
+/// operates on UTF-16 code units, not full Unicode scalars: for an
+/// astral-plane leading character (code point > U+FFFF, e.g. a Deseret
+/// capital letter), `name[0]` is a lone UTF-16 surrogate, which doesn't
+/// case-fold and so is never treated as uppercase in JS. Using Rust's
+/// `char::is_uppercase()` on the full decoded scalar instead would recognize
+/// such characters as uppercase, silently diverging from the WASM engine for
+/// this parity-sensitive heuristic (#2396) — so this replicates the
+/// UTF-16-code-unit semantics precisely rather than the "more correct" full-
+/// scalar check.
+fn starts_with_uppercase_like_js(name: &str) -> bool {
+    let Some(unit) = name.encode_utf16().next() else {
+        return false;
+    };
+    if (0xD800..=0xDFFF).contains(&unit) {
+        return false;
+    }
+    char::from_u32(unit as u32).is_some_and(|c| c.is_uppercase())
+}
+
 pub struct JsExtractor;
 
 impl SymbolExtractor for JsExtractor {
@@ -336,9 +358,9 @@ fn handle_var_declarator_type_map(node: &Node, source: &[u8], symbols: &mut File
                 if let Some(obj_n) = fn_n.child_by_field_name("object") {
                     if obj_n.kind() == "identifier" {
                         let obj_name = node_text(&obj_n, source);
-                        let starts_uppercase =
-                            obj_name.chars().next().is_some_and(|c| c.is_uppercase());
-                        if starts_uppercase && !JS_BUILTIN_GLOBALS.contains(&obj_name) {
+                        if starts_with_uppercase_like_js(obj_name)
+                            && !JS_BUILTIN_GLOBALS.contains(&obj_name)
+                        {
                             push_scoped_type_map_entry(
                                 symbols,
                                 enclosing_qualifier.as_deref(),
@@ -10460,6 +10482,45 @@ mod tests {
         assert!(s.type_map.iter().all(|t| t.name != "d"));
         assert!(s.type_map.iter().all(|t| t.name != "p"));
         assert!(s.type_map.iter().all(|t| t.name != "o"));
+    }
+
+    // Greptile review on #2396: JS string indexing (`name[0]`) operates on
+    // UTF-16 code units, not full Unicode scalars, so an astral-plane leading
+    // character becomes a lone surrogate that never case-folds — TS's
+    // `objName[0] !== objName[0].toLowerCase()` therefore never recognizes it
+    // as uppercase. A naive `chars().next().is_uppercase()` in Rust decodes
+    // the full scalar and WOULD recognize it, silently diverging from WASM
+    // for this heuristic.
+    #[test]
+    fn factory_method_heuristic_matches_js_utf16_semantics_for_a_bmp_letter() {
+        // 'Ω' (U+03A9 GREEK CAPITAL LETTER OMEGA) is a single UTF-16 code unit
+        // and IS recognized as uppercase by both `str[0].toLowerCase()` in JS
+        // and `char::is_uppercase()` in Rust — both engines must agree here.
+        let s = parse_js("const conn = Ωmega.create();");
+        let tm = s.type_map.iter().find(|t| t.name == "conn");
+        assert!(
+            tm.is_some(),
+            "expected 'conn' to be typed; got {:?}",
+            s.type_map
+        );
+        assert_eq!(tm.unwrap().type_name, "Ωmega");
+        assert_eq!(tm.unwrap().confidence, 0.7);
+    }
+
+    #[test]
+    fn factory_method_heuristic_matches_js_utf16_semantics_for_an_astral_letter() {
+        // '𐐔' (U+10414 DESERET CAPITAL LETTER LONG I) is astral-plane — its
+        // first UTF-16 code unit is a lone high surrogate, which JS's
+        // `objName[0].toLowerCase()` leaves unchanged, so
+        // `objName[0] !== objName[0].toLowerCase()` is false and TS's
+        // heuristic does NOT fire. Rust must not fire here either, even
+        // though `'𐐔'.is_uppercase()` is true for the full decoded scalar.
+        let s = parse_js("const conn = \u{10414}mega.create();");
+        assert!(
+            s.type_map.iter().all(|t| t.name != "conn"),
+            "must not type 'conn' — matches TS's UTF-16-surrogate semantics; got {:?}",
+            s.type_map
+        );
     }
 
     /// `this.prop = new Ctor()` outside any class declaration (function-style
