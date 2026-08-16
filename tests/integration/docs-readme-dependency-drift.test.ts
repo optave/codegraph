@@ -52,7 +52,21 @@ describe('README.md runtime-dependency claims track package.json (#2417)', () =>
 
     const afterHeader = afterClaim!.slice(tableStart);
     const tableBlock = afterHeader.split(/\n\n/)[0];
-    const rowNames = [...tableBlock.matchAll(/^\|\s*\[([^\]]+)\]\(/gm)].map((m) => m[1]).sort();
+
+    // Every data row (skip the header row and the `|---|---|` separator),
+    // normalizing a linked first cell (`[name](url)`) down to its link text —
+    // but not silently dropping a row whose first cell is plain text, which
+    // would let a stale non-linked row hide from the exact-set comparison
+    // below (Greptile review).
+    const rowNames = tableBlock
+      .split('\n')
+      .slice(2)
+      .filter((line) => line.startsWith('|'))
+      .map((line) => {
+        const firstCell = line.split('|')[1].trim();
+        return firstCell.match(/^\[([^\]]+)\]\(/)?.[1] ?? firstCell;
+      })
+      .sort();
 
     expect(rowNames).toEqual(actualDeps);
   });
