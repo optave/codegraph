@@ -474,6 +474,47 @@ describe('rolesData', () => {
     expect(noMatchesForFile.totalClassified).toBe(unfilteredForFile.count);
     expect(noMatchesForFile.totalClassified).toBeGreaterThan(0);
   });
+
+  // Regression guard for Greptile's #2531 review finding: a --file/--no-tests
+  // scope that excludes every classified symbol must not be conflated with a
+  // genuinely unbuilt graph either — totalClassified (scoped) is 0 in this
+  // case too, so totalClassifiedUnscoped (ignoring every filter) is needed to
+  // show the graph is fine outside the requested scope.
+  test('totalClassifiedUnscoped reports the graph-wide count when a --file scope excludes everything', () => {
+    const unfiltered = rolesData(dbPath);
+    const emptyFileScope = rolesData(dbPath, { file: 'nonexistent-file.js' });
+    expect(emptyFileScope.count).toBe(0);
+    expect(emptyFileScope.totalClassified).toBe(0);
+    expect(emptyFileScope.totalClassifiedUnscoped).toBe(unfiltered.count);
+    expect(emptyFileScope.totalClassifiedUnscoped).toBeGreaterThan(0);
+  });
+
+  test('totalClassifiedUnscoped reports the graph-wide count when file+noTests excludes everything', () => {
+    const unfiltered = rolesData(dbPath);
+    // app.test.js is the only file matching this filter, and noTests removes it too.
+    const emptyScope = rolesData(dbPath, { file: 'app.test.js', noTests: true });
+    expect(emptyScope.count).toBe(0);
+    expect(emptyScope.totalClassified).toBe(0);
+    expect(emptyScope.totalClassifiedUnscoped).toBe(unfiltered.count);
+    expect(emptyScope.totalClassifiedUnscoped).toBeGreaterThan(0);
+  });
+
+  test('totalClassifiedUnscoped is not computed when the graph genuinely has no classified symbols', () => {
+    const emptyDb = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-roles-empty-'));
+    fs.mkdirSync(path.join(emptyDb, '.codegraph'));
+    const emptyDbPath = path.join(emptyDb, '.codegraph', 'graph.db');
+    const db = new Database(emptyDbPath);
+    db.pragma('journal_mode = WAL');
+    initSchema(db);
+    db.close();
+
+    const data = rolesData(emptyDbPath);
+    expect(data.count).toBe(0);
+    expect(data.totalClassified).toBe(0);
+    expect(data.totalClassifiedUnscoped).toBeUndefined();
+
+    fs.rmSync(emptyDb, { recursive: true, force: true });
+  });
 });
 
 // ─── statsData includes roles ───────────────────────────────────────────

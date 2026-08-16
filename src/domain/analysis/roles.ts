@@ -104,6 +104,21 @@ export function rolesData(
       totalClassified = totalRows.length;
     }
 
+    // Issue #2390 follow-up: `totalClassified` above is still scoped by
+    // `--file`/`--no-tests`, so a filter combination that excludes every
+    // classified symbol from that scope (e.g. a file with none, or a role
+    // that only exists in test files under `-T`) falls through to zero there
+    // too — even though the graph is perfectly healthy outside that scope.
+    // Only in that doubly-empty case do we need a fully unscoped (no role, no
+    // file, no noTests) count to tell "this scope is empty" apart from "the
+    // graph was never classified at all."
+    let totalClassifiedUnscoped: number | undefined;
+    if (totalClassified === 0 && (filterRole || opts.file || noTests)) {
+      totalClassifiedUnscoped = (
+        db.prepare('SELECT COUNT(*) AS c FROM nodes WHERE role IS NOT NULL').get() as { c: number }
+      ).c;
+    }
+
     const summary: Record<string, number> = {};
     for (const r of rows) {
       // SQL guarantees role IS NOT NULL
@@ -113,7 +128,13 @@ export function rolesData(
 
     const hc = new Map();
     const symbols = rows.map((r) => normalizeSymbol(r, db, hc));
-    const base = { count: symbols.length, totalClassified, summary, symbols };
+    const base = {
+      count: symbols.length,
+      totalClassified,
+      totalClassifiedUnscoped,
+      summary,
+      symbols,
+    };
     return paginateResult(base, 'symbols', { limit: opts.limit, offset: opts.offset });
   } finally {
     db.close();

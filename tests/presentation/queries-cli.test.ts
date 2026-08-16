@@ -697,6 +697,36 @@ describe('roles', () => {
     roles('/db', { role: 'entry' });
     expect(output()).toContain('No classified symbols found. Run "codegraph build" first.');
   });
+
+  // Regression guard for Greptile's #2531 review finding: a --file/--no-tests
+  // scope that excludes every classified symbol must not be reported as an
+  // unbuilt graph either, when the graph is healthy outside that scope.
+  it('reports a scope-specific zero-match message instead of "run build first" when --file excludes everything but the graph is healthy (#2390)', () => {
+    mocks.rolesData.mockReturnValue({
+      count: 0,
+      totalClassified: 0,
+      totalClassifiedUnscoped: 548,
+      summary: {},
+      symbols: [],
+    });
+    roles('/db', { file: 'empty.js' });
+    const out = output();
+    expect(out).toContain('No classified symbols found for file "empty.js"');
+    expect(out).toContain('548 classified symbols in graph overall');
+    expect(out).not.toContain('Run "codegraph build" first');
+  });
+
+  it('mentions both file and no-tests scope in the message when both are active (#2390)', () => {
+    mocks.rolesData.mockReturnValue({
+      count: 0,
+      totalClassified: 0,
+      totalClassifiedUnscoped: 548,
+      summary: {},
+      symbols: [],
+    });
+    roles('/db', { file: 'app.test.js', noTests: true });
+    expect(output()).toContain('for file "app.test.js" and non-test files');
+  });
 });
 
 // ── overview.js: stats ─────────────────────────────────────────────
