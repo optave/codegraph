@@ -6,6 +6,17 @@ Hit@N = expected symbol found in top N results.
 
 | Version | Model | Symbols | Hit@1 | Hit@3 | Hit@5 | Misses | Embed Time |
 |---------|-------|--------:|------:|------:|------:|-------:|-----------:|
+| 3.17.0 | minilm | 1500 | 67.1% ↑2.1pp | 85.1% ~ | 90.0% ~ | 82 | 124.7s |
+| 3.17.0 | jina-small | 1500 | 79.4% | 91.5% | 95.1% | 38 | 242.3s |
+| 3.17.0 | jina-base | 1500 | 73.3% ↑2.5pp | 89.3% ↓1.1pp | 93.0% ↓0.7pp | 63 | 1246.1s |
+| 3.17.0 | jina-code | 1500 | 76.0% ↑8.4pp | 88.4% ↑3.7pp | 92.1% ↑2.0pp | 52 | 1064.2s |
+| 3.17.0 | nomic | 1500 | 85.0% ↑6.2pp | 96.1% ↑1.6pp | 97.9% ~ | 13 | 1257.4s |
+| 3.17.0 | nomic-v1.5 | 1500 | 84.1% ↑6.3pp | 94.9% ↑1.2pp | 96.7% ~ | 17 | 1245.5s |
+| 3.17.0 | bge-large | 1500 | 89.2% ↑5.9pp | 97.0% ~ | 98.3% ~ | 12 | 3045.7s |
+| 3.17.0 | mxbai-xsmall | 1500 | 50.7% | 69.7% | 76.6% | 259 | 185.0s |
+| 3.17.0 | mxbai-large | 1500 | 87.3% | 96.5% | 98.4% | 9 | 3022.7s |
+| 3.17.0 | bge-m3 | 1500 | 80.1% | 93.8% | 96.2% | 31 | 3370.9s |
+| 3.17.0 | modernbert | 1500 | 79.3% | 92.7% | 95.7% | 30 | 1168.4s |
 | 3.13.0 | minilm | 1500 | 64.9% ↑0.9pp | 85.1% ~ | 90.5% ~ | 76 | 159.1s |
 | 3.13.0 | jina-base | 1500 | 70.8% | 90.4% | 93.7% | 58 | 1336.9s |
 | 3.13.0 | jina-code | 1500 | 67.6% ↓0.9pp | 84.7% ~ | 90.1% ↑0.9pp | 77 | 1212.8s |
@@ -46,19 +57,164 @@ Hit@N = expected symbol found in top N results.
 
 ### Latest results
 
-**Version:** 3.13.0 | **Strategy:** structured | **Symbols:** 1500 | **Date:** 2026-06-17
+**Version:** 3.17.0 | **Strategy:** structured | **Symbols:** 1500 | **Date:** 2026-08-17
 
 | Model | Dim | Context | Hit@1 | Hit@3 | Hit@5 | Hit@10 | Misses | Embed | Search |
 |-------|----:|--------:|------:|------:|------:|-------:|-------:|------:|-------:|
-| minilm | 384 | 256 | 64.9% | 85.1% | 90.5% | 94.9% | 76 | 159.1s | 137.9s |
-| jina-base | 768 | 8192 | 70.8% | 90.4% | 93.7% | 96.1% | 58 | 1336.9s | 241.9s |
-| jina-code | 768 | 8192 | 67.6% | 84.7% | 90.1% | 94.9% | 77 | 1212.8s | 244.0s |
-| nomic | 768 | 8192 | 78.8% | 94.5% | 97.5% | 99.1% | 14 | 1292.8s | 239.1s |
-| nomic-v1.5 | 768 | 8192 | 77.8% | 93.7% | 96.9% | 98.5% | 22 | 1515.7s | 243.8s |
-| bge-large | 1024 | 512 | 83.3% | 96.5% | 98.5% | 99.4% | 9 | 2981.9s | 317.4s |
+| minilm | 384 | 256 | 67.1% | 85.1% | 90.0% | 94.5% | 82 | 124.7s | 184.6s |
+| jina-small | 512 | 8192 | 79.4% | 91.5% | 95.1% | 97.5% | 38 | 242.3s | 209.5s |
+| jina-base | 768 | 8192 | 73.3% | 89.3% | 93.0% | 95.8% | 63 | 1246.1s | 250.3s |
+| jina-code | 768 | 8192 | 76.0% | 88.4% | 92.1% | 96.5% | 52 | 1064.2s | 258.1s |
+| nomic | 768 | 8192 | 85.0% | 96.1% | 97.9% | 99.1% | 13 | 1257.4s | 242.5s |
+| nomic-v1.5 | 768 | 8192 | 84.1% | 94.9% | 96.7% | 98.9% | 17 | 1245.5s | 257.0s |
+| bge-large | 1024 | 512 | 89.2% | 97.0% | 98.3% | 99.2% | 12 | 3045.7s | 314.5s |
+| mxbai-xsmall | 384 | 4096 | 50.7% | 69.7% | 76.6% | 82.7% | 259 | 185.0s | 204.1s |
+| mxbai-large | 1024 | 512 | 87.3% | 96.5% | 98.4% | 99.4% | 9 | 3022.7s | 351.4s |
+| bge-m3 | 1024 | 8192 | 80.1% | 93.8% | 96.2% | 97.9% | 31 | 3370.9s | 398.7s |
+| modernbert | 768 | 8192 | 79.3% | 92.7% | 95.7% | 98.0% | 30 | 1168.4s | 253.5s |
 
 <!-- EMBEDDING_BENCHMARK_DATA
 [
+  {
+    "version": "3.17.0",
+    "date": "2026-08-17",
+    "strategy": "structured",
+    "symbols": 1500,
+    "models": {
+      "minilm": {
+        "dim": 384,
+        "contextWindow": 256,
+        "hits1": 1006,
+        "hits3": 1276,
+        "hits5": 1350,
+        "hits10": 1418,
+        "misses": 82,
+        "total": 1500,
+        "embedTimeMs": 124675,
+        "searchTimeMs": 184629
+      },
+      "jina-small": {
+        "dim": 512,
+        "contextWindow": 8192,
+        "hits1": 1191,
+        "hits3": 1373,
+        "hits5": 1427,
+        "hits10": 1462,
+        "misses": 38,
+        "total": 1500,
+        "embedTimeMs": 242342,
+        "searchTimeMs": 209485
+      },
+      "jina-base": {
+        "dim": 768,
+        "contextWindow": 8192,
+        "hits1": 1099,
+        "hits3": 1340,
+        "hits5": 1395,
+        "hits10": 1437,
+        "misses": 63,
+        "total": 1500,
+        "embedTimeMs": 1246142,
+        "searchTimeMs": 250309
+      },
+      "jina-code": {
+        "dim": 768,
+        "contextWindow": 8192,
+        "hits1": 1140,
+        "hits3": 1326,
+        "hits5": 1382,
+        "hits10": 1448,
+        "misses": 52,
+        "total": 1500,
+        "embedTimeMs": 1064206,
+        "searchTimeMs": 258066
+      },
+      "nomic": {
+        "dim": 768,
+        "contextWindow": 8192,
+        "hits1": 1275,
+        "hits3": 1442,
+        "hits5": 1468,
+        "hits10": 1487,
+        "misses": 13,
+        "total": 1500,
+        "embedTimeMs": 1257374,
+        "searchTimeMs": 242485
+      },
+      "nomic-v1.5": {
+        "dim": 768,
+        "contextWindow": 8192,
+        "hits1": 1261,
+        "hits3": 1423,
+        "hits5": 1451,
+        "hits10": 1483,
+        "misses": 17,
+        "total": 1500,
+        "embedTimeMs": 1245548,
+        "searchTimeMs": 256994
+      },
+      "bge-large": {
+        "dim": 1024,
+        "contextWindow": 512,
+        "hits1": 1338,
+        "hits3": 1455,
+        "hits5": 1475,
+        "hits10": 1488,
+        "misses": 12,
+        "total": 1500,
+        "embedTimeMs": 3045741,
+        "searchTimeMs": 314528
+      },
+      "mxbai-xsmall": {
+        "dim": 384,
+        "contextWindow": 4096,
+        "hits1": 761,
+        "hits3": 1046,
+        "hits5": 1149,
+        "hits10": 1241,
+        "misses": 259,
+        "total": 1500,
+        "embedTimeMs": 185031,
+        "searchTimeMs": 204051
+      },
+      "mxbai-large": {
+        "dim": 1024,
+        "contextWindow": 512,
+        "hits1": 1309,
+        "hits3": 1448,
+        "hits5": 1476,
+        "hits10": 1491,
+        "misses": 9,
+        "total": 1500,
+        "embedTimeMs": 3022680,
+        "searchTimeMs": 351448
+      },
+      "bge-m3": {
+        "dim": 1024,
+        "contextWindow": 8192,
+        "hits1": 1201,
+        "hits3": 1407,
+        "hits5": 1443,
+        "hits10": 1469,
+        "misses": 31,
+        "total": 1500,
+        "embedTimeMs": 3370937,
+        "searchTimeMs": 398739
+      },
+      "modernbert": {
+        "dim": 768,
+        "contextWindow": 8192,
+        "hits1": 1190,
+        "hits3": 1390,
+        "hits5": 1435,
+        "hits10": 1470,
+        "misses": 30,
+        "total": 1500,
+        "embedTimeMs": 1168428,
+        "searchTimeMs": 253488
+      }
+    }
+  },
   {
     "version": "3.13.0",
     "date": "2026-06-17",
