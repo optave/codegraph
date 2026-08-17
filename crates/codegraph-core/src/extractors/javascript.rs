@@ -5512,7 +5512,13 @@ fn declarator_kills_name(declarator: &Node, name: &str, source: &[u8], exclude_i
 /// `declarator_kills_name`.
 ///
 /// Mirrors `killsBinding` in `src/extractors/javascript.ts`.
-fn kills_binding(statement: &Node, name: &str, source: &[u8], exclude_id: usize, depth: usize) -> bool {
+fn kills_binding(
+    statement: &Node,
+    name: &str,
+    source: &[u8],
+    exclude_id: usize,
+    depth: usize,
+) -> bool {
     if depth >= MAX_WALK_DEPTH {
         return false;
     }
