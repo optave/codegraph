@@ -21,15 +21,22 @@ pub struct JournalResult {
     pub removed: Vec<String>,
 }
 
-fn journal_path(root_dir: &str) -> PathBuf {
-    Path::new(root_dir)
-        .join(".codegraph")
-        .join("changes.journal")
+fn journal_path(journal_dir: &str) -> PathBuf {
+    Path::new(journal_dir).join("changes.journal")
 }
 
 /// Read and parse the changes journal.
-pub fn read_journal(root_dir: &str) -> JournalResult {
-    let path = journal_path(root_dir);
+///
+/// `journal_dir` is the directory the journal lives in directly — normally
+/// the database's own directory (`Path::new(db_path).parent()`), NOT
+/// `root_dir`. `db_path` defaults to `root_dir/.codegraph/graph.db`, so the
+/// common case is unchanged (`root_dir/.codegraph`), but a caller-supplied
+/// `dbPath` override relocates the database — and the journal must follow
+/// it, or a build targeting a custom `dbPath` writes a stray `.codegraph/`
+/// into `root_dir` that the actual database never uses (#2426). Mirrors TS
+/// `readJournal` in `src/domain/graph/journal.ts`.
+pub fn read_journal(journal_dir: &str) -> JournalResult {
+    let path = journal_path(journal_dir);
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return JournalResult::default(),
@@ -74,13 +81,16 @@ pub fn read_journal(root_dir: &str) -> JournalResult {
 }
 
 /// Write a fresh journal header, atomically replacing the old journal.
-pub fn write_journal_header(root_dir: &str, timestamp: f64) {
-    let dir = Path::new(root_dir).join(".codegraph");
+///
+/// `journal_dir` — see `read_journal`'s doc comment: the database's own
+/// directory, not `root_dir`.
+pub fn write_journal_header(journal_dir: &str, timestamp: f64) {
+    let dir = Path::new(journal_dir);
     let path = dir.join("changes.journal");
     let tmp = dir.join("changes.journal.tmp");
 
-    if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("Warning: failed to create .codegraph dir: {e}");
+    if let Err(e) = fs::create_dir_all(dir) {
+        eprintln!("Warning: failed to create journal dir: {e}");
         return;
     }
 
@@ -98,12 +108,12 @@ mod tests {
     #[test]
     fn round_trip_journal() {
         let tmp = std::env::temp_dir().join("codegraph_journal_test");
-        let root = tmp.to_str().unwrap();
         let dir = tmp.join(".codegraph");
+        let journal_dir = dir.to_str().unwrap();
         fs::create_dir_all(&dir).unwrap();
 
         // Write header
-        write_journal_header(root, 1700000000000.0);
+        write_journal_header(journal_dir, 1700000000000.0);
 
         // Append some entries manually
         let journal_file = dir.join("changes.journal");
@@ -113,7 +123,7 @@ mod tests {
         content.push_str("src/foo.ts\n"); // duplicate
         fs::write(&journal_file, &content).unwrap();
 
-        let result = read_journal(root);
+        let result = read_journal(journal_dir);
         assert!(result.valid);
         assert_eq!(result.timestamp, 1700000000000.0);
         assert_eq!(result.changed, vec!["src/foo.ts"]);
@@ -124,14 +134,34 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_journal_in_a_dir_not_named_dot_codegraph() {
+        // #2426: a caller-supplied `dbPath` need not live under a
+        // `.codegraph`-named directory at all — the journal must follow
+        // whatever directory actually holds the database, verbatim.
+        let tmp = std::env::temp_dir().join("codegraph_journal_custom_dbpath");
+        let journal_dir = tmp.to_str().unwrap();
+        fs::create_dir_all(&tmp).unwrap();
+
+        write_journal_header(journal_dir, 1700000000000.0);
+        let journal_file = tmp.join("changes.journal");
+        assert!(journal_file.exists());
+
+        let result = read_journal(journal_dir);
+        assert!(result.valid);
+        assert_eq!(result.timestamp, 1700000000000.0);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn invalid_journal() {
         let tmp = std::env::temp_dir().join("codegraph_journal_invalid");
-        let root = tmp.to_str().unwrap();
         let dir = tmp.join(".codegraph");
+        let journal_dir = dir.to_str().unwrap();
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("changes.journal"), "garbage\n").unwrap();
 
-        let result = read_journal(root);
+        let result = read_journal(journal_dir);
         assert!(!result.valid);
 
         let _ = fs::remove_dir_all(&tmp);

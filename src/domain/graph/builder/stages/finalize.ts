@@ -311,7 +311,7 @@ function runAdvisoryChecks(ctx: PipelineContext, hasEmbeddings: boolean, buildNo
 }
 
 export async function finalize(ctx: PipelineContext): Promise<void> {
-  const { allSymbols, rootDir, isFullBuild, hasEmbeddings, opts } = ctx;
+  const { allSymbols, rootDir, dbPath, isFullBuild, hasEmbeddings, opts } = ctx;
 
   const t0 = performance.now();
 
@@ -367,8 +367,9 @@ export async function finalize(ctx: PipelineContext): Promise<void> {
     closeDbPair(pair);
   }
 
-  // Write journal header after successful build
-  writeJournalHeader(rootDir, Date.now());
+  // Write journal header after successful build — alongside the database
+  // (dbPath's directory), not unconditionally under rootDir (#2426).
+  writeJournalHeader(path.dirname(dbPath), Date.now());
 
   // Skip auto-registration for incremental builds — the repo was already
   // registered during the initial full build. The dynamic import + file I/O

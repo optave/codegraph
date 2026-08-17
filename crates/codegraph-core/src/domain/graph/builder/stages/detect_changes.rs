@@ -221,8 +221,9 @@ fn try_journal_tier(
     existing: &HashMap<String, FileHashRow>,
     root_dir: &str,
     removed: &[String],
+    journal_dir: &str,
 ) -> Option<ChangeResult> {
-    let journal = journal::read_journal(root_dir);
+    let journal = journal::read_journal(journal_dir);
     if !journal.valid {
         return None;
     }
@@ -1296,6 +1297,7 @@ pub fn detect_changes(
     incremental: bool,
     force_full_rebuild: bool,
     scoped_rel_paths: Option<&HashSet<String>>,
+    journal_dir: &str,
 ) -> Result<ChangeResult, String> {
     if !incremental || force_full_rebuild {
         return Ok(ChangeResult {
@@ -1345,7 +1347,7 @@ pub fn detect_changes(
     let removed = detect_removed_files(&existing, all_files, root_dir, scoped_rel_paths);
 
     // Try Tier 0 (journal) first
-    if let Some(result) = try_journal_tier(conn, &existing, root_dir, &removed) {
+    if let Some(result) = try_journal_tier(conn, &existing, root_dir, &removed, journal_dir) {
         return Ok(result);
     }
 
@@ -1377,6 +1379,49 @@ mod tests {
         let h2 = file_hash_sha256("hello world");
         assert_eq!(h1, h2);
         assert_ne!(h1, file_hash_sha256("different content"));
+    }
+
+    #[test]
+    fn try_journal_tier_reads_from_journal_dir_not_root_dir() {
+        // #2426: the journal must be read from wherever the database actually
+        // lives (journal_dir), not unconditionally from root_dir/.codegraph —
+        // this is exactly the case a caller-supplied dbPath override hits.
+        // root_dir/.codegraph is never created here, so this can only pass if
+        // try_journal_tier genuinely reads from journal_dir.
+        let root_tmp = std::env::temp_dir().join("codegraph_tjt_root");
+        let journal_tmp = std::env::temp_dir().join("codegraph_tjt_journal_elsewhere");
+        fs::create_dir_all(&root_tmp).unwrap();
+        fs::create_dir_all(&journal_tmp).unwrap();
+        fs::write(root_tmp.join("a.ts"), "hello").unwrap();
+
+        journal::write_journal_header(journal_tmp.to_str().unwrap(), 9_999_999_999_999.0);
+        let journal_file = journal_tmp.join("changes.journal");
+        let mut content = fs::read_to_string(&journal_file).unwrap();
+        content.push_str("a.ts\n");
+        fs::write(&journal_file, content).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (file TEXT, hash TEXT, mtime INTEGER, size INTEGER);",
+        )
+        .unwrap();
+        let existing = HashMap::new();
+
+        let result = try_journal_tier(
+            &conn,
+            &existing,
+            root_tmp.to_str().unwrap(),
+            &[],
+            journal_tmp.to_str().unwrap(),
+        );
+
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.changed.len(), 1);
+        assert_eq!(result.changed[0].rel_path, "a.ts");
+
+        let _ = fs::remove_dir_all(&root_tmp);
+        let _ = fs::remove_dir_all(&journal_tmp);
     }
 
     #[test]
@@ -1437,6 +1482,7 @@ mod tests {
             true,
             false,
             None,
+            "/project/.codegraph",
         );
         assert!(result.is_err());
     }

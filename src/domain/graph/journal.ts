@@ -204,11 +204,10 @@ function sweepStaleTmpFiles(dir: string): void {
   }
 }
 
-function withJournalLock<T>(rootDir: string, fn: () => T): T {
-  const dir = path.join(rootDir, '.codegraph');
-  fs.mkdirSync(dir, { recursive: true });
-  sweepStaleTmpFiles(dir);
-  const lockPath = path.join(dir, `${JOURNAL_FILENAME}${LOCK_SUFFIX}`);
+function withJournalLock<T>(journalDir: string, fn: () => T): T {
+  fs.mkdirSync(journalDir, { recursive: true });
+  sweepStaleTmpFiles(journalDir);
+  const lockPath = path.join(journalDir, `${JOURNAL_FILENAME}${LOCK_SUFFIX}`);
   const lock = acquireJournalLock(lockPath);
   try {
     return fn();
@@ -262,8 +261,17 @@ function parseJournalBody(lines: string[]): { changed: string[]; removed: string
   return { changed, removed };
 }
 
-export function readJournal(rootDir: string): JournalResult {
-  const journalPath = path.join(rootDir, '.codegraph', JOURNAL_FILENAME);
+/**
+ * `journalDir` is the directory the journal lives in directly — normally the
+ * database's own directory (`path.dirname(dbPath)`), NOT `rootDir`. `dbPath`
+ * defaults to `rootDir/.codegraph/graph.db`, so the common case is unchanged
+ * (`rootDir/.codegraph`), but a caller-supplied `dbPath` override relocates
+ * the database — and the journal must follow it, or a build targeting a
+ * custom `dbPath` writes a stray `.codegraph/` into `rootDir` that the
+ * actual database never uses (#2426).
+ */
+export function readJournal(journalDir: string): JournalResult {
+  const journalPath = path.join(journalDir, JOURNAL_FILENAME);
   let content: string;
   try {
     content = fs.readFileSync(journalPath, 'utf-8');
@@ -279,12 +287,13 @@ export function readJournal(rootDir: string): JournalResult {
   return { valid: true, timestamp, changed, removed };
 }
 
+/** `journalDir` — see `readJournal`'s doc comment: the database's own directory, not `rootDir`. */
 export function appendJournalEntries(
-  rootDir: string,
+  journalDir: string,
   entries: Array<{ file: string; deleted?: boolean }>,
 ): void {
-  withJournalLock(rootDir, () => {
-    const journalPath = path.join(rootDir, '.codegraph', JOURNAL_FILENAME);
+  withJournalLock(journalDir, () => {
+    const journalPath = path.join(journalDir, JOURNAL_FILENAME);
 
     if (!fs.existsSync(journalPath)) {
       fs.writeFileSync(journalPath, `${HEADER_PREFIX}0\n`);
@@ -299,9 +308,10 @@ export function appendJournalEntries(
   });
 }
 
-export function writeJournalHeader(rootDir: string, timestamp: number): void {
-  withJournalLock(rootDir, () => {
-    const journalPath = path.join(rootDir, '.codegraph', JOURNAL_FILENAME);
+/** `journalDir` — see `readJournal`'s doc comment: the database's own directory, not `rootDir`. */
+export function writeJournalHeader(journalDir: string, timestamp: number): void {
+  withJournalLock(journalDir, () => {
+    const journalPath = path.join(journalDir, JOURNAL_FILENAME);
     const tmpPath = `${journalPath}.tmp`;
 
     try {
@@ -328,14 +338,17 @@ export function writeJournalHeader(rootDir: string, timestamp: number): void {
  *
  * Writes a tmp file then renames — a crash mid-rename leaves the previous
  * journal state intact.
+ *
+ * `journalDir` — see `readJournal`'s doc comment: the database's own
+ * directory, not `rootDir`.
  */
 export function appendJournalEntriesAndStampHeader(
-  rootDir: string,
+  journalDir: string,
   entries: Array<{ file: string; deleted?: boolean }>,
   timestamp: number,
 ): void {
-  withJournalLock(rootDir, () => {
-    const journalPath = path.join(rootDir, '.codegraph', JOURNAL_FILENAME);
+  withJournalLock(journalDir, () => {
+    const journalPath = path.join(journalDir, JOURNAL_FILENAME);
     const tmpPath = `${journalPath}.tmp`;
 
     let existingBody = '';

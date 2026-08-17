@@ -198,11 +198,11 @@ fn early_exit_result(
     file_count: usize,
     timing: PipelineTiming,
     conn: &Connection,
-    root_dir: &str,
+    journal_dir: &str,
     metadata_updates: &[detect_changes::MetadataUpdate],
 ) -> BuildPipelineResult {
     detect_changes::heal_metadata(conn, metadata_updates);
-    journal::write_journal_header(root_dir, now_ms());
+    journal::write_journal_header(journal_dir, now_ms());
     BuildPipelineResult {
         phases: timing,
         node_count: 0,
@@ -593,10 +593,18 @@ fn run_analysis_persistence(
 
 /// Run the full build pipeline in Rust.
 ///
-/// Called from `NativeDatabase.build_graph()` via napi.
+/// Called from `NativeDatabase.build_graph()` via napi. `db_path` is the
+/// database's actual on-disk path — `self.db_path()` on the caller, already
+/// resolved from a caller-supplied `dbPath` override or the
+/// `root_dir/.codegraph/graph.db` default. The incremental-build journal
+/// must live alongside the database (`Path::new(db_path).parent()`), never
+/// unconditionally under `root_dir` — otherwise a build targeting a custom
+/// `dbPath` writes a stray `.codegraph/` into `root_dir` that the actual
+/// database never uses (#2426).
 pub fn run_pipeline(
     conn: &Connection,
     root_dir: &str,
+    db_path: &str,
     config_json: &str,
     aliases_json: &str,
     opts_json: &str,
@@ -604,6 +612,13 @@ pub fn run_pipeline(
 ) -> Result<BuildPipelineResult, String> {
     let total_start = Instant::now();
     let mut timing = PipelineTiming::default();
+
+    // The journal always travels with the database, not root_dir — see this
+    // function's doc comment (#2426).
+    let journal_dir = Path::new(db_path)
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or(root_dir);
 
     // ── Stage 1: Deserialize config ────────────────────────────────────
     let t0 = Instant::now();
@@ -635,6 +650,7 @@ pub fn run_pipeline(
         &opts,
         incremental,
         force_full_rebuild,
+        journal_dir,
     );
     timing.collect_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -647,6 +663,7 @@ pub fn run_pipeline(
         incremental,
         force_full_rebuild,
         scoped_rel_paths.as_ref(),
+        journal_dir,
     )?;
     timing.detect_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -664,7 +681,7 @@ pub fn run_pipeline(
             collect_result.files.len(),
             timing,
             conn,
-            root_dir,
+            journal_dir,
             &change_result.metadata_updates,
         ));
     }
@@ -880,7 +897,7 @@ pub fn run_pipeline(
 
     // ── Stage 9: Finalize ──────────────────────────────────────────────
     let t0 = Instant::now();
-    let (node_count, edge_count) = finalize_build(conn, root_dir);
+    let (node_count, edge_count) = finalize_build(conn, root_dir, journal_dir);
     timing.finalize_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     // Include total time in setup for overhead accounting.
@@ -924,6 +941,7 @@ fn collect_source_files(
     opts: &BuildOpts,
     incremental: bool,
     force_full_rebuild: bool,
+    journal_dir: &str,
 ) -> collect_files::CollectResult {
     if let Some(ref scope) = opts.scope {
         // Scoped rebuild
@@ -948,7 +966,7 @@ fn collect_source_files(
         }
     } else if incremental && !force_full_rebuild {
         // Try fast collect from DB + journal
-        let journal = journal::read_journal(root_dir);
+        let journal = journal::read_journal(journal_dir);
         let has_entries =
             journal.valid && (!journal.changed.is_empty() || !journal.removed.is_empty());
 
@@ -1221,7 +1239,7 @@ fn collect_reexport_from_barrels(
 }
 
 /// Stage 9: Finalize build — persist metadata, write journal, return counts.
-fn finalize_build(conn: &Connection, root_dir: &str) -> (i64, i64) {
+fn finalize_build(conn: &Connection, root_dir: &str, journal_dir: &str) -> (i64, i64) {
     let node_count = conn
         .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get::<_, i64>(0))
         .unwrap_or(0);
@@ -1249,7 +1267,7 @@ fn finalize_build(conn: &Connection, root_dir: &str) -> (i64, i64) {
     }
 
     // Write journal header
-    journal::write_journal_header(root_dir, now_ms());
+    journal::write_journal_header(journal_dir, now_ms());
     (node_count, edge_count)
 }
 

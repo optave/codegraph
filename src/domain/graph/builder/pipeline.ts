@@ -455,7 +455,10 @@ export async function buildGraph(
           )
         ) {
           info('No changes detected. Graph is up to date.');
-          writeJournalHeader(ctx.rootDir, Date.now());
+          // Alongside the database (dbPath's directory), not unconditionally
+          // under rootDir — a caller-supplied dbPath override relocates both
+          // together (#2426).
+          writeJournalHeader(path.dirname(ctx.dbPath), Date.now());
           closeDb(ctx.db);
           return;
         }
