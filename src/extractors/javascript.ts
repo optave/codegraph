@@ -5033,6 +5033,25 @@ function blockContainsIdentifierExcluding(
       }
       return false;
     }
+    // This statement doesn't contain the declarator we're checking liveness
+    // FOR, but its OWN declarators still execute left-to-right — an earlier
+    // declarator unconditionally redeclaring `name` kills the value before a
+    // LATER declarator's initializer in the SAME statement runs
+    // (`var fn = replacement, result = fn();` must not credit `fn()`'s read
+    // to whatever `fn` held before this statement — Greptile review, #2438).
+    for (let i = 0; i < node.childCount; i++) {
+      const declarator = node.child(i);
+      if (declarator?.type !== 'variable_declarator') continue;
+      if (
+        blockContainsIdentifierExcluding(declarator, name, excludeId, depth + 1, requireCallSite)
+      ) {
+        return true;
+      }
+      if (declaratorKillsName(declarator, name, excludeId)) {
+        return false;
+      }
+    }
+    return false;
   }
   if (node.type === 'variable_declarator') {
     const declName = node.childForFieldName('name');
@@ -5163,6 +5182,20 @@ function blockContainsIdentifierExcluding(
 }
 
 /**
+ * True when `declarator` unconditionally overwrites `name`: an initialized
+ * (has a `value`) declarator whose binding pattern includes `name`, other
+ * than `excludeId` itself — the declarator the whole liveness check is FOR,
+ * which trivially "binds" name via its own declaration and must never be
+ * mistaken for a kill of its own freshly-assigned value.
+ */
+function declaratorKillsName(declarator: TreeSitterNode, name: string, excludeId: number): boolean {
+  if (declarator.type !== 'variable_declarator' || declarator.id === excludeId) return false;
+  const declName = declarator.childForFieldName('name');
+  const value = declarator.childForFieldName('value');
+  return !!declName && !!value && patternBindsName(declName, name);
+}
+
+/**
  * True when `statement` — a DIRECT child of the enclosing block, exactly the
  * granularity `hasLaterReferenceInEnclosingBlock` iterates — unconditionally
  * overwrites `name`: a top-level `name = value;` assignment (any operator;
@@ -5174,25 +5207,48 @@ function blockContainsIdentifierExcluding(
  * #2438's own requirement: the original value can still reach a later read
  * when the write didn't actually run).
  *
- * `excludeId` skips the declarator this liveness check is FOR, so the
- * declaration statement that introduces `name` (which trivially "binds"
- * name via its own declarator) is never mistaken for a kill of its own
- * freshly-assigned value.
+ * Transparently unwraps `expression_statement` and any number of nested
+ * `parenthesized_expression`s (`(fn = replacement);` is exactly as
+ * unconditional as `fn = replacement;` — Greptile review), and treats a
+ * `sequence_expression` as a kill the moment ANY of its comma-separated
+ * parts kills `name`: every part of a sequence unconditionally executes in
+ * order, so by the time the whole statement finishes, `name` no longer
+ * holds whatever it held before that part ran (Greptile review).
+ * Depth-bounded like every other recursive walk in this file.
+ *
+ * `excludeId` skips the declarator this liveness check is FOR — see
+ * `declaratorKillsName`.
  */
-function killsBinding(statement: TreeSitterNode, name: string, excludeId: number): boolean {
-  const node = statement.type === 'expression_statement' ? statement.child(0) : statement;
-  if (!node) return false;
-  if (node.type === 'assignment_expression') {
-    const left = node.childForFieldName('left');
+function killsBinding(
+  statement: TreeSitterNode,
+  name: string,
+  excludeId: number,
+  depth = 0,
+): boolean {
+  if (depth >= MAX_WALK_DEPTH) return false;
+  // Recurse (not just peel once) — `((fn = x));` nests `expression_statement
+  // -> parenthesized_expression -> parenthesized_expression ->
+  // assignment_expression`, so a single unwrap leaves a
+  // `parenthesized_expression` that matches none of the checks below.
+  if (statement.type === 'expression_statement' || statement.type === 'parenthesized_expression') {
+    const inner = statement.namedChild(0);
+    return inner ? killsBinding(inner, name, excludeId, depth + 1) : false;
+  }
+  if (statement.type === 'sequence_expression') {
+    for (let i = 0; i < statement.namedChildCount; i++) {
+      const part = statement.namedChild(i);
+      if (part && killsBinding(part, name, excludeId, depth + 1)) return true;
+    }
+    return false;
+  }
+  if (statement.type === 'assignment_expression') {
+    const left = statement.childForFieldName('left');
     return !!left && patternBindsName(left, name);
   }
-  if (node.type === 'variable_declaration' || node.type === 'lexical_declaration') {
-    for (let i = 0; i < node.childCount; i++) {
-      const declarator = node.child(i);
-      if (declarator?.type !== 'variable_declarator' || declarator.id === excludeId) continue;
-      const declName = declarator.childForFieldName('name');
-      const value = declarator.childForFieldName('value');
-      if (declName && value && patternBindsName(declName, name)) return true;
+  if (statement.type === 'variable_declaration' || statement.type === 'lexical_declaration') {
+    for (let i = 0; i < statement.childCount; i++) {
+      const declarator = statement.child(i);
+      if (declarator && declaratorKillsName(declarator, name, excludeId)) return true;
     }
   }
   return false;

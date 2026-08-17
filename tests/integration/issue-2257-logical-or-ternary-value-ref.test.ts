@@ -67,6 +67,8 @@ function killedByVarRedeclare(x) { return x + 10; }
 function survivesConditionalWrite(x) { return x + 11; }
 function survivesSelfReadInKillStatement(x) { return x + 12; }
 function somethingElse(x) { return x + 13; }
+function killedByParenthesizedAssign(x) { return x + 14; }
+function killedByLaterDeclaratorInSameStatement(x) { return x + 15; }
 
 // #2438: a plain top-level reassignment kills the fallback value before the
 // later read runs — that read sees \`other\`, never \`killedThenRead\`.
@@ -101,6 +103,23 @@ export function selfReadWithinKillStatement(opts) {
   let fn = opts.custom || survivesSelfReadInKillStatement;
   fn = fn || somethingElse;
   return fn;
+}
+
+// #2438 (Greptile review): a kill wrapped in parentheses is exactly as
+// unconditional as a bare assignment statement.
+export function killViaParenthesizedAssign(opts, other) {
+  let fn = opts.custom || killedByParenthesizedAssign;
+  (fn = other);
+  return fn();
+}
+
+// #2438 (Greptile review): within a single LATER statement, an earlier
+// declarator's redeclaration kills the value before a later declarator's
+// own initializer in that same statement runs.
+export function killViaLaterDeclaratorInSameStatement(opts, other) {
+  var fn = opts.custom || killedByLaterDeclaratorInSameStatement;
+  var fn = other, result = fn();
+  return result;
 }
 
 // \`var\` is FUNCTION-scoped, so the nested block's \`var varScoped\` is the SAME
@@ -263,6 +282,18 @@ function runShared(getDbPath: () => string) {
 
   it('still credits a genuine read on the right-hand side of the killing statement itself', () => {
     expect(countCallEdgesTo(getDbPath(), 'survivesSelfReadInKillStatement')).toBeGreaterThan(0);
+  });
+
+  // Greptile review, PR #2554: a kill wrapped in parentheses must be
+  // recognized just like a bare assignment statement.
+  it('does not credit liveness from a read after a parenthesized kill assignment', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedByParenthesizedAssign')).toBe(0);
+  });
+
+  // Greptile review, PR #2554: an earlier declarator's kill within a LATER
+  // statement must suppress a later declarator's read in that SAME statement.
+  it('does not credit liveness from a later declarator reading a value an earlier declarator in the same statement killed', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedByLaterDeclaratorInSameStatement')).toBe(0);
   });
 }
 
