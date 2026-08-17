@@ -245,9 +245,11 @@ describe.each(ENGINES)(
       // Greptile finding on this PR's own fix (#2425): deleting the guard's
       // *file* is a different code path than editing it — the removed file
       // is never a member of fileSymbols (the reparsed-files set
-      // markEntrypointTargets iterates), so only the detect-changes stage's
-      // pre-purge capture (clearEntrypointAttributionForRemovedFiles /
-      // clear_entrypoint_attribution_for_removed_files) can catch this.
+      // persistEntrypointCalls iterates), so its entrypoint_calls evidence
+      // row can only be cleared via the generic per-file purge
+      // (preparePurgeStmts's entrypointCalls statement, the same path every
+      // other per-file table uses for a deleted file) — projectEntrypointAttribution
+      // then re-derives the flag from whatever evidence remains, clearing it.
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-2425-stale-${engine}-`));
       try {
         const guardFile = path.join(dir, 'run.py');
