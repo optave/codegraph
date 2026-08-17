@@ -451,7 +451,7 @@ pub(crate) fn do_classify_full(conn: &Connection) -> rusqlite::Result<RoleSummar
         return Ok(summary);
     }
 
-    // 2b. Program-entrypoint IDs (#2392) — set by `mark_entrypoint_targets`
+    // 2b. Program-entrypoint IDs (#2392) — set by `apply_entrypoint_attribution`
     // from an extractor-flagged call site (Python's `__main__` guard and
     // `__main__.py` module level). Mirrors the `entrypoint` column read by
     // `buildClassifierInput` in features/structure.ts.
