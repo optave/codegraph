@@ -176,6 +176,14 @@ const COMMON_QUERY_PATTERNS: string[] = [
   '(method_definition name: (string) @meth_name) @meth_node',
   '(import_statement source: (string) @imp_source) @imp_node',
   '(export_statement) @exp_node',
+  // #2459: recovers the export relationship tree-sitter drops for a bare
+  // `export` keyword misparsed as a standalone identifier expression
+  // statement (see recoverBareExportMisparse in extractors/javascript.ts for
+  // the full rationale and the reserved-word argument for why this can't
+  // misfire on a legitimate identifier reference). Filtered/dispatched in
+  // JS, not via a query predicate — this codebase has no existing predicate
+  // usage, so filtering in dispatchQueryMatch matches the established idiom.
+  '(expression_statement (identifier) @bare_export_kw) @bare_export_stmt',
   '(call_expression function: (identifier) @callfn_name) @callfn_node',
   '(call_expression function: (member_expression) @callmem_fn) @callmem_node',
   '(call_expression function: (subscript_expression) @callsub_fn) @callsub_node',

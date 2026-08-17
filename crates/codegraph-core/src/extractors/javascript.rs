@@ -3289,8 +3289,46 @@ fn handle_reexport(node: &Node, source_node: &Node, source: &[u8], symbols: &mut
     symbols.imports.push(imp);
 }
 
+/// Recover the export relationship tree-sitter-javascript/typescript drops
+/// for a bare `export` keyword followed by a newline before certain
+/// declarations (#2459). Mirrors `recoverBareExportMisparse` in
+/// `src/extractors/javascript.ts` — see that function's doc comment for the
+/// full ECMAScript-grammar rationale and the reserved-word argument for why
+/// this can't misfire on a legitimate identifier reference. Reuses
+/// `handle_export_declaration`, the same function a correctly-parsed
+/// `export_statement`'s declaration goes through, so the recovered symbol is
+/// classified identically to a real export (and inherits that function's own
+/// gaps, e.g. `enum_declaration` isn't tracked either way — see #2560 —
+/// rather than this fix silently papering over a different bug).
+///
+/// Restricted to direct children of `program`: `export` is not valid syntax
+/// anywhere else a bare single-identifier expression statement could appear.
+/// Comment nodes between the bare `export` and the declaration are skipped
+/// when walking forward, since comments are ordinary siblings in this
+/// grammar, not children of either statement.
+fn recover_bare_export_misparse(bare_export_stmt: &Node, source: &[u8], symbols: &mut FileSymbols) {
+    let Some(parent) = bare_export_stmt.parent() else {
+        return;
+    };
+    if parent.kind() != "program" {
+        return;
+    }
+    let mut sib = bare_export_stmt.next_sibling();
+    while let Some(s) = sib {
+        if s.kind() != "comment" {
+            handle_export_declaration(&s, source, symbols);
+            return;
+        }
+        sib = s.next_sibling();
+    }
+}
+
 fn handle_expr_stmt(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
     let Some(expr) = node.child(0) else { return };
+    if expr.kind() == "identifier" && node_text(&expr, source) == "export" {
+        recover_bare_export_misparse(node, source, symbols);
+        return;
+    }
     if expr.kind() != "assignment_expression" {
         return;
     }
@@ -10627,6 +10665,113 @@ mod tests {
             "expected 'greet' exported as function at line 2; got: {:?}",
             s.exports
         );
+    }
+
+    // #2459: tree-sitter-javascript/typescript misparses `export` followed by
+    // a newline before const/let/var/class/function/interface/type as a
+    // standalone `(expression_statement (identifier))` rather than a single
+    // `export_statement` — `export default`/`{`/`*` ARE handled correctly
+    // across a newline (see the two tests directly above, which use
+    // `export default` for exactly that reason), which is why this needed
+    // recover_bare_export_misparse rather than a line-computation fix.
+    #[test]
+    fn recovers_an_exported_const_split_across_a_newline_from_the_export_keyword() {
+        let s = parse_js("export\nconst onOwnLine = 5;");
+        assert!(
+            s.definitions
+                .iter()
+                .any(|d| d.name == "onOwnLine" && d.kind == "constant" && d.line == 2),
+            "expected 'onOwnLine' defined as constant at line 2; got: {:?}",
+            s.definitions
+        );
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "onOwnLine" && e.kind == "constant" && e.line == 2),
+            "expected 'onOwnLine' exported as constant at line 2; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn recovers_an_exported_class_split_across_a_newline_from_the_export_keyword() {
+        let s = parse_js("export\nclass Widget {}");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "Widget" && e.kind == "class" && e.line == 2),
+            "expected 'Widget' exported as class at line 2; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn recovers_an_exported_function_split_across_a_newline_from_the_export_keyword() {
+        let s = parse_js("export\nfunction greet() {}");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "greet" && e.kind == "function" && e.line == 2),
+            "expected 'greet' exported as function at line 2; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn recovers_an_exported_ts_interface_split_across_a_newline_from_the_export_keyword() {
+        let s = parse_ts("export\ninterface Shape {}");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "Shape" && e.kind == "interface" && e.line == 2),
+            "expected 'Shape' exported as interface at line 2; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn recovers_an_exported_ts_type_alias_split_across_a_newline_from_the_export_keyword() {
+        let s = parse_ts("export\ntype Id = string;");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "Id" && e.kind == "type" && e.line == 2),
+            "expected 'Id' exported as type at line 2; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn skips_a_comment_between_the_export_keyword_and_the_declaration() {
+        let s = parse_js("export\n// why is this exported\nconst withComment = 1;");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "withComment" && e.kind == "constant" && e.line == 3),
+            "expected 'withComment' exported as constant at line 3; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn still_exports_a_same_line_declaration_normally_no_regression_from_the_recovery_path() {
+        let s = parse_js("export const sameLine = 6;");
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "sameLine" && e.kind == "constant" && e.line == 1),
+            "expected 'sameLine' exported as constant at line 1; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn does_not_export_a_plain_top_level_statement_referencing_an_unrelated_identifier() {
+        // Sanity check that recovery is keyed on the literal text "export" (a
+        // reserved word — this can only ever be the misparse), not on "any
+        // bare identifier expression statement followed by a declaration".
+        let s = parse_js("notExport;\nconst untouched = 1;");
+        assert!(!s.exports.iter().any(|e| e.name == "untouched"));
     }
 
     #[test]

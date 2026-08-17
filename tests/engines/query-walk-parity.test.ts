@@ -128,6 +128,25 @@ a.b.c();
 `,
   },
   {
+    // #2459: bare `export` + newline before a declaration misparses as a
+    // standalone identifier expression statement in tree-sitter-javascript;
+    // both paths must recover the export relationship identically.
+    name: 'bare export keyword split across a newline from its declaration (#2459)',
+    file: 'test.js',
+    code: `
+export
+const onOwnLine = 5;
+
+export const sameLine = 6;
+
+export
+class Widget {}
+
+notExport;
+const untouched = 1;
+`,
+  },
+  {
     name: 'CommonJS require patterns',
     file: 'test.js',
     code: `
@@ -425,4 +444,24 @@ describe('Query vs Walk parity', () => {
       expect(queryResult).toEqual(walkResult);
     });
   }
+});
+
+describe('bare export keyword recovery — query path correctness (#2459)', () => {
+  // The parity loop above only proves the query path AGREES with the walk
+  // path; it doesn't independently confirm either is actually correct. The
+  // walk path's expected content is asserted directly in
+  // tests/parsers/javascript.test.ts — this asserts the query path's own
+  // `bare_export_stmt`/`bare_export_kw` capture (parser.ts /
+  // wasm-worker-entry.ts) fires and recovers the right export on its own.
+  it('recovers an exported const split across a newline via the query-based extractor', async () => {
+    const result = await queryExtract(`export\nconst onOwnLine = 5;`, 'test.js');
+    expect(result.exports).toContainEqual(
+      expect.objectContaining({ name: 'onOwnLine', kind: 'constant', line: 2 }),
+    );
+  });
+
+  it('does not export via the query path when the identifier is not literally "export"', async () => {
+    const result = await queryExtract(`notExport;\nconst untouched = 1;`, 'test.js');
+    expect(result.exports.some((e) => e.name === 'untouched')).toBe(false);
+  });
 });

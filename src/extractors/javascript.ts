@@ -394,6 +394,16 @@ function dispatchQueryMatch(
     handleImportCapture(c, imports);
   } else if (c.exp_node) {
     handleExportCapture(c, exps, imports);
+  } else if (c.bare_export_stmt) {
+    // #2459 — see recoverBareExportMisparse's doc comment. The query pattern
+    // matches every bare single-identifier expression statement (there's no
+    // existing predicate usage in this codebase's queries to filter by text
+    // at the query level — see the pattern's own comment in parser.ts /
+    // wasm-worker-entry.ts), so the "is this actually the reserved word"
+    // check happens here, matching the walk path's equivalent check.
+    if (c.bare_export_kw!.text === 'export') {
+      recoverBareExportMisparse(c.bare_export_stmt, exps);
+    }
   } else if (c.callfn_node) {
     // Route through extractCallInfo so special identifier calls (eval) get classified.
     const callfnInfo = extractCallInfo(c.callfn_name!, c.callfn_node);
@@ -2499,6 +2509,50 @@ function handleImportStmt(node: TreeSitterNode, ctx: ExtractorOutput): void {
   }
 }
 
+/**
+ * Recover the export relationship tree-sitter-javascript/typescript drops for
+ * a bare `export` keyword followed by a newline before certain declarations
+ * (#2459). Per the ECMAScript grammar `export Declaration` has no
+ * `[no LineTerminator here]` restriction — unlike `return`/`throw`, ASI does
+ * not apply — so `export\nconst x = 5;` is valid, correctly-exported JS in
+ * every real engine. The grammar's ASI-like heuristic special-cases
+ * `default`/`{`/`*` as valid same-line continuations after `export` but not
+ * `const`/`let`/`var`/`class`/`function`/`interface`/`type` directly, so it
+ * misparses `export` alone as a standalone `(expression_statement
+ * (identifier))`, and the declaration that follows becomes an ordinary,
+ * non-exported top-level statement — never wrapped in an `export_statement`,
+ * so neither extraction path's normal export detection (which requires a
+ * real `export_statement` node) can ever see it.
+ *
+ * `export` is a reserved word, so a genuine `identifier` node whose text is
+ * exactly "export" can only occur via this misparse — never a legitimate
+ * variable reference — making recovery here unambiguous. Reuses
+ * `collectExportedDeclarations`, the same function a correctly-parsed
+ * `export_statement`'s declaration goes through, so the recovered symbol is
+ * classified identically to a real export (and inherits any of that
+ * function's own gaps, e.g. `enum_declaration` isn't tracked either way —
+ * see #2560 — rather than this fix silently papering over a different bug).
+ *
+ * Restricted to direct children of `program`: `export` is not valid syntax
+ * anywhere else a bare single-identifier expression statement could appear
+ * (nested blocks, function bodies, etc.), so this can't misfire on unrelated
+ * code — it is simply never reached there because `bareExportStmt.parent`
+ * won't be `program`.
+ *
+ * Comment nodes between the bare `export` and the declaration (e.g.
+ * `export\n// why\nconst x = 5;`) are skipped when walking forward, since
+ * comments are ordinary siblings in this grammar, not children of either
+ * statement — without this, a comment would be handed to
+ * `collectExportedDeclarations`, which recognizes neither its own node type
+ * nor any of `EXPORT_DECL_KIND`'s, and silently no-ops.
+ */
+function recoverBareExportMisparse(bareExportStmt: TreeSitterNode, exps: Export[]): void {
+  if (bareExportStmt.parent?.type !== 'program') return;
+  let sib = bareExportStmt.nextSibling;
+  while (sib?.type === 'comment') sib = sib.nextSibling;
+  if (sib) collectExportedDeclarations(sib, exps);
+}
+
 function handleExportStmt(node: TreeSitterNode, ctx: ExtractorOutput): void {
   const decl = node.childForFieldName('declaration');
   if (decl) collectExportedDeclarations(decl, ctx.exports);
@@ -2525,6 +2579,10 @@ function handleExportStmt(node: TreeSitterNode, ctx: ExtractorOutput): void {
 
 function handleExpressionStmt(node: TreeSitterNode, ctx: ExtractorOutput): void {
   const expr = node.child(0);
+  if (expr && expr.type === 'identifier' && expr.text === 'export') {
+    recoverBareExportMisparse(node, ctx.exports);
+    return;
+  }
   if (expr && expr.type === 'assignment_expression') {
     const left = expr.childForFieldName('left');
     const right = expr.childForFieldName('right');

@@ -4017,6 +4017,81 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('bare `export` + newline before a declaration (#2459)', () => {
+    // tree-sitter-javascript/typescript misparses `export` followed by a
+    // newline before const/let/var/class/function/interface/type as a
+    // standalone `(expression_statement (identifier))` rather than a single
+    // `export_statement` — `export default`/`{`/`*` ARE handled correctly
+    // across a newline (the grammar's ASI-like heuristic special-cases
+    // them), which is why the #2293 suite above uses `export default` to
+    // exercise its line-computation fix instead of this exact shape.
+    function parseTS(code) {
+      const parser = parsers.get('typescript');
+      const tree = parser.parse(code);
+      return extractSymbols(tree, 'test.ts');
+    }
+
+    it('recovers an exported const split across a newline from the export keyword', () => {
+      const symbols = parseJS(`export\nconst onOwnLine = 5;`);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'onOwnLine', kind: 'constant', line: 2 }),
+      );
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'onOwnLine', kind: 'constant', line: 2 }),
+      );
+    });
+
+    it('recovers an exported class split across a newline from the export keyword', () => {
+      const symbols = parseJS(`export\nclass Widget {}`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'Widget', kind: 'class', line: 2 }),
+      );
+    });
+
+    it('recovers an exported function split across a newline from the export keyword', () => {
+      const symbols = parseJS(`export\nfunction greet() {}`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'greet', kind: 'function', line: 2 }),
+      );
+    });
+
+    it('recovers an exported TS interface split across a newline from the export keyword', () => {
+      const symbols = parseTS(`export\ninterface Shape {}`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'Shape', kind: 'interface', line: 2 }),
+      );
+    });
+
+    it('recovers an exported TS type alias split across a newline from the export keyword', () => {
+      const symbols = parseTS(`export\ntype Id = string;`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'Id', kind: 'type', line: 2 }),
+      );
+    });
+
+    it('skips a comment between the export keyword and the declaration', () => {
+      const symbols = parseJS(`export\n// why is this exported\nconst withComment = 1;`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'withComment', kind: 'constant', line: 3 }),
+      );
+    });
+
+    it('still exports a same-line declaration normally (no regression from the recovery path)', () => {
+      const symbols = parseJS(`export const sameLine = 6;`);
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'sameLine', kind: 'constant', line: 1 }),
+      );
+    });
+
+    it('does not export a plain top-level statement that merely references an unrelated identifier', () => {
+      // Sanity check that the recovery is keyed on the literal text "export"
+      // (a reserved word — this can only ever be the misparse), not on "any
+      // bare identifier expression statement followed by a declaration".
+      const symbols = parseJS(`notExport;\nconst untouched = 1;`);
+      expect(symbols.exports.some((e) => e.name === 'untouched')).toBe(false);
+    });
+  });
+
   describe('top-level const with a non-"literal-shaped" initializer (#1819)', () => {
     it('extracts a const with a parenthesized member-expression initializer as a definition (repro)', () => {
       // Repro from #1819: `(...).version` isn't one of the recognized "literal"
