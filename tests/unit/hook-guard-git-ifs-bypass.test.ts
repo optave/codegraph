@@ -111,6 +111,25 @@ describe('guard-git.sh IFS whitespace-expansion bypass (#2451)', () => {
     expect(isDenied('echo ${IFSOMETHING:0:1}')).toBe(false);
   });
 
+  it('does not invent a token boundary from an alternate-value IFS expansion (Greptile review)', () => {
+    // ${IFS:+x} substitutes the literal "x" when IFS IS set and non-null —
+    // the normally-true case — so this expands to the single harmless
+    // token "gitxreset" in real bash, never "git reset". An earlier,
+    // over-broad version of the normalizer treated ANY `${IFS<operator>}`
+    // form as whitespace and wrongly rewrote this into "echo git reset",
+    // fabricating a git invocation out of a plain echo argument.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('echo git${IFS:+x}reset')).toBe(false);
+  });
+
+  it('does not invent a token boundary from an IFS pattern-substitution expansion', () => {
+    // ${IFS/ /X} replaces spaces in IFS's value with the literal "X" —
+    // arbitrary attacker-chosen replacement text, not a value drawn from
+    // IFS's own characters.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('echo git${IFS/ /X}reset')).toBe(false);
+  });
+
   it('does not treat an IFS reference appearing inside a quoted, inert string as a token boundary', () => {
     // Quoted text is data, not a command invocation — mask-quoted-text.mjs
     // already blanks it out downstream of the IFS-normalization pass, so
