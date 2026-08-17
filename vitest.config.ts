@@ -18,6 +18,13 @@ export default defineConfig({
     testTimeout: 30000,
     hookTimeout: 30000,
     exclude: ['**/node_modules/**', '**/.git/**', '**/.claude/**'],
+    // Issue #2439: rebuild dist/ once before the whole run (regardless of
+    // `npm test` vs. a direct `npx vitest run <file>`), so the WASM engine's
+    // worker — which always loads compiled dist/, even when tests import
+    // src/*.ts directly — never silently runs stale extraction logic. See
+    // scripts/vitest-global-setup.ts for why this isn't a hand-rolled
+    // staleness check.
+    globalSetup: './scripts/vitest-global-setup.ts',
     // Ensure child processes spawned by tests (e.g. CLI integration tests)
     // can load .ts files via Node's built-in type stripping.
     env: {
