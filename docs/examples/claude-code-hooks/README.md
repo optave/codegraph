@@ -9,6 +9,7 @@ Ready-to-use [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-code/
 mkdir -p .claude/hooks
 cp docs/examples/claude-code-hooks/*.sh .claude/hooks/
 cp docs/examples/claude-code-hooks/*.js .claude/hooks/
+cp docs/examples/claude-code-hooks/*.mjs .claude/hooks/
 chmod +x .claude/hooks/*.sh
 
 # 2. Copy settings (or merge into your existing .claude/settings.json)

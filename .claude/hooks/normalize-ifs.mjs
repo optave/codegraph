@@ -29,12 +29,35 @@
 // literal text. Bash variable-name continuation characters are
 // `[A-Za-z0-9_]`; the braced form (`${IFS}`) has no such ambiguity, since
 // `}` unambiguously ends it.
+//
+// `${IFS:0:1}`/`${IFS:1:1}`/etc. (substring expansion — Greptile review):
+// bash's field-splitting applies to the RESULT of any unquoted parameter
+// expansion, not just a bare variable reference, so `${IFS:0:1}` (which
+// extracts a single whitespace character from IFS's default value) creates
+// exactly the same token boundary as the whole-variable form. Matched
+// generically as "any `${IFS` followed by a parameter-expansion operator up
+// to the closing `}`" — `[^}]*` — rather than enumerating every specific
+// bash operator (substring `:`, pattern-trim `#`/`%`, substitution `/`,
+// case-conversion `^`/`,`, …), so this also covers forms not spelled out
+// here. Assumes IFS still holds its default value (space/tab/newline) at
+// expansion time, the same implicit assumption the whole-variable form
+// already makes — a prior `IFS=...` reassignment earlier in the same
+// command line is a materially harder problem (tracking shell state across
+// the whole line) that this regex-based heuristic guard does not attempt,
+// matching the tolerance for edge cases already accepted by
+// mask-quoted-text.mjs and guard-git.sh's other checks. Does not handle a
+// nested `${...}` inside the offset/length (`${IFS:0:${N}}`) — `[^}]*`
+// stops at the first `}` — an exotic construction with no known real-world
+// motivation for this specific bypass.
 
 let input = '';
 process.stdin.on('data', (chunk) => {
   input += chunk;
 });
 process.stdin.on('end', () => {
-  const normalized = input.replace(/\$\{IFS\}/g, ' ').replace(/\$IFS(?![A-Za-z0-9_])/g, ' ');
+  const normalized = input
+    .replace(/\$\{IFS\}/g, ' ')
+    .replace(/\$\{IFS[^A-Za-z0-9_}][^}]*\}/g, ' ')
+    .replace(/\$IFS(?![A-Za-z0-9_])/g, ' ');
   process.stdout.write(normalized);
 });

@@ -92,6 +92,25 @@ describe('guard-git.sh IFS whitespace-expansion bypass (#2451)', () => {
     expect(isDenied('git${IFS}checkout${IFS}--detach')).toBe(false);
   });
 
+  it('still blocks git add -A via IFS substring expansion (Greptile review)', () => {
+    // ${IFS:0:1} extracts a single whitespace character from IFS's default
+    // value via bash's substring-expansion syntax, not the whole-variable
+    // form — but the RESULT still undergoes the same unquoted field
+    // splitting, so it creates the identical token boundary.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS:0:1}add${IFS:0:1}-A')).toBe(true);
+  });
+
+  it('still blocks the fast-path bypass via IFS substring expansion (Greptile review)', () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS:1:1}checkout${IFS:1:1}--${IFS:1:1}some-file.txt')).toBe(true);
+  });
+
+  it('does not mistake a differently-named variable for an IFS substring expansion', () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('echo ${IFSOMETHING:0:1}')).toBe(false);
+  });
+
   it('does not treat an IFS reference appearing inside a quoted, inert string as a token boundary', () => {
     // Quoted text is data, not a command invocation — mask-quoted-text.mjs
     // already blanks it out downstream of the IFS-normalization pass, so
