@@ -193,6 +193,36 @@ const SIZE_METRICS = new Set<string>(['DB bytes/file']);
 const MIN_ABSOLUTE_DELTA = 10;
 
 /**
+ * Minimum absolute delta, in ms/file, required before a normalized "Full
+ * build" regression is flagged (#2455).
+ *
+ * "Full build" is compared as `fullBuildMs / files` instead of raw
+ * `fullBuildMs` (see `perFileMs` below) so that corpus growth and legitimate
+ * per-file work growth — neither of which is a regression — don't keep
+ * tripping the gate release over release (#2081, #2412, #2436). Recorded
+ * ms/file values run ~5-25 (generated/benchmarks/INCREMENTAL-BENCHMARKS.md),
+ * two orders of magnitude below MIN_ABSOLUTE_DELTA's 10ms floor, which was
+ * calibrated for raw millisecond metrics — reusing it here would mean
+ * `absDelta < minAbsoluteDelta` is true for nearly every real delta at this
+ * scale, silently disabling the floor rather than filtering noise. 0.1
+ * ms/file is well below the delta the 25%/75% percentage thresholds already
+ * require at these baselines (e.g. 25% of a 6.5ms/file native baseline is
+ * ~1.6ms/file), so it only filters float-level measurement noise while
+ * leaving the percentage threshold as the actual regression signal.
+ */
+const MIN_ABSOLUTE_DELTA_PER_FILE = 0.1;
+
+/**
+ * `ms / files` when both are present and `files` is a positive count, else
+ * null — propagates through `checkRegression`'s existing null-skip. Used to
+ * normalize "Full build" (see MIN_ABSOLUTE_DELTA_PER_FILE above).
+ */
+function perFileMs(ms: number | null | undefined, files: number | null | undefined): number | null {
+  if (ms == null || files == null || files <= 0) return null;
+  return ms / files;
+}
+
+/**
  * Versions to skip entirely from regression comparisons.
  *
  * - v3.8.0: benchmarks produced with broken native build orchestrator (#804)
@@ -244,11 +274,10 @@ const SKIP_VERSIONS = new Set(['3.8.0']);
  * handled structurally by WASM_TIMING_THRESHOLD (see above); native keeps the
  * strict thresholds and is the canary for real algorithmic regressions.
  *
- * v3.16.0 was released 2026-07-20 and no stable release has landed since.
- * The same growth/runner-variance drift documented for 3.15.0 above (#2081)
- * has recurred against this baseline on both metrics — tracked in #2412
- * (Full build) and #2436 (both metrics). Evidence this is drift/noise, not a
- * PR-introduced regression:
+ * v3.16.0 was released 2026-07-20. The same growth/runner-variance drift
+ * documented for 3.15.0 above (#2081) recurred against this baseline —
+ * tracked in #2412 (Full build) and #2436 (both metrics). Evidence this was
+ * drift/noise, not a PR-introduced regression:
  * - #2412: a docs-only PR touching only two Markdown files hit
  *   `Full build: 4844 → 6063 (+25%)`; a second docs-only PR (#2382) hit the
  *   identical failure and was merged anyway.
@@ -261,12 +290,21 @@ const SKIP_VERSIONS = new Set(['3.8.0']);
  *   commits existed. The environment, not the code, accounts for the
  *   swing: local `dev` measured faster than the recorded 3.16.0 baseline,
  *   while CI measured 26-103% slower.
- * Exemption clears itself: prune both entries once the next stable release
- * folds current repo size and runner conditions into a fresh baseline (same
- * pattern as the 3.12.0/3.13.0 prune at 3.15.0, and the 3.15.0 prune at
- * 3.16.0, documented above).
+ * `3.16.0:Full build` is pruned here (#2455): "Full build" is now compared
+ * as ms/file (see MIN_ABSOLUTE_DELTA_PER_FILE / perFileMs above), which
+ * absorbs exactly the corpus-growth drift this entry was working around —
+ * `3.17.0 vs 3.16.0` clears the normalized threshold on both engines without
+ * the exemption (native +16.1% ms/file vs the 25% threshold, wasm +8.9%
+ * ms/file vs the 75% WASM threshold; the raw-ms deltas were +31.0%/+22.9%).
+ * `3.16.0:1-file rebuild` stays — #2455 only normalizes Full build; per its
+ * own "Suggested direction," 1-file rebuild's flakiness looks dominated by
+ * near-zero-baseline absolute jitter rather than corpus size, so per-file
+ * normalization may not be the right fix for it. Prune once a future stable
+ * release folds current repo size and runner conditions into a fresh
+ * baseline (same pattern as the 3.12.0/3.13.0 prune at 3.15.0, and the
+ * 3.15.0 prune at 3.16.0, documented above).
  */
-const KNOWN_REGRESSIONS = new Set<string>(['3.16.0:Full build', '3.16.0:1-file rebuild']);
+const KNOWN_REGRESSIONS = new Set<string>(['3.16.0:1-file rebuild']);
 
 /**
  * Maximum minor-version gap allowed for comparison. When the nearest
@@ -493,10 +531,11 @@ function checkRegression(
   label: string,
   current: number | null | undefined,
   previous: number | null | undefined,
+  minAbsoluteDelta: number = MIN_ABSOLUTE_DELTA,
 ): RegressionCheck | null {
   if (current == null || previous == null || previous === 0) return null;
   const absDelta = current - previous;
-  if (absDelta < MIN_ABSOLUTE_DELTA) return null; // below noise floor
+  if (absDelta < minAbsoluteDelta) return null; // below noise floor
   const pctChange = absDelta / previous;
   return { label, current, previous, pctChange };
 }
@@ -619,6 +658,123 @@ describe('assertNoRegressions — KNOWN_REGRESSIONS baseline fallback', () => {
         testKnownRegressions,
       ),
     ).toThrow(/Full build/);
+  });
+});
+
+// Pure-logic tests for the "Full build" ms/file normalization (#2455).
+// These exercise perFileMs and checkRegression's minAbsoluteDelta override
+// directly with synthetic data, so — like the KNOWN_REGRESSIONS baseline
+// fallback tests above — they always run and don't depend on committed
+// benchmark history.
+describe('perFileMs normalization for Full build (#2455)', () => {
+  test('perFileMs divides ms by files', () => {
+    expect(perFileMs(4844, 741)).toBeCloseTo(6.5371, 4);
+  });
+
+  test('perFileMs returns null when ms is missing', () => {
+    expect(perFileMs(null, 741)).toBeNull();
+    expect(perFileMs(undefined, 741)).toBeNull();
+  });
+
+  test('perFileMs returns null when files is missing, zero, or negative', () => {
+    expect(perFileMs(4844, null)).toBeNull();
+    expect(perFileMs(4844, 0)).toBeNull();
+    expect(perFileMs(4844, -5)).toBeNull();
+  });
+
+  test('pure corpus growth at constant per-file cost does not register as a regression', () => {
+    // #2081's own numbers: 629 -> 1013 files (+61%), timing tracking the
+    // same ratio. Raw ms clears the 25% threshold; ms/file does not, because
+    // the per-file cost genuinely did not change.
+    const prevFullBuildMs = 3500;
+    const prevFiles = 629;
+    const perFileCost = prevFullBuildMs / prevFiles;
+    const curFiles = 1013;
+    const curFullBuildMs = perFileCost * curFiles; // same per-file cost, more files
+
+    const rawCheck = checkRegression('Full build', curFullBuildMs, prevFullBuildMs);
+    expect(rawCheck).not.toBeNull();
+    expect(rawCheck.pctChange).toBeGreaterThan(0.25); // raw would have flagged this
+
+    const normalizedCheck = checkRegression(
+      'Full build',
+      perFileMs(curFullBuildMs, curFiles),
+      perFileMs(prevFullBuildMs, prevFiles),
+      MIN_ABSOLUTE_DELTA_PER_FILE,
+    );
+    expect(normalizedCheck).toBeNull(); // per-file cost is unchanged
+  });
+
+  test('a genuine per-file regression at constant file count is still caught', () => {
+    const files = 800;
+    const prevFullBuildMs = 5200; // 6.5 ms/file
+    const curFullBuildMs = 8000; // 10.0 ms/file, +53.8%
+
+    const normalizedCheck = checkRegression(
+      'Full build',
+      perFileMs(curFullBuildMs, files),
+      perFileMs(prevFullBuildMs, files),
+      MIN_ABSOLUTE_DELTA_PER_FILE,
+    );
+    expect(normalizedCheck).not.toBeNull();
+    expect(normalizedCheck.pctChange).toBeGreaterThan(0.25);
+
+    expect(() =>
+      assertNoRegressions(
+        [normalizedCheck],
+        'dev',
+        '9.9.9',
+        'native',
+        new Set<string>(), // no exemption for this synthetic version
+      ),
+    ).toThrow(/Full build/);
+  });
+
+  test('a real-release-vs-baseline regression at constant file count is still caught (not just dev)', () => {
+    // Mirrors the KNOWN_REGRESSIONS baseline-fallback tests above — confirms
+    // the ms/file check participates in the same fallback machinery rather
+    // than bypassing it.
+    const files = 800;
+    const normalizedCheck = checkRegression(
+      'Full build',
+      perFileMs(8000, files),
+      perFileMs(4000, files), // +100%, well over threshold
+      MIN_ABSOLUTE_DELTA_PER_FILE,
+    );
+    expect(() =>
+      assertNoRegressions([normalizedCheck], '10.0.0', '9.8.0', 'native', new Set<string>()),
+    ).toThrow(/Full build/);
+  });
+
+  test('MIN_ABSOLUTE_DELTA_PER_FILE filters trivial ms/file jitter even at a large percentage', () => {
+    // A near-zero baseline (e.g. a corpus so small ms/file rounds to almost
+    // nothing) can produce a huge percentage from a sub-noise-floor absolute
+    // delta — exactly the false-positive pattern MIN_ABSOLUTE_DELTA guards
+    // against for raw-ms metrics elsewhere in this file.
+    const check = checkRegression('Full build', 0.15, 0.1, MIN_ABSOLUTE_DELTA_PER_FILE);
+    expect(check).toBeNull(); // delta is 0.05 ms/file, below the 0.1 floor
+  });
+
+  test('the real 3.17.0 vs 3.16.0 data clears the normalized threshold without a KNOWN_REGRESSIONS entry', () => {
+    // Recorded in generated/benchmarks/INCREMENTAL-BENCHMARKS.md. Raw ms grew
+    // +31.0% (native) / +22.9% (wasm) — over the 25%/75% thresholds, which is
+    // exactly why '3.16.0:Full build' existed in KNOWN_REGRESSIONS before
+    // this fix. Normalized, both clear their threshold on their own.
+    const nativeCheck = checkRegression(
+      'Full build',
+      perFileMs(6345, 836),
+      perFileMs(4844, 741),
+      MIN_ABSOLUTE_DELTA_PER_FILE,
+    );
+    expect(nativeCheck.pctChange).toBeLessThan(0.25);
+
+    const wasmCheck = checkRegression(
+      'Full build',
+      perFileMs(19082, 836),
+      perFileMs(15537, 741),
+      MIN_ABSOLUTE_DELTA_PER_FILE,
+    );
+    expect(wasmCheck.pctChange).toBeLessThan(0.75);
   });
 });
 
@@ -838,7 +994,12 @@ describe.runIf(RUN_REGRESSION_GUARD)('Benchmark regression guard', () => {
       test(`${engineKey} engine — ${latest.version} vs ${previous.version}`, () => {
         assertNoRegressions(
           [
-            checkRegression(`Full build`, cur.fullBuildMs, prev.fullBuildMs),
+            checkRegression(
+              `Full build`,
+              perFileMs(cur.fullBuildMs, latest.files),
+              perFileMs(prev.fullBuildMs, previous.files),
+              MIN_ABSOLUTE_DELTA_PER_FILE,
+            ),
             checkRegression(`No-op rebuild`, cur.noopRebuildMs, prev.noopRebuildMs),
             checkRegression(`1-file rebuild`, cur.oneFileRebuildMs, prev.oneFileRebuildMs),
           ],

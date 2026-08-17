@@ -76,6 +76,33 @@ function findPrevMetric(hist, fromIdx, getter) {
 	return null;
 }
 
+// Like findPrevMetric, but returns the whole matching entry rather than a
+// single extracted value. Used for the "Full build" ms/file trend (#2455):
+// the ms/file figure needs `fullBuildMs` and `files` from the *same*
+// historical entry, and finding each independently via findPrevMetric could
+// pair a metric from one release with a file count from another if either
+// value happened to be null on a different intervening release.
+function findPrevEntry(hist, fromIdx, predicate) {
+	for (let i = fromIdx + 1; i < hist.length; i++) {
+		if (hist[i].version === 'dev') continue;
+		if (predicate(hist[i])) return hist[i];
+	}
+	return null;
+}
+
+// `ms / files` when both are present and `files` is a positive count, else
+// null. Mirrors perFileMs in tests/benchmarks/regression-guard.test.ts —
+// the report's "Full build (ms/file)" column is display-only and does not
+// gate anything, but it should show the same figure the gate compares.
+function perFileMs(ms, files) {
+	if (ms == null || files == null || files <= 0) return null;
+	return ms / files;
+}
+
+function formatPerFile(v) {
+	return v != null ? v.toFixed(4) : 'n/a';
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 function trend(current, previous, lowerIsBetter = true) {
 	// Guard against null/undefined and a zero baseline — dividing by zero would
@@ -100,6 +127,14 @@ function engineRow(hist, i, engineKey, prevResolveNative, prevResolveJs) {
 	if (!e) return null;
 
 	const fullT = trend(e.fullBuildMs, findPrevMetric(hist, i, (r) => r[engineKey]?.fullBuildMs));
+
+	// ms/file trend (#2455) — the previous value must come from the same
+	// historical entry as the previous fullBuildMs (see findPrevEntry).
+	const curPerFile = perFileMs(e.fullBuildMs, h.files);
+	const prevEntry = findPrevEntry(hist, i, (r) => r[engineKey]?.fullBuildMs != null);
+	const prevPerFile = prevEntry ? perFileMs(prevEntry[engineKey].fullBuildMs, prevEntry.files) : null;
+	const fullPerFileT = trend(curPerFile, prevPerFile);
+
 	const noopT = trend(e.noopRebuildMs, findPrevMetric(hist, i, (r) => r[engineKey]?.noopRebuildMs));
 	const oneT = trend(
 		e.oneFileRebuildMs,
@@ -116,6 +151,7 @@ function engineRow(hist, i, engineKey, prevResolveNative, prevResolveJs) {
 	return (
 		`| ${h.version} | ${engineKey} | ${h.files} ` +
 		`| ${formatMs(e.fullBuildMs)}${fullT} ` +
+		`| ${formatPerFile(curPerFile)}${fullPerFileT} ` +
 		`| ${noopCell} ` +
 		`| ${oneFileCell} ` +
 		`| ${r.nativeBatchMs != null ? formatMs(r.nativeBatchMs) + natT : 'n/a'} ` +
@@ -130,9 +166,9 @@ md += 'Build tiers: full (cold), no-op (nothing changed), 1-file (single file mo
 md += 'Import resolution: native batch vs JS fallback throughput.\n\n';
 
 md +=
-	'| Version | Engine | Files | Full Build | No-op | 1-File | Resolve (native) | Resolve (JS) |\n';
+	'| Version | Engine | Files | Full Build | Full Build (ms/file) | No-op | 1-File | Resolve (native) | Resolve (JS) |\n';
 md +=
-	'|---------|--------|------:|-----------:|------:|-------:|------------------:|-------------:|\n';
+	'|---------|--------|------:|-----------:|----------------------:|------:|-------:|------------------:|-------------:|\n';
 
 for (let i = 0; i < history.length; i++) {
 	// Resolve metrics are release-level (not engine-specific), so pre-compute
@@ -159,6 +195,7 @@ for (const engineKey of ['native', 'wasm']) {
 	md += '| Metric | Value |\n';
 	md += '|--------|------:|\n';
 	md += `| Full build | ${formatMs(e.fullBuildMs)} |\n`;
+	md += `| Full build (ms/file) | ${formatPerFile(perFileMs(e.fullBuildMs, latest.files))} |\n`;
 	md += `| No-op rebuild | ${e.noopRebuildMs != null ? formatMs(e.noopRebuildMs) : 'n/a'} |\n`;
 	md += `| 1-file rebuild | ${e.oneFileRebuildMs != null ? formatMs(e.oneFileRebuildMs) : 'n/a'} |\n\n`;
 
@@ -254,10 +291,15 @@ for (const engineKey of ['native', 'wasm']) {
 	const e = latest[engineKey];
 	if (!e) continue;
 	const tag = `[${engineKey}]`;
+	// Compared as ms/file (#2455), matching the hard-fail gate in
+	// tests/benchmarks/regression-guard.test.ts — otherwise this warning
+	// fires on every commit that merely grows the corpus or adds legitimate
+	// per-file work, even though the gate itself no longer flags it.
+	const fullPrevEntry = findPrevEntry(history, 0, (r) => r[engineKey]?.fullBuildMs != null);
 	checkRegression(
-		`${tag} Full build`,
-		e.fullBuildMs,
-		findPrevMetric(history, 0, (r) => r[engineKey]?.fullBuildMs),
+		`${tag} Full build (ms/file)`,
+		perFileMs(e.fullBuildMs, latest.files),
+		fullPrevEntry ? perFileMs(fullPrevEntry[engineKey].fullBuildMs, fullPrevEntry.files) : null,
 	);
 	if (e.noopRebuildMs != null) {
 		checkRegression(

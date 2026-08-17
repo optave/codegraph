@@ -118,6 +118,61 @@ ${NOTES_B}
     expect(out.match(/<!--\s*NOTES_END\s*-->/g)?.length).toBe(2);
   });
 
+  it('renders a Full Build (ms/file) column normalized against files, with its own trend (#2455)', () => {
+    const initial = `# Codegraph Incremental Build Benchmarks
+
+<!-- INCREMENTAL_BENCHMARK_DATA
+[
+  {
+    "version": "9.9.8",
+    "date": "2026-05-01",
+    "files": 800,
+    "wasm": { "fullBuildMs": 16000, "noopRebuildMs": 20, "oneFileRebuildMs": 100 },
+    "native": { "fullBuildMs": 5200, "noopRebuildMs": 10, "oneFileRebuildMs": 50 },
+    "resolve": { "imports": 100, "nativeBatchMs": 5, "jsFallbackMs": 10, "perImportNativeMs": 0, "perImportJsMs": 0 }
+  }
+]
+-->
+`;
+    fs.writeFileSync(reportPath, initial);
+    // 9.9.9 doubles files (800 -> 1600) and roughly doubles native fullBuildMs
+    // (5200 -> 10400) — same per-file cost, so raw ms doubles (+100%) but
+    // ms/file should read as unchanged (~0%).
+    fs.writeFileSync(
+      entryPath,
+      JSON.stringify({
+        version: '9.9.9',
+        date: '2026-05-14',
+        files: 1600,
+        wasm: { fullBuildMs: 32000, noopRebuildMs: 20, oneFileRebuildMs: 100 },
+        native: { fullBuildMs: 10400, noopRebuildMs: 10, oneFileRebuildMs: 50 },
+        resolve: {
+          imports: 200,
+          nativeBatchMs: 5,
+          jsFallbackMs: 10,
+          perImportNativeMs: 0,
+          perImportJsMs: 0,
+        },
+      }),
+    );
+
+    runScript();
+    const out = fs.readFileSync(reportPath, 'utf8');
+
+    expect(out).toContain('Full Build (ms/file)');
+    const nativeRow = out.match(/^\| 9\.9\.9 \| native \|.*$/m)?.[0];
+    expect(nativeRow).toBeDefined();
+    // Raw full build doubled (+100%)...
+    expect(nativeRow).toContain('↑100%');
+    // ...but ms/file (6.5) is unchanged from the prior release, so its own
+    // trend cell reads "~" rather than another "↑100%".
+    expect(nativeRow).toContain('6.5000 ~');
+
+    const latestSection = out.slice(out.indexOf('### Latest results'));
+    expect(latestSection).toContain('Full build (ms/file)');
+    expect(latestSection).toContain('6.5000');
+  });
+
   it('does not invent a NOTES block when none was present', () => {
     const initial = `# Codegraph Incremental Build Benchmarks
 
