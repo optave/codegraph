@@ -6,6 +6,8 @@ Import resolution: native batch vs JS fallback throughput.
 
 | Version | Engine | Files | Full Build | No-op | 1-File | Resolve (native) | Resolve (JS) |
 |---------|--------|------:|-----------:|------:|-------:|------------------:|-------------:|
+| 3.17.0 | native | 836 | 6.3s ↑31% | 32ms ↑7% | 251ms ↑31% | 8ms ↑47% | 10ms ~ |
+| 3.17.0 | wasm | 836 | 19.1s ↑23% | 31ms ↑7% | 173ms ↓21% | 8ms ↑47% | 10ms ~ |
 | 3.16.0 | native | 741 | 4.8s ↑38% | 30ms ↑25% | 192ms ↑64% | 5ms ↓15% | 9ms ↓3% |
 | 3.16.0 | wasm | 741 | 15.5s ↑27% | 29ms ↑26% | 218ms ↑93% | 5ms ↓15% | 9ms ↓3% |
 | 3.15.0 | native | 629 | 3.5s ↑17% | 24ms ↓4% | 117ms ↑8% | 6ms ~ | 10ms ↓3% |
@@ -73,34 +75,34 @@ Import resolution: native batch vs JS fallback throughput.
 
 ### Latest results
 
-**Version:** 3.16.0 | **Files:** 741 | **Date:** 2026-07-20
+**Version:** 3.17.0 | **Files:** 836 | **Date:** 2026-08-17
 
 #### Native (Rust)
 
 | Metric | Value |
 |--------|------:|
-| Full build | 4.8s |
-| No-op rebuild | 30ms |
-| 1-file rebuild | 192ms |
+| Full build | 6.3s |
+| No-op rebuild | 32ms |
+| 1-file rebuild | 251ms |
 
 <details><summary>1-file rebuild phase breakdown (native)</summary>
 
 | Phase | Time |
 |-------|-----:|
-| setup | 7ms |
+| setup | 4ms |
 | collect | 9ms |
 | detect | 3ms |
-| parse | 1ms |
+| parse | 0ms |
 | insert | 0ms |
-| resolve | 1ms |
-| edges | 5ms |
-| structure | 43ms |
-| roles | 29ms |
-| gap detect + backfill | 48ms |
-| CHA expansion | 6ms |
-| this/super dispatch | 3ms |
+| resolve | 0ms |
+| edges | 8ms |
+| structure | 49ms |
+| roles | 62ms |
+| gap detect + backfill | 50ms |
+| CHA expansion | 10ms |
+| this/super dispatch | 15ms |
 | role reclassify | 0ms |
-| technique backfill | 5ms |
+| technique backfill | 6ms |
 | ast | 0ms |
 | complexity | 0ms |
 | cfg | 0ms |
@@ -113,28 +115,28 @@ Import resolution: native batch vs JS fallback throughput.
 
 | Metric | Value |
 |--------|------:|
-| Full build | 15.5s |
-| No-op rebuild | 29ms |
-| 1-file rebuild | 218ms |
+| Full build | 19.1s |
+| No-op rebuild | 31ms |
+| 1-file rebuild | 173ms |
 
 <details><summary>1-file rebuild phase breakdown (wasm)</summary>
 
 | Phase | Time |
 |-------|-----:|
-| setup | 6ms |
-| collect | 19ms |
-| detect | 114ms |
+| setup | 9ms |
+| collect | 17ms |
+| detect | 16ms |
 | parse | 2ms |
-| insert | 0ms |
+| insert | 1ms |
 | resolve | 1ms |
-| edges | 13ms |
-| structure | 33ms |
-| roles | 23ms |
+| edges | 22ms |
+| structure | 38ms |
+| roles | 60ms |
 | ast | 0ms |
 | complexity | 0ms |
 | cfg | 0ms |
 | dataflow | 2ms |
-| finalize | 0ms |
+| finalize | 1ms |
 
 </details>
 
@@ -142,12 +144,12 @@ Import resolution: native batch vs JS fallback throughput.
 
 | Metric | Value |
 |--------|------:|
-| Import pairs | 1116 |
-| Native batch | 5ms |
-| JS fallback | 9ms |
+| Import pairs | 1138 |
+| Native batch | 8ms |
+| JS fallback | 10ms |
 | Per-import (native) | 0ms |
 | Per-import (JS) | 0ms |
-| Speedup ratio | 1.8x |
+| Speedup ratio | 1.3x |
 
 <!-- NOTES_START -->
 **Note (3.9.5):** No build/rebuild metrics for this release (both engines null) — only import resolution data was collected. Both the WASM and native workers reached the 1-file rebuild phase and then hung past the benchmark's 10-minute per-engine timeout (see `scripts/lib/fork-engine.ts`), so each was killed (`SIGKILL`) before returning results. Import resolution is unaffected because it runs in the parent process and doesn't depend on the full build. 3.9.5 is consequently absent from the top-level version-history comparison table since there are no build-time figures to compare against prior releases. The workflow run is [here](https://github.com/optave/ops-codegraph-tool/actions/runs/24863501577); the root cause will be investigated and the numbers backfilled in a follow-up if possible.
@@ -155,6 +157,66 @@ Import resolution: native batch vs JS fallback throughput.
 
 <!-- INCREMENTAL_BENCHMARK_DATA
 [
+  {
+    "version": "3.17.0",
+    "date": "2026-08-17",
+    "files": 836,
+    "wasm": {
+      "fullBuildMs": 19082,
+      "noopRebuildMs": 31,
+      "oneFileRebuildMs": 173,
+      "oneFilePhases": {
+        "setupMs": 9.2,
+        "collectMs": 16.9,
+        "detectMs": 16,
+        "parseMs": 2.3,
+        "insertMs": 0.6,
+        "resolveMs": 0.5,
+        "edgesMs": 21.7,
+        "structureMs": 38.3,
+        "rolesMs": 60,
+        "astMs": 0.3,
+        "complexityMs": 0.1,
+        "cfgMs": 0.1,
+        "dataflowMs": 1.5,
+        "finalizeMs": 0.5
+      }
+    },
+    "native": {
+      "fullBuildMs": 6345,
+      "noopRebuildMs": 32,
+      "oneFileRebuildMs": 251,
+      "oneFilePhases": {
+        "setupMs": 4,
+        "collectMs": 8.7,
+        "detectMs": 3.4,
+        "parseMs": 0.4,
+        "insertMs": 0.2,
+        "resolveMs": 0.4,
+        "edgesMs": 7.6,
+        "structureMs": 49,
+        "rolesMs": 61.5,
+        "gapDetectMs": 49.8,
+        "chaMs": 10.3,
+        "thisDispatchMs": 15.1,
+        "definePropertyDispatchMs": 0,
+        "reclassifyMs": 0,
+        "techniqueBackfillMs": 6.2,
+        "astMs": 0.2,
+        "complexityMs": 0,
+        "cfgMs": 0,
+        "dataflowMs": 0.1,
+        "finalizeMs": 0.6
+      }
+    },
+    "resolve": {
+      "imports": 1138,
+      "nativeBatchMs": 7.5,
+      "jsFallbackMs": 9.5,
+      "perImportNativeMs": 0,
+      "perImportJsMs": 0
+    }
+  },
   {
     "version": "3.16.0",
     "date": "2026-07-20",
