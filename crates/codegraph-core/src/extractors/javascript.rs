@@ -5439,6 +5439,59 @@ fn block_contains_identifier_excluding(
     false
 }
 
+/// True when `statement` — a DIRECT child of the enclosing block, exactly the
+/// granularity `has_later_reference_in_enclosing_block` iterates —
+/// unconditionally overwrites `name`: a top-level `name = value;` assignment
+/// (any operator; `pattern_binds_name` also covers destructuring targets
+/// like `[name] = arr`) or a `var name = value;` redeclaration sitting
+/// directly in the block. A write nested inside an `if`/loop/`switch`/`try`
+/// never matches here — it surfaces as a single
+/// `if_statement`/`for_statement`/etc. child, not as the assignment itself —
+/// so a conditional write correctly never kills (issue #2438's own
+/// requirement: the original value can still reach a later read when the
+/// write didn't actually run).
+///
+/// `exclude_id` skips the declarator this liveness check is FOR, so the
+/// declaration statement that introduces `name` (which trivially "binds"
+/// name via its own declarator) is never mistaken for a kill of its own
+/// freshly-assigned value.
+///
+/// Mirrors `killsBinding` in `src/extractors/javascript.ts`.
+fn kills_binding(statement: &Node, name: &str, source: &[u8], exclude_id: usize) -> bool {
+    let node: Node = if statement.kind() == "expression_statement" {
+        match statement.child(0) {
+            Some(child) => child,
+            None => return false,
+        }
+    } else {
+        *statement
+    };
+    if node.kind() == "assignment_expression" {
+        return match node.child_by_field_name("left") {
+            Some(left) => pattern_binds_name(&left, name, source, 0),
+            None => false,
+        };
+    }
+    if node.kind() == "variable_declaration" || node.kind() == "lexical_declaration" {
+        for i in 0..node.child_count() {
+            let Some(declarator) = node.child(i) else {
+                continue;
+            };
+            if declarator.kind() != "variable_declarator" || declarator.id() == exclude_id {
+                continue;
+            }
+            let decl_name = declarator.child_by_field_name("name");
+            let value = declarator.child_by_field_name("value");
+            if let (Some(decl_name), Some(_)) = (decl_name, value) {
+                if pattern_binds_name(&decl_name, name, source, 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// True when `name` appears as a bare identifier reference anywhere else in
 /// `declarator_node`'s enclosing block (function body, module top level, or
 /// arrow-function body) — the local, position-scoped liveness evidence
@@ -5465,6 +5518,15 @@ fn block_contains_identifier_excluding(
 /// to require genuine invocation evidence (`handler(...)`), not just any
 /// reference (`console.log(handler)`), matching #1895's own "invoked...
 /// via member-call syntax" precision.
+///
+/// Stops crediting reads once a sibling statement unconditionally overwrites
+/// `name` (`kills_binding`, issue #2438): `var fn = a || b; fn = other;
+/// fn();` must NOT count `fn();` as evidence that `b` is reachable — by the
+/// time it runs, `fn` already holds `other`, not the fallback. The killing
+/// statement's OWN right-hand side is still scanned for a genuine read
+/// before the kill takes effect (`fn = fn || other;` still credits the read
+/// of the pre-existing value), since the read-check on each statement always
+/// runs before its kill-check.
 ///
 /// Mirrors `hasLaterReferenceInEnclosingBlock` in `src/extractors/javascript.ts`.
 fn has_later_reference_in_enclosing_block(
@@ -5521,6 +5583,9 @@ fn has_later_reference_in_enclosing_block(
                 require_call_site,
             ) {
                 return true;
+            }
+            if kills_binding(&child, name, source, declarator_node.id()) {
+                return false;
             }
         }
     }
@@ -8926,6 +8991,69 @@ mod tests {
     fn does_not_credit_liveness_from_a_write_only_reassignment() {
         let s = parse_js("let fn = options.custom || fetchLatestVersion;\nfn = replacement;");
         assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Issue #2438 (deferred from PR #2432's review): a write correctly does
+    // not count as a read of ITS OWN statement, but a plain reassignment
+    // must also KILL the value for every LATER statement — a read after the
+    // fallback has already been overwritten sees the new value, never the
+    // fallback.
+    #[test]
+    fn does_not_credit_liveness_from_a_read_after_an_unconditional_reassignment_killed_it() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             fn = replacement;\n\
+             fn();",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Same kill semantics via a `var` redeclaration in a separate later
+    // statement, rather than a plain assignment expression.
+    #[test]
+    fn does_not_credit_liveness_from_a_read_after_a_var_redeclaration_in_a_later_statement() {
+        let s = parse_js(
+            "var fn = options.custom || fetchLatestVersion;\n\
+             var fn = replacement;\n\
+             fn();",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Issue #2438: a write nested inside a conditional is NOT a guaranteed
+    // kill — the branch might not run, so the fallback can still reach the
+    // later read.
+    #[test]
+    fn still_credits_liveness_from_a_read_after_a_write_nested_inside_a_conditional() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             if (cond) {\n\
+               fn = replacement;\n\
+             }\n\
+             fn();",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Issue #2438: the killing statement's OWN right-hand side is scanned
+    // for a genuine read BEFORE the kill takes effect — `fn` on the right of
+    // its own reassignment still reads the pre-existing (possibly fallback)
+    // value.
+    #[test]
+    fn still_credits_a_genuine_read_on_the_right_hand_side_of_the_killing_statement_itself() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             fn = fn || somethingElse;",
+        );
+        assert!(s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
     }

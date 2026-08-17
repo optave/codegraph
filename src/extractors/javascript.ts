@@ -5163,6 +5163,42 @@ function blockContainsIdentifierExcluding(
 }
 
 /**
+ * True when `statement` — a DIRECT child of the enclosing block, exactly the
+ * granularity `hasLaterReferenceInEnclosingBlock` iterates — unconditionally
+ * overwrites `name`: a top-level `name = value;` assignment (any operator;
+ * `patternBindsName` also covers destructuring targets like `[name] = arr`)
+ * or a `var name = value;` redeclaration sitting directly in the block. A
+ * write nested inside an `if`/loop/`switch`/`try` never matches here — it
+ * surfaces as a single `if_statement`/`for_statement`/etc. child, not as the
+ * assignment itself — so a conditional write correctly never kills (issue
+ * #2438's own requirement: the original value can still reach a later read
+ * when the write didn't actually run).
+ *
+ * `excludeId` skips the declarator this liveness check is FOR, so the
+ * declaration statement that introduces `name` (which trivially "binds"
+ * name via its own declarator) is never mistaken for a kill of its own
+ * freshly-assigned value.
+ */
+function killsBinding(statement: TreeSitterNode, name: string, excludeId: number): boolean {
+  const node = statement.type === 'expression_statement' ? statement.child(0) : statement;
+  if (!node) return false;
+  if (node.type === 'assignment_expression') {
+    const left = node.childForFieldName('left');
+    return !!left && patternBindsName(left, name);
+  }
+  if (node.type === 'variable_declaration' || node.type === 'lexical_declaration') {
+    for (let i = 0; i < node.childCount; i++) {
+      const declarator = node.child(i);
+      if (declarator?.type !== 'variable_declarator' || declarator.id === excludeId) continue;
+      const declName = declarator.childForFieldName('name');
+      const value = declarator.childForFieldName('value');
+      if (declName && value && patternBindsName(declName, name)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * True when `name` appears as a bare identifier reference anywhere else in
  * `declaratorNode`'s enclosing block (function body, module top level, or
  * arrow-function body) — the local, position-scoped liveness evidence
@@ -5200,6 +5236,15 @@ function blockContainsIdentifierExcluding(
  * invocation evidence (`handler(...)`), not just any reference
  * (`console.log(handler)`), matching #1895's own "invoked... via
  * member-call syntax" precision.
+ *
+ * Stops crediting reads once a sibling statement unconditionally overwrites
+ * `name` (`killsBinding`, issue #2438): `var fn = a || b; fn = other; fn();`
+ * must NOT count `fn();` as evidence that `b` is reachable — by the time it
+ * runs, `fn` already holds `other`, not the fallback. The killing
+ * statement's OWN right-hand side is still scanned for a genuine read before
+ * the kill takes effect (`fn = fn || other;` still credits the read of the
+ * pre-existing value), since the read-check on each statement always runs
+ * before its kill-check.
  */
 function hasLaterReferenceInEnclosingBlock(
   declaratorNode: TreeSitterNode,
@@ -5237,6 +5282,9 @@ function hasLaterReferenceInEnclosingBlock(
     }
     if (blockContainsIdentifierExcluding(child, name, declaratorNode.id, 0, requireCallSite)) {
       return true;
+    }
+    if (killsBinding(child, name, declaratorNode.id)) {
+      return false;
     }
   }
   return false;

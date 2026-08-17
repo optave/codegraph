@@ -19,6 +19,17 @@
  * variable is later passed to `useCallback`) from `deadViaUnusedFallback`
  * (whose variable is declared and never touched again) — both reference
  * their target identically, so only the liveness check tells them apart.
+ *
+ * Also covers #2438 (deferred from PR #2432's review): the liveness scan
+ * ignored plain writes correctly, but didn't model a write as a KILL — a
+ * read occurring after the variable has already been unconditionally
+ * overwritten was still credited as evidence the fallback is consumed, even
+ * though that read can only ever see the new value. Fixed by having the
+ * per-statement scan stop once it passes a statement that unconditionally
+ * overwrites the name (`killsBinding`/`kills_binding`), while still crediting
+ * a genuine read on the killing statement's OWN right-hand side first. A
+ * write nested inside a conditional must NOT kill, since the original value
+ * can still reach a later read when the branch doesn't run.
  */
 
 import fs from 'node:fs';
@@ -50,6 +61,47 @@ function readAroundNestedVar(x) { return x + 5; }
 function hoistedInNestedFn(x) { return x + 6; }
 function loopOwnBinding(x) { return x + 7; }
 function loopBareTarget(x) { return x + 8; }
+
+function killedThenRead(x) { return x + 9; }
+function killedByVarRedeclare(x) { return x + 10; }
+function survivesConditionalWrite(x) { return x + 11; }
+function survivesSelfReadInKillStatement(x) { return x + 12; }
+function somethingElse(x) { return x + 13; }
+
+// #2438: a plain top-level reassignment kills the fallback value before the
+// later read runs — that read sees \`other\`, never \`killedThenRead\`.
+export function killAssignBeforeRead(opts, other) {
+  let fn = opts.custom || killedThenRead;
+  fn = other;
+  return fn();
+}
+
+// #2438: a \`var\` redeclaration in a later sibling statement is the same
+// kind of unconditional overwrite as a plain assignment.
+export function killViaVarRedeclare(opts, other) {
+  var fn = opts.custom || killedByVarRedeclare;
+  var fn = other;
+  return fn();
+}
+
+// #2438: a write inside a conditional is NOT a guaranteed kill — the
+// fallback can still reach the later read when \`cond\` is false.
+export function conditionalWriteDoesNotKill(opts, other, cond) {
+  let fn = opts.custom || survivesConditionalWrite;
+  if (cond) {
+    fn = other;
+  }
+  return fn();
+}
+
+// #2438: the killing statement's OWN right-hand side is scanned for a
+// genuine read before the kill takes effect — \`fn\` on the right of its own
+// reassignment still reads the pre-existing (possibly fallback) value.
+export function selfReadWithinKillStatement(opts) {
+  let fn = opts.custom || survivesSelfReadInKillStatement;
+  fn = fn || somethingElse;
+  return fn;
+}
 
 // \`var\` is FUNCTION-scoped, so the nested block's \`var varScoped\` is the SAME
 // binding as the outer one — the \`varScoped()\` read before it genuinely
@@ -194,6 +246,23 @@ function runShared(getDbPath: () => string) {
 
   it('does not credit liveness from a for-of body read of a bare loop target', () => {
     expect(countCallEdgesTo(getDbPath(), 'loopBareTarget')).toBe(0);
+  });
+
+  // #2438: a read after an unconditional overwrite must not be credited.
+  it('does not credit liveness from a read that a prior unconditional assignment already killed', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedThenRead')).toBe(0);
+  });
+
+  it('does not credit liveness from a read after a var redeclaration in a later statement', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedByVarRedeclare')).toBe(0);
+  });
+
+  it('still credits liveness from a read after a write nested inside a conditional', () => {
+    expect(countCallEdgesTo(getDbPath(), 'survivesConditionalWrite')).toBeGreaterThan(0);
+  });
+
+  it('still credits a genuine read on the right-hand side of the killing statement itself', () => {
+    expect(countCallEdgesTo(getDbPath(), 'survivesSelfReadInKillStatement')).toBeGreaterThan(0);
   });
 }
 
