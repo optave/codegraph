@@ -5066,6 +5066,25 @@ function blockContainsIdentifierExcluding(
       ? blockContainsIdentifierExcluding(value, name, excludeId, depth + 1, requireCallSite)
       : false;
   }
+  // A comma-separated sequence (`fn = replacement, fn()`) executes its parts
+  // in order — a kill earlier in the sequence must suppress a read later in
+  // the SAME sequence, the same ordering already applied across top-level
+  // block statements and multi-declarator statements above (Greptile review,
+  // PR #2554: `(fn = replacement, fn())` was crediting the read because the
+  // generic recursive walk below has no concept of sequence-internal order).
+  if (node.type === 'sequence_expression') {
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const part = node.namedChild(i);
+      if (!part) continue;
+      if (blockContainsIdentifierExcluding(part, name, excludeId, depth + 1, requireCallSite)) {
+        return true;
+      }
+      if (killsBinding(part, name, excludeId, depth + 1)) {
+        return false;
+      }
+    }
+    return false;
+  }
   if (node.type === 'assignment_expression') {
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');

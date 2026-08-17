@@ -5295,6 +5295,34 @@ fn block_contains_identifier_excluding(
             None => false,
         };
     }
+    // A comma-separated sequence (`fn = replacement, fn()`) executes its
+    // parts in order — a kill earlier in the sequence must suppress a read
+    // later in the SAME sequence, the same ordering already applied across
+    // top-level block statements and multi-declarator statements above
+    // (Greptile review, PR #2554: `(fn = replacement, fn())` was crediting
+    // the read because the generic recursive walk below has no concept of
+    // sequence-internal order).
+    if node.kind() == "sequence_expression" {
+        for i in 0..node.named_child_count() {
+            let Some(part) = node.named_child(i) else {
+                continue;
+            };
+            if block_contains_identifier_excluding(
+                &part,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ) {
+                return true;
+            }
+            if kills_binding(&part, name, source, exclude_id, depth + 1) {
+                return false;
+            }
+        }
+        return false;
+    }
     if node.kind() == "assignment_expression" {
         if let Some(left) = node.child_by_field_name("left") {
             if pattern_binds_name(&left, name, source, 0) {
@@ -9150,6 +9178,21 @@ mod tests {
         let s = parse_js(
             "var fn = options.custom || fetchLatestVersion;\n\
              var fn = replacement, result = fn();",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2554: a sequence expression's parts execute in
+    // order — a kill earlier in the sequence must suppress a read later in
+    // the SAME sequence.
+    #[test]
+    fn does_not_credit_liveness_from_a_read_later_in_a_sequence_expression_whose_earlier_part_killed_it(
+    ) {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             (fn = replacement, fn());",
         );
         assert!(!s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"

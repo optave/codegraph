@@ -69,6 +69,7 @@ function survivesSelfReadInKillStatement(x) { return x + 12; }
 function somethingElse(x) { return x + 13; }
 function killedByParenthesizedAssign(x) { return x + 14; }
 function killedByLaterDeclaratorInSameStatement(x) { return x + 15; }
+function killedBySequenceExprPriorPart(x) { return x + 16; }
 
 // #2438: a plain top-level reassignment kills the fallback value before the
 // later read runs — that read sees \`other\`, never \`killedThenRead\`.
@@ -120,6 +121,14 @@ export function killViaLaterDeclaratorInSameStatement(opts, other) {
   var fn = opts.custom || killedByLaterDeclaratorInSameStatement;
   var fn = other, result = fn();
   return result;
+}
+
+// #2438 (Greptile review): a sequence expression's parts execute in order —
+// a kill earlier in the sequence must suppress a read later in the SAME
+// sequence.
+export function killViaSequenceExprPriorPart(opts, other) {
+  let fn = opts.custom || killedBySequenceExprPriorPart;
+  return (fn = other, fn());
 }
 
 // \`var\` is FUNCTION-scoped, so the nested block's \`var varScoped\` is the SAME
@@ -294,6 +303,13 @@ function runShared(getDbPath: () => string) {
   // statement must suppress a later declarator's read in that SAME statement.
   it('does not credit liveness from a later declarator reading a value an earlier declarator in the same statement killed', () => {
     expect(countCallEdgesTo(getDbPath(), 'killedByLaterDeclaratorInSameStatement')).toBe(0);
+  });
+
+  // Greptile review, PR #2554: a sequence expression's own internal ordering
+  // must be respected — a kill earlier in the sequence suppresses a read
+  // later in the SAME sequence.
+  it('does not credit liveness from a read later in a sequence expression whose earlier part killed it', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedBySequenceExprPriorPart')).toBe(0);
   });
 }
 
