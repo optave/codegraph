@@ -631,6 +631,14 @@ interface CallableNodeRow {
   fan_out: number;
   /** 1 when a program-entrypoint call resolves here (#2392). */
   entrypoint: number;
+  /**
+   * 1 when this specific target should carry the `role: 'entry'` label,
+   * narrower than `entrypoint` — a nested call sharing a line with another
+   * (unresolved) call gets `entrypoint = 1` for reachability but not
+   * necessarily this (#2420). See `projectEntrypointAttribution`'s doc
+   * comment for the full rule.
+   */
+  entrypoint_role: number;
 }
 
 /**
@@ -699,6 +707,7 @@ function buildClassifierInput(
   hasActiveFileSiblings: boolean | undefined;
   isPublicSurface: boolean;
   isEntrypoint: boolean;
+  isEntrypointRole: boolean;
 }> {
   return rows.map((r) => ({
     id: String(r.id),
@@ -709,6 +718,7 @@ function buildClassifierInput(
     fanOut: r.fan_out,
     isExported: exportedIds.has(r.id),
     isEntrypoint: r.entrypoint === 1,
+    isEntrypointRole: r.entrypoint_role === 1,
     productionFanIn: prodFanInMap.get(r.id) || 0,
     // Set hasActiveFileSiblings for annotation-only kinds (constants, type defs)
     // AND for method/function — the latter two can have fanIn === 0 due to
@@ -877,6 +887,7 @@ function classifyNodeRolesFull(db: BetterSqlite3Database, emptySummary: RoleSumm
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file,
         COALESCE(n.entrypoint, 0) AS entrypoint,
+        COALESCE(n.entrypoint_role, 0) AS entrypoint_role,
         COALESCE(fi.cnt, 0) AS fan_in,
         COALESCE(fo.cnt, 0) AS fan_out
       FROM nodes n
@@ -1219,6 +1230,7 @@ function runIncrementalReachabilityDowngrade(
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file, n.exported,
         COALESCE(n.entrypoint, 0) AS entrypoint,
+        COALESCE(n.entrypoint_role, 0) AS entrypoint_role,
         COALESCE(fi.cnt, 0) AS fan_in,
         COALESCE(fo.cnt, 0) AS fan_out
       FROM nodes n
@@ -1238,6 +1250,7 @@ function runIncrementalReachabilityDowngrade(
     file: string;
     exported: number;
     entrypoint: number;
+    entrypoint_role: number;
     fan_in: number;
     fan_out: number;
   }>;
@@ -1252,6 +1265,7 @@ function runIncrementalReachabilityDowngrade(
     isExported: r.exported === 1,
     isPublicSurface: r.exported === 1,
     isEntrypoint: r.entrypoint === 1,
+    isEntrypointRole: r.entrypoint_role === 1,
     hasActiveFileSiblings: true,
   }));
 
@@ -1360,6 +1374,7 @@ function classifyNodeRolesIncremental(
     .prepare(
       `SELECT n.id, n.name, n.kind, n.file,
         COALESCE(n.entrypoint, 0) AS entrypoint,
+        COALESCE(n.entrypoint_role, 0) AS entrypoint_role,
         (SELECT COUNT(*) FROM edges WHERE kind IN ('calls', 'imports-type') AND target_id = n.id) AS fan_in,
         (SELECT COUNT(*) FROM edges WHERE kind = 'calls' AND source_id = n.id) AS fan_out
       FROM nodes n

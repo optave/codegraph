@@ -630,6 +630,28 @@ export interface Call {
    * into the `nodes.entrypoint` flag the role classifier reads.
    */
   entrypoint?: boolean;
+  /**
+   * Bare name of the *immediately* enclosing call, when this entrypoint call
+   * is itself an argument to another call within the same qualifying
+   * statement — e.g. `configure` in `main(configure())`, where this field
+   * would read `'main'`. `undefined` for a call that is not nested inside
+   * another call (the top-level `main` in that same example), or for a call
+   * that is not `entrypoint` at all.
+   *
+   * Exists because `entrypoint` alone cannot distinguish two shapes that look
+   * identical from inside `markEntrypointCalls` (#2420): `main(configure())`,
+   * where `configure` is a helper that merely happens to run at module load
+   * and should NOT itself be classified `role: 'entry'`, versus
+   * `sys.exit(main())`, where the outer call is an unresolvable stdlib
+   * passthrough and the *inner* `main` is the one that matters. Both share a
+   * line and both calls get `entrypoint: true` (reachability has no bug to
+   * fix here — see the field's own projection-side consumer's doc comment) —
+   * but only the outermost call whose target actually resolves to an in-repo
+   * definition should win the `role: 'entry'` label. `projectEntrypointAttribution`
+   * (`domain/graph/builder/entrypoints.ts`) walks this chain at build end,
+   * once resolution is known, to decide which target that is.
+   */
+  entrypointWrappedBy?: string;
   dynamicKind?: DynamicKind;
   /** Raw key/arg text — used for diagnostics and future RES-1 const-string resolution. */
   keyExpr?: string;

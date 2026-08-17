@@ -50,6 +50,7 @@ import { resolvePyprojectScriptEntrypoints } from '../resolve.js';
 interface EntrypointCall {
   name: string;
   entrypoint?: boolean;
+  entrypointWrappedBy?: string;
 }
 
 /**
@@ -78,19 +79,25 @@ export function persistEntrypointCalls(
 ): void {
   const deleteStmt = db.prepare('DELETE FROM entrypoint_calls WHERE file = ?');
   const insertStmt = db.prepare(
-    'INSERT OR IGNORE INTO entrypoint_calls (file, name) VALUES (?, ?)',
+    'INSERT OR IGNORE INTO entrypoint_calls (file, name, wrapped_by) VALUES (?, ?, ?)',
   );
 
   const tx = db.transaction(() => {
     for (const [file, calls] of entries) {
       if (!file.endsWith('.py')) continue;
       deleteStmt.run(file);
-      const names = new Set<string>();
+      // First occurrence per name wins (matches the existing "seen" dedup
+      // behavior) — the rare case of the same name appearing both wrapped
+      // and unwrapped as separate entrypoint calls within one file isn't
+      // otherwise representable by this (file, name) primary key.
+      const names = new Map<string, string | null>();
       for (const call of calls) {
-        if (call.entrypoint) names.add(call.name);
+        if (call.entrypoint && !names.has(call.name)) {
+          names.set(call.name, call.entrypointWrappedBy ?? null);
+        }
       }
-      for (const name of names) {
-        insertStmt.run(file, name);
+      for (const [name, wrappedBy] of names) {
+        insertStmt.run(file, name, wrappedBy);
       }
     }
   });
@@ -102,13 +109,15 @@ interface DesiredRow {
   id: number;
   file: string;
   sourceFile: string;
+  name: string;
+  wrappedBy: string | null;
 }
 
 /**
- * Recompute `nodes.entrypoint` / `nodes.entrypoint_source_file` from the
- * persisted evidence and the committed `calls` edges, and return the files
- * whose flag set actually changed, so the caller can seed incremental role
- * reclassification for them.
+ * Recompute `nodes.entrypoint` / `nodes.entrypoint_source_file` /
+ * `nodes.entrypoint_role` from the persisted evidence and the committed
+ * `calls` edges, and return the files whose flag set actually changed, so the
+ * caller can seed incremental role reclassification for them.
  *
  * Must run after every edge-insert path for the build has completed — it
  * identifies targets from committed edges, not by re-resolving. An entrypoint
@@ -129,7 +138,37 @@ interface DesiredRow {
  * files both call the same target as their entrypoint, the one that sorts
  * first wins deterministically (rather than "whichever marked last", as in
  * #2411) and the target stays correctly flagged while either survives —
- * removing one no longer clears it. Tracked as #2419.
+ * removing one no longer clears it (#2419).
+ *
+ * ## `entrypoint_role`: which of several calls sharing a line gets `role: 'entry'`
+ *
+ * `entrypoint` alone answers "is the runtime the caller" — set on EVERY call
+ * inside a qualifying guard, including one nested inside another
+ * (`main(configure())` flags both `main` and `configure`, and correctly so:
+ * `configure` really does run at module load and needs the same
+ * dead-code-downgrade protection `main` does). But only one of them should be
+ * the *label* role classification promotes to `'entry'` — a helper like
+ * `configure` should keep whatever role its own fan-in/fan-out shape implies,
+ * not misleadingly appear in `codegraph roles --role entry` next to the real
+ * entrypoint (#2420).
+ *
+ * The rule: a call that is not nested inside another call on the same
+ * qualifying line is always the label winner. A nested call
+ * (`entrypointWrappedBy` set at extraction time, see `Call`'s doc comment)
+ * only wins the label if its wrapper does NOT resolve to an in-repo target
+ * from the same source file — e.g. `sys.exit(main())`, where `sys.exit` is
+ * an unresolvable stdlib passthrough, so `main` — the call that actually
+ * matters — gets the label instead of being silently skipped. This can only
+ * be decided here, once resolution is known: extraction (which only sees
+ * syntax) cannot tell `main(configure())` (wrapper resolves in-repo) from
+ * `sys.exit(main())` (wrapper does not) without knowing the graph's `calls`
+ * edges — the same reason `desired` itself waits until here.
+ *
+ * A `entrypoint_role` value change is a role-classification-visible change
+ * even when `entrypoint`/`entrypoint_source_file` stay the same — e.g. a
+ * wrapper that used to resolve stops resolving on a later rebuild that
+ * doesn't touch the wrapped target's own file at all — so it is checked and
+ * `touchedFiles`-seeded independently of the existing sourceFile-change check.
  */
 export function projectEntrypointAttribution(db: BetterSqlite3Database): string[] {
   // Cheap exit for the overwhelmingly common case — no Python entrypoint
@@ -150,7 +189,8 @@ export function projectEntrypointAttribution(db: BetterSqlite3Database): string[
   // `Owner.start`, hence the qualified form at all.
   const desiredRows = db
     .prepare(
-      `SELECT e.target_id AS id, tgt.file AS file, ec.file AS sourceFile
+      `SELECT e.target_id AS id, tgt.file AS file, ec.file AS sourceFile,
+              ec.name AS name, ec.wrapped_by AS wrappedBy
        FROM entrypoint_calls ec
        JOIN nodes src ON src.kind = 'file' AND src.file = ec.file
        JOIN edges e ON e.source_id = src.id AND e.kind = 'calls'
@@ -170,18 +210,30 @@ export function projectEntrypointAttribution(db: BetterSqlite3Database): string[
     if (!desired.has(row.id)) desired.set(row.id, row);
   }
 
+  // Which (sourceFile, name) pairs resolved to SOME in-repo target — used
+  // below to test whether a wrapped call's own wrapper resolved. Built from
+  // `desired` rather than a separate query since it needs exactly the same
+  // "did ec.name resolve via a calls edge from ec.file" answer `desired`
+  // itself already computed.
+  const resolvedNames = new Set<string>();
+  for (const row of desired.values()) {
+    resolvedNames.add(`${row.sourceFile} ${row.name}`);
+  }
+  const isRoleEligible = (row: DesiredRow): boolean =>
+    row.wrappedBy === null || !resolvedNames.has(`${row.sourceFile} ${row.wrappedBy}`);
+
   const current = db
     .prepare(
-      `SELECT id, file, entrypoint_source_file AS sourceFile
+      `SELECT id, file, entrypoint_source_file AS sourceFile, entrypoint_role AS role
        FROM nodes WHERE entrypoint = 1`,
     )
-    .all() as Array<{ id: number; file: string; sourceFile: string | null }>;
+    .all() as Array<{ id: number; file: string; sourceFile: string | null; role: number }>;
 
   const clearStmt = db.prepare(
-    'UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL WHERE id = ?',
+    'UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL, entrypoint_role = 0 WHERE id = ?',
   );
   const markStmt = db.prepare(
-    'UPDATE nodes SET entrypoint = 1, entrypoint_source_file = ? WHERE id = ?',
+    'UPDATE nodes SET entrypoint = 1, entrypoint_source_file = ?, entrypoint_role = ? WHERE id = ?',
   );
 
   const touchedFiles = new Set<string>();
@@ -193,15 +245,19 @@ export function projectEntrypointAttribution(db: BetterSqlite3Database): string[
       if (!want) {
         clearStmt.run(row.id);
         touchedFiles.add(row.file);
-      } else if (want.sourceFile !== row.sourceFile) {
-        // Still an entrypoint, only the attributing file changed. The role is
-        // `entry` either way, so this needs no role reclassification.
-        markStmt.run(want.sourceFile, row.id);
+        continue;
       }
+      const wantRole = isRoleEligible(want) ? 1 : 0;
+      if (want.sourceFile === row.sourceFile && wantRole === row.role) continue;
+      markStmt.run(want.sourceFile, wantRole, row.id);
+      // A sourceFile-only change needs no reclassification (the role is
+      // `entry` either way), but an entrypoint_role VALUE change does — it
+      // is exactly what role classification's `'entry'` early-return reads.
+      if (wantRole !== row.role) touchedFiles.add(row.file);
     }
     for (const [id, want] of desired) {
       if (currentIds.has(id)) continue;
-      markStmt.run(want.sourceFile, id);
+      markStmt.run(want.sourceFile, isRoleEligible(want) ? 1 : 0, id);
       touchedFiles.add(want.file);
     }
   });
@@ -249,10 +305,14 @@ export function applyPyprojectScriptAttribution(
   if (desired.length === 0 && current.length === 0) return [];
 
   const clearStmt = db.prepare(
-    'UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL WHERE id = ?',
+    'UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL, entrypoint_role = 0 WHERE id = ?',
   );
+  // entrypoint_role is unconditionally 1 here (#2420): an explicit
+  // `[project.scripts]`-style declaration has no "nested call" ambiguity to
+  // resolve — there is exactly one target per script name, always the
+  // label-worthy one.
   const markStmt = db.prepare(
-    "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'pyproject.toml' WHERE id = ?",
+    "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'pyproject.toml', entrypoint_role = 1 WHERE id = ?",
   );
   const findCandidates = db.prepare(
     `SELECT id, name FROM nodes WHERE file = ? AND kind IN ('function', 'method')`,

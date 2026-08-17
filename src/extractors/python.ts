@@ -59,6 +59,30 @@ const BUILTIN_GLOBALS_PY: Set<string> = new Set([
 ]);
 
 /**
+ * Stdlib modules whose attribute calls are the "process launcher
+ * passthrough" idiom #2420 exists to protect (`sys.exit(main())`,
+ * `asyncio.run(main())`, `os._exit(main())`) — deliberately narrow and
+ * non-exhaustive. This is NOT an attempt to classify every import as
+ * external vs. local (real import resolution, needed to do that precisely,
+ * isn't available at extraction time); it only names the specific handful
+ * of modules this exact idiom uses. See `findEnclosingCallName`'s doc
+ * comment for why a wrapper resolving to any OTHER module (or no import at
+ * all) takes a different path.
+ *
+ * Known residual gap (#2543, deliberately not fixed here): this matches by
+ * import *source name* only, not by whether the import actually resolved to
+ * a stdlib module. A repository that defines its own top-level module
+ * literally named `sys.py`/`os.py`/`asyncio.py` would have a call like
+ * `asyncio.run(main())` still treated as the external passthrough even
+ * though it resolves in-repo. Closing that gap needs real resolved-import
+ * data (an `imports` edge), only available after the build's import
+ * resolution phase — i.e. in `projectEntrypointAttribution`, not here at
+ * extraction time. Left for #2543 given a repository shadowing a stdlib
+ * module name this way is already unusual, independent of this tool.
+ */
+const STDLIB_PROCESS_LAUNCHER_MODULES: ReadonlySet<string> = new Set(['sys', 'os', 'asyncio']);
+
+/**
  * Extract symbols from Python files.
  */
 export function extractPythonSymbols(tree: TreeSitterTree, filePath: string): ExtractorOutput {
@@ -97,10 +121,24 @@ export function extractPythonSymbols(tree: TreeSitterTree, filePath: string): Ex
  * leaving no room for the two engines to disagree about a given call site.
  */
 function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: ExtractorOutput): void {
-  const lines = collectEntrypointCallLines(root, filePath);
+  // Maps each plain `import X` / `import X as Y` local binding name
+  // (`handlePyImport`'s `namespaceBindings`) to the module it actually
+  // imports (`imp.source`), so an alias like `import os as o` still maps
+  // "o" to "os" — never a `from X import Y` binding, which names a symbol
+  // pulled out of a module, not the module namespace itself. Runs after
+  // `walkPythonNode`, so `ctx.imports` is already fully populated by the
+  // time this reads it (see `extractPythonSymbols`'s call order).
+  const importSourceByLocalName = new Map<string, string>();
+  for (const imp of ctx.imports) {
+    for (const name of imp.namespaceBindings ?? []) importSourceByLocalName.set(name, imp.source);
+  }
+  const { lines, wrappedBy } = collectEntrypointCallLines(root, filePath, importSourceByLocalName);
   if (lines.size === 0) return;
   for (const call of ctx.calls) {
-    if (lines.has(call.line)) call.entrypoint = true;
+    if (!lines.has(call.line)) continue;
+    call.entrypoint = true;
+    const wrapper = wrappedBy.get(`${call.line}:${call.name}`);
+    if (wrapper) call.entrypointWrappedBy = wrapper;
   }
 }
 
@@ -132,8 +170,13 @@ function markEntrypointCalls(root: TreeSitterNode, filePath: string, ctx: Extrac
  * Like `guarded`, entering a class does not turn this off either, for the
  * same immediate-execution reason.
  */
-function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set<number> {
+function collectEntrypointCallLines(
+  root: TreeSitterNode,
+  filePath: string,
+  importSourceByLocalName: ReadonlyMap<string, string>,
+): { lines: Set<number>; wrappedBy: Map<string, string> } {
   const lines = new Set<number>();
+  const wrappedBy = new Map<string, string>();
 
   const visit = (
     node: TreeSitterNode,
@@ -142,7 +185,13 @@ function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set
     atModuleLevel: boolean,
   ): void => {
     if (depth >= MAX_WALK_DEPTH) return;
-    if (node.type === 'call' && guarded) lines.add(node.startPosition.row + 1);
+    if (node.type === 'call' && guarded) {
+      const line = node.startPosition.row + 1;
+      lines.add(line);
+      const name = getCallName(node);
+      const wrapper = name ? findEnclosingCallName(node, importSourceByLocalName) : null;
+      if (name && wrapper) wrappedBy.set(`${line}:${name}`, wrapper);
+    }
 
     // Only a function defers its body — a class body is executed immediately
     // while evaluating the `class` statement, so it must not be treated the
@@ -176,7 +225,100 @@ function collectEntrypointCallLines(root: TreeSitterNode, filePath: string): Set
   };
 
   visit(root, 0, filePath.endsWith('__main__.py'), true);
-  return lines;
+  return { lines, wrappedBy };
+}
+
+/**
+ * The bare callee name of a `call` node, matching `handlePyCall`'s own naming
+ * exactly (identifier, or an attribute call's `.attribute` half) — so a
+ * wrapper name recorded here matches what `entrypoint_calls`/projection
+ * later look up by the same bare-name convention. Returns `null` for a
+ * shape `handlePyCall` itself would skip (e.g. a computed/subscript callee).
+ */
+function getCallName(node: TreeSitterNode): string | null {
+  const fn = node.childForFieldName('function');
+  if (!fn) return null;
+  if (fn.type === 'identifier') return fn.text;
+  if (fn.type === 'attribute') {
+    const attr = fn.childForFieldName('attribute');
+    return attr ? attr.text : null;
+  }
+  return null;
+}
+
+/**
+ * The name of the nearest enclosing `call` whose arguments directly or
+ * transitively contain `node` — e.g. `main` for the `configure()` call
+ * inside `main(configure())` — or `null` if `node` is not nested inside
+ * another call within the same statement (#2420).
+ *
+ * Bounded to the current statement: stops (returns `null`) at the first
+ * `expression_statement`/`block`/`module` ancestor, since a call can only be
+ * "wrapped" by another call textually enclosing it in the same expression —
+ * walking past a statement boundary would find an unrelated, merely
+ * lexically-outer call (e.g. the `if __name__ == "__main__":` guard's own
+ * body statement list is a `block`, not a call, and must stop the walk).
+ *
+ * A wrapper whose receiver resolves (via `importSourceByLocalName`, honoring
+ * `import X as Y` aliasing) to one of `STDLIB_PROCESS_LAUNCHER_MODULES` —
+ * `sys.exit(...)`, `asyncio.run(...)`, `os._exit(...)` — is reported as
+ * `null` here, same as no wrapper, rather than its bare attribute name. This
+ * is exactly the stdlib-passthrough idiom #2420 exists to protect: these
+ * specific modules are never resolvable to a same-file symbol, yet the bare
+ * attribute name (`exit`, `run`) is a plain identifier stripped of its
+ * module qualifier — far too likely to coincidentally match an unrelated
+ * same-named in-repo symbol for `projectEntrypointAttribution`'s file-wide
+ * bare-name lookup to trust (#2420 review — Greptile, round 1: a second,
+ * unrelated `exit`-named call elsewhere in the file that DOES resolve
+ * in-repo would otherwise make this wrapper look "resolved" and wrongly
+ * suppress the real entrypoint's role). Treating it as unwrapped is always
+ * the safe default here: silently losing a real entrypoint's role is worse
+ * than an over-inclusive label on its wrapper, the same trade-off the
+ * feature already accepts for reachability (see this file's `Call`-marking
+ * doc comment).
+ *
+ * Every OTHER wrapper — a plain identifier call (`main(...)`), a dotted
+ * call on a local object/instance (`runner.run(...)`), or a dotted call on
+ * an import that ISN'T one of those specific stdlib modules (`import
+ * runner; runner.run(...)`, a same-repo module) — reports its bare name as
+ * usual and goes through the normal bare-name resolution check instead:
+ * unlike `sys`/`asyncio`, any of these plausibly resolve to a same-repo
+ * symbol. #2420 review (Greptile, rounds 2 and 3) confirmed that excluding
+ * either "every dotted wrapper" or "every import-bound wrapper" regresses
+ * to the original bug for these cases — both the wrapper and the wrapped
+ * call would wrongly receive the entry label. `STDLIB_PROCESS_LAUNCHER_MODULES`
+ * is deliberately narrow rather than an attempt to classify every import as
+ * external vs. local (which needs real import resolution, unavailable at
+ * extraction time) — it only needs to name the specific handful of modules
+ * this exact idiom uses.
+ */
+function findEnclosingCallName(
+  node: TreeSitterNode,
+  importSourceByLocalName: ReadonlyMap<string, string>,
+): string | null {
+  let parent = node.parent;
+  let hops = 0;
+  while (parent && hops < MAX_WALK_DEPTH) {
+    if (parent.type === 'call') {
+      const fn = parent.childForFieldName('function');
+      if (fn?.type === 'attribute') {
+        const receiver = fn.childForFieldName('object')?.text;
+        const source = receiver ? importSourceByLocalName.get(receiver) : undefined;
+        if (source && STDLIB_PROCESS_LAUNCHER_MODULES.has(source)) return null;
+      }
+      return getCallName(parent);
+    }
+    if (
+      parent.type === 'expression_statement' ||
+      parent.type === 'block' ||
+      parent.type === 'module'
+    ) {
+      return null;
+    }
+    parent = parent.parent;
+    hops++;
+  }
+  return null;
 }
 
 /** True for the `__name__ == "__main__"` test of an `if` statement. */

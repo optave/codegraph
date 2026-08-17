@@ -71,9 +71,9 @@ fn persist_entrypoint_calls(conn: &Connection, file_symbols: &BTreeMap<String, F
         let Ok(mut delete) = tx.prepare("DELETE FROM entrypoint_calls WHERE file = ?1") else {
             return;
         };
-        let Ok(mut insert) =
-            tx.prepare("INSERT OR IGNORE INTO entrypoint_calls (file, name) VALUES (?1, ?2)")
-        else {
+        let Ok(mut insert) = tx.prepare(
+            "INSERT OR IGNORE INTO entrypoint_calls (file, name, wrapped_by) VALUES (?1, ?2, ?3)",
+        ) else {
             return;
         };
 
@@ -82,12 +82,19 @@ fn persist_entrypoint_calls(conn: &Connection, file_symbols: &BTreeMap<String, F
                 continue;
             }
             let _ = delete.execute(rusqlite::params![rel_path]);
-            let mut seen: HashSet<&str> = HashSet::new();
+            // First occurrence per name wins (matches TS's dedup behavior) —
+            // see persistEntrypointCalls's doc comment for the rare-edge-case
+            // rationale.
+            let mut seen: HashMap<&str, Option<&str>> = HashMap::new();
             for call in &symbols.calls {
-                if !call.entrypoint.unwrap_or(false) || !seen.insert(call.name.as_str()) {
+                if !call.entrypoint.unwrap_or(false) {
                     continue;
                 }
-                let _ = insert.execute(rusqlite::params![rel_path, call.name]);
+                seen.entry(call.name.as_str())
+                    .or_insert(call.entrypoint_wrapped_by.as_deref());
+            }
+            for (name, wrapped_by) in seen {
+                let _ = insert.execute(rusqlite::params![rel_path, name, wrapped_by]);
             }
         }
     }
@@ -98,12 +105,14 @@ fn persist_entrypoint_calls(conn: &Connection, file_symbols: &BTreeMap<String, F
 struct DesiredRow {
     file: String,
     source_file: String,
+    name: String,
+    wrapped_by: Option<String>,
 }
 
-/// Recompute `nodes.entrypoint` / `nodes.entrypoint_source_file` from the
-/// persisted evidence and the committed `calls` edges, returning the files
-/// whose flag set actually changed so the caller can seed incremental role
-/// reclassification for them.
+/// Recompute `nodes.entrypoint` / `nodes.entrypoint_source_file` /
+/// `nodes.entrypoint_role` from the persisted evidence and the committed
+/// `calls` edges, returning the files whose flag set actually changed so the
+/// caller can seed incremental role reclassification for them.
 ///
 /// Must run after every edge-insert path for the build has completed — it
 /// identifies targets from committed edges, not by re-resolving. An
@@ -122,7 +131,36 @@ struct DesiredRow {
 /// two files both call the same target as their entrypoint, the
 /// lexicographically first wins deterministically (rather than "whichever
 /// marked last", as in #2411) and the target stays correctly flagged while
-/// either survives. Tracked as #2419.
+/// either survives (#2419).
+///
+/// ## `entrypoint_role`: which of several calls sharing a line gets `role: 'entry'`
+///
+/// `entrypoint` alone answers "is the runtime the caller" — set on every call
+/// inside a qualifying guard, including one nested inside another
+/// (`main(configure())` flags both `main` and `configure`, correctly: both
+/// really do run at module load and need the same dead-code-downgrade
+/// protection). But only one should be the *label* role classification
+/// promotes to `'entry'` — a helper like `configure` should keep whatever
+/// role its own fan-in/fan-out shape implies, not misleadingly appear in
+/// `codegraph roles --role entry` next to the real entrypoint (#2420).
+///
+/// The rule: a call not nested inside another call on the same qualifying
+/// line always wins the label. A nested call (`Call.entrypoint_wrapped_by`
+/// set at extraction time) only wins the label if its wrapper does NOT
+/// resolve to an in-repo target from the same source file — e.g.
+/// `sys.exit(main())`, where `sys.exit` is an unresolvable stdlib
+/// passthrough, so `main` gets the label instead of being silently skipped.
+/// This can only be decided here, once resolution is known: extraction (only
+/// sees syntax) cannot tell `main(configure())` (wrapper resolves in-repo)
+/// from `sys.exit(main())` (wrapper does not) without the graph's `calls`
+/// edges — the same reason `desired` itself waits until here.
+///
+/// An `entrypoint_role` value change is role-classification-visible even
+/// when `entrypoint`/`entrypoint_source_file` stay the same — e.g. a wrapper
+/// that used to resolve stops resolving on a later rebuild that doesn't
+/// touch the wrapped target's own file at all — so it is checked and
+/// `touched_files`-seeded independently of the existing source-file-change
+/// check.
 fn project_entrypoint_attribution(conn: &Connection) -> HashSet<String> {
     let mut touched_files: HashSet<String> = HashSet::new();
 
@@ -158,7 +196,7 @@ fn project_entrypoint_attribution(conn: &Connection) -> HashSet<String> {
     // over a changed-file set.
     let mut desired: HashMap<i64, DesiredRow> = HashMap::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT e.target_id, tgt.file, ec.file
+        "SELECT e.target_id, tgt.file, ec.file, ec.name, ec.wrapped_by
          FROM entrypoint_calls ec
          JOIN nodes src ON src.kind = 'file' AND src.file = ec.file
          JOIN edges e ON e.source_id = src.id AND e.kind = 'calls'
@@ -173,25 +211,47 @@ fn project_entrypoint_attribution(conn: &Connection) -> HashSet<String> {
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         }) {
-            for (id, file, source_file) in rows.flatten() {
-                desired
-                    .entry(id)
-                    .or_insert(DesiredRow { file, source_file });
+            for (id, file, source_file, name, wrapped_by) in rows.flatten() {
+                desired.entry(id).or_insert(DesiredRow {
+                    file,
+                    source_file,
+                    name,
+                    wrapped_by,
+                });
             }
         }
     }
 
-    let mut current: Vec<(i64, String, Option<String>)> = Vec::new();
-    if let Ok(mut stmt) =
-        conn.prepare("SELECT id, file, entrypoint_source_file FROM nodes WHERE entrypoint = 1")
-    {
+    // Which (source_file, name) pairs resolved to SOME in-repo target — used
+    // below to test whether a wrapped call's own wrapper resolved. Built from
+    // `desired` rather than a separate query since it needs exactly the same
+    // "did ec.name resolve via a calls edge from ec.file" answer `desired`
+    // itself already computed.
+    let mut resolved_names: HashSet<String> = HashSet::new();
+    for row in desired.values() {
+        resolved_names.insert(format!("{} {}", row.source_file, row.name));
+    }
+    let is_role_eligible = |row: &DesiredRow| -> bool {
+        match &row.wrapped_by {
+            None => true,
+            Some(wrapper) => !resolved_names.contains(&format!("{} {}", row.source_file, wrapper)),
+        }
+    };
+
+    let mut current: Vec<(i64, String, Option<String>, i64)> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, file, entrypoint_source_file, entrypoint_role FROM nodes WHERE entrypoint = 1",
+    ) {
         if let Ok(rows) = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         }) {
             current.extend(rows.flatten());
@@ -206,38 +266,46 @@ fn project_entrypoint_attribution(conn: &Connection) -> HashSet<String> {
     };
     {
         let Ok(mut clear) = tx.prepare(
-            "UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL WHERE id = ?1",
+            "UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL, entrypoint_role = 0 WHERE id = ?1",
         ) else {
             return touched_files;
         };
-        let Ok(mut mark) = tx
-            .prepare("UPDATE nodes SET entrypoint = 1, entrypoint_source_file = ?1 WHERE id = ?2")
-        else {
+        let Ok(mut mark) = tx.prepare(
+            "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = ?1, entrypoint_role = ?2 WHERE id = ?3",
+        ) else {
             return touched_files;
         };
 
         let mut current_ids: HashSet<i64> = HashSet::new();
-        for (id, file, source_file) in &current {
+        for (id, file, source_file, role) in &current {
             current_ids.insert(*id);
             match desired.get(id) {
                 None => {
                     let _ = clear.execute(rusqlite::params![id]);
                     touched_files.insert(file.clone());
                 }
-                // Still an entrypoint, only the attributing file changed. The
-                // role is `entry` either way, so this needs no role
-                // reclassification.
-                Some(want) if Some(&want.source_file) != source_file.as_ref() => {
-                    let _ = mark.execute(rusqlite::params![want.source_file, id]);
+                Some(want) => {
+                    let want_role = i64::from(is_role_eligible(want));
+                    if Some(&want.source_file) == source_file.as_ref() && want_role == *role {
+                        continue;
+                    }
+                    let _ = mark.execute(rusqlite::params![want.source_file, want_role, id]);
+                    // A source-file-only change needs no reclassification
+                    // (the role is `entry` either way), but an
+                    // entrypoint_role VALUE change does — it is exactly what
+                    // role classification's `'entry'` early-return reads.
+                    if want_role != *role {
+                        touched_files.insert(file.clone());
+                    }
                 }
-                Some(_) => {}
             }
         }
         for (id, want) in &desired {
             if current_ids.contains(id) {
                 continue;
             }
-            let _ = mark.execute(rusqlite::params![want.source_file, id]);
+            let want_role = i64::from(is_role_eligible(want));
+            let _ = mark.execute(rusqlite::params![want.source_file, want_role, id]);
             touched_files.insert(want.file.clone());
         }
     }
@@ -299,7 +367,7 @@ pub fn apply_pyproject_script_attribution(
             return touched_files;
         };
         let Ok(mut mark_stmt) = tx.prepare(
-            "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'pyproject.toml' WHERE id = ?1",
+            "UPDATE nodes SET entrypoint = 1, entrypoint_source_file = 'pyproject.toml', entrypoint_role = 1 WHERE id = ?1",
         ) else {
             return touched_files;
         };
@@ -329,7 +397,7 @@ pub fn apply_pyproject_script_attribution(
     }
     {
         let Ok(mut clear_stmt) = tx.prepare(
-            "UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL WHERE id = ?1",
+            "UPDATE nodes SET entrypoint = 0, entrypoint_source_file = NULL, entrypoint_role = 0 WHERE id = ?1",
         ) else {
             return touched_files;
         };
@@ -357,14 +425,15 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT, kind TEXT, file TEXT, line INTEGER,
                 entrypoint INTEGER DEFAULT 0,
-                entrypoint_source_file TEXT
+                entrypoint_source_file TEXT,
+                entrypoint_role INTEGER DEFAULT 0
              );
              CREATE TABLE edges (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER, target_id INTEGER, kind TEXT
              );
              CREATE TABLE entrypoint_calls (
-                file TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (file, name)
+                file TEXT NOT NULL, name TEXT NOT NULL, wrapped_by TEXT, PRIMARY KEY (file, name)
              );",
         )
         .unwrap();
@@ -408,6 +477,122 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap()
+    }
+
+    fn role_of(conn: &Connection, id: i64) -> i64 {
+        conn.query_row(
+            "SELECT entrypoint_role FROM nodes WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Like `seed`, but records `wrapped_by` evidence and reuses the same
+    /// `run.py` file node across repeated calls — needed to model several
+    /// calls sharing one qualifying line (`main(configure())`).
+    fn seed_wrapped(
+        conn: &Connection,
+        target_name: &str,
+        call_name: &str,
+        wrapped_by: Option<&str>,
+    ) -> i64 {
+        let src_id = match conn.query_row(
+            "SELECT id FROM nodes WHERE kind = 'file' AND file = 'run.py'",
+            [],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                conn.execute(
+                    "INSERT INTO nodes (name, kind, file, line) VALUES ('run.py', 'file', 'run.py', 0)",
+                    [],
+                )
+                .unwrap();
+                conn.last_insert_rowid()
+            }
+        };
+        conn.execute(
+            "INSERT INTO nodes (name, kind, file, line) VALUES (?1, 'function', 'lib.py', 1)",
+            rusqlite::params![target_name],
+        )
+        .unwrap();
+        let tgt_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO edges (source_id, target_id, kind) VALUES (?1, ?2, 'calls')",
+            rusqlite::params![src_id, tgt_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entrypoint_calls (file, name, wrapped_by) VALUES ('run.py', ?1, ?2)",
+            rusqlite::params![call_name, wrapped_by],
+        )
+        .unwrap();
+        tgt_id
+    }
+
+    #[test]
+    fn defers_the_entry_role_to_the_wrapper_when_the_wrapper_call_resolves_in_repo() {
+        // `main(configure())` — both calls are recorded as entrypoint
+        // evidence (both really run at import time), but only the unwrapped
+        // outer call should carry the `'entry'` label.
+        let conn = test_conn();
+        let main_tgt = seed_wrapped(&conn, "main", "main", None);
+        let configure_tgt = seed_wrapped(&conn, "configure", "configure", Some("main"));
+
+        project_entrypoint_attribution(&conn);
+
+        assert_eq!(flag_of(&conn, main_tgt).0, 1);
+        assert_eq!(role_of(&conn, main_tgt), 1);
+        assert_eq!(flag_of(&conn, configure_tgt).0, 1);
+        assert_eq!(role_of(&conn, configure_tgt), 0);
+    }
+
+    #[test]
+    fn a_wrapper_that_does_not_resolve_in_repo_does_not_block_the_entry_role() {
+        // `sys.exit(main())` — `exit` is recorded as entrypoint evidence too
+        // (it's the outer call on the line), but it never resolves to an
+        // in-repo target, so no `calls` edge names it and it never enters
+        // `desired`. `main`'s wrapper lookup must not find it there and must
+        // still grant the label rather than silently dropping it.
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO entrypoint_calls (file, name, wrapped_by) VALUES ('run.py', 'exit', NULL)",
+            [],
+        )
+        .unwrap();
+        let main_tgt = seed_wrapped(&conn, "main", "main", Some("exit"));
+
+        project_entrypoint_attribution(&conn);
+
+        assert_eq!(role_of(&conn, main_tgt), 1);
+    }
+
+    #[test]
+    fn a_role_only_change_touches_the_file_even_when_the_source_file_is_unchanged() {
+        // First build: `main` resolves unwrapped and gets the label. A later
+        // rebuild discovers `main` is now nested inside a wrapper that
+        // itself resolves — `entrypoint_source_file` doesn't change (`main`
+        // is still attributed to `run.py`), but the role must flip to 0, and
+        // that flip alone — independent of the source-file check — must
+        // surface the file for role reclassification.
+        let conn = test_conn();
+        let tgt = seed_wrapped(&conn, "main", "main", None);
+        project_entrypoint_attribution(&conn);
+        assert_eq!(role_of(&conn, tgt), 1);
+
+        seed_wrapped(&conn, "wrapper", "wrapper", None);
+        conn.execute(
+            "UPDATE entrypoint_calls SET wrapped_by = 'wrapper' WHERE file = 'run.py' AND name = 'main'",
+            [],
+        )
+        .unwrap();
+
+        let touched = project_entrypoint_attribution(&conn);
+
+        assert_eq!(role_of(&conn, tgt), 0);
+        assert_eq!(flag_of(&conn, tgt).1, Some("run.py".to_string()));
+        assert!(touched.contains("lib.py"));
     }
 
     #[test]

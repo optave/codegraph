@@ -148,6 +148,14 @@ pub struct Call {
     /// the guard frequently invokes a `main` imported from another module.
     /// Mirrors TS `Call.entrypoint` (#2392).
     pub entrypoint: Option<bool>,
+    /// Bare name of the immediately enclosing call, when this entrypoint call
+    /// is itself an argument to another call within the same qualifying
+    /// statement — e.g. `configure` in `main(configure())` carries `Some("main")`.
+    /// `None` for a call that is not nested inside another call, or that is
+    /// not `entrypoint` at all. Mirrors TS `Call.entrypointWrappedBy` (#2420)
+    /// — see that field's doc comment for the full rationale.
+    #[napi(js_name = "entrypointWrappedBy")]
+    pub entrypoint_wrapped_by: Option<String>,
 }
 
 /// `import { X as Y }`: the local binding name (Y) paired with the original

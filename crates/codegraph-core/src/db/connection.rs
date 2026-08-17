@@ -979,6 +979,13 @@ impl NativeDatabase {
             let _ = conn.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_nodes_entrypoint_source_file ON nodes(entrypoint_source_file)",
             );
+            // #2420: narrower than `entrypoint` — see TS `ensureNodeColumns`'s
+            // mirrored comment (migrations.ts) for the full rationale.
+            if !has_column(conn, "nodes", "entrypoint_role") {
+                let _ = conn.execute_batch(
+                    "ALTER TABLE nodes ADD COLUMN entrypoint_role INTEGER DEFAULT 0",
+                );
+            }
             let _ = conn.execute_batch(
                 "UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL",
             );
@@ -1024,6 +1031,18 @@ impl NativeDatabase {
             let _ = conn.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_edges_dynamic_kind ON edges(dynamic_kind) WHERE dynamic_kind IS NOT NULL",
             );
+        }
+
+        // #2420: bare name of the call this evidence row's call is nested
+        // inside, or NULL for a top-level entrypoint call. Mirrors TS
+        // `ensureEntrypointCallsColumns` (migrations.ts) — see that
+        // function's doc comment for why this is an idempotent ALTER rather
+        // than a numbered migration. Guarded on the table existing since a
+        // pre-v31 database reaches this before migration v31 has run.
+        if has_table(conn, "entrypoint_calls")
+            && !has_column(conn, "entrypoint_calls", "wrapped_by")
+        {
+            let _ = conn.execute_batch("ALTER TABLE entrypoint_calls ADD COLUMN wrapped_by TEXT");
         }
 
         // #2428: seed `entrypoint_calls` from attribution a pre-v31 build

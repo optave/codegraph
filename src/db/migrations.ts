@@ -683,6 +683,7 @@ function ensureLegacyColumns(db: BetterSqlite3Database): void {
   if (hasTable(db, 'edges')) {
     ensureEdgeColumns(db);
   }
+  ensureEntrypointCallsColumns(db);
 }
 
 function ensureNodeColumns(db: BetterSqlite3Database): void {
@@ -724,6 +725,19 @@ function ensureNodeColumns(db: BetterSqlite3Database): void {
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_nodes_entrypoint_source_file ON nodes(entrypoint_source_file)',
   );
+  // #2420: narrower than `entrypoint` — a target can be a live root
+  // (`entrypoint = 1`, seeding reachability so it isn't downgraded as dead)
+  // without also being the *label-worthy* program entrypoint for role
+  // classification. `main(configure())` flags both `main` and `configure` as
+  // `entrypoint` (neither should be silently treated as dead code — the
+  // reachability side has no bug), but only `main` — the outermost call
+  // whose target actually resolves in-repo — should classify as
+  // `role: 'entry'`; `configure` keeps whatever role its own fan-in/fan-out
+  // shape would otherwise give it. See `projectEntrypointAttribution`'s doc
+  // comment for the wrapper-chain rule this column is set from. Mirrored in
+  // crates/codegraph-core/src/db/connection.rs.
+  if (missing('entrypoint_role'))
+    db.exec('ALTER TABLE nodes ADD COLUMN entrypoint_role INTEGER DEFAULT 0');
   db.exec('UPDATE nodes SET qualified_name = name WHERE qualified_name IS NULL');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_scope ON nodes(scope)');
@@ -734,6 +748,24 @@ function ensureEdgeColumns(db: BetterSqlite3Database): void {
     db.exec('ALTER TABLE edges ADD COLUMN confidence REAL DEFAULT 1.0');
   if (!hasColumn(db, 'edges', 'dynamic'))
     db.exec('ALTER TABLE edges ADD COLUMN dynamic INTEGER DEFAULT 0');
+}
+
+/**
+ * #2420: the bare name of the call this evidence row's call is nested inside
+ * (e.g. `'main'` for the `configure` evidence row from `main(configure())`),
+ * or `NULL` for a top-level (unwrapped) entrypoint call. Added the same way
+ * `entrypoint`/`entrypoint_source_file` were — an idempotent `ALTER TABLE`
+ * here rather than a numbered migration, since `entrypoint_calls` itself was
+ * only ever created via one (v31) and a bare `ALTER` is not replay-safe
+ * against a schema_version already stamped past that point. Guarded on the
+ * table existing for the same reason `backfillEntrypointEvidence` is: a
+ * pre-v31 database reaches this function before migration v31 has run.
+ * Mirrored in crates/codegraph-core/src/db/connection.rs.
+ */
+function ensureEntrypointCallsColumns(db: BetterSqlite3Database): void {
+  if (!hasTable(db, 'entrypoint_calls')) return;
+  if (!hasColumn(db, 'entrypoint_calls', 'wrapped_by'))
+    db.exec('ALTER TABLE entrypoint_calls ADD COLUMN wrapped_by TEXT');
 }
 
 /**
