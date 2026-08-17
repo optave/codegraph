@@ -93,7 +93,7 @@ npm run release:dry-run          # Preview what release would do without writing
 
 **Pipeline:** Source files → tree-sitter parse → extract symbols → resolve imports → SQLite DB → query/search
 
-Source is TypeScript in `src/`, compiled via `tsup`. The Rust native engine lives in `crates/codegraph-core/`.
+Source is TypeScript in `src/`, compiled via plain `tsc` (no bundler) — every `import` in `src/` survives into `dist/` as a real module resolution, so a package used by even one code path must be a `dependencies` entry, never a `devDependency` on the assumption a bundler would have inlined it. The Rust native engine lives in `crates/codegraph-core/`.
 
 | Path | Role |
 |------|------|
