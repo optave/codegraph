@@ -130,6 +130,38 @@ describe('guard-git.sh IFS whitespace-expansion bypass (#2451)', () => {
     expect(isDenied('echo git${IFS/ /X}reset')).toBe(false);
   });
 
+  it('does not invent a token boundary from an empty IFS substring (Greptile review)', () => {
+    // ${IFS:0:0} extracts zero characters — an empty string, which an
+    // unquoted expansion contributes NOTHING from (not even a separator).
+    // "echo git${IFS:0:0}reset" really expands to the single harmless
+    // token "gitreset" in real bash, never "git reset".
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('echo git${IFS:0:0}reset')).toBe(false);
+  });
+
+  it('still blocks git reset via a whitespace-only IFS alternate-value expansion (Greptile review)', () => {
+    // ${IFS:+ } substitutes the literal single space "word" itself
+    // whenever IFS is set and non-null (the normally-true case) — the
+    // substituted text IS whitespace this time, so it produces exactly
+    // the same token boundary as the whole-variable form.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS:+ }reset')).toBe(true);
+  });
+
+  it('still blocks git reset via the bare (colon-less) whitespace-only IFS alternate-value form', () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS+ }reset')).toBe(true);
+  });
+
+  it('does not invent a token boundary from an empty IFS alternate-value expansion', () => {
+    // ${IFS:+} (nothing between + and }) substitutes an EMPTY string when
+    // IFS is set and non-null — an unquoted empty expansion contributes
+    // nothing, not even a separator, so this must not be treated the same
+    // as the non-empty, all-whitespace form above.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('echo git${IFS:+}reset')).toBe(false);
+  });
+
   it('does not treat an IFS reference appearing inside a quoted, inert string as a token boundary', () => {
     // Quoted text is data, not a command invocation — mask-quoted-text.mjs
     // already blanks it out downstream of the IFS-normalization pass, so
