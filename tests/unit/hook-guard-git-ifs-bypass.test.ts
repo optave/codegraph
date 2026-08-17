@@ -139,6 +139,22 @@ describe('guard-git.sh IFS whitespace-expansion bypass (#2451)', () => {
     expect(isDenied('echo git${IFS:0:0}reset')).toBe(false);
   });
 
+  it('does not invent a token boundary from an out-of-range IFS substring offset (Greptile review)', () => {
+    // ${IFS:3} starts extraction AT the end of IFS's 3-character default
+    // value (indices 0, 1, 2) — bash's substring expansion returns EMPTY
+    // once offset is at or past the string's length, the same "empty, not
+    // whitespace" problem as an explicit zero length.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('echo git${IFS:3}reset')).toBe(false);
+  });
+
+  it('does not invent a token boundary from an out-of-range offset even with an explicit length', () => {
+    // ${IFS:5:1} is ALSO empty: bash returns nothing once offset alone is
+    // out of range, regardless of the requested length.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('echo git${IFS:5:1}reset')).toBe(false);
+  });
+
   it('still blocks git reset via a whitespace-only IFS alternate-value expansion (Greptile review)', () => {
     // ${IFS:+ } substitutes the literal single space "word" itself
     // whenever IFS is set and non-null (the normally-true case) — the

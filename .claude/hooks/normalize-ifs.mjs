@@ -34,12 +34,32 @@
 // bash's field-splitting applies to the RESULT of any unquoted parameter
 // expansion, not just a bare variable reference, so `${IFS:0:1}` (which
 // extracts a single whitespace character from IFS's default value) creates
-// exactly the same token boundary as the whole-variable form. The LENGTH
-// portion must be a non-zero digit sequence (Greptile review):
-// `${IFS:0:0}` extracts zero characters — an EMPTY string, which an
-// unquoted expansion contributes NOTHING from (not even a separator) —
-// `echo git${IFS:0:0}reset` really expands to the single harmless token
-// `gitreset`, not `git reset`.
+// exactly the same token boundary as the whole-variable form.
+//
+// Both OFFSET and LENGTH are constrained to the exact values that are
+// PROVABLY non-empty against IFS's 3-character default value
+// (space/tab/newline), rather than accepting any digit sequence:
+//
+// - OFFSET is restricted to `0`/`1`/`2` (from the start) or `-1`/`-2`/`-3`
+//   (from the end) — the only positions that exist within a 3-character
+//   string. `${IFS:3}` (Greptile review) starts extraction AT the end of
+//   the string — bash's substring expansion returns EMPTY once offset is
+//   at or past the string's length, the same "empty, not whitespace"
+//   problem as an explicit zero length below — `echo git${IFS:3}reset`
+//   really expands to the single harmless token `gitreset`, not
+//   `git reset`. This also protects the WITH-length form the same way:
+//   `${IFS:5:1}` is empty too (bash returns nothing once offset alone is
+//   out of range, regardless of the requested length).
+// - LENGTH, when present, must be a non-zero digit sequence (Greptile
+//   review): `${IFS:0:0}` extracts zero characters — an EMPTY string,
+//   which an unquoted expansion contributes NOTHING from (not even a
+//   separator) — `echo git${IFS:0:0}reset` really expands to the single
+//   harmless token `gitreset`. Once OFFSET is validated as in-range, ANY
+//   non-zero LENGTH is safe to accept without also bounding its upper
+//   value: bash clamps a length that exceeds what's actually available
+//   from OFFSET to the end of the string, rather than erroring or
+//   producing something unexpected, so a too-large length still yields a
+//   non-empty (if shorter than requested) whitespace-only result.
 //
 // `${IFS:+ }`/`${IFS+ }` (alternate-value expansion, restricted to
 // ALL-whitespace content — Greptile review): unlike substring, this
@@ -73,13 +93,6 @@
 // variable works identically, which a per-variable-name normalizer like
 // this one can never fully close).
 //
-// Also does not attempt to detect an out-of-range substring OFFSET with no
-// explicit length (`${IFS:3}` — offset 3 is at the end of the 3-character
-// default IFS value, so this is ALSO empty, the same problem as an
-// explicit zero length) — narrower and easier to get precisely right than
-// modeling every offset/length combination against IFS's exact default
-// length, and not the concrete form named in review.
-//
 // The bare `$IFS` form must not swallow the start of a longer variable
 // name — `$IFSOMETHING` references a completely different (and almost
 // certainly unset, hence empty-expanding) variable, not `$IFS` followed by
@@ -101,7 +114,7 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => {
   const normalized = input
     .replace(/\$\{IFS\}/g, ' ')
-    .replace(/\$\{IFS: *-?\d+(: *-?[1-9]\d*)?\}/g, ' ')
+    .replace(/\$\{IFS: *(?:[0-2]|-[1-3])(?::[1-9]\d*)?\}/g, ' ')
     .replace(/\$\{IFS:?\+[ \t]+\}/g, ' ')
     .replace(/\$IFS(?![A-Za-z0-9_])/g, ' ');
   process.stdout.write(normalized);
