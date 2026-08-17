@@ -180,6 +180,19 @@ describe('guard-git.sh IFS whitespace-expansion bypass (#2451)', () => {
     expect(isDenied('git${IFS:002}reset')).toBe(true);
   });
 
+  it('still blocks git reset via a negative-zero IFS substring offset (Greptile review)', () => {
+    // Integers have no signed zero, so bash evaluates "-0" to the same
+    // value as "0" — offset -0 is offset 0 FROM THE START (valid,
+    // non-empty), not "0 characters before the end" the way -1/-2/-3 are.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS: -0}reset')).toBe(true);
+  });
+
+  it('still blocks git reset via a zero-padded negative-zero IFS substring offset', () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS: -00}reset')).toBe(true);
+  });
+
   it('still blocks git reset via a whitespace-only IFS alternate-value expansion (Greptile review)', () => {
     // ${IFS:+ } substitutes the literal single space "word" itself
     // whenever IFS is set and non-null (the normally-true case) — the

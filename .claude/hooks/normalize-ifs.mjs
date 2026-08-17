@@ -74,6 +74,14 @@
 // problem, the same class already tracked in #2558, not a bounded,
 // concretely-named gap like leading zeros.
 //
+// `-0`/`-00`/etc. (negative zero — Greptile review): integers have no
+// signed zero, so bash evaluates `-0` to the same value as `0` — offset
+// `-0` is offset `0` FROM THE START (valid, non-empty), NOT "0 characters
+// before the end" the way `-1`/`-2`/`-3` are. `-0*[1-3]` requires a
+// non-zero digit after the leading zeros, so it correctly does not match
+// a run of ALL zeros after the minus sign — matched separately here via
+// `-0+` (a literal minus followed by one or more zeros and nothing else).
+//
 // `${IFS:+ }`/`${IFS+ }` (alternate-value expansion, restricted to
 // ALL-whitespace content — Greptile review): unlike substring, this
 // operator does NOT extract from IFS's own value at all — it substitutes
@@ -127,7 +135,7 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => {
   const normalized = input
     .replace(/\$\{IFS\}/g, ' ')
-    .replace(/\$\{IFS: *(?:0*[0-2]|-0*[1-3])(?::0*[1-9]\d*)?\}/g, ' ')
+    .replace(/\$\{IFS: *(?:0*[0-2]|-0*[1-3]|-0+)(?::0*[1-9]\d*)?\}/g, ' ')
     .replace(/\$\{IFS:?\+[ \t]+\}/g, ' ')
     .replace(/\$IFS(?![A-Za-z0-9_])/g, ' ');
   process.stdout.write(normalized);
