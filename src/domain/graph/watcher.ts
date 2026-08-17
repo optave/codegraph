@@ -105,6 +105,7 @@ async function processPendingFiles(
   stmts: IncrementalStmts,
   engineOpts: import('../../types.js').EngineOpts,
   cache: ReturnType<typeof createParseTreeCache>,
+  journalDir: string,
 ): Promise<void> {
   const results: RebuildResult[] = [];
   for (const filePath of files) {
@@ -128,20 +129,30 @@ async function processPendingFiles(
   }
 
   if (results.length > 0) {
-    writeJournalAndChangeEvents(rootDir, results);
+    writeJournalAndChangeEvents(rootDir, journalDir, results);
   }
 
   logRebuildResults(results);
 }
 
-/** Write journal entries and change events for processed files. */
-function writeJournalAndChangeEvents(rootDir: string, updates: RebuildResult[]): void {
+/**
+ * Write incremental-build journal entries and change events for processed
+ * files. `journalDir` (the database's own directory, `path.dirname(dbPath)`,
+ * #2426) is for the incremental-build journal only — `rootDir` is still used
+ * as-is for `appendChangeEvents`' own NDJSON change-event log, an unrelated
+ * feature (`change-journal.ts`) this issue does not touch.
+ */
+function writeJournalAndChangeEvents(
+  rootDir: string,
+  journalDir: string,
+  updates: RebuildResult[],
+): void {
   const entries = updates.map((r) => ({
     file: r.file,
     deleted: r.deleted || false,
   }));
   try {
-    appendJournalEntriesAndStampHeader(rootDir, entries, Date.now());
+    appendJournalEntriesAndStampHeader(journalDir, entries, Date.now());
   } catch (e: unknown) {
     debug(`Journal write failed (non-fatal): ${(e as Error).message}`);
   }
@@ -211,6 +222,10 @@ function collectTrackedFiles(
 /** Shared watcher state passed between setup and watcher sub-functions. */
 interface WatcherContext {
   rootDir: string;
+  /** The database's actual on-disk path — the journal must live alongside
+   * it (`path.dirname(dbPath)`), not unconditionally under `rootDir`,
+   * since a caller-supplied `dbPath` override relocates both together (#2426). */
+  dbPath: string;
   db: ReturnType<typeof openDb>;
   stmts: IncrementalStmts;
   engineOpts: import('../../types.js').EngineOpts;
@@ -309,6 +324,7 @@ function setupWatcher(rootDir: string, opts: { engine?: string; dbPath?: string 
 
   return {
     rootDir,
+    dbPath,
     db,
     stmts,
     engineOpts,
@@ -333,7 +349,15 @@ function scheduleDebouncedProcess(ctx: WatcherContext): void {
       ctx.workspaceRefreshPending = false;
       refreshWorkspaceAndExportsCaches(ctx.rootDir);
     }
-    await processPendingFiles(files, ctx.db, ctx.rootDir, ctx.stmts, ctx.engineOpts, ctx.cache);
+    await processPendingFiles(
+      files,
+      ctx.db,
+      ctx.rootDir,
+      ctx.stmts,
+      ctx.engineOpts,
+      ctx.cache,
+      path.dirname(ctx.dbPath),
+    );
   }, ctx.debounceMs);
 }
 
@@ -474,7 +498,7 @@ function setupShutdownHandler(ctx: WatcherContext, cleanup: () => void): void {
     if (ctx.pending.size > 0) {
       const entries = buildFlushEntriesFromPending(ctx.rootDir, ctx.pending);
       try {
-        appendJournalEntriesAndStampHeader(ctx.rootDir, entries, Date.now());
+        appendJournalEntriesAndStampHeader(path.dirname(ctx.dbPath), entries, Date.now());
       } catch (e: unknown) {
         debug(`Journal flush on exit failed (non-fatal): ${(e as Error).message}`);
       }

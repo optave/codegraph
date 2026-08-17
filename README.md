@@ -649,19 +649,19 @@ Codegraph also extracts symbols from common callback patterns: Commander `.comma
 
 Self-measured on every release via CI ([build benchmarks](generated/benchmarks/BUILD-BENCHMARKS.md) | [embedding benchmarks](generated/benchmarks/EMBEDDING-BENCHMARKS.md) | [query benchmarks](generated/benchmarks/QUERY-BENCHMARKS.md) | [incremental benchmarks](generated/benchmarks/INCREMENTAL-BENCHMARKS.md) | [resolution precision/recall](tests/benchmarks/resolution/)):
 
-*Last updated: v3.16.0 (2026-07-20)*
+*Last updated: v3.17.0 (2026-08-17)*
 
 | Metric | Native | WASM |
 |---|---|---|
-| Build speed | **6.9 ms/file** | **24.4 ms/file** |
-| Query time | **9ms** | **12ms** |
-| No-op rebuild | **29ms** | **29ms** |
-| 1-file rebuild | **193ms** | **213ms** |
-| Query: fn-deps | **9.7ms** | **11.2ms** |
-| Query: path | **12.8ms** | **11.9ms** |
-| ~50,000 files (est.) | **~345.0s build** | **~1220.0s build** |
-| Resolution precision | **94.9%** | — |
-| Resolution recall | **66.7%** | — |
+| Build speed | **8.2 ms/file** | **26.8 ms/file** |
+| Query time | **10ms** | **14ms** |
+| No-op rebuild | **30ms** | **30ms** |
+| 1-file rebuild | **254ms** | **171ms** |
+| Query: fn-deps | **10.1ms** | **13.7ms** |
+| Query: path | **14.7ms** | **14.3ms** |
+| ~50,000 files (est.) | **~410.0s build** | **~1340.0s build** |
+| Resolution precision | **95.2%** | — |
+| Resolution recall | **70.3%** | — |
 
 Metrics are normalized per file for cross-version comparability. Times above are for a full initial build — incremental rebuilds only re-parse changed files.
 
@@ -672,12 +672,12 @@ Metrics are normalized per file for cross-version comparability. Times above are
 | javascript | 100.0% | 100.0% | 47 | 0 | 0 | 47 | 17/32 |
 | typescript | 100.0% | 100.0% | 55 | 0 | 0 | 55 | — |
 | bash | 100.0% | 100.0% | 12 | 0 | 0 | 12 | 0/1 |
-| c | 100.0% | 100.0% | 9 | 0 | 0 | 9 | — |
+| c | 100.0% | 100.0% | 9 | 0 | 0 | 9 | 9/9 |
 | clojure | 80.0% | 26.7% | 4 | 1 | 11 | 15 | — |
-| cpp | 100.0% | 57.1% | 8 | 0 | 6 | 14 | — |
+| cpp | 100.0% | 57.1% | 8 | 0 | 6 | 14 | 13/14 |
 | csharp | 100.0% | 100.0% | 25 | 0 | 0 | 25 | — |
 | cuda | 50.0% | 33.3% | 4 | 4 | 8 | 12 | — |
-| dart | 0.0% | 0.0% | 0 | 0 | 21 | 21 | — |
+| dart | 100.0% | 81.0% | 17 | 0 | 4 | 21 | — |
 | dynamic-groovy | 100.0% | 100.0% | 1 | 0 | 0 | 1 | — |
 | dynamic-java | 100.0% | 100.0% | 1 | 0 | 0 | 1 | — |
 | dynamic-javascript | 100.0% | 100.0% | 4 | 0 | 0 | 4 | — |
@@ -703,7 +703,7 @@ Metrics are normalized per file for cross-version comparability. Times above are
 | python | 100.0% | 68.4% | 13 | 0 | 6 | 19 | 15/15 |
 | r | 100.0% | 100.0% | 11 | 0 | 0 | 11 | — |
 | ruby | 100.0% | 100.0% | 11 | 0 | 0 | 11 | 11/11 |
-| rust | 100.0% | 83.3% | 20 | 0 | 4 | 24 | 23/23 |
+| rust | 100.0% | 100.0% | 24 | 0 | 0 | 24 | 23/23 |
 | scala | 100.0% | 100.0% | 7 | 0 | 0 | 7 | — |
 | solidity | 33.3% | 7.7% | 1 | 2 | 12 | 13 | — |
 | swift | 81.8% | 64.3% | 9 | 2 | 5 | 14 | 9/9 |
@@ -715,10 +715,10 @@ Metrics are normalized per file for cross-version comparability. Times above are
 
 | Mode | Resolved | Expected | Recall |
 |------|--------:|---------:|-------:|
-| receiver-typed | 39 | 117 | 33.3% |
+| receiver-typed | 47 | 117 | 40.2% |
 | module-function | 49 | 115 | 42.6% |
-| static | 82 | 97 | 84.5% |
-| same-file | 69 | 91 | 75.8% |
+| static | 86 | 97 | 88.7% |
+| same-file | 71 | 91 | 78.0% |
 | interface-dispatched | 24 | 24 | 100.0% |
 | dynamic | 17 | 17 | 100.0% |
 | class-inheritance | 12 | 16 | 75.0% |

@@ -35,6 +35,7 @@ describe('detectChanges stage', () => {
 
     const ctx = new PipelineContext();
     ctx.rootDir = tmpDir;
+    ctx.dbPath = path.join(dbDir, 'graph.db');
     ctx.db = db;
     ctx.allFiles = [path.join(tmpDir, 'a.js')];
     ctx.opts = {};
@@ -85,6 +86,7 @@ describe('detectChanges stage', () => {
 
     const ctx = new PipelineContext();
     ctx.rootDir = dir;
+    ctx.dbPath = path.join(dbDir, 'graph.db');
     ctx.db = db;
     ctx.allFiles = [path.join(dir, 'a.js')];
     ctx.opts = {};
@@ -126,11 +128,13 @@ describe('detectChanges stage', () => {
       stat.size,
     );
 
-    // Write journal header so journal check doesn't confuse things
-    writeJournalHeader(dir, Date.now());
+    // Write journal header so journal check doesn't confuse things — the
+    // journal lives alongside the database (dbDir), not rootDir (#2426).
+    writeJournalHeader(dbDir, Date.now());
 
     const ctx = new PipelineContext();
     ctx.rootDir = dir;
+    ctx.dbPath = path.join(dbDir, 'graph.db');
     ctx.db = db;
     ctx.allFiles = [path.join(dir, 'a.js')];
     ctx.opts = {};
@@ -156,6 +160,7 @@ describe('detectChanges stage', () => {
 
     const ctx = new PipelineContext();
     ctx.rootDir = dir;
+    ctx.dbPath = path.join(dbDir, 'graph.db');
     ctx.db = db;
     ctx.allFiles = [path.join(dir, 'a.js')];
     ctx.opts = { scope: ['a.js'] };
@@ -186,6 +191,7 @@ describe('detectChanges stage', () => {
 
     const ctx = new PipelineContext();
     ctx.rootDir = dir;
+    ctx.dbPath = path.join(dbDir, 'graph.db');
     ctx.db = db;
     ctx.allFiles = [path.join(dir, 'a.js')];
     ctx.opts = {};

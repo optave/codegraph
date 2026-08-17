@@ -64,6 +64,7 @@ function getChangedFiles(
   db: BetterSqlite3Database,
   allFiles: string[],
   rootDir: string,
+  journalDir: string,
 ): ChangeResult {
   // NativeDatabase is not open during change detection (deferred to after
   // early-exit check). All queries use better-sqlite3 here.
@@ -80,7 +81,7 @@ function getChangedFiles(
   }
 
   const removed = detectRemovedFiles(existing, allFiles, rootDir);
-  const journalResult = tryJournalTier(db, existing, rootDir, removed);
+  const journalResult = tryJournalTier(db, existing, rootDir, removed, journalDir);
   if (journalResult) return journalResult;
   return mtimeAndHashTiers(existing, allFiles, rootDir, removed);
 }
@@ -108,9 +109,10 @@ function tryJournalTier(
   existing: Map<string, FileHashRow>,
   rootDir: string,
   removed: string[],
+  journalDir: string,
   precomputedMaxMtime?: number,
 ): ChangeResult | null {
-  const journal = readJournal(rootDir);
+  const journal = readJournal(journalDir);
   if (!journal.valid) return null;
 
   const latestDbMtime =
@@ -981,14 +983,17 @@ function hasEmptyAnalysisTable(db: BetterSqlite3Database, table: string): boolea
 export async function detectChanges(ctx: PipelineContext): Promise<void> {
   const start = performance.now();
   try {
-    const { db, allFiles, rootDir, incremental, forceFullRebuild, opts } = ctx;
+    const { db, allFiles, rootDir, dbPath, incremental, forceFullRebuild, opts } = ctx;
     if ((opts as Record<string, unknown>).scope) {
       handleScopedBuild(ctx);
       return;
     }
+    // The journal always travels with the database, not rootDir — see
+    // journal.ts's `readJournal` doc comment (#2426).
+    const journalDir = path.dirname(dbPath);
     const increResult =
       incremental && !forceFullRebuild
-        ? getChangedFiles(db, allFiles, rootDir)
+        ? getChangedFiles(db, allFiles, rootDir, journalDir)
         : {
             changed: allFiles.map((f): ChangedFile => ({ file: f })),
             removed: [] as string[],
@@ -1020,14 +1025,14 @@ export async function detectChanges(ctx: PipelineContext): Promise<void> {
       const ranAnalysis = await runPendingAnalysis(ctx);
       if (ranAnalysis) {
         closeDb(db);
-        writeJournalHeader(rootDir, Date.now());
+        writeJournalHeader(journalDir, Date.now());
         ctx.earlyExit = true;
         return;
       }
       healMetadata(ctx);
       info('No changes detected. Graph is up to date.');
       closeDb(db);
-      writeJournalHeader(rootDir, Date.now());
+      writeJournalHeader(journalDir, Date.now());
       ctx.earlyExit = true;
       return;
     }

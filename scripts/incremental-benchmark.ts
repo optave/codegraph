@@ -160,12 +160,17 @@ console.log = (...args) => console.error(...args);
 const RUNS = 5;
 const PROBE_FILE = path.join(root, 'src', 'domain', 'queries.ts');
 
-// First 1–2 incremental rebuilds per process pay a cold-start cost (rusqlite
+// First 1–2 builds/rebuilds per process pay a cold-start cost (rusqlite
 // statement-cache warmup, OS page cache for the DB file, NAPI-side static
 // init from tree-sitter's transitive crates linked into the .node binary).
 // Mirrors the WARMUP_RUNS used in scripts/query-benchmark.ts since #1077 —
 // without this, a 3-sample median includes cold-start outliers and shows
 // CI-amplified false regressions on sub-30ms metrics like No-op rebuild.
+// Full build is the FIRST buildGraph call in this worker's process lifetime,
+// so it's the metric MOST exposed to this cost (the one-time NAPI static
+// init can only ever land on a build's very first call) — #2436 traced part
+// of the gate's reported non-determinism to Full build being the one metric
+// that measured without this warmup.
 const WARMUP_RUNS = 2;
 
 // Resolution-benchmark fixtures (`BENCHMARK_EXCLUDES` in scripts/lib/bench-config.ts)
@@ -180,6 +185,10 @@ const BUILD_OPTS = { engine, exclude: [...resolveBenchmarkExcludes()] };
 console.error(`Benchmarking ${engine} engine...`);
 
 // Full build (delete DB first)
+for (let i = 0; i < WARMUP_RUNS; i++) {
+	if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+	await buildGraph(root, { ...BUILD_OPTS, incremental: false });
+}
 const fullBuildMs = Math.round(
 	await timeMedian(async () => {
 		if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);

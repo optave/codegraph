@@ -1869,9 +1869,11 @@ impl NativeDatabase {
     ) -> napi::Result<String> {
         let conn = self.conn()?;
         let workspaces_json = workspaces_json.unwrap_or_default();
+        let db_path = self.db_path();
         let result = crate::domain::graph::builder::pipeline::run_pipeline(
             conn,
             &root_dir,
+            &db_path,
             &config_json,
             &aliases_json,
             &opts_json,

@@ -26,7 +26,7 @@ import {
 function tryFastCollect(
   ctx: PipelineContext,
 ): { files: string[]; directories: Set<string> } | null {
-  const { db, rootDir, config } = ctx;
+  const { db, rootDir, dbPath, config } = ctx;
   const useNative = ctx.engineName === 'native' && !!ctx.nativeDb?.getCollectFilesData;
 
   // 1. Check that file_hashes table exists and has entries
@@ -48,8 +48,10 @@ function tryFastCollect(
 
   // 2. Read the journal — only use fast path when journal has entries,
   // proving the watcher was active and tracking changes. An empty-but-valid
-  // journal (no watcher) could miss file deletions.
-  const journal = readJournal(rootDir);
+  // journal (no watcher) could miss file deletions. The journal lives
+  // alongside the database (dbPath's directory), not unconditionally under
+  // rootDir — a caller-supplied dbPath override relocates both together (#2426).
+  const journal = readJournal(path.dirname(dbPath));
   if (!journal.valid) return null;
   const hasEntries =
     (journal.changed && journal.changed.length > 0) ||

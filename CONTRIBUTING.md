@@ -355,7 +355,7 @@ Use [GitHub Issues](https://github.com/optave/ops-codegraph-tool/issues) with:
 
 ## Code Style
 
-- Source is TypeScript (`src/`), compiled via `tsc`/`tsup`; run `npm run typecheck` to type-check without emitting
+- Source is TypeScript (`src/`), compiled via plain `tsc` (no bundler); run `npm run typecheck` to type-check without emitting
 - [Biome](https://biomejs.dev/) is used for linting and formatting (config in `biome.json`, scoped to `src/` and `tests/`)
 - Run `npm run lint` to check and `npm run lint:fix` to auto-fix
 - The pre-commit hook runs the linter automatically

@@ -19,6 +19,17 @@
  * variable is later passed to `useCallback`) from `deadViaUnusedFallback`
  * (whose variable is declared and never touched again) — both reference
  * their target identically, so only the liveness check tells them apart.
+ *
+ * Also covers #2438 (deferred from PR #2432's review): the liveness scan
+ * ignored plain writes correctly, but didn't model a write as a KILL — a
+ * read occurring after the variable has already been unconditionally
+ * overwritten was still credited as evidence the fallback is consumed, even
+ * though that read can only ever see the new value. Fixed by having the
+ * per-statement scan stop once it passes a statement that unconditionally
+ * overwrites the name (`killsBinding`/`kills_binding`), while still crediting
+ * a genuine read on the killing statement's OWN right-hand side first. A
+ * write nested inside a conditional must NOT kill, since the original value
+ * can still reach a later read when the branch doesn't run.
  */
 
 import fs from 'node:fs';
@@ -50,6 +61,84 @@ function readAroundNestedVar(x) { return x + 5; }
 function hoistedInNestedFn(x) { return x + 6; }
 function loopOwnBinding(x) { return x + 7; }
 function loopBareTarget(x) { return x + 8; }
+
+function killedThenRead(x) { return x + 9; }
+function killedByVarRedeclare(x) { return x + 10; }
+function survivesConditionalWrite(x) { return x + 11; }
+function survivesSelfReadInKillStatement(x) { return x + 12; }
+function somethingElse(x) { return x + 13; }
+function killedByParenthesizedAssign(x) { return x + 14; }
+function killedByLaterDeclaratorInSameStatement(x) { return x + 15; }
+function killedBySequenceExprPriorPart(x) { return x + 16; }
+function killedByLaterDeclaratorInOwnStatement(x) { return x + 17; }
+
+// #2438: a plain top-level reassignment kills the fallback value before the
+// later read runs — that read sees \`other\`, never \`killedThenRead\`.
+export function killAssignBeforeRead(opts, other) {
+  let fn = opts.custom || killedThenRead;
+  fn = other;
+  return fn();
+}
+
+// #2438: a \`var\` redeclaration in a later sibling statement is the same
+// kind of unconditional overwrite as a plain assignment.
+export function killViaVarRedeclare(opts, other) {
+  var fn = opts.custom || killedByVarRedeclare;
+  var fn = other;
+  return fn();
+}
+
+// #2438: a write inside a conditional is NOT a guaranteed kill — the
+// fallback can still reach the later read when \`cond\` is false.
+export function conditionalWriteDoesNotKill(opts, other, cond) {
+  let fn = opts.custom || survivesConditionalWrite;
+  if (cond) {
+    fn = other;
+  }
+  return fn();
+}
+
+// #2438: the killing statement's OWN right-hand side is scanned for a
+// genuine read before the kill takes effect — \`fn\` on the right of its own
+// reassignment still reads the pre-existing (possibly fallback) value.
+export function selfReadWithinKillStatement(opts) {
+  let fn = opts.custom || survivesSelfReadInKillStatement;
+  fn = fn || somethingElse;
+  return fn;
+}
+
+// #2438 (Greptile review): a kill wrapped in parentheses is exactly as
+// unconditional as a bare assignment statement.
+export function killViaParenthesizedAssign(opts, other) {
+  let fn = opts.custom || killedByParenthesizedAssign;
+  (fn = other);
+  return fn();
+}
+
+// #2438 (Greptile review): within a single LATER statement, an earlier
+// declarator's redeclaration kills the value before a later declarator's
+// own initializer in that same statement runs.
+export function killViaLaterDeclaratorInSameStatement(opts, other) {
+  var fn = opts.custom || killedByLaterDeclaratorInSameStatement;
+  var fn = other, result = fn();
+  return result;
+}
+
+// #2438 (Greptile review): a sequence expression's parts execute in order —
+// a kill earlier in the sequence must suppress a read later in the SAME
+// sequence.
+export function killViaSequenceExprPriorPart(opts, other) {
+  let fn = opts.custom || killedBySequenceExprPriorPart;
+  return (fn = other, fn());
+}
+
+// #2438 (Greptile review): a LATER sibling declarator in the SAME statement
+// as the original fallback declarator can itself unconditionally redeclare
+// the name — must suppress a read from a declarator after that.
+export function killViaLaterDeclaratorInOwnStatement(opts, other) {
+  var fn = opts.custom || killedByLaterDeclaratorInOwnStatement, fn = other, result = fn();
+  return result;
+}
 
 // \`var\` is FUNCTION-scoped, so the nested block's \`var varScoped\` is the SAME
 // binding as the outer one — the \`varScoped()\` read before it genuinely
@@ -194,6 +283,48 @@ function runShared(getDbPath: () => string) {
 
   it('does not credit liveness from a for-of body read of a bare loop target', () => {
     expect(countCallEdgesTo(getDbPath(), 'loopBareTarget')).toBe(0);
+  });
+
+  // #2438: a read after an unconditional overwrite must not be credited.
+  it('does not credit liveness from a read that a prior unconditional assignment already killed', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedThenRead')).toBe(0);
+  });
+
+  it('does not credit liveness from a read after a var redeclaration in a later statement', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedByVarRedeclare')).toBe(0);
+  });
+
+  it('still credits liveness from a read after a write nested inside a conditional', () => {
+    expect(countCallEdgesTo(getDbPath(), 'survivesConditionalWrite')).toBeGreaterThan(0);
+  });
+
+  it('still credits a genuine read on the right-hand side of the killing statement itself', () => {
+    expect(countCallEdgesTo(getDbPath(), 'survivesSelfReadInKillStatement')).toBeGreaterThan(0);
+  });
+
+  // Greptile review, PR #2554: a kill wrapped in parentheses must be
+  // recognized just like a bare assignment statement.
+  it('does not credit liveness from a read after a parenthesized kill assignment', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedByParenthesizedAssign')).toBe(0);
+  });
+
+  // Greptile review, PR #2554: an earlier declarator's kill within a LATER
+  // statement must suppress a later declarator's read in that SAME statement.
+  it('does not credit liveness from a later declarator reading a value an earlier declarator in the same statement killed', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedByLaterDeclaratorInSameStatement')).toBe(0);
+  });
+
+  // Greptile review, PR #2554: a sequence expression's own internal ordering
+  // must be respected — a kill earlier in the sequence suppresses a read
+  // later in the SAME sequence.
+  it('does not credit liveness from a read later in a sequence expression whose earlier part killed it', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedBySequenceExprPriorPart')).toBe(0);
+  });
+
+  // Greptile review, PR #2554: a later sibling declarator in the SAME
+  // statement as the original fallback declarator can itself kill the name.
+  it('does not credit liveness from a declarator reading a value a later sibling in its own declaration statement killed', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedByLaterDeclaratorInOwnStatement')).toBe(0);
   });
 }
 

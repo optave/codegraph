@@ -5235,9 +5235,51 @@ fn block_contains_identifier_excluding(
                 ) {
                     return true;
                 }
+                // A LATER sibling declarator in this SAME statement can
+                // itself unconditionally redeclare `name` — `var fn = a ||
+                // fallback, fn = other, result = fn();` must not credit
+                // `result`'s read to `fallback` once the intervening `fn =
+                // other` has already run (Greptile review, PR #2554).
+                // `declarator_kills_name` already excludes `exclude_id`
+                // itself, so the original declarator's own initializer is
+                // never mistaken for a kill of its own value.
+                if child.kind() == "variable_declarator"
+                    && declarator_kills_name(&child, name, source, exclude_id)
+                {
+                    return false;
+                }
             }
             return false;
         }
+        // This statement doesn't contain the declarator we're checking
+        // liveness FOR, but its OWN declarators still execute left-to-right
+        // — an earlier declarator unconditionally redeclaring `name` kills
+        // the value before a LATER declarator's initializer in the SAME
+        // statement runs (`var fn = replacement, result = fn();` must not
+        // credit `fn()`'s read to whatever `fn` held before this statement —
+        // Greptile review, #2438).
+        for i in 0..node.child_count() {
+            let Some(declarator) = node.child(i) else {
+                continue;
+            };
+            if declarator.kind() != "variable_declarator" {
+                continue;
+            }
+            if block_contains_identifier_excluding(
+                &declarator,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ) {
+                return true;
+            }
+            if declarator_kills_name(&declarator, name, source, exclude_id) {
+                return false;
+            }
+        }
+        return false;
     }
     if node.kind() == "variable_declarator" {
         let decl_name = node.child_by_field_name("name");
@@ -5265,6 +5307,34 @@ fn block_contains_identifier_excluding(
             ),
             None => false,
         };
+    }
+    // A comma-separated sequence (`fn = replacement, fn()`) executes its
+    // parts in order — a kill earlier in the sequence must suppress a read
+    // later in the SAME sequence, the same ordering already applied across
+    // top-level block statements and multi-declarator statements above
+    // (Greptile review, PR #2554: `(fn = replacement, fn())` was crediting
+    // the read because the generic recursive walk below has no concept of
+    // sequence-internal order).
+    if node.kind() == "sequence_expression" {
+        for i in 0..node.named_child_count() {
+            let Some(part) = node.named_child(i) else {
+                continue;
+            };
+            if block_contains_identifier_excluding(
+                &part,
+                name,
+                exclude_id,
+                source,
+                depth + 1,
+                require_call_site,
+            ) {
+                return true;
+            }
+            if kills_binding(&part, name, source, exclude_id, depth + 1) {
+                return false;
+            }
+        }
+        return false;
     }
     if node.kind() == "assignment_expression" {
         if let Some(left) = node.child_by_field_name("left") {
@@ -5439,6 +5509,99 @@ fn block_contains_identifier_excluding(
     false
 }
 
+/// True when `declarator` unconditionally overwrites `name`: an initialized
+/// (has a `value`) declarator whose binding pattern includes `name`, other
+/// than `exclude_id` itself — the declarator the whole liveness check is
+/// FOR, which trivially "binds" name via its own declaration and must never
+/// be mistaken for a kill of its own freshly-assigned value.
+///
+/// Mirrors `declaratorKillsName` in `src/extractors/javascript.ts`.
+fn declarator_kills_name(declarator: &Node, name: &str, source: &[u8], exclude_id: usize) -> bool {
+    if declarator.kind() != "variable_declarator" || declarator.id() == exclude_id {
+        return false;
+    }
+    let decl_name = declarator.child_by_field_name("name");
+    let value = declarator.child_by_field_name("value");
+    match (decl_name, value) {
+        (Some(decl_name), Some(_)) => pattern_binds_name(&decl_name, name, source, 0),
+        _ => false,
+    }
+}
+
+/// True when `statement` — a DIRECT child of the enclosing block, exactly the
+/// granularity `has_later_reference_in_enclosing_block` iterates —
+/// unconditionally overwrites `name`: a top-level `name = value;` assignment
+/// (any operator; `pattern_binds_name` also covers destructuring targets
+/// like `[name] = arr`) or a `var name = value;` redeclaration sitting
+/// directly in the block. A write nested inside an `if`/loop/`switch`/`try`
+/// never matches here — it surfaces as a single
+/// `if_statement`/`for_statement`/etc. child, not as the assignment itself —
+/// so a conditional write correctly never kills (issue #2438's own
+/// requirement: the original value can still reach a later read when the
+/// write didn't actually run).
+///
+/// Transparently unwraps `expression_statement` and any number of nested
+/// `parenthesized_expression`s (`(fn = replacement);` is exactly as
+/// unconditional as `fn = replacement;` — Greptile review), and treats a
+/// `sequence_expression` as a kill the moment ANY of its comma-separated
+/// parts kills `name`: every part of a sequence unconditionally executes in
+/// order, so by the time the whole statement finishes, `name` no longer
+/// holds whatever it held before that part ran (Greptile review).
+/// Depth-bounded like every other recursive walk in this file.
+///
+/// `exclude_id` skips the declarator this liveness check is FOR — see
+/// `declarator_kills_name`.
+///
+/// Mirrors `killsBinding` in `src/extractors/javascript.ts`.
+fn kills_binding(
+    statement: &Node,
+    name: &str,
+    source: &[u8],
+    exclude_id: usize,
+    depth: usize,
+) -> bool {
+    if depth >= MAX_WALK_DEPTH {
+        return false;
+    }
+    // Recurse (not just peel once) — `((fn = x));` nests `expression_statement
+    // -> parenthesized_expression -> parenthesized_expression ->
+    // assignment_expression`, so a single unwrap leaves a
+    // `parenthesized_expression` that matches none of the checks below.
+    if statement.kind() == "expression_statement" || statement.kind() == "parenthesized_expression"
+    {
+        return match statement.named_child(0) {
+            Some(child) => kills_binding(&child, name, source, exclude_id, depth + 1),
+            None => false,
+        };
+    }
+    if statement.kind() == "sequence_expression" {
+        for i in 0..statement.named_child_count() {
+            if let Some(part) = statement.named_child(i) {
+                if kills_binding(&part, name, source, exclude_id, depth + 1) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    if statement.kind() == "assignment_expression" {
+        return match statement.child_by_field_name("left") {
+            Some(left) => pattern_binds_name(&left, name, source, 0),
+            None => false,
+        };
+    }
+    if statement.kind() == "variable_declaration" || statement.kind() == "lexical_declaration" {
+        for i in 0..statement.child_count() {
+            if let Some(declarator) = statement.child(i) {
+                if declarator_kills_name(&declarator, name, source, exclude_id) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// True when `name` appears as a bare identifier reference anywhere else in
 /// `declarator_node`'s enclosing block (function body, module top level, or
 /// arrow-function body) — the local, position-scoped liveness evidence
@@ -5465,6 +5628,15 @@ fn block_contains_identifier_excluding(
 /// to require genuine invocation evidence (`handler(...)`), not just any
 /// reference (`console.log(handler)`), matching #1895's own "invoked...
 /// via member-call syntax" precision.
+///
+/// Stops crediting reads once a sibling statement unconditionally overwrites
+/// `name` (`kills_binding`, issue #2438): `var fn = a || b; fn = other;
+/// fn();` must NOT count `fn();` as evidence that `b` is reachable — by the
+/// time it runs, `fn` already holds `other`, not the fallback. The killing
+/// statement's OWN right-hand side is still scanned for a genuine read
+/// before the kill takes effect (`fn = fn || other;` still credits the read
+/// of the pre-existing value), since the read-check on each statement always
+/// runs before its kill-check.
 ///
 /// Mirrors `hasLaterReferenceInEnclosingBlock` in `src/extractors/javascript.ts`.
 fn has_later_reference_in_enclosing_block(
@@ -5521,6 +5693,9 @@ fn has_later_reference_in_enclosing_block(
                 require_call_site,
             ) {
                 return true;
+            }
+            if kills_binding(&child, name, source, declarator_node.id(), 0) {
+                return false;
             }
         }
     }
@@ -8925,6 +9100,128 @@ mod tests {
     #[test]
     fn does_not_credit_liveness_from_a_write_only_reassignment() {
         let s = parse_js("let fn = options.custom || fetchLatestVersion;\nfn = replacement;");
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Issue #2438 (deferred from PR #2432's review): a write correctly does
+    // not count as a read of ITS OWN statement, but a plain reassignment
+    // must also KILL the value for every LATER statement — a read after the
+    // fallback has already been overwritten sees the new value, never the
+    // fallback.
+    #[test]
+    fn does_not_credit_liveness_from_a_read_after_an_unconditional_reassignment_killed_it() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             fn = replacement;\n\
+             fn();",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Same kill semantics via a `var` redeclaration in a separate later
+    // statement, rather than a plain assignment expression.
+    #[test]
+    fn does_not_credit_liveness_from_a_read_after_a_var_redeclaration_in_a_later_statement() {
+        let s = parse_js(
+            "var fn = options.custom || fetchLatestVersion;\n\
+             var fn = replacement;\n\
+             fn();",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Issue #2438: a write nested inside a conditional is NOT a guaranteed
+    // kill — the branch might not run, so the fallback can still reach the
+    // later read.
+    #[test]
+    fn still_credits_liveness_from_a_read_after_a_write_nested_inside_a_conditional() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             if (cond) {\n\
+               fn = replacement;\n\
+             }\n\
+             fn();",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Issue #2438: the killing statement's OWN right-hand side is scanned
+    // for a genuine read BEFORE the kill takes effect — `fn` on the right of
+    // its own reassignment still reads the pre-existing (possibly fallback)
+    // value.
+    #[test]
+    fn still_credits_a_genuine_read_on_the_right_hand_side_of_the_killing_statement_itself() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             fn = fn || somethingElse;",
+        );
+        assert!(s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2554: a kill wrapped in parentheses is exactly as
+    // unconditional as a bare assignment statement.
+    #[test]
+    fn does_not_credit_liveness_from_a_read_after_a_parenthesized_kill_assignment() {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             (fn = replacement);\n\
+             fn();",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2554: within a single LATER statement, an
+    // earlier declarator's redeclaration kills the value before a later
+    // declarator's own initializer in that same statement runs.
+    #[test]
+    fn does_not_credit_liveness_from_a_later_declarator_reading_a_value_an_earlier_declarator_in_the_same_statement_killed(
+    ) {
+        let s = parse_js(
+            "var fn = options.custom || fetchLatestVersion;\n\
+             var fn = replacement, result = fn();",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2554: a sequence expression's parts execute in
+    // order — a kill earlier in the sequence must suppress a read later in
+    // the SAME sequence.
+    #[test]
+    fn does_not_credit_liveness_from_a_read_later_in_a_sequence_expression_whose_earlier_part_killed_it(
+    ) {
+        let s = parse_js(
+            "let fn = options.custom || fetchLatestVersion;\n\
+             (fn = replacement, fn());",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2554: a later sibling declarator in the SAME
+    // statement as the original fallback declarator can itself
+    // unconditionally redeclare the name — must suppress a read from a
+    // declarator after that.
+    #[test]
+    fn does_not_credit_liveness_from_a_declarator_reading_a_value_a_later_sibling_in_its_own_declaration_statement_killed(
+    ) {
+        let s = parse_js(
+            "var fn = options.custom || fetchLatestVersion, fn = replacement, result = fn();",
+        );
         assert!(!s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
         }));
