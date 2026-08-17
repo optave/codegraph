@@ -50,16 +50,29 @@
 //   `git reset`. This also protects the WITH-length form the same way:
 //   `${IFS:5:1}` is empty too (bash returns nothing once offset alone is
 //   out of range, regardless of the requested length).
-// - LENGTH, when present, must be a non-zero digit sequence (Greptile
-//   review): `${IFS:0:0}` extracts zero characters — an EMPTY string,
-//   which an unquoted expansion contributes NOTHING from (not even a
-//   separator) — `echo git${IFS:0:0}reset` really expands to the single
-//   harmless token `gitreset`. Once OFFSET is validated as in-range, ANY
-//   non-zero LENGTH is safe to accept without also bounding its upper
-//   value: bash clamps a length that exceeds what's actually available
-//   from OFFSET to the end of the string, rather than erroring or
-//   producing something unexpected, so a too-large length still yields a
-//   non-empty (if shorter than requested) whitespace-only result.
+// - LENGTH, when present, must be a digit sequence that isn't all zeros
+//   (Greptile review): `${IFS:0:0}` extracts zero characters — an EMPTY
+//   string, which an unquoted expansion contributes NOTHING from (not
+//   even a separator) — `echo git${IFS:0:0}reset` really expands to the
+//   single harmless token `gitreset`. Once OFFSET is validated as
+//   in-range, ANY non-zero LENGTH is safe to accept without also bounding
+//   its upper value: bash clamps a length that exceeds what's actually
+//   available from OFFSET to the end of the string, rather than erroring
+//   or producing something unexpected, so a too-large length still yields
+//   a non-empty (if shorter than requested) whitespace-only result.
+//
+// OFFSET and LENGTH both tolerate leading zeros (Greptile review):
+// bash evaluates both as arithmetic expressions, so `${IFS:00}` and
+// `${IFS:0:01}` are exactly as valid as `${IFS:0}` and `${IFS:0:1}` — an
+// earlier version's exact single-digit patterns (`[0-2]`, `[1-9]\d*`)
+// missed these zero-padded spellings entirely, leaving them unnormalized
+// even though bash evaluates them identically. `0*[0-2]`/`-0*[1-3]` for
+// OFFSET and `0*[1-9]\d*` for LENGTH accept any number of leading zeros
+// (including none) ahead of the same significant digit(s) validated
+// above. This does not attempt full arithmetic-expression support (hex,
+// operators, nested expansions, `$((...))`) — a genuinely open-ended
+// problem, the same class already tracked in #2558, not a bounded,
+// concretely-named gap like leading zeros.
 //
 // `${IFS:+ }`/`${IFS+ }` (alternate-value expansion, restricted to
 // ALL-whitespace content — Greptile review): unlike substring, this
@@ -114,7 +127,7 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => {
   const normalized = input
     .replace(/\$\{IFS\}/g, ' ')
-    .replace(/\$\{IFS: *(?:[0-2]|-[1-3])(?::[1-9]\d*)?\}/g, ' ')
+    .replace(/\$\{IFS: *(?:0*[0-2]|-0*[1-3])(?::0*[1-9]\d*)?\}/g, ' ')
     .replace(/\$\{IFS:?\+[ \t]+\}/g, ' ')
     .replace(/\$IFS(?![A-Za-z0-9_])/g, ' ');
   process.stdout.write(normalized);

@@ -155,6 +155,31 @@ describe('guard-git.sh IFS whitespace-expansion bypass (#2451)', () => {
     expect(isDenied('echo git${IFS:5:1}reset')).toBe(false);
   });
 
+  it('still blocks git reset via a leading-zero-padded IFS substring offset (Greptile review)', () => {
+    // ${IFS:00} evaluates identically to ${IFS:0} in bash's arithmetic
+    // context — an exact single-digit-only pattern misses this zero-padded
+    // spelling entirely.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS:00}reset')).toBe(true);
+  });
+
+  it('still blocks git reset via a leading-zero-padded IFS substring length (Greptile review)', () => {
+    // ${IFS:0:01} evaluates identically to ${IFS:0:1}.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS:0:01}reset')).toBe(true);
+  });
+
+  it('does not invent a token boundary from a leading-zero-padded but still zero length', () => {
+    // ${IFS:0:00} is still an empty substring (length zero, however spelled).
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('echo git${IFS:0:00}reset')).toBe(false);
+  });
+
+  it('still blocks git reset via a leading-zero-padded IFS substring in a later part of the command', () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${IFS:002}reset')).toBe(true);
+  });
+
   it('still blocks git reset via a whitespace-only IFS alternate-value expansion (Greptile review)', () => {
     // ${IFS:+ } substitutes the literal single space "word" itself
     // whenever IFS is set and non-null (the normally-true case) — the
