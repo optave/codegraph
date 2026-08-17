@@ -719,7 +719,7 @@ pub fn run_pipeline(
     // than a "successful" build with missing data (#1827).
     let t0 = Instant::now();
     let insert_batches = build_insert_batches(&file_symbols);
-    let file_hashes = build_file_hash_entries(&parse_changes);
+    let file_hashes = build_file_hash_entries(&parse_changes, &file_symbols);
     crate::domain::graph::builder::stages::insert_nodes::do_insert_nodes(
         conn,
         &insert_batches,
@@ -1356,11 +1356,26 @@ fn build_insert_batches(
 /// For full builds, `detect_changes` returns `hash: None` because it skips
 /// reading file content. In that case we read and hash each file here so
 /// that `file_hashes` is populated for subsequent incremental builds.
+///
+/// A changed file with no entry in `file_symbols` means extraction failed
+/// outright (worker panic recovery, unreadable, unsupported/missing
+/// grammar) — as opposed to a file that parsed successfully but
+/// legitimately produced zero symbols, which DOES get an entry (with empty
+/// `definitions`/`exports`; `parse_files_parallel`'s `filter_map` only
+/// drops files where parsing itself never produced a tree). Committing a
+/// hash for the former would mark it "up to date" relative to graph data
+/// that was never written, permanently hiding the loss from every later
+/// incremental build (issue #2441) — skip it instead, so the next build
+/// still sees it as changed and reprocesses it. Mirrors
+/// `iterFileHashRecords`'s `parsedRelPaths` check in
+/// `src/domain/graph/builder/stages/insert-nodes.ts`.
 fn build_file_hash_entries(
     changed: &[&detect_changes::ChangedFile],
+    file_symbols: &BTreeMap<String, FileSymbols>,
 ) -> Vec<crate::domain::graph::builder::stages::insert_nodes::FileHashEntry> {
     changed
         .iter()
+        .filter(|c| file_symbols.contains_key(&c.rel_path))
         .filter_map(|c| {
             let hash = match c.hash.as_ref() {
                 Some(h) => h.clone(),
@@ -3053,5 +3068,59 @@ mod tests {
             unwrap_option_result_type("std::option::Option<User>"),
             Some("User")
         );
+    }
+
+    fn changed_file(rel_path: &str, hash: &str) -> detect_changes::ChangedFile {
+        detect_changes::ChangedFile {
+            abs_path: format!("/repo/{rel_path}"),
+            rel_path: rel_path.to_string(),
+            content: None,
+            hash: Some(hash.to_string()),
+            mtime: 1000,
+            size: 10,
+            metadata_only: false,
+            reverse_dep_only: false,
+        }
+    }
+
+    // Issue #2441: a changed file whose extraction failed outright (worker
+    // panic recovery, unreadable, unsupported/missing grammar) has no entry
+    // in file_symbols at all — must not get a committed hash, or the next
+    // incremental build wrongly believes its (missing) graph data is up to
+    // date with the file's new content, permanently hiding the loss.
+    #[test]
+    fn skips_a_changed_file_with_no_file_symbols_entry() {
+        let ok = changed_file("a.js", "hash-a");
+        let failed = changed_file("b.js", "hash-b");
+        let changed: Vec<&detect_changes::ChangedFile> = vec![&ok, &failed];
+
+        let mut file_symbols = BTreeMap::new();
+        file_symbols.insert("a.js".to_string(), FileSymbols::new("a.js".to_string()));
+        // "b.js" intentionally has no entry — simulates a parse failure.
+
+        let entries = build_file_hash_entries(&changed, &file_symbols);
+        let files: Vec<&str> = entries.iter().map(|e| e.file.as_str()).collect();
+        assert_eq!(files, vec!["a.js"]);
+    }
+
+    // A file that parsed successfully but legitimately produced zero symbols
+    // (empty file, parser no-op) DOES get a file_symbols entry (with empty
+    // definitions/exports) — it must still get a committed hash, or the
+    // no-op fast-skip pre-flight on the next rebuild would reject it as
+    // "missing from file_hashes" and force a full rebuild.
+    #[test]
+    fn still_includes_a_changed_file_that_parsed_with_zero_symbols() {
+        let empty = changed_file("empty.js", "hash-empty");
+        let changed: Vec<&detect_changes::ChangedFile> = vec![&empty];
+
+        let mut file_symbols = BTreeMap::new();
+        file_symbols.insert(
+            "empty.js".to_string(),
+            FileSymbols::new("empty.js".to_string()),
+        );
+
+        let entries = build_file_hash_entries(&changed, &file_symbols);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].file, "empty.js");
     }
 }

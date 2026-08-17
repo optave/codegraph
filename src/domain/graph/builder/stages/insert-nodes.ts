@@ -165,6 +165,7 @@ function* iterFileHashRecords(
   metadataUpdates: MetadataUpdate[],
   rootDir: string,
   caller: string,
+  parsedRelPaths?: ReadonlySet<string>,
 ): Generator<FileHashRecord> {
   const seen = new Set<string>();
 
@@ -175,6 +176,19 @@ function* iterFileHashRecords(
 
     const precomputed = precomputedData.get(relPath);
     if (precomputed?._reverseDepOnly) continue;
+
+    // #2441: a file that was actually scheduled for parsing (not a
+    // reverse-dep-only refresh, handled above) but produced no entry in
+    // fileSymbols means extraction failed outright — a crash, an unreadable
+    // file, or an unsupported/missing grammar — as opposed to a file that
+    // parsed successfully but legitimately produced zero symbols (#1068),
+    // which DOES get a fileSymbols entry (with empty definitions/exports).
+    // Committing this file's hash would mark it "up to date" relative to
+    // content whose graph data was never written, permanently hiding the
+    // loss from every later incremental build. Only enforced when the
+    // caller actually tracked parse outcomes (`parsedRelPaths` provided) —
+    // direct/synthetic callers keep the original unconditional behavior.
+    if (parsedRelPaths && !parsedRelPaths.has(relPath)) continue;
 
     const record = resolveHashFromPrecomputed(
       relPath,
@@ -204,6 +218,13 @@ function* iterFileHashRecords(
  * `file_hashes`, which permanently breaks the JS-side fast-skip pre-flight on
  * any subsequent no-op rebuild (#1068).
  *
+ * `parsedRelPaths`, when provided, additionally excludes a file that was
+ * scheduled for parsing but has no entry there at all — a genuine parse
+ * failure rather than a legitimate empty result (#2441; see the check inside
+ * `iterFileHashRecords`). Omitted by direct/synthetic callers (e.g. this
+ * function's own unit tests), which don't track parse outcomes and keep the
+ * original unconditional #1068 behavior.
+ *
  * Exported for unit testing.
  */
 export function buildFileHashes(
@@ -211,6 +232,7 @@ export function buildFileHashes(
   precomputedData: Map<string, PrecomputedFileData>,
   metadataUpdates: MetadataUpdate[],
   rootDir: string,
+  parsedRelPaths?: ReadonlySet<string>,
 ): FileHashRecord[] {
   return [
     ...iterFileHashRecords(
@@ -219,6 +241,7 @@ export function buildFileHashes(
       metadataUpdates,
       rootDir,
       'buildFileHashes',
+      parsedRelPaths,
     ),
   ];
 }
@@ -478,13 +501,19 @@ export async function insertNodes(ctx: PipelineContext): Promise<void> {
  * correctly detects the file as still needing (re)processing.
  */
 export function commitFileHashes(ctx: PipelineContext): void {
-  const { filesToParse, metadataUpdates, rootDir } = ctx;
+  const { filesToParse, metadataUpdates, rootDir, fileSymbols } = ctx;
 
   const precomputedData = new Map<string, PrecomputedFileData>();
   for (const item of filesToParse) {
     if (item.relPath) precomputedData.set(item.relPath, item as PrecomputedFileData);
   }
-  const fileHashes = buildFileHashes(filesToParse, precomputedData, metadataUpdates, rootDir);
+  const fileHashes = buildFileHashes(
+    filesToParse,
+    precomputedData,
+    metadataUpdates,
+    rootDir,
+    new Set(fileSymbols.keys()),
+  );
   if (fileHashes.length === 0) return;
 
   if (ctx.engineName === 'native' && ctx.nativeDb?.healFileMetadata) {
