@@ -70,6 +70,7 @@ function somethingElse(x) { return x + 13; }
 function killedByParenthesizedAssign(x) { return x + 14; }
 function killedByLaterDeclaratorInSameStatement(x) { return x + 15; }
 function killedBySequenceExprPriorPart(x) { return x + 16; }
+function killedByLaterDeclaratorInOwnStatement(x) { return x + 17; }
 
 // #2438: a plain top-level reassignment kills the fallback value before the
 // later read runs — that read sees \`other\`, never \`killedThenRead\`.
@@ -129,6 +130,14 @@ export function killViaLaterDeclaratorInSameStatement(opts, other) {
 export function killViaSequenceExprPriorPart(opts, other) {
   let fn = opts.custom || killedBySequenceExprPriorPart;
   return (fn = other, fn());
+}
+
+// #2438 (Greptile review): a LATER sibling declarator in the SAME statement
+// as the original fallback declarator can itself unconditionally redeclare
+// the name — must suppress a read from a declarator after that.
+export function killViaLaterDeclaratorInOwnStatement(opts, other) {
+  var fn = opts.custom || killedByLaterDeclaratorInOwnStatement, fn = other, result = fn();
+  return result;
 }
 
 // \`var\` is FUNCTION-scoped, so the nested block's \`var varScoped\` is the SAME
@@ -310,6 +319,12 @@ function runShared(getDbPath: () => string) {
   // later in the SAME sequence.
   it('does not credit liveness from a read later in a sequence expression whose earlier part killed it', () => {
     expect(countCallEdgesTo(getDbPath(), 'killedBySequenceExprPriorPart')).toBe(0);
+  });
+
+  // Greptile review, PR #2554: a later sibling declarator in the SAME
+  // statement as the original fallback declarator can itself kill the name.
+  it('does not credit liveness from a declarator reading a value a later sibling in its own declaration statement killed', () => {
+    expect(countCallEdgesTo(getDbPath(), 'killedByLaterDeclaratorInOwnStatement')).toBe(0);
   });
 }
 

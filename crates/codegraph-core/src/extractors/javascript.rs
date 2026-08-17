@@ -5235,6 +5235,19 @@ fn block_contains_identifier_excluding(
                 ) {
                     return true;
                 }
+                // A LATER sibling declarator in this SAME statement can
+                // itself unconditionally redeclare `name` — `var fn = a ||
+                // fallback, fn = other, result = fn();` must not credit
+                // `result`'s read to `fallback` once the intervening `fn =
+                // other` has already run (Greptile review, PR #2554).
+                // `declarator_kills_name` already excludes `exclude_id`
+                // itself, so the original declarator's own initializer is
+                // never mistaken for a kill of its own value.
+                if child.kind() == "variable_declarator"
+                    && declarator_kills_name(&child, name, source, exclude_id)
+                {
+                    return false;
+                }
             }
             return false;
         }
@@ -9193,6 +9206,21 @@ mod tests {
         let s = parse_js(
             "let fn = options.custom || fetchLatestVersion;\n\
              (fn = replacement, fn());",
+        );
+        assert!(!s.calls.iter().any(|c| {
+            c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"
+        }));
+    }
+
+    // Greptile review, PR #2554: a later sibling declarator in the SAME
+    // statement as the original fallback declarator can itself
+    // unconditionally redeclare the name — must suppress a read from a
+    // declarator after that.
+    #[test]
+    fn does_not_credit_liveness_from_a_declarator_reading_a_value_a_later_sibling_in_its_own_declaration_statement_killed(
+    ) {
+        let s = parse_js(
+            "var fn = options.custom || fetchLatestVersion, fn = replacement, result = fn();",
         );
         assert!(!s.calls.iter().any(|c| {
             c.dynamic_kind.as_deref() == Some("value-ref") && c.name == "fetchLatestVersion"

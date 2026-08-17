@@ -5030,6 +5030,16 @@ function blockContainsIdentifierExcluding(
         if (blockContainsIdentifierExcluding(child, name, excludeId, depth + 1, requireCallSite)) {
           return true;
         }
+        // A LATER sibling declarator in this SAME statement can itself
+        // unconditionally redeclare `name` — `var fn = a || fallback, fn =
+        // other, result = fn();` must not credit `result`'s read to
+        // `fallback` once the intervening `fn = other` has already run
+        // (Greptile review, PR #2554). `declaratorKillsName` already
+        // excludes `excludeId` itself, so the original declarator's own
+        // initializer is never mistaken for a kill of its own value.
+        if (child.type === 'variable_declarator' && declaratorKillsName(child, name, excludeId)) {
+          return false;
+        }
       }
       return false;
     }
