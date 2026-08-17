@@ -9,6 +9,7 @@ Ready-to-use [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-code/
 mkdir -p .claude/hooks
 cp docs/examples/claude-code-hooks/*.sh .claude/hooks/
 cp docs/examples/claude-code-hooks/*.js .claude/hooks/
+cp docs/examples/claude-code-hooks/*.mjs .claude/hooks/
 chmod +x .claude/hooks/*.sh
 
 # 2. Copy settings (or merge into your existing .claude/settings.json)
@@ -46,7 +47,7 @@ If an instruction matters, make it a blocking hook. If it's in CLAUDE.md but not
 
 | Hook | Trigger | What it does |
 |------|---------|-------------|
-| `guard-git.sh` (+ `mask-quoted-text.mjs`, `check-git-clean-force.mjs`) | PreToolUse on Bash | Blocks `git add .`, `git reset`, `git restore`, a force-deleting `git clean` (dry-run is allowed), `git stash`; blocks AI attribution in commit messages; validates branch names and that commits only include files the session actually edited |
+| `guard-git.sh` (+ `mask-quoted-text.mjs`, `check-git-clean-force.mjs`, `normalize-ifs.mjs`) | PreToolUse on Bash | Blocks `git add .`, `git reset`, `git restore`, a force-deleting `git clean` (dry-run is allowed), `git stash`; blocks AI attribution in commit messages; validates branch names and that commits only include files the session actually edited |
 | `track-edits.sh` | PostToolUse on Edit/Write | Logs every file edited to `.claude/session-edits.log` — required by guard-git.sh and pre-commit.sh |
 | `track-moves.sh` | PostToolUse on Bash | Logs files affected by `mv`/`git mv`/`cp` to the edit log |
 
@@ -80,7 +81,7 @@ All session-local state files (`session-edits.log`) use `git rev-parse --show-to
 
 **Branch name validation:** `guard-git.sh` validates branch names against conventional prefixes (`feat/`, `fix/`, etc.) on `git push` and `gh pr create`. Adjust the `PATTERN` in `validate_branch_name` if your project uses different conventions.
 
-**Kept in sync automatically:** `guard-git.sh` and its two companion scripts (`mask-quoted-text.mjs`, `check-git-clean-force.mjs`) here are exact copies of this repo's own `.claude/hooks/` — a test (`tests/unit/hook-guard-git-clean.test.ts`) fails CI if they ever diverge, so this example always reflects the live hook's actual behavior instead of drifting into a stale, partial snapshot (#2105).
+**Kept in sync automatically:** `guard-git.sh` and its companion scripts (`mask-quoted-text.mjs`, `check-git-clean-force.mjs`, `normalize-ifs.mjs`) here are exact copies of this repo's own `.claude/hooks/` — a test (`tests/unit/hook-guard-git-clean.test.ts`) fails CI if they ever diverge, so this example always reflects the live hook's actual behavior instead of drifting into a stale, partial snapshot (#2105).
 
 ## Incremental build freshness
 

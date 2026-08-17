@@ -312,7 +312,12 @@ describe('guard-git.sh docs example stays in sync (#2105)', () => {
   // reflected the real hook's behavior at all. Kept as an exact copy and
   // enforced here instead of documented-and-hoped-for, since a prose note
   // alone already failed to prevent the original drift.
-  const HOOKS = ['guard-git.sh', 'mask-quoted-text.mjs', 'check-git-clean-force.mjs'];
+  const HOOKS = [
+    'guard-git.sh',
+    'mask-quoted-text.mjs',
+    'check-git-clean-force.mjs',
+    'normalize-ifs.mjs',
+  ];
   const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'examples', 'claude-code-hooks');
 
   it.each(HOOKS)('%s is byte-identical to its docs/examples copy', (name) => {

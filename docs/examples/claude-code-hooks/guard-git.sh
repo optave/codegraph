@@ -21,6 +21,8 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # The actual directory the Bash tool will run this command in — a top-level
 # field on every PreToolUse payload, independent of whatever cd/-C text
 # happens to appear in $COMMAND. This is what a bare `git push` (relying on
@@ -35,6 +37,25 @@ HOOK_CWD=$(echo "$INPUT" | node -e "
   });
 " 2>/dev/null) || true
 
+# Replace every $IFS/${IFS} reference with a literal space (#2451) BEFORE
+# even the fast-path filter below runs. `$IFS`/`${IFS}` (bash's own
+# whitespace field-separator variable) supplies a token boundary bash
+# expands at execution time that the command TEXT itself has no literal
+# whitespace for — `git${IFS}checkout` looks like a single token to every
+# regex in this file, including the fast-path filter's own
+# `(git|gh)[[:space:]]+` check, but bash expands the unquoted `${IFS}` to
+# whitespace before Git ever runs, so Git actually receives `checkout` as a
+# separate argument. Without this, the fast-path filter doesn't recognize
+# such a command as git/gh at all and exits 0 immediately, skipping EVERY
+# check below, not just whichever one the attacker was targeting. See
+# normalize-ifs.mjs for why this can run without any quote-awareness of its
+# own. Extraction logic below (detect_work_dir, MSG_FILE, the AI-attribution
+# scan) deliberately keeps reading the raw, unnormalized $COMMAND.
+IFS_NORM_COMMAND=$(echo "$COMMAND" | node "$HOOK_DIR/normalize-ifs.mjs" 2>/dev/null) || true
+if [ -z "$IFS_NORM_COMMAND" ]; then
+  IFS_NORM_COMMAND="$COMMAND"
+fi
+
 # Act on git and gh commands (may appear after cd "..." &&, inside a quoted
 # nested-shell invocation like `bash -c "git clean -fd"`, or inside a command
 # substitution like `"message $(git clean -fd)"` — #2099 Greptile review).
@@ -43,7 +64,7 @@ HOOK_CWD=$(echo "$INPUT" | node -e "
 # rather than exact: a false "yes" here just means the rest of the script
 # runs its checks anyway, while a false "no" would exit before ever reaching
 # them.
-if ! echo "$COMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*|["'"'"'`(])(git|gh)[[:space:]]+'; then
+if ! echo "$IFS_NORM_COMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*|["'"'"'`(])(git|gh)[[:space:]]+'; then
   exit 0
 fi
 
@@ -53,13 +74,17 @@ fi
 # awareness of shell quoting — so text that merely APPEARS inside a quoted
 # argument (e.g. `gh issue create --body "...git clean -fd..."`) matched the
 # same pattern as a real invocation and got blocked. See mask-quoted-text.mjs
-# for the masking rules. Extraction logic below (detect_work_dir, MSG_FILE,
-# the AI-attribution scan) deliberately keeps reading the raw, unmasked
-# $COMMAND — masking only feeds the verb-detection checks that use $NCOMMAND.
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-MASKED_COMMAND=$(echo "$COMMAND" | node "$HOOK_DIR/mask-quoted-text.mjs" 2>/dev/null) || true
+# for the masking rules. Fed from $IFS_NORM_COMMAND (not raw $COMMAND) so
+# every downstream verb-detection check also benefits from IFS normalization
+# (#2451) without needing its own IFS-awareness — a $IFS/${IFS} that landed
+# inside a quoted span gets replaced with a space here, then blanked out
+# (along with everything else in that span) by masking anyway. Extraction
+# logic below (detect_work_dir, MSG_FILE, the AI-attribution scan)
+# deliberately keeps reading the raw, unmasked $COMMAND — masking only feeds
+# the verb-detection checks that use $NCOMMAND.
+MASKED_COMMAND=$(echo "$IFS_NORM_COMMAND" | node "$HOOK_DIR/mask-quoted-text.mjs" 2>/dev/null) || true
 if [ -z "$MASKED_COMMAND" ]; then
-  MASKED_COMMAND="$COMMAND"
+  MASKED_COMMAND="$IFS_NORM_COMMAND"
 fi
 
 # Normalize: strip `git -C "<path>"` / `git -C <path>` so downstream subcommand
