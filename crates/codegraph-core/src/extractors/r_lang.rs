@@ -126,7 +126,9 @@ pub(crate) fn assigned_function_name(function_def: &Node, source: &[u8]) -> Opti
     if parent.kind() != "binary_operator" {
         return None;
     }
-    let lhs = parent.child_by_field_name("lhs").or_else(|| parent.child(0))?;
+    let lhs = parent
+        .child_by_field_name("lhs")
+        .or_else(|| parent.child(0))?;
     let op = parent
         .child_by_field_name("operator")
         .or_else(|| parent.child(1))?;
