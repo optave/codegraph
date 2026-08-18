@@ -901,6 +901,17 @@ interface DartSelectorCall {
   receiver?: string;
 }
 
+// A `.method` access (`unconditional_assignable_selector`) and a null-aware
+// `?.method` access (`conditional_assignable_selector`) are otherwise
+// identical for call-resolution purposes — both wrap a plain `identifier`
+// naming the method — so every lookup below tries either wrapper (#2476).
+function findDartAssignableSelector(node: TreeSitterNode): TreeSitterNode | null {
+  return (
+    findChild(node, 'unconditional_assignable_selector') ||
+    findChild(node, 'conditional_assignable_selector')
+  );
+}
+
 // Look for the identifier this selector belongs to, plus (for a genuine
 // `.method` access) its receiver, for typeMap-based call resolution (#2319).
 // Three layouts are possible depending on grammar version and call shape:
@@ -916,8 +927,12 @@ interface DartSelectorCall {
 //      wrapping call_expression — #2082). This is a bare call, not a
 //      receiver+method pair — the identifier IS the callee's own name, so
 //      no receiver is produced.
+// A/B both apply identically to a null-aware `?.method` access — confirmed
+// by parsing `a?.b();`, which produces the exact same Layout B shape as
+// `a.b();` with `conditional_assignable_selector` in place of
+// `unconditional_assignable_selector` (#2476).
 function resolveDartSelectorCall(node: TreeSitterNode): DartSelectorCall | null {
-  const unconditional = findChild(node, 'unconditional_assignable_selector');
+  const unconditional = findDartAssignableSelector(node);
   if (unconditional) {
     const id = findChild(unconditional, 'identifier');
     if (!id) return null;
@@ -947,7 +962,7 @@ function resolveDartSelectorCall(node: TreeSitterNode): DartSelectorCall | null 
   if (!prevSibling) return null;
 
   if (prevSibling.type === 'selector') {
-    const unc2 = findChild(prevSibling, 'unconditional_assignable_selector');
+    const unc2 = findDartAssignableSelector(prevSibling);
     const id2 = unc2 ? findChild(unc2, 'identifier') : null;
     if (!id2) return null;
     const receiver = findDartSelectorReceiver(prevSibling);

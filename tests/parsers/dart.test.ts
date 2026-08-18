@@ -113,6 +113,37 @@ import 'package:flutter/material.dart';`);
     });
   });
 
+  // #2476: `a?.b()` uses a distinct `conditional_assignable_selector` node
+  // (`?.`) instead of the `unconditional_assignable_selector` (`.`) ordinary
+  // member access uses — resolveDartSelectorCall's Layout A/B checks only
+  // looked for the unconditional wrapper, so a null-aware method call was
+  // silently extracted as ZERO calls (not misresolved — dropped entirely).
+  describe('#2476: null-aware (conditional) method call extraction', () => {
+    it('extracts a null-aware method call', () => {
+      const symbols = parseDart(`void f() {
+  a?.b();
+}`);
+      expect(symbols.calls).toContainEqual(expect.objectContaining({ name: 'b' }));
+    });
+
+    it('sets a this-prefixed receiver for a bare identifier object', () => {
+      const symbols = parseDart(`void f() {
+  a?.b();
+}`);
+      const call = symbols.calls.find((c) => c.name === 'b');
+      expect(call?.receiver).toBe('this.a');
+    });
+
+    it('resolves each call in a null-aware chained sequence', () => {
+      const symbols = parseDart(`void main() {
+  obj?.method1()?.method2();
+}`);
+      const names = symbols.calls.map((c) => c.name);
+      expect(names).toContain('method1');
+      expect(names).toContain('method2');
+    });
+  });
+
   // #2082: multi-line function/method endLine truncation — tree-sitter-dart
   // splits a function's signature and body into SIBLING nodes
   // (function_signature/method_signature + function_body), not a

@@ -1113,8 +1113,18 @@ fn handle_dart_selector(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
 /// is `None` for a bare call (Layout C) or when the preceding token isn't a
 /// plain identifier/type_identifier (a chained call's intermediate receiver
 /// or a subscript-indexed receiver).
+/// A `.method` access (`unconditional_assignable_selector`) and a null-aware
+/// `?.method` access (`conditional_assignable_selector`) are otherwise
+/// identical for call-resolution purposes — both wrap a plain `identifier`
+/// naming the method — so every lookup below tries either wrapper (#2476).
+/// Mirrors `findDartAssignableSelector` in `src/extractors/dart.ts`.
+fn find_dart_assignable_selector<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    find_child(node, "unconditional_assignable_selector")
+        .or_else(|| find_child(node, "conditional_assignable_selector"))
+}
+
 fn resolve_dart_selector_call(node: &Node, source: &[u8]) -> Option<(String, Option<String>)> {
-    if let Some(unconditional) = find_child(node, "unconditional_assignable_selector") {
+    if let Some(unconditional) = find_dart_assignable_selector(node) {
         let id = find_child(&unconditional, "identifier")?;
         let receiver = find_dart_selector_receiver(node, source);
         return Some((node_text(&id, source).to_string(), receiver));
@@ -1133,7 +1143,7 @@ fn resolve_dart_selector_call(node: &Node, source: &[u8]) -> Option<(String, Opt
     let prev_sibling = prev_sibling?;
 
     if prev_sibling.kind() == "selector" {
-        let unc2 = find_child(&prev_sibling, "unconditional_assignable_selector")?;
+        let unc2 = find_dart_assignable_selector(&prev_sibling)?;
         let id2 = find_child(&unc2, "identifier")?;
         let receiver = find_dart_selector_receiver(&prev_sibling, source);
         return Some((node_text(&id2, source).to_string(), receiver));
@@ -1232,7 +1242,11 @@ fn handle_dart_call_expression(node: &Node, source: &[u8], symbols: &mut FileSym
             let name = node_text(&func, source).to_string();
             push_simple_call(symbols, node, name);
         }
-        "member_expression" => {
+        // `null_aware_member_expression` (`a?.b()`) is otherwise identical to
+        // `member_expression` (`a.b()`) — same `object`/`property` fields —
+        // just a distinct node kind for the null-aware `?.` accessor
+        // (confirmed by parsing `a?.b();` with tree-sitter-dart 0.2; #2476).
+        "member_expression" | "null_aware_member_expression" => {
             let Some(property) = func.child_by_field_name("property") else {
                 return;
             };
@@ -1384,6 +1398,48 @@ mod tests {
                     .any(|c| c.name == "<dynamic:unresolved>" && c.dynamic == Some(true)),
                 "expected an unresolved-dynamic call; got: {:?}",
                 s.calls
+            );
+        }
+    }
+
+    // #2476: `a?.b()` parses its callee as a `null_aware_member_expression`
+    // node — otherwise identical to `member_expression` (same object/property
+    // fields), but a distinct node kind `handle_dart_call_expression` never
+    // matched, so a null-aware method call was silently extracted as ZERO
+    // calls (not misresolved — dropped entirely).
+    mod null_aware_calls {
+        use super::*;
+
+        #[test]
+        fn extracts_a_null_aware_method_call() {
+            let s = parse_dart("void f() {\n  a?.b();\n}");
+            assert!(
+                s.calls.iter().any(|c| c.name == "b"),
+                "expected a call named 'b'; got: {:?}",
+                s.calls
+            );
+        }
+
+        #[test]
+        fn sets_a_this_prefixed_receiver_for_a_bare_identifier_object() {
+            let s = parse_dart("void f() {\n  a?.b();\n}");
+            let call = s.calls.iter().find(|c| c.name == "b");
+            assert_eq!(call.and_then(|c| c.receiver.as_deref()), Some("this.a"));
+        }
+
+        #[test]
+        fn resolves_each_call_in_a_null_aware_chained_sequence() {
+            let s = parse_dart("void main() {\n  obj?.method1()?.method2();\n}");
+            let names: Vec<&str> = s.calls.iter().map(|c| c.name.as_str()).collect();
+            assert!(
+                names.contains(&"method1"),
+                "missing method1; got: {:?}",
+                names
+            );
+            assert!(
+                names.contains(&"method2"),
+                "missing method2; got: {:?}",
+                names
             );
         }
     }
