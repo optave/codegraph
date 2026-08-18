@@ -923,6 +923,79 @@ fn find_enclosing_dart_param_list_for_call<'a>(node: &Node<'a>) -> Option<Node<'
     find_child(&inner, "formal_parameter_list")
 }
 
+/// Whether `name` is shadowed by a LOCAL VARIABLE declared earlier in an
+/// ancestor block of `node` — e.g. `_repo` in:
+///
+///   void run() {
+///     var _repo = MockRepository();
+///     _repo.mockOnlyMethod();   // shadowed: resolves the LOCAL, not the field
+///   }
+///
+/// (#2478, the local-variable counterpart to `collect_dart_param_names`'s
+/// parameter-shadowing check.) A parameter is trivially in scope for the
+/// WHOLE function body with no ordering to consider, but a local variable's
+/// scope is block-bounded and position-dependent: a same-named local
+/// declared in a DIFFERENT (sibling) block, or later in the SAME block,
+/// must NOT be treated as shadowing.
+///
+/// Walks up from `node` one enclosing `block` at a time. At each level, the
+/// child of that block on the path up from `node` is the "entry statement"
+/// — only that block's siblings BEFORE the entry statement's own index are
+/// checked: a local variable declared AFTER it in the same block is not
+/// yet in scope there, and one declared inside a DIFFERENT branch of an
+/// `if`/`for` lives in a sibling block this walk never visits at all, so it
+/// can't falsely match either. This verifies the ordering directly from the
+/// tree rather than assuming Dart's compiler already rejects a forward
+/// reference.
+///
+/// Stops at the enclosing `function_body` boundary, mirroring
+/// `find_enclosing_dart_param_list_for_call`'s identical discipline against
+/// crossing into an outer function/class scope.
+///
+/// Deliberately does NOT walk into nested descendant blocks the call site
+/// itself isn't inside, nor chase the rare comma-separated multi-declarator
+/// local (`var a, b = Foo();`) — see `findEnclosingDartShadowingLocalName`
+/// in `src/extractors/dart.ts` (this function's mirror) for the full
+/// rationale; missing either case is a conservative under-detection, not a
+/// wrong one.
+fn find_enclosing_dart_shadowing_local_name(node: &Node, source: &[u8], name: &str) -> bool {
+    let mut current = *node;
+    loop {
+        let Some(ancestor) = current.parent() else {
+            return false;
+        };
+        if ancestor.kind() == "block" {
+            let mut idx: i64 = -1;
+            for i in 0..ancestor.child_count() {
+                if ancestor.child(i).map(|c| c.id()) == Some(current.id()) {
+                    idx = i as i64;
+                    break;
+                }
+            }
+            let mut i = idx - 1;
+            while i >= 0 {
+                if let Some(sibling) = ancestor.child(i as usize) {
+                    if sibling.kind() == "local_variable_declaration" {
+                        if let Some(decl) = find_child(&sibling, "initialized_variable_definition")
+                        {
+                            if let Some(name_node) = decl.child_by_field_name("name") {
+                                if node_text(&name_node, source) == name {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                i -= 1;
+            }
+        }
+        if ancestor.kind() == "function_body" {
+            return false;
+        }
+        current = ancestor;
+    }
+}
+
 /// Qualified name (`ClassName.methodName`, or bare `functionName`) of the
 /// function/method enclosing `node`, a descendant of that function's
 /// `function_body` — e.g. a local variable declaration inside the body
@@ -1210,6 +1283,9 @@ fn find_dart_selector_receiver(method_selector: &Node, source: &[u8]) -> Option<
                     return Some(name.to_string());
                 }
             }
+            if find_enclosing_dart_shadowing_local_name(method_selector, source, name) {
+                return Some(name.to_string());
+            }
             Some(format!("this.{}", name))
         }
         "type_identifier" => Some(node_text(&prev_sibling, source).to_string()),
@@ -1294,8 +1370,10 @@ fn handle_dart_call_expression(node: &Node, source: &[u8], symbols: &mut FileSym
             // rationale (#2319 second follow-up, Greptile finding on PR
             // #2477: this is likewise the LIVE path for that shadowing fix,
             // for the same reason it's the live path for the `this.`-prefix
-            // fix above). Mirrors `findDartSelectorReceiver` in
-            // `src/extractors/dart.ts`.
+            // fix above) — OR by a same-named LOCAL VARIABLE declared
+            // earlier in an enclosing block (#2478; see
+            // `find_enclosing_dart_shadowing_local_name`'s doc comment).
+            // Mirrors `findDartSelectorReceiver` in `src/extractors/dart.ts`.
             let receiver = object.and_then(|obj| {
                 if obj.kind() != "identifier" {
                     return None;
@@ -1305,6 +1383,9 @@ fn handle_dart_call_expression(node: &Node, source: &[u8], symbols: &mut FileSym
                     if collect_dart_param_names(&param_list, source).contains(name) {
                         return Some(name.to_string());
                     }
+                }
+                if find_enclosing_dart_shadowing_local_name(node, source, name) {
+                    return Some(name.to_string());
                 }
                 Some(format!("this.{}", name))
             });
@@ -1710,12 +1791,11 @@ mod tests {
                 "missing doSomething call; got: {:?}",
                 s.calls
             );
-            // Also `this.`-prefixed even though `w` is a local, not a field:
-            // the extractor cannot tell the two apart from a bare identifier
-            // alone, and prefixing is harmless here — the class-scoped
-            // lookup it enables just finds no entry for a non-field name and
-            // falls through to the same bare-key lookup as before.
-            assert_eq!(call.unwrap().receiver.as_deref(), Some("this.w"));
+            // Bare, NOT `this.`-prefixed: `w` is a local variable declared
+            // earlier in this same block, so `find_enclosing_dart_shadowing_
+            // local_name` (#2478) correctly recognizes it as a local rather
+            // than defaulting to a field access.
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("w"));
         }
 
         #[test]
@@ -1839,6 +1919,117 @@ mod tests {
             assert_eq!(call.unwrap().receiver.as_deref(), Some("_repo"));
             // And the function-scoped key resolves it to the PARAMETER's
             // own type, not the field's.
+            let scoped = s
+                .type_map
+                .iter()
+                .find(|e| e.name == "Service.run::_repo")
+                .expect("missing Service.run::_repo scoped type-map entry");
+            assert_eq!(scoped.type_name, "MockRepository");
+        }
+    }
+
+    // #2478: a LOCAL VARIABLE (not just a parameter) can also legally shadow
+    // a same-named class field of a different type — the counterpart to
+    // `parameter_shadows_field` above.
+    mod local_variable_shadows_field {
+        use super::*;
+
+        #[test]
+        fn local_var_receiver_is_not_this_prefixed_when_it_shadows_a_field() {
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run() {\n    var _repo = MockRepository();\n    _repo.mockOnlyMethod();\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "mockOnlyMethod");
+            assert!(
+                call.is_some(),
+                "missing mockOnlyMethod call; got: {:?}",
+                s.calls
+            );
+            assert_eq!(
+                call.unwrap().receiver.as_deref(),
+                Some("_repo"),
+                "a local variable shadowing a field must emit the BARE receiver, not \
+                 `this.`-prefixed (which would wrongly activate the class-scoped FIELD lookup)"
+            );
+        }
+
+        #[test]
+        fn does_not_shadow_when_declared_in_a_different_method() {
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run() {\n    var _repo = MockRepository();\n    _repo.mockOnlyMethod();\n  }\n  void other() {\n    _repo.findById();\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "findById");
+            assert!(call.is_some(), "missing findById call; got: {:?}", s.calls);
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("this._repo"));
+        }
+
+        #[test]
+        fn does_not_shadow_across_sibling_blocks() {
+            // The local's scope ends with the `if` block that declares it —
+            // a call AFTER that block, back in the outer method body, must
+            // still resolve against the field.
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run(bool cond) {\n    if (cond) {\n      var _repo = MockRepository();\n      _repo.mockOnlyMethod();\n    }\n    _repo.findById();\n  }\n}",
+            );
+            let inner = s.calls.iter().find(|c| c.name == "mockOnlyMethod");
+            assert_eq!(
+                inner.and_then(|c| c.receiver.as_deref()),
+                Some("_repo"),
+                "call inside the if-block must still see the local as shadowing"
+            );
+            let outer = s.calls.iter().find(|c| c.name == "findById");
+            assert_eq!(
+                outer.and_then(|c| c.receiver.as_deref()),
+                Some("this._repo"),
+                "call outside the if-block must NOT be shadowed by a local scoped to a sibling block"
+            );
+        }
+
+        #[test]
+        fn shadows_from_an_enclosing_block_into_a_nested_call_site() {
+            // The inverse of the sibling-block case: the local is declared
+            // in the OUTER block, and the call is nested inside an `if`
+            // block within that same enclosing scope — the local is still
+            // in scope there.
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run(bool cond) {\n    var _repo = MockRepository();\n    if (cond) {\n      _repo.mockOnlyMethod();\n    }\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "mockOnlyMethod");
+            assert_eq!(call.and_then(|c| c.receiver.as_deref()), Some("_repo"));
+        }
+
+        #[test]
+        fn does_not_shadow_a_call_textually_before_the_local_declaration() {
+            // Even in the SAME block, a local declared AFTER the call site
+            // must not retroactively shadow it — ordering is checked
+            // directly from sibling position, not merely "does a
+            // same-named local exist anywhere in this block".
+            let s = parse_dart(
+                "class Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run() {\n    _repo.findById();\n    var _repo = MockRepository();\n    _repo.mockOnlyMethod();\n  }\n}",
+            );
+            let before = s.calls.iter().find(|c| c.name == "findById");
+            assert_eq!(
+                before.and_then(|c| c.receiver.as_deref()),
+                Some("this._repo"),
+                "a call preceding the local's own declaration must still resolve against the field"
+            );
+            let after = s.calls.iter().find(|c| c.name == "mockOnlyMethod");
+            assert_eq!(after.and_then(|c| c.receiver.as_deref()), Some("_repo"));
+        }
+
+        #[test]
+        fn end_to_end_resolution_does_not_target_the_field_type() {
+            // Full end-to-end regression mirroring parameter_shadows_field's
+            // identical test: both types define a same-named method, so a
+            // wrong (field-typed) resolution would be indistinguishable
+            // from a correct one without checking both the receiver AND the
+            // typeMap entry the resolver actually consumes.
+            let s = parse_dart(
+                "class Repository {\n  void save() {}\n}\nclass MockRepository {\n  void save() {}\n}\nclass Service {\n  final Repository _repo;\n  Service(this._repo);\n  void run() {\n    var _repo = MockRepository();\n    _repo.save();\n  }\n}",
+            );
+            let call = s.calls.iter().find(|c| c.name == "save");
+            assert!(call.is_some(), "missing save call; got: {:?}", s.calls);
+            assert_eq!(call.unwrap().receiver.as_deref(), Some("_repo"));
             let scoped = s
                 .type_map
                 .iter()

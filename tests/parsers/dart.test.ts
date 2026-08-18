@@ -371,13 +371,12 @@ import 'package:flutter/material.dart';`);
   var w = Foo();
   w.doSomething();
 }`);
-      // Also `this.`-prefixed even though `w` is a local, not a field: the
-      // extractor cannot tell the two apart from a bare identifier alone,
-      // and prefixing is harmless here — the class-scoped lookup it enables
-      // just finds no entry for a non-field name and falls through to the
-      // same bare-key lookup as before.
+      // Bare, NOT `this.`-prefixed: `w` is a local variable declared earlier
+      // in this same block, so `findEnclosingDartShadowingLocalName` (#2478)
+      // correctly recognizes it as a local rather than defaulting to a
+      // field access.
       expect(symbols.calls).toContainEqual(
-        expect.objectContaining({ name: 'doSomething', receiver: 'this.w' }),
+        expect.objectContaining({ name: 'doSomething', receiver: 'w' }),
       );
     });
 
@@ -525,6 +524,130 @@ class Service {
       expect(symbols.typeMap.get('Service.run::_repo')).toEqual({
         type: 'MockRepository',
         confidence: 0.9,
+      });
+    });
+  });
+
+  // #2478: a LOCAL VARIABLE (not just a parameter) can also legally shadow
+  // a same-named class field of a different type — the counterpart to the
+  // #2319 second follow-up above.
+  describe('#2478: local variable shadowing a same-named class field', () => {
+    it('emits the bare receiver (not `this.`-prefixed) when a local shadows the field', () => {
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run() {
+    var _repo = MockRepository();
+    _repo.mockOnlyMethod();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'mockOnlyMethod', receiver: '_repo' }),
+      );
+    });
+
+    it('does not shadow a bare field access in a sibling method with no such local', () => {
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run() {
+    var _repo = MockRepository();
+    _repo.mockOnlyMethod();
+  }
+  void other() {
+    _repo.findById();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'findById', receiver: 'this._repo' }),
+      );
+    });
+
+    it('does not shadow across sibling blocks', () => {
+      // The local's scope ends with the `if` block that declares it — a
+      // call AFTER that block, back in the outer method body, must still
+      // resolve against the field.
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run(bool cond) {
+    if (cond) {
+      var _repo = MockRepository();
+      _repo.mockOnlyMethod();
+    }
+    _repo.findById();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'mockOnlyMethod', receiver: '_repo' }),
+      );
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'findById', receiver: 'this._repo' }),
+      );
+    });
+
+    it('shadows from an enclosing block into a nested call site', () => {
+      // The inverse of the sibling-block case: the local is declared in the
+      // OUTER block, and the call is nested inside an `if` block within
+      // that same enclosing scope — the local is still in scope there.
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run(bool cond) {
+    var _repo = MockRepository();
+    if (cond) {
+      _repo.mockOnlyMethod();
+    }
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'mockOnlyMethod', receiver: '_repo' }),
+      );
+    });
+
+    it('does not shadow a call textually before the local declaration', () => {
+      // Even in the SAME block, a local declared AFTER the call site must
+      // not retroactively shadow it — ordering is checked directly from
+      // sibling position, not merely "does a same-named local exist
+      // anywhere in this block".
+      const symbols = parseDart(`class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run() {
+    _repo.findById();
+    var _repo = MockRepository();
+    _repo.mockOnlyMethod();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'findById', receiver: 'this._repo' }),
+      );
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'mockOnlyMethod', receiver: '_repo' }),
+      );
+    });
+
+    it('end-to-end: does not resolve the shadowed call against the field type', () => {
+      const symbols = parseDart(`class Repository {
+  void save() {}
+}
+class MockRepository {
+  void save() {}
+}
+class Service {
+  final Repository _repo;
+  Service(this._repo);
+  void run() {
+    var _repo = MockRepository();
+    _repo.save();
+  }
+}`);
+      expect(symbols.calls).toContainEqual(
+        expect.objectContaining({ name: 'save', receiver: '_repo' }),
+      );
+      expect(symbols.typeMap.get('Service.run::_repo')).toEqual({
+        type: 'MockRepository',
+        confidence: 0.7,
       });
     });
   });

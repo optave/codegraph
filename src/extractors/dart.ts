@@ -422,9 +422,13 @@ function handleDartFormalParamTypeMap(node: TreeSitterNode, ctx: ExtractorOutput
  * dependent and diverge from the (order-independent) native engine. Both
  * options are out of scope for this fix — tracked in #2568.
  *
- * Deliberately does not attempt to detect a LOCAL VARIABLE shadowing a class
- * field of the same name (only a shadowing PARAMETER is handled elsewhere,
- * via `findDartSelectorReceiver`) — tracked separately as #2478.
+ * Seeds unconditionally, regardless of whether this local happens to shadow
+ * a same-named class field — `findDartSelectorReceiver` /
+ * `findEnclosingDartShadowingLocalName` (#2478) is what decides, at each
+ * call site, whether a bare receiver should resolve against this seeded
+ * local-scoped entry or the field's own class-scoped one; this function
+ * only needs to make the local's own type available for that later lookup
+ * to find.
  */
 function handleDartLocalVarTypeMap(node: TreeSitterNode, ctx: ExtractorOutput): void {
   const nameNode = node.childForFieldName('name');
@@ -611,6 +615,77 @@ function findEnclosingDartParamListForCall(node: TreeSitterNode): TreeSitterNode
   if (!sig) return null;
   const inner = findDartInnerSignatureNode(sig);
   return findChild(inner, 'formal_parameter_list');
+}
+
+/**
+ * Whether `name` is shadowed by a LOCAL VARIABLE declared earlier in an
+ * ancestor block of `node` — e.g. `_repo` in:
+ *
+ *   void run() {
+ *     var _repo = MockRepository();
+ *     _repo.mockOnlyMethod();   // shadowed: resolves the LOCAL, not the field
+ *   }
+ *
+ * (#2478, the local-variable counterpart to `collectDartParamNames`'s
+ * parameter-shadowing check.) A parameter is trivially in scope for the
+ * WHOLE function body with no ordering to consider, but a local variable's
+ * scope is block-bounded and position-dependent: a same-named local
+ * declared in a DIFFERENT (sibling) block, or later in the SAME block, must
+ * NOT be treated as shadowing.
+ *
+ * Walks up from `node` one enclosing `block` at a time. At each level, the
+ * child of that block on the path up from `node` is the "entry statement"
+ * — only that block's siblings BEFORE the entry statement's own index are
+ * checked: a local variable declared AFTER it in the same block is not yet
+ * in scope there, and one declared inside a DIFFERENT branch of an
+ * `if`/`for` lives in a sibling block this walk never visits at all, so it
+ * can't falsely match either. This verifies the ordering directly from the
+ * tree rather than assuming Dart's compiler already rejects a forward
+ * reference.
+ *
+ * Stops at the enclosing `function_body` boundary, mirroring
+ * `findEnclosingDartParamListForCall`'s identical discipline against
+ * crossing into an outer function/class scope.
+ *
+ * Deliberately does NOT walk into nested descendant blocks the call site
+ * itself isn't inside (e.g. a local declared inside an `if` whose block
+ * doesn't contain the call) — those are simply never visited by the
+ * ancestor walk, so this cannot over-detect shadowing there. Nor does it
+ * chase the rare, unusual-style comma-separated multi-declarator local
+ * (`var a, b = Foo();`) — tree-sitter-dart's grammar folds the second
+ * declarator into an oddly-shaped `initialized_identifier` sibling rather
+ * than a second `initialized_variable_definition`, and this only reads the
+ * primary `name` field. Missing that rare shape is a conservative
+ * under-detection (falls through to the pre-existing `this.`-prefixed
+ * behavior), not a wrong one — matching this file's own "don't guess"
+ * convention for every other case `findDartSelectorReceiver` leaves
+ * unhandled.
+ */
+function findEnclosingDartShadowingLocalName(node: TreeSitterNode, name: string): boolean {
+  let current: TreeSitterNode | null = node;
+  while (current) {
+    const ancestor: TreeSitterNode | null = current.parent;
+    if (!ancestor) return false;
+    if (ancestor.type === 'block') {
+      let idx = -1;
+      for (let i = 0; i < ancestor.childCount; i++) {
+        if (ancestor.child(i)?.id === current.id) {
+          idx = i;
+          break;
+        }
+      }
+      for (let i = idx - 1; i >= 0; i--) {
+        const sibling = ancestor.child(i);
+        if (sibling?.type !== 'local_variable_declaration') continue;
+        const decl = findChild(sibling, 'initialized_variable_definition');
+        const nameNode = decl?.childForFieldName('name');
+        if (nameNode?.text === name) return true;
+      }
+    }
+    if (ancestor.type === 'function_body') return false;
+    current = ancestor;
+  }
+  return false;
 }
 
 /**
@@ -1012,10 +1087,16 @@ function resolveDartSelectorCall(node: TreeSitterNode): DartSelectorCall | null 
  * parameter's own type instead — see that function's doc comment for why
  * the bare fallback key ALONE (i.e. simply not prefixing, with no
  * function-scoped seeding) is NOT sufficient to avoid resolving against the
- * field's type. Only a shadowing PARAMETER is detected this way — a
- * shadowing LOCAL VARIABLE declaration is a materially bigger, deliberately
- * out-of-scope problem tracked in #2478.
+ * field's type.
  *
+ * A shadowing LOCAL VARIABLE declaration (`var _repo = MockRepository();
+ * _repo.mockOnlyMethod();` inside a class whose own `_repo` field is a
+ * different type) is detected the same way, via
+ * `findEnclosingDartShadowingLocalName` (#2478) — see that function's doc
+ * comment for why block-scoping and declaration order can be checked
+ * directly from the tree without needing full control-flow analysis.
+ *
+
  * A `type_identifier` sibling (a class/type name used as a static-call
  * receiver, e.g. `MyClass.staticMethod()`) is deliberately left UNPREFIXED —
  * it never denotes a field access, so there is no class-scoped key for it
@@ -1045,6 +1126,9 @@ function findDartSelectorReceiver(methodSelector: TreeSitterNode): string | unde
   if (prevSibling?.type === 'identifier') {
     const paramList = findEnclosingDartParamListForCall(methodSelector);
     if (paramList && collectDartParamNames(paramList).has(prevSibling.text)) {
+      return prevSibling.text;
+    }
+    if (findEnclosingDartShadowingLocalName(methodSelector, prevSibling.text)) {
       return prevSibling.text;
     }
     return `this.${prevSibling.text}`;
