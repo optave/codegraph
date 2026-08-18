@@ -162,5 +162,27 @@ describe.skipIf(BASH4 === null)(
         .filter((l) => l.includes('Cross-fence variable: $FOO'));
       expect(crossFenceErrors).toHaveLength(1);
     });
+
+    // Greptile round 2 on PR #2574: destination extraction truncated at the
+    // FIRST `<`, so a destination placed AFTER the redirection (valid bash —
+    // `read -r <<< "hello" FOO` really does bind FOO) was silently dropped,
+    // and a later, legitimate reference to the freshly-bound value was
+    // falsely reported as a stale cross-fence leak.
+    it('does not false-flag a later reference when the destination follows the redirection', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'FOO=stale',
+        'read -r <<< "hello" FOO\necho "now fresh: $FOO"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).not.toContain('Cross-fence variable: $FOO');
+    });
+
+    it('still flags a same-line self-reference when input precedes the destination', () => {
+      const { stdout, ranSuccessfully } = runLint(['FOO=hello', 'read -r <<< "$FOO" FOO']);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
+      );
+    });
   },
 );

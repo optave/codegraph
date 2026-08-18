@@ -76,11 +76,27 @@ collect_assignments() {
     s="${s#*"${BASH_REMATCH[0]}"}"
   done
 }
+# ERE for ONE `read` input-redirection clause: 1-3 `<` characters (covers
+# `<`, `<<`, `<<<`), optional whitespace, then its target — a double-quoted
+# string (matched whole, so a space inside it can't split off a trailing
+# word) or a bare unquoted word. A single-quoted target is deliberately not
+# matched here: bash never expands `$var` inside single quotes, so it can
+# never hold a reference this file's cross-fence check cares about, and
+# excluding it avoids the quoting gymnastics of embedding a literal `'`
+# in an ERE built from bash string fragments.
+# Shared by extract_read_dest_vars (removes the clause so a destination
+# AFTER it survives extraction) and extract_read_input (captures just the
+# clause's target) so both agree on what "the redirection" is, regardless
+# of where it falls among read's other arguments (#2491 Greptile round 2:
+# `read -r <<< "$FOO" BAR` is valid bash — BAR is still a real destination
+# even though it comes after the redirection).
+READ_REDIRECT_RE='<{1,3}[[:space:]]*("[^"]*"|[^[:space:]]+)'
 # Extracts the destination variable name(s) actually bound by a `read ...`
 # command on a line (e.g. `read -r VAR1 VAR2`) — one per output line via
 # stdout — stripping everything that ISN'T a real destination first:
 #   - a trailing command on the same line (`; do`)
-#   - the input source (`< file`, `<<< "$X"` here-strings)
+#   - the input source (`< file`, `<<< "$X"` here-strings), from anywhere
+#     in the argument list, not just a trailing truncation
 #   - quoted option arguments (`-p "prompt text"`, which may contain
 #     arbitrary uppercase words that aren't destinations at all)
 #   - a value-taking flag's own argument (`-t 5`, `-u FD`, `-d ':'`,
@@ -98,7 +114,7 @@ extract_read_dest_vars() {
   [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]] || return 0
   local read_args="${BASH_REMATCH[2]}"
   read_args="${read_args%%;*}"
-  read_args="${read_args%%<*}"
+  read_args=$(printf '%s' "$read_args" | sed -E "s/${READ_REDIRECT_RE}//")
   read_args=$(printf '%s' "$read_args" | sed -E 's/"[^"]*"//g' | sed -E "s/'[^']*'//g")
   read_args=$(printf '%s' "$read_args" | sed -E 's/-[a-zA-Z]*[ptnNdui][[:space:]]+[^[:space:]]+//g')
   printf '%s' "$read_args" | grep -oE '(^|[^A-Za-z0-9_$])[A-Z][A-Z0-9_]+' | sed -E 's/^[^A-Za-z0-9_]//'
@@ -114,17 +130,17 @@ is_read_dest_of_line() {
   done < <(extract_read_dest_vars "$line")
   return 1
 }
-# Extracts the INPUT-supplying portion of a `read` line — the mirror image
-# of extract_read_dest_vars's "%%<*" truncation, keeping everything from the
-# first standalone `<` onward (`< file`, `<<< "value"`) instead of discarding
-# it. Empty output if the line has no `<` at all (e.g. `read -p "..." VAR`).
+# Extracts just the TARGET of a `read` line's input redirection (e.g. the
+# `"$FOO"` in `read -r BAR <<< "$FOO"`), using the same READ_REDIRECT_RE as
+# extract_read_dest_vars so the two agree on where the redirection is.
+# Empty output if the line has no redirection at all (e.g. `read -p "..." VAR`).
 extract_read_input() {
   local line="$1"
   [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]] || return 0
   local read_args="${BASH_REMATCH[2]}"
   read_args="${read_args%%;*}"
-  [[ "$read_args" == *'<'* ]] || return 0
-  printf '%s' "${read_args#*<}"
+  [[ "$read_args" =~ $READ_REDIRECT_RE ]] || return 0
+  printf '%s' "${BASH_REMATCH[1]}"
 }
 # Whether $var (as $var, not the bare destination name) appears in this
 # line's own `read` input clause — the here-string/redirect operand, not
