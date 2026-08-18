@@ -370,6 +370,27 @@ function handleDartFormalParamTypeMap(node: TreeSitterNode, ctx: ExtractorOutput
  * constructor type to seed, mirroring `handleDartFieldDeclTypeMap`'s
  * identical "no explicit type" no-op.
  *
+ * Also requires the callee to be capitalized (Greptile finding on this PR):
+ * unlike JS/TS's `new` keyword, Dart lets a constructor call omit `new`
+ * entirely, so `Foo()` and `foo()` are syntactically identical
+ * `call_expression`s at this position — tree-sitter-dart gives no node-kind
+ * signal to tell "constructor call" apart from "ordinary function call that
+ * happens to return an object" (confirmed: even a genuine `UserRepository()`
+ * constructor call parses its callee as a plain `identifier`, not
+ * `type_identifier`, in this position). Without this gate, an ordinary
+ * factory FUNCTION call (`var svc = makeService();`) would be seeded as if
+ * `svc`'s type were the literal function name `makeService`, so a later
+ * `svc.createUser()` would search for the nonexistent `makeService.
+ * createUser` instead of falling back to an untyped lookup. Gating on
+ * capitalization matches Dart's own type-naming convention (enforced by the
+ * language's default `camel_case_types` lint) and this file's own existing
+ * precedent for the identical ambiguity in JS/TS (`/^[A-Z]/` in
+ * `handleJsxElementRef` / `extractCallArgumentIdentifierRefs`) — deliberately
+ * a plain ASCII `/^[A-Z]/` test, not a `toLowerCase()`-based Unicode
+ * comparison, so the native/Rust mirror can use `is_ascii_uppercase()` and
+ * agree byte-for-byte without the astral-plane/titlecase divergence risk
+ * #2396 already found in the fuller Unicode-aware heuristic.
+ *
  * Deliberately does not attempt to detect a LOCAL VARIABLE shadowing a class
  * field of the same name (only a shadowing PARAMETER is handled elsewhere,
  * via `findDartSelectorReceiver`) — tracked separately as #2478.
@@ -382,6 +403,7 @@ function handleDartLocalVarTypeMap(node: TreeSitterNode, ctx: ExtractorOutput): 
   if (valueNode?.type === 'call_expression') {
     const fnNode = valueNode.childForFieldName('function');
     if (!fnNode || (fnNode.type !== 'identifier' && fnNode.type !== 'type_identifier')) return;
+    if (!/^[A-Z]/.test(fnNode.text)) return;
     const enclosingQualifier = findEnclosingDartFunctionQualifierForBody(node);
     setScopedTypeMapEntry(ctx.typeMap, enclosingQualifier, nameNode.text, fnNode.text, 1.0);
     return;
@@ -399,7 +421,8 @@ function handleDartLocalVarTypeMap(node: TreeSitterNode, ctx: ExtractorOutput): 
     if (
       callee &&
       (callee.type === 'identifier' || callee.type === 'type_identifier') &&
-      callee.id !== nameNode.id
+      callee.id !== nameNode.id &&
+      /^[A-Z]/.test(callee.text)
     ) {
       const enclosingQualifier = findEnclosingDartFunctionQualifierForBody(node);
       setScopedTypeMapEntry(ctx.typeMap, enclosingQualifier, nameNode.text, callee.text, 1.0);

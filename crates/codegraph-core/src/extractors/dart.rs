@@ -904,18 +904,45 @@ fn find_enclosing_dart_function_qualifier_for_body(node: &Node, source: &[u8]) -
 /// tree-sitter-dart's two grammar versions structure this differently, same
 /// class of divergence `handle_dart_constructor_call` already documents:
 ///
-/// - Native (crates.io tree-sitter-dart 0.2): a clean
-///   `value: (call_expression function: (identifier) arguments: (...))`.
-/// - WASM (npm tree-sitter-dart 1.x): NO `value` field at all — the callee is
-///   a bare `identifier`/`type_identifier` SIBLING immediately followed by a
-///   `selector` node carrying the call's `argument_part` — exactly Layout C,
-///   the same shape `resolve_dart_selector_call`'s own doc comment documents
-///   for `var w = Foo();` / `helper();`.
+/// - Native (crates.io tree-sitter-dart 0.2): a clean single `value:` field
+///   pointing straight at a `(call_expression function: (identifier)
+///   arguments: (...))` — the only shape this Rust extractor ever actually
+///   parses.
+/// - WASM (npm tree-sitter-dart 1.x, mirrored here only so both engines'
+///   logic stay in lockstep — this crate never parses this grammar itself):
+///   `value:` is a field marker on TWO different children of
+///   `initialized_variable_definition` — the bare callee identifier AND the
+///   trailing `selector` node carrying the call's `argument_part` — so the
+///   WASM-side lookup falls through to a sibling scan for the `selector`
+///   node, then takes ITS immediately preceding sibling as the callee —
+///   exactly Layout C, the same shape `resolve_dart_selector_call`'s own doc
+///   comment documents for `var w = Foo();` / `helper();`.
 ///
 /// No-ops for any other initializer shape (a literal, a bare identifier
 /// reference, an `await` expression, …) — there is no statically-knowable
-/// constructor type to seed. Mirrors `handleDartLocalVarTypeMap` in
-/// `src/extractors/dart.ts` — see that function's doc comment for why a
+/// constructor type to seed.
+///
+/// Also requires the callee to be capitalized (Greptile finding on this PR):
+/// unlike JS/TS's `new` keyword, Dart lets a constructor call omit `new`
+/// entirely, so `Foo()` and `foo()` are syntactically identical
+/// `call_expression`s at this position — tree-sitter-dart gives no node-kind
+/// signal to tell "constructor call" apart from "ordinary function call that
+/// happens to return an object" (confirmed: even a genuine `UserRepository()`
+/// constructor call parses its callee as a plain `identifier`, not
+/// `type_identifier`, in this position). Without this gate, an ordinary
+/// factory FUNCTION call (`var svc = makeService();`) would be seeded as if
+/// `svc`'s type were the literal function name `makeService`, so a later
+/// `svc.createUser()` would search for the nonexistent
+/// `makeService.createUser` instead of falling back to an untyped lookup.
+/// Gating on capitalization matches Dart's own type-naming convention
+/// (enforced by the language's default `camel_case_types` lint) and this
+/// crate's own existing precedent for the identical ambiguity in
+/// `javascript.rs` (`starts_with(|c: char| c.is_ascii_uppercase())`) —
+/// deliberately a plain ASCII check, not a full-Unicode-scalar
+/// `char::is_uppercase()`, so this agrees byte-for-byte with TS's `/^[A-Z]/`
+/// without the astral-plane/titlecase divergence risk #2396 already found
+/// in the fuller Unicode-aware heuristic. Mirrors `handleDartLocalVarTypeMap`
+/// in `src/extractors/dart.ts` — see that function's doc comment for why a
 /// LOCAL VARIABLE shadowing a class field of the same name is deliberately
 /// out of scope here (tracked separately as #2478).
 fn handle_dart_local_var_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
@@ -934,6 +961,9 @@ fn handle_dart_local_var_type_map(node: &Node, source: &[u8], symbols: &mut File
             return;
         };
         if fn_node.kind() != "identifier" && fn_node.kind() != "type_identifier" {
+            return;
+        }
+        if !node_text(&fn_node, source).starts_with(|c: char| c.is_ascii_uppercase()) {
             return;
         }
         let enclosing_qualifier = find_enclosing_dart_function_qualifier_for_body(node, source);
@@ -961,6 +991,7 @@ fn handle_dart_local_var_type_map(node: &Node, source: &[u8], symbols: &mut File
         if let Some(callee) = node.child(i - 1) {
             if (callee.kind() == "identifier" || callee.kind() == "type_identifier")
                 && callee.id() != name_node.id()
+                && node_text(&callee, source).starts_with(|c: char| c.is_ascii_uppercase())
             {
                 let enclosing_qualifier =
                     find_enclosing_dart_function_qualifier_for_body(node, source);
@@ -1764,6 +1795,24 @@ mod tests {
                     .iter()
                     .all(|e| e.name != "main::y" && e.name != "y"),
                 "must not seed a type for a bare-identifier initializer; got: {:?}",
+                s.type_map
+            );
+        }
+
+        // Greptile finding on PR #2567: Dart lets a constructor call omit
+        // `new`, so `makeService()` (an ordinary lowercase factory FUNCTION)
+        // and `UserService()` (a genuine constructor call) are
+        // indistinguishable `call_expression`s. Without the capitalization
+        // gate this handler would wrongly seed `svc`'s type as the literal
+        // function name `makeService`.
+        #[test]
+        fn does_not_seed_for_a_lowercase_bare_function_call_initializer() {
+            let s = parse_dart("void main() {\n  var svc = makeService();\n}");
+            assert!(
+                s.type_map
+                    .iter()
+                    .all(|e| e.name != "main::svc" && e.name != "svc"),
+                "must not seed a type from a lowercase factory-function callee; got: {:?}",
                 s.type_map
             );
         }

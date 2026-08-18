@@ -550,6 +550,19 @@ void b() {
       expect(symbols.typeMap.has('y')).toBe(false);
     });
 
+    // Greptile finding on PR #2567: Dart lets a constructor call omit `new`,
+    // so `makeService()` (an ordinary lowercase factory FUNCTION) and
+    // `UserService()` (a genuine constructor call) are indistinguishable
+    // call_expressions. Without the capitalization gate this would wrongly
+    // seed svc's type as the literal function name `makeService`.
+    it('does not seed for a lowercase bare function-call initializer', () => {
+      const symbols = parseDart(`void main() {
+  var svc = makeService();
+}`);
+      expect(symbols.typeMap.has('main::svc')).toBe(false);
+      expect(symbols.typeMap.has('svc')).toBe(false);
+    });
+
     it('seeds a class-method-scoped entry too', () => {
       const symbols = parseDart(`class Controller {
   void run() {
