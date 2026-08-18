@@ -248,4 +248,4 @@ This repo uses [Greptile](https://greptile.com) for automated PR reviews. After 
 
 ## Node Version
 
-Requires Node >= 22.12.0.
+Requires Node >= 22.12.0. CI (`.github/workflows/ci.yml`) pins Node 22 everywhere; `.nvmrc` mirrors that. If your local Node major version diverges from CI's — `npm run doctor` (also run automatically as `pretest`) warns loudly when it does — treat a full local `npm test` run as untrustworthy for cross-checking against CI: native-addon/V8 behavioral drift between major versions can produce a large, unrelated-looking wall of failures that aren't real regressions. Cross-check any suspicious local failure against CI (or an untouched `origin/main` checkout in the same local environment) before treating it as caused by your change.

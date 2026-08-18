@@ -22,6 +22,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { LANGUAGE_REGISTRY } from '../../src/domain/parser.js';
 import {
   checkBetterSqlite3Abi,
+  checkNodeVersion,
   checkWasmGrammars,
   findMissingGrammars,
   parseAbiMismatchError,
@@ -294,17 +295,22 @@ describe('runDoctorChecks', () => {
     expect(report.ok).toBe(true);
   });
 
-  it('runs both real checks against the real environment and returns a well-formed report', () => {
+  it('runs all real checks against the real environment and returns a well-formed report', () => {
     // Uses the real defaults (real require('better-sqlite3'), real grammars/
-    // directory) — by the time this test runs, `pretest` has already gated
-    // `npm test` on a healthy environment, but this asserts shape rather than
-    // hard-coding a specific status so a single-file run on a mid-repair
-    // machine doesn't fail on an unrelated assertion.
+    // directory, real .nvmrc) — by the time this test runs, `pretest` has
+    // already gated `npm test` on a healthy environment, but this asserts
+    // shape rather than hard-coding a specific status so a single-file run
+    // on a mid-repair machine (or one whose Node version doesn't match
+    // .nvmrc) doesn't fail on an unrelated assertion.
     const report = runDoctorChecks();
 
     expect(typeof report.ok).toBe('boolean');
-    expect(report.checks).toHaveLength(2);
-    expect(report.checks.map((c) => c.id)).toEqual(['better-sqlite3-abi', 'wasm-grammars']);
+    expect(report.checks).toHaveLength(3);
+    expect(report.checks.map((c) => c.id)).toEqual([
+      'better-sqlite3-abi',
+      'wasm-grammars',
+      'node-version',
+    ]);
     for (const check of report.checks) {
       expect(['ok', 'warn', 'fail']).toContain(check.status);
       expect(typeof check.label).toBe('string');
@@ -312,5 +318,56 @@ describe('runDoctorChecks', () => {
       expect(check.detail.length).toBeGreaterThan(0);
     }
     expect(report.ok).toBe(report.checks.every((c) => c.status !== 'fail'));
+  });
+});
+
+describe('checkNodeVersion', () => {
+  it('reports ok when no .nvmrc is present', () => {
+    const result = checkNodeVersion(() => null, 'v22.12.0');
+    expect(result.status).toBe('ok');
+    expect(result.id).toBe('node-version');
+    expect(result.detail).toContain('no .nvmrc');
+  });
+
+  it('reports ok when .nvmrc content is not a plain version number', () => {
+    const result = checkNodeVersion(() => 'lts/*\n', 'v22.12.0');
+    expect(result.status).toBe('ok');
+    expect(result.detail).toContain('not a plain version number');
+  });
+
+  it('reports ok when the running major matches .nvmrc exactly', () => {
+    const result = checkNodeVersion(() => '22\n', 'v22.12.0');
+    expect(result.status).toBe('ok');
+    expect(result.detail).toContain('matches .nvmrc');
+  });
+
+  it('reports ok when .nvmrc pins a full semver whose major matches', () => {
+    const result = checkNodeVersion(() => '22.12.0\n', 'v22.4.1');
+    expect(result.status).toBe('ok');
+  });
+
+  it('tolerates a leading v and a trailing comment in .nvmrc', () => {
+    const result = checkNodeVersion(() => 'v22 # pinned to match CI\n', 'v22.12.0');
+    expect(result.status).toBe('ok');
+  });
+
+  // Regression test for issue #2521: this exact scenario (Node 26 installed
+  // locally, CI pins Node 22) produced 200+ unrelated-looking local test
+  // failures that reproduced identically on an untouched origin/main.
+  it('warns — never fails — when the running major does not match .nvmrc', () => {
+    const result = checkNodeVersion(() => '22\n', 'v26.4.0');
+    expect(result.status).toBe('warn');
+    expect(result.status).not.toBe('fail');
+    expect(result.detail).toContain('v26.4.0');
+    expect(result.detail).toContain('.nvmrc pins 22');
+    expect(result.detail).toContain('cross-check against CI');
+  });
+
+  it('a Node-version warning does not flip the overall report unhealthy', () => {
+    const report = runDoctorChecks([
+      { id: 'a', label: 'A', status: 'ok', detail: 'fine' },
+      checkNodeVersion(() => '22\n', 'v26.4.0'),
+    ]);
+    expect(report.ok).toBe(true);
   });
 });

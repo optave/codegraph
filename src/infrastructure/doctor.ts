@@ -41,9 +41,13 @@
  * This module only detects — it never mutates the environment. `scripts/doctor.ts`
  * is the CLI entry point that also knows how to *fix* what this module reports.
  */
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { LanguageRegistryEntry } from '../types.js';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const _require = createRequire(import.meta.url);
 
@@ -313,17 +317,99 @@ export function checkWasmGrammars(
 }
 
 /**
- * Run every doctor check and aggregate the result. Fast and read-only — safe
- * to call frequently (e.g. from a `pretest` hook) since neither check spawns
- * a subprocess or mutates the environment.
+ * Parse a `.nvmrc`-style file's content into a Node major version number.
+ * Not exported — only `checkNodeVersion`'s default reader produces this
+ * input; tests exercise it indirectly via that check's injectable reader.
+ * Tolerates a leading `v`, a full semver (`22.12.0`), trailing whitespace,
+ * and a trailing comment. Returns null for a non-numeric value (e.g. an
+ * `lts/*` alias) rather than guessing — this check only ever warns, so a
+ * silently-wrong comparison would be worse than skipping it.
+ */
+function parseNvmrcMajor(content: string): number | null {
+  const firstLine = content.split('\n')[0]?.trim() ?? '';
+  const versionPart = firstLine.split('#')[0]?.trim() ?? '';
+  const match = /^v?(\d+)/.exec(versionPart);
+  return match ? Number(match[1]) : null;
+}
+
+/** Read `.nvmrc` from the repo root, if present. Returns null when absent or unreadable. */
+function readNvmrc(): string | null {
+  try {
+    return readFileSync(join(REPO_ROOT, '.nvmrc'), 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Warn (never fail) when the running Node major version doesn't match
+ * `.nvmrc` (issue #2521): a full local `npm test` run on a Node version CI
+ * doesn't pin can produce a large, unrelated-looking wall of failures from
+ * native-addon/V8 behavioral drift, not actual regressions — wasting time
+ * triaging phantom failures or masking a real one in the noise. This is
+ * purely informational (a mismatch doesn't mean the environment is broken,
+ * just that local results shouldn't be trusted over CI's), so it only ever
+ * warns, matching the "missing optional grammar" precedent above — never
+ * blocks `pretest`/`npm test`.
  *
- * `checks` is injectable (defaulting to the two real checks) so the
+ * `readFile`/`currentVersion` are injectable so tests can simulate a
+ * missing `.nvmrc`, an unparseable one, a match, and a mismatch without
+ * touching the real file or `process.version`.
+ */
+export function checkNodeVersion(
+  readFile: () => string | null = readNvmrc,
+  currentVersion: string = process.version,
+): DoctorCheck {
+  const id = 'node-version';
+  const label = 'Node version vs .nvmrc';
+
+  const nvmrcContent = readFile();
+  if (nvmrcContent === null) {
+    return { id, label, status: 'ok', detail: 'no .nvmrc present — nothing to compare against' };
+  }
+
+  const expectedMajor = parseNvmrcMajor(nvmrcContent);
+  if (expectedMajor === null) {
+    return {
+      id,
+      label,
+      status: 'ok',
+      detail: `.nvmrc content is not a plain version number (${nvmrcContent.trim()}) — skipping comparison`,
+    };
+  }
+
+  const currentMajor = Number(/^v?(\d+)/.exec(currentVersion)?.[1]);
+  if (currentMajor === expectedMajor) {
+    return { id, label, status: 'ok', detail: `running Node ${currentVersion}, matches .nvmrc` };
+  }
+
+  return {
+    id,
+    label,
+    status: 'warn',
+    detail:
+      `running Node ${currentVersion}, but .nvmrc pins ${expectedMajor} — a full local test ` +
+      `run can show unrelated-looking failures from native-addon/V8 drift between major ` +
+      `versions; cross-check against CI (which pins ${expectedMajor}) before treating them as regressions`,
+  };
+}
+
+/**
+ * Run every doctor check and aggregate the result. Fast and read-only — safe
+ * to call frequently (e.g. from a `pretest` hook) since no check spawns a
+ * subprocess or mutates the environment.
+ *
+ * `checks` is injectable (defaulting to the three real checks) so the
  * ok/'fail'-only aggregation rule — a 'warn' must never flip the overall
  * report unhealthy — can be unit tested directly with fake check results,
- * independent of the real native binary or grammars/ directory.
+ * independent of the real native binary, grammars/ directory, or Node version.
  */
 export function runDoctorChecks(
-  checks: readonly DoctorCheck[] = [checkBetterSqlite3Abi(), checkWasmGrammars()],
+  checks: readonly DoctorCheck[] = [
+    checkBetterSqlite3Abi(),
+    checkWasmGrammars(),
+    checkNodeVersion(),
+  ],
 ): DoctorReport {
   return { ok: checks.every((c) => c.status !== 'fail'), checks: [...checks] };
 }
