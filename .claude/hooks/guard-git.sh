@@ -332,6 +332,19 @@ if echo "$NCOMMAND" | grep -qE '(^|[[:space:]]|&&[[:space:]]*)git[[:space:]]+com
   # Resolve the target worktree so the edit log and staged-file listing come
   # from the same repo the commit targets (e.g. `git -C <pr-worktree> commit`).
   WORK_DIR=$(detect_work_dir commit)
+
+  # No explicit -C/cd in the command text — fall back to the Bash tool's
+  # actual cwd for this call (reported by the harness on every PreToolUse
+  # payload), NOT the hook process's own ambient cwd. A bare
+  # `git commit <files> -m "msg"` relying on a `cd` from an earlier, separate
+  # tool call has no directory hint in $COMMAND at all; substituting the
+  # hook's own cwd there resolves the edit-log check against a completely
+  # unrelated repo (#2526, the same root cause #2386 fixed for
+  # validate_branch_name).
+  if [ -z "$WORK_DIR" ] && [ -n "$HOOK_CWD" ] && [ -d "$HOOK_CWD" ]; then
+    WORK_DIR="$HOOK_CWD"
+  fi
+
   MERGE_IN_PROGRESS=false
   if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
     PROJECT_DIR=$(git -C "$WORK_DIR" rev-parse --show-toplevel 2>/dev/null) || PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
