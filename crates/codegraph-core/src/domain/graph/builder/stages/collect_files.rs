@@ -351,11 +351,20 @@ fn path_has_ignored_segment(rel_path: &str, ignore_set: &HashSet<String>) -> boo
     let normalized = rel_path.replace('\\', "/");
     let mut parts = normalized.split('/').peekable();
     while let Some(seg) = parts.next() {
+        let is_dir_segment = parts.peek().is_some();
+        // Mirrors collect_files' filter_entry closure exactly: both the
+        // ignore_set match and the hidden-directory rule apply only to
+        // directory segments there, never to the final filename (Greptile
+        // review on PR #2576 for #2512: an earlier version of this check
+        // matched every segment including the filename, which could drop a
+        // real source file the full walk would keep).
+        if !is_dir_segment {
+            continue;
+        }
         if ignore_set.contains(seg) {
             return true;
         }
-        let is_dir_segment = parts.peek().is_some();
-        if is_dir_segment && seg.starts_with('.') && seg != "." {
+        if seg.starts_with('.') && seg != "." {
             return true;
         }
     }
@@ -740,6 +749,24 @@ mod tests {
         assert!(
             !names.contains("thing.go"),
             "a config-level ignore_dirs entry must be re-applied by the fast path too"
+        );
+    }
+
+    // Greptile review on PR #2576 for #2512: the ignore-set match (and the
+    // hidden-directory rule) must apply only to DIRECTORY segments, exactly
+    // like collect_files' own filter_entry closure — never to the final
+    // filename. A file whose bare name happens to equal an ignore-dir entry
+    // must still be collected.
+    #[test]
+    fn fast_collect_does_not_drop_a_file_whose_name_matches_an_ignore_dir_entry() {
+        let root = "/project";
+        let db_files = vec!["src/vendor".to_string()];
+
+        let result = try_fast_collect(root, &db_files, &[], &[], &[], &[], &[]);
+        assert_eq!(
+            result.files.len(),
+            1,
+            "a file literally named 'vendor' is not a directory and must survive"
         );
     }
 
