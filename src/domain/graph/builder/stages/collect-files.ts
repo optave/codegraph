@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { debug, info } from '../../../../infrastructure/logger.js';
-import { normalizePath } from '../../../../shared/constants.js';
+import { buildIgnoreSet, normalizePath } from '../../../../shared/constants.js';
 import { compileGlobs, matchesAny } from '../../../../shared/globs.js';
 import { readJournal } from '../../journal.js';
 import type { PipelineContext } from '../context.js';
@@ -18,6 +18,27 @@ import {
   passesIncludeExclude,
   readGitignorePatterns,
 } from '../helpers.js';
+
+/**
+ * Whether any directory segment of `relPath` is ignored — mirrors the full
+ * walk's per-entry `shouldIgnore`-style check (IGNORE_DIRS name match, or a
+ * hidden directory other than `.` itself), but applied to an already-flat
+ * relative path from the DB/journal instead of a live directory walk
+ * (issue #2512: the incremental fast path never re-applied ignore-dir
+ * filtering, so a file indexed before a directory was added to the ignore
+ * list — e.g. `target` in #2374 — survived every subsequent incremental
+ * rebuild indefinitely).
+ */
+function pathHasIgnoredSegment(relPath: string, ignoreSet: ReadonlySet<string>): boolean {
+  const segments = relPath.split('/');
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i] ?? '';
+    if (ignoreSet.has(seg)) return true;
+    const isDirSegment = i < segments.length - 1;
+    if (isDirSegment && seg.startsWith('.') && seg !== '.') return true;
+  }
+  return false;
+}
 
 /**
  * Reconstruct allFiles from DB file_hashes + journal deltas.
@@ -83,15 +104,21 @@ function tryFastCollect(
   //    config changes (paths from the DB were collected under older config).
   //    Also apply gitignore patterns so the incremental fast path is consistent
   //    with the full filesystem walk (which calls readGitignorePatterns too).
+  //    Also re-apply IGNORE_DIRS (+ config.ignoreDirs/ignoreAdditionalDirs) so a
+  //    file indexed before a directory joined the ignore list self-heals on the
+  //    next incremental build rather than surviving indefinitely (issue #2512).
   const includeRegexes = compileGlobs(config?.include);
   const excludeRegexes = compileGlobs(config?.exclude);
   const hasGlobFilters = includeRegexes.length > 0 || excludeRegexes.length > 0;
   const gitignoreRegexes = readGitignorePatterns(rootDir);
+  const extraIgnoreDirs = [...(config?.ignoreDirs ?? []), ...(config?.ignoreAdditionalDirs ?? [])];
+  const ignoreSet = buildIgnoreSet(extraIgnoreDirs.length ? extraIgnoreDirs : undefined);
 
   const files: string[] = [];
   const directories = new Set<string>();
   for (const relPath of fileSet) {
     const normRel = normalizePath(relPath);
+    if (pathHasIgnoredSegment(normRel, ignoreSet)) continue;
     if (gitignoreRegexes.length > 0 && matchesAny(gitignoreRegexes, normRel)) continue;
     if (hasGlobFilters && !passesIncludeExclude(normRel, includeRegexes, excludeRegexes)) continue;
     const absPath = path.join(rootDir, relPath);

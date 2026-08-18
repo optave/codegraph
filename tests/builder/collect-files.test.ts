@@ -5,9 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { initSchema, openDb } from '../../src/db/index.js';
 import { PipelineContext } from '../../src/domain/graph/builder/context.js';
 import { readGitignorePatterns } from '../../src/domain/graph/builder/helpers.js';
 import { collectFiles } from '../../src/domain/graph/builder/stages/collect-files.js';
+import { appendJournalEntries, writeJournalHeader } from '../../src/domain/graph/journal.js';
 
 let tmpDir: string;
 
@@ -73,6 +75,62 @@ describe('collectFiles stage', () => {
     expect(ctx.allFiles).toHaveLength(0);
     expect(ctx.parseChanges).toHaveLength(0);
     expect(ctx.removed).toContain('nonexistent.js');
+  });
+
+  // Regression test for issue #2512: the incremental fast path
+  // (tryFastCollect) reconstructs allFiles purely from file_hashes + journal
+  // deltas, never re-applying IGNORE_DIRS — so a file that was indexed
+  // before its directory joined the ignore list (e.g. `vendor`) survives
+  // every subsequent incremental rebuild, unlike the full filesystem walk.
+  it('fast path re-applies IGNORE_DIRS to file_hashes rows from before a dir was ignored', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-stage-collect-fastpath-'));
+    const dbDir = path.join(dir, '.codegraph');
+    fs.mkdirSync(dbDir, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'vendor'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'a.ts'), 'export const a = 1;');
+    fs.writeFileSync(path.join(dir, 'vendor', 'stale.go'), 'package vendor');
+
+    const db = openDb(path.join(dbDir, 'graph.db'));
+    initSchema(db);
+    // Simulate a file_hashes row that predates `vendor` joining IGNORE_DIRS
+    // (or that slipped in through any other means) — the exact scenario
+    // #2512 describes.
+    db.prepare('INSERT INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)').run(
+      'vendor/stale.go',
+      'deadbeef',
+      1,
+      1,
+    );
+    db.prepare('INSERT INTO file_hashes (file, hash, mtime, size) VALUES (?, ?, ?, ?)').run(
+      'src/a.ts',
+      'cafebabe',
+      1,
+      1,
+    );
+
+    // A journal with entries proves the watcher was active — required for
+    // tryFastCollect to apply at all (an empty-but-valid journal falls
+    // through to the full walk, which would mask this bug).
+    writeJournalHeader(dbDir, Date.now());
+    appendJournalEntries(dbDir, [{ file: 'src/a.ts' }]);
+
+    const ctx = new PipelineContext();
+    ctx.rootDir = dir;
+    ctx.dbPath = path.join(dbDir, 'graph.db');
+    ctx.db = db;
+    ctx.opts = {};
+    ctx.incremental = true;
+    ctx.forceFullRebuild = false;
+    ctx.config = {};
+
+    await collectFiles(ctx);
+
+    const relFiles = ctx.allFiles.map((f) => path.relative(dir, f).replace(/\\/g, '/'));
+    expect(relFiles).toContain('src/a.ts');
+    expect(relFiles).not.toContain('vendor/stale.go');
+
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

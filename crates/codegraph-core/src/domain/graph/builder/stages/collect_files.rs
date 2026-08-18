@@ -339,11 +339,35 @@ pub fn collect_files(
     CollectResult { files, directories }
 }
 
+/// Whether any directory segment of `rel_path` is ignored — mirrors
+/// `collect_files`' per-entry `filter_entry` check (an `ignore_set` name
+/// match, or a hidden directory other than `.` itself), but applied to an
+/// already-flat relative path from the DB/journal instead of a live
+/// directory walk (issue #2512: the incremental fast path never re-applied
+/// ignore-dir filtering, so a file indexed before a directory was added to
+/// the ignore list — e.g. `target` in #2374 — survived every subsequent
+/// incremental rebuild indefinitely).
+fn path_has_ignored_segment(rel_path: &str, ignore_set: &HashSet<String>) -> bool {
+    let normalized = rel_path.replace('\\', "/");
+    let mut parts = normalized.split('/').peekable();
+    while let Some(seg) = parts.next() {
+        if ignore_set.contains(seg) {
+            return true;
+        }
+        let is_dir_segment = parts.peek().is_some();
+        if is_dir_segment && seg.starts_with('.') && seg != "." {
+            return true;
+        }
+    }
+    false
+}
+
 /// Reconstruct file list from DB file_hashes + journal deltas (fast path).
 ///
 /// Applies `include_patterns` / `exclude_patterns` so incremental builds honor
 /// config changes — the paths in the DB were collected under an earlier config
-/// that may have had different glob filters.
+/// that may have had different glob filters. Also re-applies `extra_ignore_dirs`
+/// merged with `DEFAULT_IGNORE_DIRS` (issue #2512), matching `collect_files`.
 ///
 /// Returns `None` when the fast path isn't applicable.
 pub fn try_fast_collect(
@@ -351,6 +375,7 @@ pub fn try_fast_collect(
     db_files: &[String],
     journal_changed: &[String],
     journal_removed: &[String],
+    extra_ignore_dirs: &[String],
     include_patterns: &[String],
     exclude_patterns: &[String],
 ) -> CollectResult {
@@ -364,6 +389,12 @@ pub fn try_fast_collect(
         file_set.insert(changed.clone());
     }
 
+    let ignore_set: HashSet<String> = DEFAULT_IGNORE_DIRS
+        .iter()
+        .map(|s| s.to_string())
+        .chain(extra_ignore_dirs.iter().cloned())
+        .collect();
+
     let include_set = build_glob_set(include_patterns);
     let exclude_set = build_glob_set(exclude_patterns);
     let has_filters = include_set.is_some() || exclude_set.is_some();
@@ -374,6 +405,9 @@ pub fn try_fast_collect(
     let mut directories = HashSet::new();
 
     for rel_path in &file_set {
+        if path_has_ignored_segment(rel_path, &ignore_set) {
+            continue;
+        }
         if has_filters {
             let norm = rel_path.replace('\\', "/");
             if !passes_include_exclude(&norm, include_set.as_deref(), exclude_set.as_deref()) {
@@ -642,7 +676,7 @@ mod tests {
         let changed = vec!["src/d.ts".to_string()];
         let removed = vec!["src/b.ts".to_string()];
 
-        let result = try_fast_collect(root, &db_files, &changed, &removed, &[], &[]);
+        let result = try_fast_collect(root, &db_files, &changed, &removed, &[], &[], &[]);
         assert_eq!(result.files.len(), 3); // a, c, d
         let names: HashSet<&str> = result
             .files
@@ -653,6 +687,60 @@ mod tests {
         assert!(!names.contains("b.ts"));
         assert!(names.contains("c.ts"));
         assert!(names.contains("d.ts"));
+    }
+
+    // Regression test for issue #2512: the fast path reconstructs its file
+    // set purely from file_hashes + journal deltas, so a file indexed
+    // before a directory joined the ignore list (e.g. DEFAULT_IGNORE_DIRS'
+    // own `target`, or a config-level ignore_dirs override) survived every
+    // subsequent incremental rebuild indefinitely, since only the full walk
+    // applied ignore-dir filtering.
+    #[test]
+    fn fast_collect_re_applies_default_ignore_dirs() {
+        let root = "/project";
+        let db_files = vec![
+            "src/a.ts".to_string(),
+            "target/debug/build.rs".to_string(),
+            "node_modules/pkg/index.js".to_string(),
+        ];
+
+        let result = try_fast_collect(root, &db_files, &[], &[], &[], &[], &[]);
+        let names: HashSet<&str> = result
+            .files
+            .iter()
+            .map(|f| f.rsplit('/').next().unwrap_or(f))
+            .collect();
+        assert!(names.contains("a.ts"));
+        assert!(
+            !names.contains("build.rs"),
+            "target/ is in DEFAULT_IGNORE_DIRS and must be filtered by the fast path too"
+        );
+        assert!(
+            !names.contains("index.js"),
+            "node_modules/ is in DEFAULT_IGNORE_DIRS and must be filtered by the fast path too"
+        );
+    }
+
+    #[test]
+    fn fast_collect_re_applies_config_ignore_dirs() {
+        let root = "/project";
+        let db_files = vec![
+            "src/a.ts".to_string(),
+            "vendor_extra/pkg/thing.go".to_string(),
+        ];
+        let extra_ignore = vec!["vendor_extra".to_string()];
+
+        let result = try_fast_collect(root, &db_files, &[], &[], &extra_ignore, &[], &[]);
+        let names: HashSet<&str> = result
+            .files
+            .iter()
+            .map(|f| f.rsplit('/').next().unwrap_or(f))
+            .collect();
+        assert!(names.contains("a.ts"));
+        assert!(
+            !names.contains("thing.go"),
+            "a config-level ignore_dirs entry must be re-applied by the fast path too"
+        );
     }
 
     #[test]
@@ -742,7 +830,7 @@ mod tests {
         ];
         let exclude = vec!["**/*.test.ts".to_string()];
 
-        let result = try_fast_collect(root, &db_files, &[], &[], &[], &exclude);
+        let result = try_fast_collect(root, &db_files, &[], &[], &[], &[], &exclude);
         let names: HashSet<&str> = result
             .files
             .iter()

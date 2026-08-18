@@ -985,6 +985,7 @@ fn collect_source_files(
                     &db_files,
                     &journal.changed,
                     &journal.removed,
+                    &config.ignore_dirs,
                     &config.include,
                     &config.exclude,
                 )
