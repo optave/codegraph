@@ -46,9 +46,13 @@ beforeAll(() => {
   //   shared/core.ts   (for alias resolution)
   //   src/esm/util.mts (for .mjs -> .mts remap, #2299)
   //   src/cjs/legacy.cts (for .cjs -> .cts remap, #2299)
+  //   src/esm-dir/index.mts (for /index.mts directory resolution, #2464)
+  //   src/cjs-dir/index.cts (for /index.cts directory resolution, #2464)
   fs.mkdirSync(path.join(tmpDir, 'src', 'lib'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, 'src', 'esm'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, 'src', 'cjs'), { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'src', 'esm-dir'), { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'src', 'cjs-dir'), { recursive: true });
   fs.mkdirSync(path.join(tmpDir, 'shared'), { recursive: true });
 
   fs.writeFileSync(path.join(tmpDir, 'src', 'math.js'), 'export const add = (a, b) => a + b;');
@@ -65,6 +69,11 @@ beforeAll(() => {
   fs.writeFileSync(path.join(tmpDir, 'shared', 'core.ts'), 'export const x = 1;');
   fs.writeFileSync(path.join(tmpDir, 'src', 'esm', 'util.mts'), 'export const greet = () => "hi";');
   fs.writeFileSync(path.join(tmpDir, 'src', 'cjs', 'legacy.cts'), 'export const x = 1;');
+  fs.writeFileSync(
+    path.join(tmpDir, 'src', 'esm-dir', 'index.mts'),
+    'export const greet = () => "hi";',
+  );
+  fs.writeFileSync(path.join(tmpDir, 'src', 'cjs-dir', 'index.cts'), 'export const x = 1;');
 });
 
 afterAll(() => {
@@ -125,6 +134,21 @@ describe('resolveImportPathJS', () => {
     const fromFile = path.join(tmpDir, 'src', 'cjs', 'index.cts');
     const result = resolveImportPathJS(fromFile, './legacy', tmpDir, null);
     expect(result).toMatch(/legacy\.cts$/);
+  });
+
+  it('resolves a directory specifier to its index.mts file (#2464, Greptile follow-up)', () => {
+    // Caught by review: the direct .mts/.cts candidates alone don't cover
+    // the directory-index convention (`import './dir'` -> `dir/index.mts`),
+    // which every other extension in this list already supports.
+    const fromFile = path.join(tmpDir, 'src', 'index.mts');
+    const result = resolveImportPathJS(fromFile, './esm-dir', tmpDir, null);
+    expect(result).toMatch(/esm-dir\/index\.mts$/);
+  });
+
+  it('resolves a directory specifier to its index.cts file (#2464, Greptile follow-up)', () => {
+    const fromFile = path.join(tmpDir, 'src', 'index.cts');
+    const result = resolveImportPathJS(fromFile, './cjs-dir', tmpDir, null);
+    expect(result).toMatch(/cjs-dir\/index\.cts$/);
   });
 
   it('resolves directory to index.js', () => {
