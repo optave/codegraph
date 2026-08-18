@@ -63,6 +63,9 @@ function walkDartNode(node: TreeSitterNode, ctx: ExtractorOutput): void {
     case 'formal_parameter':
       handleDartFormalParamTypeMap(node, ctx);
       break;
+    case 'initialized_variable_definition':
+      handleDartLocalVarTypeMap(node, ctx);
+      break;
   }
 
   for (let i = 0; i < node.childCount; i++) {
@@ -335,6 +338,77 @@ function handleDartFormalParamTypeMap(node: TreeSitterNode, ctx: ExtractorOutput
 }
 
 /**
+ * Seed a function-scoped typeMap entry (confidence 1.0 — a constructor call
+ * determines its assigned local's type with full certainty, matching every
+ * other language extractor's identical "assign a constructor call to a
+ * local variable" convention, e.g. JS/TS's `handleVarDeclaratorTypeMap`) for
+ * `var svc = UserService(repo);` (#2474).
+ *
+ * tree-sitter-dart's two grammar versions structure this differently, same
+ * class of divergence `handleDartConstructorCall` already documents:
+ *
+ * - Native (crates.io tree-sitter-dart 0.2): a clean single `value:` field
+ *   pointing straight at a `(call_expression function: (identifier)
+ *   arguments: (...))`.
+ * - WASM (npm tree-sitter-dart 1.x): confirmed by direct parse dump — this
+ *   grammar has `value:` field markers on TWO different children of
+ *   `initialized_variable_definition`: the bare callee `identifier`
+ *   (`UserRepository`) AND the trailing `selector` node carrying the call's
+ *   `argument_part` (`()`). `childForFieldName('value')` only ever returns
+ *   the FIRST match — the bare identifier, never a `call_expression` node at
+ *   all — so checking merely "does a `value` field exist" (as an earlier
+ *   version of this function did) wrongly took the native branch and bailed
+ *   out before ever reaching the correct lookup below. The fix is to gate on
+ *   the value field's TYPE, not its presence: WASM's `value` identifier
+ *   isn't a `call_expression`, so it falls through to a sibling scan for the
+ *   `selector` node, then takes ITS immediately preceding sibling as the
+ *   callee — exactly Layout C, the same shape `resolveDartSelectorCall`'s
+ *   own doc comment documents for `var w = Foo();` / `helper();`.
+ *
+ * No-ops for any other initializer shape (a literal, a bare identifier
+ * reference, an `await` expression, …) — there is no statically-knowable
+ * constructor type to seed, mirroring `handleDartFieldDeclTypeMap`'s
+ * identical "no explicit type" no-op.
+ *
+ * Deliberately does not attempt to detect a LOCAL VARIABLE shadowing a class
+ * field of the same name (only a shadowing PARAMETER is handled elsewhere,
+ * via `findDartSelectorReceiver`) — tracked separately as #2478.
+ */
+function handleDartLocalVarTypeMap(node: TreeSitterNode, ctx: ExtractorOutput): void {
+  const nameNode = node.childForFieldName('name');
+  if (nameNode?.type !== 'identifier') return;
+
+  const valueNode = node.childForFieldName('value');
+  if (valueNode?.type === 'call_expression') {
+    const fnNode = valueNode.childForFieldName('function');
+    if (!fnNode || (fnNode.type !== 'identifier' && fnNode.type !== 'type_identifier')) return;
+    const enclosingQualifier = findEnclosingDartFunctionQualifierForBody(node);
+    setScopedTypeMapEntry(ctx.typeMap, enclosingQualifier, nameNode.text, fnNode.text, 1.0);
+    return;
+  }
+
+  // WASM grammar: `value` (if present at all) is the bare callee identifier,
+  // not a call_expression — find the `selector` child carrying the call
+  // (`argument_part`) instead, then take ITS immediately preceding sibling
+  // as the callee, mirroring `resolveDartSelectorCall`'s identical Layout C
+  // lookup.
+  for (let i = 1; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type !== 'selector' || !findChild(child, 'argument_part')) continue;
+    const callee = node.child(i - 1);
+    if (
+      callee &&
+      (callee.type === 'identifier' || callee.type === 'type_identifier') &&
+      callee.id !== nameNode.id
+    ) {
+      const enclosingQualifier = findEnclosingDartFunctionQualifierForBody(node);
+      setScopedTypeMapEntry(ctx.typeMap, enclosingQualifier, nameNode.text, callee.text, 1.0);
+    }
+    return;
+  }
+}
+
+/**
  * Nearest enclosing class name for class-scoped typeMap keys — walks the
  * node's ancestor chain looking for the nearest `class_definition`, mirroring
  * `enclosing_type_map_class` in
@@ -479,6 +553,31 @@ function collectDartParamNames(paramList: TreeSitterNode): ReadonlySet<string> {
  * chained-call/subscript-indexed cases).
  */
 function findEnclosingDartParamListForCall(node: TreeSitterNode): TreeSitterNode | null {
+  const sig = findEnclosingDartSignatureFromBody(node);
+  if (!sig) return null;
+  const inner = findDartInnerSignatureNode(sig);
+  return findChild(inner, 'formal_parameter_list');
+}
+
+/**
+ * The `method_signature`/`function_signature`/`constructor_signature` node
+ * enclosing `node`, where `node` is some descendant of that function's
+ * `function_body` — the shared traversal behind both
+ * `findEnclosingDartParamListForCall` (needs the parameter list) and
+ * `findEnclosingDartFunctionQualifierForBody` (needs the qualified name;
+ * #2474, local-variable constructor-call typeMap seeding). See the former's
+ * original doc comment (still accurate) for why this can't be a simple
+ * ancestor walk like `findEnclosingDartFunctionQualifierForParam`:
+ * tree-sitter-dart splits a function/method's signature and body into
+ * SIBLING nodes under a shared parent, so a descendant of the body has
+ * `function_body` as an ancestor, never the signature itself.
+ *
+ * Returns `null` when no enclosing `function_body` is found at all, or when
+ * the sibling immediately preceding it isn't recognizably a signature —
+ * deliberately conservative, matching this file's own established
+ * discipline of falling through rather than guessing.
+ */
+function findEnclosingDartSignatureFromBody(node: TreeSitterNode): TreeSitterNode | null {
   let current: TreeSitterNode | null = node.parent;
   while (current) {
     if (current.type === 'function_body') {
@@ -500,8 +599,7 @@ function findEnclosingDartParamListForCall(node: TreeSitterNode): TreeSitterNode
           sibling.type === 'function_signature' ||
           sibling.type === 'constructor_signature'
         ) {
-          const inner = findDartInnerSignatureNode(sibling);
-          return findChild(inner, 'formal_parameter_list');
+          return sibling;
         }
         return null;
       }
@@ -510,6 +608,24 @@ function findEnclosingDartParamListForCall(node: TreeSitterNode): TreeSitterNode
     current = current.parent;
   }
   return null;
+}
+
+/**
+ * Qualified name (`ClassName.methodName`, or bare `functionName`) of the
+ * function/method enclosing `node`, a descendant of that function's
+ * `function_body` — e.g. a local variable declaration inside the body
+ * (#2474). Mirrors `findEnclosingDartFunctionQualifierForParam`'s return
+ * shape, but for a body descendant rather than a parameter — see
+ * `findEnclosingDartSignatureFromBody` for why these need different
+ * traversals.
+ */
+function findEnclosingDartFunctionQualifierForBody(node: TreeSitterNode): string | null {
+  const sig = findEnclosingDartSignatureFromBody(node);
+  if (!sig) return null;
+  const fnName = extractDartFunctionName(sig);
+  if (!fnName) return null;
+  const className = findEnclosingDartClassName(sig);
+  return className ? `${className}.${fnName}` : fnName;
 }
 
 /**

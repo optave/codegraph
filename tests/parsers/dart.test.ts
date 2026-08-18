@@ -497,4 +497,84 @@ class Service {
       });
     });
   });
+
+  // #2474: `var svc = UserService(repo);` never seeded a typeMap entry for
+  // `svc`, unlike every other language extractor's identical
+  // constructor-call-initializer convention — so a later call through it
+  // (`svc.createUser(...)`) could never resolve via the typeMap and the call
+  // edge was silently dropped. This grammar (npm tree-sitter-dart, the WASM
+  // engine) is the one that originally surfaced the bug: `value:` is a field
+  // marker on TWO different children of `initialized_variable_definition`
+  // here (the bare callee identifier AND the trailing call `selector`), so
+  // `childForFieldName('value')` alone can't distinguish this shape from the
+  // native grammar's clean `value: call_expression` — an earlier version of
+  // the fix checked only "does a value field exist" and wrongly bailed out
+  // before reaching the correct sibling-based lookup.
+  describe('#2474: typeMap seeding for a local variable initialized from a constructor call', () => {
+    it('seeds a function-scoped typeMap entry for a bare constructor-call initializer', () => {
+      const symbols = parseDart(`void main() {
+  var svc = UserService();
+}`);
+      expect(symbols.typeMap.get('main::svc')).toEqual({
+        type: 'UserService',
+        confidence: 1.0,
+      });
+    });
+
+    it('also seeds the bare fallback key', () => {
+      const symbols = parseDart(`void main() {
+  var svc = UserService();
+}`);
+      expect(symbols.typeMap.get('svc')?.type).toBe('UserService');
+    });
+
+    it('does not collide across two functions with a same-named local', () => {
+      const symbols = parseDart(`void a() {
+  var svc = UserService();
+}
+void b() {
+  var svc = MockUserService();
+}`);
+      expect(symbols.typeMap.get('a::svc')?.type).toBe('UserService');
+      expect(symbols.typeMap.get('b::svc')?.type).toBe('MockUserService');
+    });
+
+    it('does not seed for a non-constructor-call initializer', () => {
+      const symbols = parseDart(`void main() {
+  var x = 5;
+  var y = other;
+}`);
+      expect(symbols.typeMap.has('main::x')).toBe(false);
+      expect(symbols.typeMap.has('x')).toBe(false);
+      expect(symbols.typeMap.has('main::y')).toBe(false);
+      expect(symbols.typeMap.has('y')).toBe(false);
+    });
+
+    it('seeds a class-method-scoped entry too', () => {
+      const symbols = parseDart(`class Controller {
+  void run() {
+    var svc = UserService();
+    svc.createUser();
+  }
+}`);
+      expect(symbols.typeMap.get('Controller.run::svc')).toEqual({
+        type: 'UserService',
+        confidence: 1.0,
+      });
+    });
+
+    it('end-to-end repro from the issue: a constructor call passed the result of another', () => {
+      const symbols = parseDart(`class UserService {
+  void createUser() {}
+}
+void main() {
+  var repo = UserRepository();
+  var svc = UserService(repo);
+  svc.createUser();
+}`);
+      expect(symbols.typeMap.get('main::repo')?.type).toBe('UserRepository');
+      expect(symbols.typeMap.get('main::svc')?.type).toBe('UserService');
+      expect(symbols.calls).toContainEqual(expect.objectContaining({ name: 'createUser' }));
+    });
+  });
 });
