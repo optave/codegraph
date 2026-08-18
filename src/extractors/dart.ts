@@ -147,16 +147,29 @@ function extractDartClassMembers(
       // node to read here — inferring one from the initializer is a separate,
       // out-of-scope problem — so this is a no-op for that shape.
       handleDartFieldDeclTypeMap(member, className, ctx.typeMap);
-      // Field declarations
-      for (let j = 0; j < member.childCount; j++) {
-        const decl = member.child(j);
-        if (decl?.type === 'identifier') {
-          children.push({
-            name: decl.text,
-            kind: 'property',
-            line: member.startPosition.row + 1,
-          });
-          break;
+      // Field declarations — every real field-declaration shape (`final Foo
+      // x;`, `Foo x;`, `late Foo x;`, `Foo? x;`) nests its identifier TWO
+      // levels deep (`declaration -> initialized_identifier_list ->
+      // initialized_identifier -> identifier`); Dart requires every field to
+      // carry a var/final/const/late/type modifier, so `identifier` is never
+      // a direct child of `declaration` itself — a direct-child scan here
+      // silently found nothing for any real field, leaving `children` always
+      // empty (#2475). Mirrors `handleDartFieldDeclTypeMap`'s identical
+      // traversal, including its handling of a comma-separated multi-field
+      // declaration (`final Foo a, b;` declares BOTH `a` and `b`).
+      const identifierList = findChild(member, 'initialized_identifier_list');
+      if (identifierList) {
+        for (let j = 0; j < identifierList.childCount; j++) {
+          const item = identifierList.child(j);
+          if (item?.type !== 'initialized_identifier') continue;
+          const nameNode = findChild(item, 'identifier');
+          if (nameNode) {
+            children.push({
+              name: nameNode.text,
+              kind: 'property',
+              line: member.startPosition.row + 1,
+            });
+          }
         }
       }
     }

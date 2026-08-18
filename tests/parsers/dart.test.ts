@@ -590,4 +590,65 @@ void main() {
       expect(symbols.calls).toContainEqual(expect.objectContaining({ name: 'createUser' }));
     });
   });
+
+  // #2475: every real field-declaration shape nests its identifier TWO
+  // levels deep (declaration -> initialized_identifier_list ->
+  // initialized_identifier -> identifier), never a direct child of
+  // declaration itself — the class definition's `children` list was always
+  // empty for real code.
+  describe('#2475: class field children', () => {
+    it('records a final field as a child', () => {
+      const symbols = parseDart(`class UserService {
+  final UserRepository _repo;
+  UserService(this._repo);
+}`);
+      const cls = symbols.definitions.find((d) => d.name === 'UserService');
+      expect(cls?.children).toBeDefined();
+      expect(cls?.children).toContainEqual(
+        expect.objectContaining({ name: '_repo', kind: 'property' }),
+      );
+    });
+
+    it('records a plain var field and a late field', () => {
+      const symbols = parseDart(`class A {
+  UserRepository repo;
+  late Foo _f;
+}`);
+      const cls = symbols.definitions.find((d) => d.name === 'A');
+      const names = cls?.children?.map((c) => c.name) ?? [];
+      expect(names).toContain('repo');
+      expect(names).toContain('_f');
+    });
+
+    it('records every identifier in a comma-separated multi-field declaration', () => {
+      const symbols = parseDart(`class A {
+  final Foo a, b;
+}`);
+      const cls = symbols.definitions.find((d) => d.name === 'A');
+      const names = cls?.children?.map((c) => c.name) ?? [];
+      expect(names).toContain('a');
+      expect(names).toContain('b');
+    });
+
+    it('still records methods alongside fields', () => {
+      const symbols = parseDart(`class UserService {
+  final UserRepository _repo;
+  UserService(this._repo);
+  void createUser() {}
+}`);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'UserService.createUser', kind: 'method' }),
+      );
+      const cls = symbols.definitions.find((d) => d.name === 'UserService');
+      expect(cls?.children).toContainEqual(expect.objectContaining({ name: '_repo' }));
+    });
+
+    it('a class with no fields has no children', () => {
+      const symbols = parseDart(`class Empty {
+  void run() {}
+}`);
+      const cls = symbols.definitions.find((d) => d.name === 'Empty');
+      expect(cls?.children).toBeUndefined();
+    });
+  });
 });

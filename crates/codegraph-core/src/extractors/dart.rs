@@ -73,13 +73,14 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         None => return,
     };
     let class_name = node_text(&name_node, source).to_string();
+    let mut children: Vec<Definition> = Vec::new();
 
     // Extract methods
     if let Some(body) = node
         .child_by_field_name("body")
         .or_else(|| find_child(node, "class_body"))
     {
-        extract_dart_class_methods(&body, &class_name, source, symbols);
+        extract_dart_class_methods(&body, &class_name, source, symbols, &mut children);
     }
 
     // Extract inheritance
@@ -124,7 +125,7 @@ fn handle_dart_class(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
         decorators: None,
         complexity: None,
         cfg: None,
-        children: None,
+        children: opt_children(children),
         bodyless: None,
         content_hash: None,
         accessor_kind: None,
@@ -136,6 +137,7 @@ fn extract_dart_class_methods(
     class_name: &str,
     source: &[u8],
     symbols: &mut FileSymbols,
+    children: &mut Vec<Definition>,
 ) {
     for i in 0..body.child_count() {
         if let Some(member) = body.child(i) {
@@ -185,14 +187,25 @@ fn extract_dart_class_methods(
                             // shape before skipping — otherwise every
                             // fixture/codebase using this idiomatic form
                             // silently loses its constructors/abstract methods.
-                            let bodyless_sig = find_child(&member, "declaration").and_then(|d| {
-                                find_child(&d, "constructor_signature")
-                                    .or_else(|| find_child(&d, "method_signature"))
-                                    .or_else(|| find_child(&d, "function_signature"))
+                            let field_decl = find_child(&member, "declaration");
+                            let bodyless_sig = field_decl.as_ref().and_then(|d| {
+                                find_child(d, "constructor_signature")
+                                    .or_else(|| find_child(d, "method_signature"))
+                                    .or_else(|| find_child(d, "function_signature"))
                             });
                             match bodyless_sig {
                                 Some(s) => s,
-                                None => continue,
+                                None => {
+                                    // Not a bodyless signature — a genuine
+                                    // field declaration (#2475). Record its
+                                    // identifier(s) as `children` before
+                                    // moving on; there is no signature node
+                                    // to fall through to below.
+                                    if let Some(d) = &field_decl {
+                                        extract_dart_field_children(d, source, children);
+                                    }
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -220,6 +233,38 @@ fn extract_dart_class_methods(
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+/// Push a `Definition` (kind "property") for every identifier declared by a
+/// class-field `declaration` node into `children` — mirrors
+/// `handle_dart_field_decl_type_map`'s identical `initialized_identifier_list
+/// -> initialized_identifier -> identifier` traversal, including its
+/// handling of a comma-separated multi-field declaration (`final Foo a, b;`
+/// declares BOTH `a` and `b`). Every real field-declaration shape nests its
+/// identifier two levels deep — Dart requires a var/final/const/late/type
+/// modifier on every field, so `identifier` is never a direct child of
+/// `declaration` itself (#2475). Mirrors the TS fix in
+/// `extractDartClassMembers`.
+fn extract_dart_field_children(decl: &Node, source: &[u8], children: &mut Vec<Definition>) {
+    let Some(list) = find_child(decl, "initialized_identifier_list") else {
+        return;
+    };
+    let line = start_line(decl);
+    for i in 0..list.child_count() {
+        let Some(item) = list.child(i) else {
+            continue;
+        };
+        if item.kind() != "initialized_identifier" {
+            continue;
+        }
+        if let Some(name_node) = find_child(&item, "identifier") {
+            children.push(child_def(
+                node_text(&name_node, source).to_string(),
+                "property",
+                line,
+            ));
         }
     }
 }
@@ -1883,6 +1928,92 @@ mod tests {
                 call.is_some(),
                 "missing createUser call; got: {:?}",
                 s.calls
+            );
+        }
+    }
+
+    // #2475: every real field-declaration shape nests its identifier TWO
+    // levels deep (declaration -> initialized_identifier_list ->
+    // initialized_identifier -> identifier), never a direct child of
+    // declaration itself — the class Definition's `children` list was
+    // always empty for real code.
+    mod class_field_children {
+        use super::*;
+
+        #[test]
+        fn records_a_final_field_as_a_child() {
+            let s = parse_dart(
+                "class UserService {\n  final UserRepository _repo;\n  UserService(this._repo);\n}",
+            );
+            let class = s
+                .definitions
+                .iter()
+                .find(|d| d.name == "UserService")
+                .expect("missing UserService definition");
+            let children = class
+                .children
+                .as_ref()
+                .expect("expected UserService to have children");
+            let field = children.iter().find(|c| c.name == "_repo");
+            assert!(field.is_some(), "missing _repo child; got: {:?}", children);
+            assert_eq!(field.unwrap().kind, "property");
+        }
+
+        #[test]
+        fn records_a_plain_var_field_and_a_late_field() {
+            let s = parse_dart("class A {\n  UserRepository repo;\n  late Foo _f;\n}");
+            let class = s.definitions.iter().find(|d| d.name == "A").unwrap();
+            let children = class.children.as_ref().expect("expected children");
+            assert!(children.iter().any(|c| c.name == "repo"));
+            assert!(children.iter().any(|c| c.name == "_f"));
+        }
+
+        #[test]
+        fn records_every_identifier_in_a_comma_separated_multi_field_declaration() {
+            let s = parse_dart("class A {\n  final Foo a, b;\n}");
+            let class = s.definitions.iter().find(|d| d.name == "A").unwrap();
+            let children = class.children.as_ref().expect("expected children");
+            assert!(
+                children.iter().any(|c| c.name == "a"),
+                "missing a; got: {:?}",
+                children
+            );
+            assert!(
+                children.iter().any(|c| c.name == "b"),
+                "missing b; got: {:?}",
+                children
+            );
+        }
+
+        #[test]
+        fn still_records_methods_alongside_fields() {
+            let s = parse_dart(
+                "class UserService {\n  final UserRepository _repo;\n  UserService(this._repo);\n  void createUser() {}\n}",
+            );
+            assert!(
+                s.definitions
+                    .iter()
+                    .any(|d| d.name == "UserService.createUser" && d.kind == "method"),
+                "missing UserService.createUser method definition; got: {:?}",
+                s.definitions
+            );
+            let class = s
+                .definitions
+                .iter()
+                .find(|d| d.name == "UserService")
+                .unwrap();
+            let children = class.children.as_ref().expect("expected children");
+            assert!(children.iter().any(|c| c.name == "_repo"));
+        }
+
+        #[test]
+        fn a_class_with_no_fields_has_no_children() {
+            let s = parse_dart("class Empty {\n  void run() {}\n}");
+            let class = s.definitions.iter().find(|d| d.name == "Empty").unwrap();
+            assert!(
+                class.children.is_none(),
+                "expected no children; got: {:?}",
+                class.children
             );
         }
     }
