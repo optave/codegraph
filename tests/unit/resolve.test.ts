@@ -112,6 +112,21 @@ describe('resolveImportPathJS', () => {
     expect(result).toMatch(/legacy\.cts$/);
   });
 
+  it('resolves an extension-less specifier to a .mts file (#2464)', () => {
+    // Distinct from the #2299 remap tests above: `./util` here carries no
+    // extension at all, unlike `./util.mjs`, so it exercises the
+    // extension-probing loop directly instead of EMIT_EXTENSION_REMAPS.
+    const fromFile = path.join(tmpDir, 'src', 'esm', 'index.mts');
+    const result = resolveImportPathJS(fromFile, './util', tmpDir, null);
+    expect(result).toMatch(/util\.mts$/);
+  });
+
+  it('resolves an extension-less specifier to a .cts file (#2464)', () => {
+    const fromFile = path.join(tmpDir, 'src', 'cjs', 'index.cts');
+    const result = resolveImportPathJS(fromFile, './legacy', tmpDir, null);
+    expect(result).toMatch(/legacy\.cts$/);
+  });
+
   it('resolves directory to index.js', () => {
     const fromFile = path.join(tmpDir, 'src', 'index.js');
     const result = resolveImportPathJS(fromFile, './lib', tmpDir, null);

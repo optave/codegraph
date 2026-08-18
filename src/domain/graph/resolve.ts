@@ -1259,6 +1259,8 @@ function resolveImportPathJS(
   for (const ext of [
     '.ts',
     '.tsx',
+    '.mts',
+    '.cts',
     '.js',
     '.jsx',
     '.mjs',

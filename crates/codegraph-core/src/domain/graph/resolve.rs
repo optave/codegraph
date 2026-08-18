@@ -1503,6 +1503,8 @@ fn probe_known_extensions(
     const EXTENSIONS: &[&str] = &[
         ".ts",
         ".tsx",
+        ".mts",
+        ".cts",
         ".js",
         ".jsx",
         ".mjs",
@@ -1942,6 +1944,52 @@ mod tests {
         let result = resolve_import_path_inner(
             "/project/src/index.cts",
             "./legacy.cjs",
+            "/project",
+            &aliases,
+            Some(&known),
+            None,
+        );
+        assert_eq!(result, "src/legacy.cts");
+    }
+
+    #[test]
+    fn probe_known_extensions_resolves_an_extension_less_specifier_to_mts() {
+        // #2464: distinct from resolve_mjs_to_mts_remap_with_known_files above
+        // — `./utils` here carries no extension at all, unlike `./utils.mjs`,
+        // so it exercises probe_known_extensions's EXTENSIONS list directly
+        // instead of EMIT_EXTENSION_REMAPS.
+        let mut known = HashSet::new();
+        known.insert("src/utils.mts".to_string());
+
+        let aliases = PathAliases {
+            base_url: None,
+            paths: vec![],
+        };
+
+        let result = resolve_import_path_inner(
+            "/project/src/index.mts",
+            "./utils",
+            "/project",
+            &aliases,
+            Some(&known),
+            None,
+        );
+        assert_eq!(result, "src/utils.mts");
+    }
+
+    #[test]
+    fn probe_known_extensions_resolves_an_extension_less_specifier_to_cts() {
+        let mut known = HashSet::new();
+        known.insert("src/legacy.cts".to_string());
+
+        let aliases = PathAliases {
+            base_url: None,
+            paths: vec![],
+        };
+
+        let result = resolve_import_path_inner(
+            "/project/src/index.cts",
+            "./legacy",
             "/project",
             &aliases,
             Some(&known),
