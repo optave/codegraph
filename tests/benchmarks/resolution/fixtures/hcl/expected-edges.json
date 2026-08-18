@@ -1,7 +1,7 @@
 {
   "$schema": "../../expected-edges.schema.json",
   "language": "hcl",
-  "description": "Hand-annotated call edges for HCL/Terraform resolution benchmark. HCL uses module references rather than function calls — edges represent module source references.",
+  "description": "ASPIRATIONAL, not currently enforced (see resolution-benchmark.test.ts's hcl threshold, pinned at 0.0/0.0, and issue #2524): hand-annotated module-reference edges for a HCL/Terraform resolution capability that does not exist yet. HCL has no functions/calls to resolve in the traditional sense — these edges describe a genuinely different, unimplemented notion of module-source-reference linkage ('module.user_service references module.repository'), not a gap in the same call-resolution machinery other 0.0/0.0 languages (cuda/groovy/verilog) are missing. Building this fixture today yields 0 of these 2 edges; every edge that does materialize is a structural 'contains' edge.",
   "edges": [
     {
       "source": { "name": "module.user_service", "file": "main.tf" },

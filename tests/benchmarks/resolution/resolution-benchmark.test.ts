@@ -245,6 +245,12 @@ const THRESHOLDS: Record<string, { precision: number; recall: number }> = {
   cuda: { precision: 0.0, recall: 0.0 },
   groovy: { precision: 0.0, recall: 0.0 },
   verilog: { precision: 0.0, recall: 0.0 },
+  // hcl's fixture (unlike cuda/groovy/verilog above) isn't just "call
+  // resolution not implemented yet" for the same kind of edge every other
+  // language has — HCL has no functions/calls at all. Its expected-edges.json
+  // aspirationally describes a genuinely different, unimplemented capability
+  // (module-source-reference linkage) that 0 of its own edges currently
+  // materialize (see that file's own description and issue #2524).
   hcl: { precision: 0.0, recall: 0.0 },
 };
 
