@@ -163,14 +163,17 @@ export const dataflow: DataflowRulesConfig = makeDataflowRules({
   memberPropertyField: 'field',
   mutatingMethods: new Set(),
   expressionListType: 'expression_list',
+  // A `parameter_declaration` can share one type across multiple
+  // comma-separated names (`func f(a, b int)` — both `a` and `b` are
+  // `name`-field children of the SAME node, per tree-sitter-go's
+  // node-types.json). `groupedParamTypes` (issue #2358) makes `extractParams`
+  // iterate this node's own namedChildren as separate slots instead of
+  // calling `extractParamName` on the whole node — each `identifier` name
+  // resolves via the generic `paramIdentifier` handler and gets its own
+  // index, while the trailing `type_identifier` yields no name and
+  // consumes no index (issue #2501).
+  groupedParamTypes: new Set(['parameter_declaration']),
   extractParamName(node) {
-    if (node.type === 'parameter_declaration') {
-      const names: string[] = [];
-      for (const c of node.namedChildren) {
-        if (c.type === 'identifier') names.push(c.text);
-      }
-      return names.length > 0 ? names : null;
-    }
     if (node.type === 'variadic_parameter_declaration') {
       const nameNode = node.childForFieldName('name');
       return nameNode ? [nameNode.text] : null;
