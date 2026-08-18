@@ -517,7 +517,7 @@ class Service {
 }`);
       expect(symbols.typeMap.get('main::svc')).toEqual({
         type: 'UserService',
-        confidence: 1.0,
+        confidence: 0.7,
       });
     });
 
@@ -572,7 +572,7 @@ void b() {
 }`);
       expect(symbols.typeMap.get('Controller.run::svc')).toEqual({
         type: 'UserService',
-        confidence: 1.0,
+        confidence: 0.7,
       });
     });
 

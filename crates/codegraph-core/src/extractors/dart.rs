@@ -896,10 +896,8 @@ fn find_enclosing_dart_function_qualifier_for_body(node: &Node, source: &[u8]) -
     })
 }
 
-/// Seed a function-scoped typeMap entry (confidence 1.0 — a constructor call
-/// determines its assigned local's type with full certainty, matching every
-/// other language extractor's identical "assign a constructor call to a
-/// local variable" convention) for `var svc = UserService(repo);` (#2474).
+/// Seed a function-scoped typeMap entry for `var svc = UserService(repo);`
+/// (#2474).
 ///
 /// tree-sitter-dart's two grammar versions structure this differently, same
 /// class of divergence `handle_dart_constructor_call` already documents:
@@ -931,18 +929,39 @@ fn find_enclosing_dart_function_qualifier_for_body(node: &Node, source: &[u8]) -
 /// constructor call parses its callee as a plain `identifier`, not
 /// `type_identifier`, in this position). Without this gate, an ordinary
 /// factory FUNCTION call (`var svc = makeService();`) would be seeded as if
-/// `svc`'s type were the literal function name `makeService`, so a later
-/// `svc.createUser()` would search for the nonexistent
-/// `makeService.createUser` instead of falling back to an untyped lookup.
-/// Gating on capitalization matches Dart's own type-naming convention
-/// (enforced by the language's default `camel_case_types` lint) and this
-/// crate's own existing precedent for the identical ambiguity in
-/// `javascript.rs` (`starts_with(|c: char| c.is_ascii_uppercase())`) —
-/// deliberately a plain ASCII check, not a full-Unicode-scalar
-/// `char::is_uppercase()`, so this agrees byte-for-byte with TS's `/^[A-Z]/`
-/// without the astral-plane/titlecase divergence risk #2396 already found
-/// in the fuller Unicode-aware heuristic. Mirrors `handleDartLocalVarTypeMap`
-/// in `src/extractors/dart.ts` — see that function's doc comment for why a
+/// `svc`'s type were the literal function name `makeService`. Gating on
+/// capitalization matches Dart's own type-naming convention (enforced by the
+/// language's default `camel_case_types` lint) and this crate's own existing
+/// precedent for the identical ambiguity in `javascript.rs`
+/// (`starts_with(|c: char| c.is_ascii_uppercase())`) — deliberately a plain
+/// ASCII check, not a full-Unicode-scalar `char::is_uppercase()`, so this
+/// agrees byte-for-byte with TS's `/^[A-Z]/` without the astral-plane/
+/// titlecase divergence risk #2396 already found in the fuller Unicode-aware
+/// heuristic.
+///
+/// Capitalization only narrows, not eliminates, the ambiguity: a legally
+/// uppercase ordinary function (`OrderService MakeOrderService() {...}`) is
+/// still indistinguishable from a constructor call here, and — confirmed via
+/// a dual-engine integration test during review — wrongly guessing its name
+/// as the type can cause a later receiver call through that local to lose
+/// its edge (both `resolve_call_targets_core` here and `resolveByReceiver`
+/// in `resolver/strategy.ts` skip the untyped direct-qualified fallback
+/// whenever ANY typeMap entry exists for the receiver, right or wrong — a
+/// pre-existing, language-agnostic property of the shared resolver, not
+/// something introduced here). Seeded at confidence 0.7 rather than 1.0 —
+/// the same tier as JS/TS's own `Foo.create()` factory heuristic, which
+/// carries the identical capitalization-based uncertainty — so a more
+/// certain entry from elsewhere wins any `dedup_type_map` tie. Closing the
+/// residual gap needs either a shared-resolver change (fall through to the
+/// untyped fallback when the type-aware tier finds nothing, across every
+/// language using this cascade) or a same-file "is this name already a
+/// known ordinary function?" cross-check — the latter requires refactoring
+/// `dart.ts`'s single-pass `walkDartNode` into the two-pass design this
+/// crate and `javascript.ts` already use, since a single-pass check would be
+/// declaration-order-dependent there and diverge from this (order-
+/// independent) engine. Both options are out of scope for this fix —
+/// tracked in #2568. Mirrors `handleDartLocalVarTypeMap` in
+/// `src/extractors/dart.ts` — see that function's doc comment for why a
 /// LOCAL VARIABLE shadowing a class field of the same name is deliberately
 /// out of scope here (tracked separately as #2478).
 fn handle_dart_local_var_type_map(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
@@ -972,15 +991,16 @@ fn handle_dart_local_var_type_map(node: &Node, source: &[u8], symbols: &mut File
             enclosing_qualifier.as_deref(),
             node_text(&name_node, source),
             node_text(&fn_node, source),
-            1.0,
+            0.7,
         );
         return;
     }
 
-    // WASM grammar: no `value` field — find a `selector` child carrying a
-    // call (`argument_part`), then take ITS immediately preceding sibling as
-    // the callee, mirroring `resolve_dart_selector_call`'s identical Layout C
-    // lookup.
+    // WASM grammar: `value` (if present at all) is the bare callee
+    // identifier, not a call_expression — find the `selector` child carrying
+    // the call (`argument_part`) instead, then take ITS immediately
+    // preceding sibling as the callee, mirroring
+    // `resolve_dart_selector_call`'s identical Layout C lookup.
     for i in 1..node.child_count() {
         let Some(child) = node.child(i) else {
             continue;
@@ -1000,7 +1020,7 @@ fn handle_dart_local_var_type_map(node: &Node, source: &[u8], symbols: &mut File
                     enclosing_qualifier.as_deref(),
                     node_text(&name_node, source),
                     node_text(&callee, source),
-                    1.0,
+                    0.7,
                 );
             }
         }
@@ -1744,7 +1764,7 @@ mod tests {
                 s.type_map
             );
             assert_eq!(entry.unwrap().type_name, "UserService");
-            assert_eq!(entry.unwrap().confidence, 1.0);
+            assert_eq!(entry.unwrap().confidence, 0.7);
         }
 
         #[test]

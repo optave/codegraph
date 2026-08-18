@@ -338,11 +338,8 @@ function handleDartFormalParamTypeMap(node: TreeSitterNode, ctx: ExtractorOutput
 }
 
 /**
- * Seed a function-scoped typeMap entry (confidence 1.0 — a constructor call
- * determines its assigned local's type with full certainty, matching every
- * other language extractor's identical "assign a constructor call to a
- * local variable" convention, e.g. JS/TS's `handleVarDeclaratorTypeMap`) for
- * `var svc = UserService(repo);` (#2474).
+ * Seed a function-scoped typeMap entry for `var svc = UserService(repo);`
+ * (#2474).
  *
  * tree-sitter-dart's two grammar versions structure this differently, same
  * class of divergence `handleDartConstructorCall` already documents:
@@ -379,9 +376,7 @@ function handleDartFormalParamTypeMap(node: TreeSitterNode, ctx: ExtractorOutput
  * constructor call parses its callee as a plain `identifier`, not
  * `type_identifier`, in this position). Without this gate, an ordinary
  * factory FUNCTION call (`var svc = makeService();`) would be seeded as if
- * `svc`'s type were the literal function name `makeService`, so a later
- * `svc.createUser()` would search for the nonexistent `makeService.
- * createUser` instead of falling back to an untyped lookup. Gating on
+ * `svc`'s type were the literal function name `makeService`. Gating on
  * capitalization matches Dart's own type-naming convention (enforced by the
  * language's default `camel_case_types` lint) and this file's own existing
  * precedent for the identical ambiguity in JS/TS (`/^[A-Z]/` in
@@ -390,6 +385,29 @@ function handleDartFormalParamTypeMap(node: TreeSitterNode, ctx: ExtractorOutput
  * comparison, so the native/Rust mirror can use `is_ascii_uppercase()` and
  * agree byte-for-byte without the astral-plane/titlecase divergence risk
  * #2396 already found in the fuller Unicode-aware heuristic.
+ *
+ * Capitalization only narrows, not eliminates, the ambiguity: a legally
+ * uppercase ordinary function (`OrderService MakeOrderService() {...}`) is
+ * still indistinguishable from a constructor call here, and — confirmed via
+ * a dual-engine integration test during review — wrongly guessing its name
+ * as the type can cause a later receiver call through that local to lose its
+ * edge (both `resolveByReceiver` in resolver/strategy.ts and
+ * `resolve_call_targets_core` in build_edges.rs skip the untyped
+ * direct-qualified fallback whenever ANY typeMap entry exists for the
+ * receiver, right or wrong — a pre-existing, language-agnostic property of
+ * the shared resolver, not something introduced here). Seeded at confidence
+ * 0.7 rather than 1.0 — the same tier as JS/TS's own `Foo.create()` factory
+ * heuristic in `handleCallExprTypeMap`, which carries the identical
+ * capitalization-based uncertainty — so a more certain entry from elsewhere
+ * wins any `dedup_type_map` tie. Closing the residual gap needs either a
+ * shared-resolver change (fall through to the untyped fallback when the
+ * type-aware tier finds nothing, across every language using this cascade)
+ * or a same-file "is this name already a known ordinary function?"
+ * cross-check — the latter requires refactoring this file's single-pass
+ * `walkDartNode` into the two-pass design `dart.rs` and `javascript.ts`
+ * already use, since a single-pass check would be declaration-order-
+ * dependent and diverge from the (order-independent) native engine. Both
+ * options are out of scope for this fix — tracked in #2568.
  *
  * Deliberately does not attempt to detect a LOCAL VARIABLE shadowing a class
  * field of the same name (only a shadowing PARAMETER is handled elsewhere,
@@ -405,7 +423,7 @@ function handleDartLocalVarTypeMap(node: TreeSitterNode, ctx: ExtractorOutput): 
     if (!fnNode || (fnNode.type !== 'identifier' && fnNode.type !== 'type_identifier')) return;
     if (!/^[A-Z]/.test(fnNode.text)) return;
     const enclosingQualifier = findEnclosingDartFunctionQualifierForBody(node);
-    setScopedTypeMapEntry(ctx.typeMap, enclosingQualifier, nameNode.text, fnNode.text, 1.0);
+    setScopedTypeMapEntry(ctx.typeMap, enclosingQualifier, nameNode.text, fnNode.text, 0.7);
     return;
   }
 
@@ -425,7 +443,7 @@ function handleDartLocalVarTypeMap(node: TreeSitterNode, ctx: ExtractorOutput): 
       /^[A-Z]/.test(callee.text)
     ) {
       const enclosingQualifier = findEnclosingDartFunctionQualifierForBody(node);
-      setScopedTypeMapEntry(ctx.typeMap, enclosingQualifier, nameNode.text, callee.text, 1.0);
+      setScopedTypeMapEntry(ctx.typeMap, enclosingQualifier, nameNode.text, callee.text, 0.7);
     }
     return;
   }
