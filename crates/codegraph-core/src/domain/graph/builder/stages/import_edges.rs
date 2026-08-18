@@ -541,6 +541,37 @@ fn maybe_type_erased_file(file: &str) -> bool {
     TYPESCRIPT_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
 }
 
+/// Resolve `symbol_name` through a possible barrel hop at `resolved_path` to
+/// the file that actually declares it and the name declared there. Falls
+/// back to `resolved_path`/`symbol_name` unchanged when `resolved_path` isn't
+/// a barrel, or when barrel resolution finds nothing.
+///
+/// Single source of truth for this fallback (#2461) — mirrors TS's
+/// `traceBarrelTarget` in `stages/resolve-imports.ts` (#2071/#2295). Before
+/// this helper existed, `collect_symbol_lookup_pairs`, `emit_named_symbol_rows`,
+/// and `emit_barrel_through_rows` each inlined their own copy of this exact
+/// "resolve through a barrel, falling back to the original file/name" pattern,
+/// with no shared implementation to consolidate onto (unlike the TS side,
+/// which already had one from #2071).
+fn trace_barrel_target(
+    ctx: &ImportEdgeContext,
+    resolved_path: &str,
+    symbol_name: &str,
+) -> barrel_resolution::BarrelResolution {
+    if !ctx.is_barrel_file(resolved_path) {
+        return barrel_resolution::BarrelResolution {
+            file: resolved_path.to_string(),
+            name: symbol_name.to_string(),
+        };
+    }
+    let mut visited = HashSet::new();
+    ctx.resolve_barrel_export(resolved_path, symbol_name, &mut visited)
+        .unwrap_or_else(|| barrel_resolution::BarrelResolution {
+            file: resolved_path.to_string(),
+            name: symbol_name.to_string(),
+        })
+}
+
 /// Walk type-only imports, named re-exports, and plain imports that might
 /// target a TypeScript interface/type-alias declaration in `ctx.file_symbols`,
 /// returning the distinct `(name, file)` pairs that `build_import_edges` will
@@ -565,18 +596,8 @@ fn collect_symbol_lookup_pairs(ctx: &ImportEdgeContext) -> HashSet<(String, Stri
                 if !is_reexport && !type_only && !maybe_type_erased {
                     continue;
                 }
-                let mut target_file = resolved_path.clone();
-                let mut target_name = original;
-                if ctx.is_barrel_file(&resolved_path) {
-                    let mut visited = HashSet::new();
-                    if let Some(resolved) =
-                        ctx.resolve_barrel_export(&resolved_path, &target_name, &mut visited)
-                    {
-                        target_file = resolved.file;
-                        target_name = resolved.name;
-                    }
-                }
-                pairs.insert((target_name, target_file));
+                let resolved = trace_barrel_target(ctx, &resolved_path, &original);
+                pairs.insert((resolved.name, resolved.file));
             }
         }
     }
@@ -666,24 +687,15 @@ fn emit_named_symbol_rows(
     seen_edges: &mut HashSet<(i64, i64, String)>,
 ) {
     for (_local, original, type_only) in import_name_pairs(imp) {
-        let mut target_file = resolved_path.to_string();
-        let mut target_name = original;
-        if ctx.is_barrel_file(resolved_path) {
-            let mut visited = HashSet::new();
-            if let Some(resolved) =
-                ctx.resolve_barrel_export(resolved_path, &target_name, &mut visited)
-            {
-                target_file = resolved.file;
-                target_name = resolved.name;
-            }
-        }
-        let Some((sym_id, sym_kind)) = symbol_node_ids.get(&(target_name, target_file.clone()))
+        let resolved = trace_barrel_target(ctx, resolved_path, &original);
+        let Some((sym_id, sym_kind)) =
+            symbol_node_ids.get(&(resolved.name.clone(), resolved.file.clone()))
         else {
             continue;
         };
         if kind == "imports-type"
             && !type_only
-            && !is_type_erased_import_target(sym_kind, &target_file)
+            && !is_type_erased_import_target(sym_kind, &resolved.file)
         {
             continue;
         }
@@ -717,12 +729,7 @@ fn emit_barrel_through_rows(
     };
     let mut resolved_sources: HashSet<String> = HashSet::new();
     for (_local, original, _type_only) in import_name_pairs(imp) {
-        let mut visited = HashSet::new();
-        let actual_source = match ctx.resolve_barrel_export(resolved_path, &original, &mut visited)
-        {
-            Some(resolved) => resolved.file,
-            None => continue,
-        };
+        let actual_source = trace_barrel_target(ctx, resolved_path, &original).file;
         if actual_source == resolved_path || !resolved_sources.insert(actual_source.clone()) {
             continue;
         }
@@ -1074,6 +1081,69 @@ mod tests {
         assert!(!ctx.is_barrel_file("nonexistent.ts"));
     }
 
+    /// Regression coverage for #2461's shared `trace_barrel_target` helper —
+    /// the three call sites it replaces (`collect_symbol_lookup_pairs`,
+    /// `emit_named_symbol_rows`, `emit_barrel_through_rows`) are exercised
+    /// indirectly by their own tests below; these exercise the helper
+    /// directly against all three branches its doc comment describes.
+    #[test]
+    fn trace_barrel_target_falls_back_to_identity_for_a_non_barrel_file() {
+        let ctx = empty_ctx(BTreeMap::new());
+        let resolved = trace_barrel_target(&ctx, "src/utils.ts", "helper");
+        assert_eq!(resolved.file, "src/utils.ts");
+        assert_eq!(resolved.name, "helper");
+    }
+
+    #[test]
+    fn trace_barrel_target_resolves_through_a_barrel_to_the_declaring_file() {
+        let mut file_symbols = BTreeMap::new();
+        file_symbols.insert(
+            "src/index.ts".to_string(),
+            make_symbols(vec![], vec!["src/real.ts"]),
+        );
+        file_symbols.insert(
+            "src/real.ts".to_string(),
+            make_symbols_with_imports(vec!["helper"], vec![]),
+        );
+        let mut ctx = empty_ctx(file_symbols);
+        ctx.reexport_map.insert(
+            "src/index.ts".to_string(),
+            vec![ReexportEntry {
+                source: "src/real.ts".to_string(),
+                names: vec!["helper".to_string()],
+                wildcard_reexport: false,
+                renames: vec![],
+            }],
+        );
+
+        let resolved = trace_barrel_target(&ctx, "src/index.ts", "helper");
+        assert_eq!(resolved.file, "src/real.ts");
+        assert_eq!(resolved.name, "helper");
+    }
+
+    #[test]
+    fn trace_barrel_target_falls_back_to_identity_when_barrel_resolution_finds_nothing() {
+        let mut file_symbols = BTreeMap::new();
+        file_symbols.insert(
+            "src/index.ts".to_string(),
+            make_symbols(vec![], vec!["src/real.ts"]),
+        );
+        let mut ctx = empty_ctx(file_symbols);
+        ctx.reexport_map.insert(
+            "src/index.ts".to_string(),
+            vec![ReexportEntry {
+                source: "src/real.ts".to_string(),
+                names: vec!["other".to_string()], // "helper" is not reexported
+                wildcard_reexport: false,
+                renames: vec![],
+            }],
+        );
+
+        let resolved = trace_barrel_target(&ctx, "src/index.ts", "helper");
+        assert_eq!(resolved.file, "src/index.ts");
+        assert_eq!(resolved.name, "helper");
+    }
+
     /// Regression test for #1848: `detect_barrel_only_files` must only
     /// classify files present in the supplied candidate list, even when a
     /// file outside that list also satisfies the reexports-outnumber-
@@ -1310,6 +1380,142 @@ mod tests {
         );
 
         assert!(edges.is_empty());
+    }
+
+    /// `emit_barrel_through_rows` previously had no dedicated unit test of
+    /// its own (#2461) — it was only exercised indirectly through the
+    /// higher-level `emit_edges_for_import` orchestrator. These also verify
+    /// the #2461 refactor's behavior-preservation argument directly: the
+    /// function used to `continue` immediately when `resolve_barrel_export`
+    /// returned `None`, via its own explicit match; after routing through
+    /// `trace_barrel_target` (which never returns `None`, only a fallback
+    /// identity), that case now flows through the pre-existing
+    /// `actual_source == resolved_path` self-reference check below instead —
+    /// same observable outcome (no edge emitted), different code path.
+    #[test]
+    fn emit_barrel_through_rows_emits_an_edge_to_the_actual_definition_file() {
+        let mut file_symbols = BTreeMap::new();
+        file_symbols.insert(
+            "src/index.ts".to_string(),
+            make_symbols(vec![], vec!["src/real.ts"]),
+        );
+        file_symbols.insert(
+            "src/real.ts".to_string(),
+            make_symbols_with_imports(vec!["helper"], vec![]),
+        );
+        let mut ctx = empty_ctx(file_symbols);
+        ctx.reexport_map.insert(
+            "src/index.ts".to_string(),
+            vec![ReexportEntry {
+                source: "src/real.ts".to_string(),
+                names: vec!["helper".to_string()],
+                wildcard_reexport: false,
+                renames: vec![],
+            }],
+        );
+        let imp = Import::new("./index".to_string(), vec!["helper".to_string()], 1);
+        let mut file_node_ids = HashMap::new();
+        file_node_ids.insert("src/real.ts".to_string(), 42i64);
+        let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
+
+        emit_barrel_through_rows(
+            &mut edges,
+            1,
+            &imp,
+            "src/index.ts",
+            "imports",
+            &ctx,
+            &file_node_ids,
+            &mut seen_edges,
+        );
+
+        assert_eq!(edges.len(), 1, "expected exactly one edge; got: {edges:?}");
+        assert_eq!(edges[0].source_id, 1);
+        assert_eq!(edges[0].target_id, 42);
+        assert_eq!(edges[0].kind, "imports");
+        assert_eq!(edges[0].confidence, 0.9);
+    }
+
+    #[test]
+    fn emit_barrel_through_rows_emits_nothing_when_barrel_resolution_finds_no_target() {
+        let mut file_symbols = BTreeMap::new();
+        file_symbols.insert(
+            "src/index.ts".to_string(),
+            make_symbols(vec![], vec!["src/real.ts"]),
+        );
+        let mut ctx = empty_ctx(file_symbols);
+        ctx.reexport_map.insert(
+            "src/index.ts".to_string(),
+            vec![ReexportEntry {
+                source: "src/real.ts".to_string(),
+                names: vec!["other".to_string()], // "helper" is not reexported
+                wildcard_reexport: false,
+                renames: vec![],
+            }],
+        );
+        let imp = Import::new("./index".to_string(), vec!["helper".to_string()], 1);
+        let file_node_ids = HashMap::new();
+        let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
+
+        emit_barrel_through_rows(
+            &mut edges,
+            1,
+            &imp,
+            "src/index.ts",
+            "imports",
+            &ctx,
+            &file_node_ids,
+            &mut seen_edges,
+        );
+
+        assert!(
+            edges.is_empty(),
+            "must not emit an edge when barrel resolution finds nothing: {edges:?}"
+        );
+    }
+
+    #[test]
+    fn emit_barrel_through_rows_skips_a_barrel_that_resolves_back_to_itself() {
+        let mut file_symbols = BTreeMap::new();
+        // 1 def + 2 reexports -> barrel (reexport_count strictly exceeds
+        // definition count); the file also defines "helper" itself, so a
+        // reexport entry pointing back at "src/index.ts" genuinely resolves.
+        file_symbols.insert(
+            "src/index.ts".to_string(),
+            make_symbols(vec!["helper"], vec!["a", "b"]),
+        );
+        let mut ctx = empty_ctx(file_symbols);
+        ctx.reexport_map.insert(
+            "src/index.ts".to_string(),
+            vec![ReexportEntry {
+                source: "src/index.ts".to_string(),
+                names: vec!["helper".to_string()],
+                wildcard_reexport: false,
+                renames: vec![],
+            }],
+        );
+        let imp = Import::new("./index".to_string(), vec!["helper".to_string()], 1);
+        let file_node_ids = HashMap::new();
+        let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
+
+        emit_barrel_through_rows(
+            &mut edges,
+            1,
+            &imp,
+            "src/index.ts",
+            "imports",
+            &ctx,
+            &file_node_ids,
+            &mut seen_edges,
+        );
+
+        assert!(
+            edges.is_empty(),
+            "must not emit a self-referencing through edge: {edges:?}"
+        );
     }
 
     #[test]
