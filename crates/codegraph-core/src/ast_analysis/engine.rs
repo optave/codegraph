@@ -11,14 +11,46 @@ use crate::ast_analysis::cfg::{build_function_cfg, get_cfg_rules};
 use crate::ast_analysis::complexity::{compute_all_metrics, lang_rules};
 use crate::ast_analysis::dataflow::extract_dataflow;
 use crate::domain::parser::LanguageKind;
+use crate::extractors::julia::signature_call;
+use crate::extractors::r_lang::assigned_function_name;
 use crate::shared::constants::MAX_WALK_DEPTH;
 use crate::types::{DataflowResult, FunctionCfgResult, FunctionComplexityResult};
 
-/// Extract the name of a function/method node via the "name" field.
-fn function_name(node: &Node, source: &[u8]) -> String {
+/// Fallback name lookup via the node's own direct `name` field, for
+/// languages whose function nodes actually carry one.
+fn generic_function_name(node: &Node, source: &[u8]) -> String {
     node.child_by_field_name("name")
         .map(|n| n.utf8_text(source).unwrap_or("<anonymous>").to_string())
         .unwrap_or_else(|| "<anonymous>".to_string())
+}
+
+/// Extract the name of a function/method node.
+///
+/// Most languages' function nodes carry a direct `name` field, but Julia and
+/// R do not (issue #2471) — their real extractors (`extractors/julia.rs`,
+/// `extractors/r_lang.rs`) already resolve names correctly for these
+/// languages; this reuses that exact logic instead of re-deriving it, so the
+/// two can't silently drift apart on what counts as a function's name.
+///
+/// R is never allowed to fall through to `generic_function_name`: confirmed
+/// by direct inspection that tree-sitter-r's grammar *does* define a `name`
+/// field on `function_definition` — but it points at the literal `function`
+/// keyword token, not an identifier (R has no named-function-definition
+/// syntax at all; every function is an anonymous expression that only
+/// acquires a name via assignment). Falling through there wouldn't report
+/// "<anonymous>" as this issue originally assumed — it would report the
+/// literal string "function" for every unnamed R function, which is a more
+/// actively misleading result than a missing name.
+fn function_name(node: &Node, source: &[u8], lang_id: &str) -> String {
+    match lang_id {
+        "julia" => signature_call(node)
+            .and_then(|call_sig| call_sig.child(0))
+            .and_then(|name_node| name_node.utf8_text(source).ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| generic_function_name(node, source)),
+        "r" => assigned_function_name(node, source).unwrap_or_else(|| "<anonymous>".to_string()),
+        _ => generic_function_name(node, source),
+    }
 }
 
 /// Collect all function/method nodes from the AST using a DFS walk.
@@ -87,7 +119,7 @@ pub fn analyze_complexity_standalone(
         .into_iter()
         .filter_map(|node| {
             let metrics = compute_all_metrics(&node, source_bytes, lang_id)?;
-            let name = function_name(&node, source_bytes);
+            let name = function_name(&node, source_bytes, lang_id);
             let line = node.start_position().row as u32 + 1;
             let column = Some(node.start_position().column as u32);
             let end_line = Some(node.end_position().row as u32 + 1);
@@ -132,7 +164,7 @@ pub fn build_cfg_standalone(
         .into_iter()
         .filter_map(|node| {
             let cfg = build_function_cfg(&node, lang_id, source_bytes)?;
-            let name = function_name(&node, source_bytes);
+            let name = function_name(&node, source_bytes, lang_id);
             let line = node.start_position().row as u32 + 1;
             let column = Some(node.start_position().column as u32);
             let end_line = Some(node.end_position().row as u32 + 1);
@@ -190,5 +222,57 @@ mod tests {
         let b = results.iter().find(|r| r.line == 2 && r.column == Some(24));
         assert!(a.is_some(), "expected a result at line 2, column 10");
         assert!(b.is_some(), "expected a result at line 2, column 25");
+    }
+
+    // #2471: Julia and R function_definition nodes carry no direct `name`
+    // field, unlike most other languages this crate supports — the generic
+    // function_name() fallback used to silently report a wrong name for
+    // every function in these two languages (Julia: "<anonymous>"; R:
+    // actively worse — the literal string "function", since tree-sitter-r's
+    // grammar happens to define a `name` field pointing at the keyword
+    // token itself, not an identifier).
+    //
+    // Only `analyze_complexity_standalone` is exercised here for Julia/R —
+    // `get_cfg_rules` (ast_analysis/cfg.rs) has no entry for either language
+    // at all, so `build_cfg_standalone` correctly returns zero results for
+    // both regardless of this fix; that's a separate, pre-existing, and
+    // out-of-scope gap (CFG support for Julia/R hasn't been built yet), not
+    // something this issue's name-resolution fix touches.
+    #[test]
+    fn analyze_complexity_standalone_resolves_julia_function_name() {
+        let results = analyze_complexity_standalone(
+            "function greet(name)\n    return \"hello, \" * name\nend",
+            "test.jl",
+            Some("julia"),
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "greet");
+    }
+
+    #[test]
+    fn analyze_complexity_standalone_resolves_r_function_name() {
+        let results = analyze_complexity_standalone(
+            "greet <- function(name) {\n  return(paste(\"hello,\", name))\n}",
+            "test.r",
+            Some("r"),
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "greet");
+    }
+
+    #[test]
+    fn analyze_complexity_standalone_r_anonymous_function_reports_anonymous_not_the_function_keyword(
+    ) {
+        // A function_definition with no enclosing name-assigning
+        // binary_operator (an inline callback) has no name to resolve — must
+        // report "<anonymous>", NOT fall through to generic_function_name's
+        // child_by_field_name("name") lookup, which for R returns the
+        // literal "function" keyword token rather than None (confirmed by
+        // direct AST inspection — R's grammar defines that field, just not
+        // with the meaning this generic fallback assumes).
+        let results =
+            analyze_complexity_standalone("lapply(x, function(y) y + 1)", "test.r", Some("r"));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "<anonymous>");
     }
 }

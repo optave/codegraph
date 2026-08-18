@@ -88,7 +88,7 @@ fn handle_module_def(node: &Node, source: &[u8], symbols: &mut FileSymbols) -> O
 /// would silently match the first body call_expression and mis-record the
 /// function name. Callers must therefore treat a missing `signature` as a
 /// parser/grammar mismatch worth investigating, not as a routine code path.
-fn signature_call<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+pub(crate) fn signature_call<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     if let Some(sig) = find_child(node, "signature") {
         return find_child(&sig, "call_expression");
     }

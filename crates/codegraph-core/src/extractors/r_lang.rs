@@ -106,6 +106,40 @@ fn is_program_level(node: &Node) -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve the name of a `function_definition` node from its enclosing
+/// `binary_operator` assignment (`name <- function(...) {...}`) — R's
+/// `function_definition` node itself carries no `name` field, unlike most
+/// other languages this crate supports (issue #2471). Mirrors the same
+/// operator-set and identifier-kind validation `handle_binary_op` above
+/// already applies when it independently discovers the same shape top-down
+/// (parent -> child); this is the bottom-up direction (child -> parent),
+/// needed by the standalone complexity/CFG analysis in `ast_analysis::engine`,
+/// which is handed a bare `function_definition` node with no assignment
+/// context threaded through.
+///
+/// Returns `None` when the function isn't the RHS of a valid name-assigning
+/// binary_operator — e.g. an anonymous function expression passed inline to
+/// `lapply(x, function(y) y + 1)` — matching `handle_binary_op`'s own silent
+/// no-op for those same shapes.
+pub(crate) fn assigned_function_name(function_def: &Node, source: &[u8]) -> Option<String> {
+    let parent = function_def.parent()?;
+    if parent.kind() != "binary_operator" {
+        return None;
+    }
+    let lhs = parent.child_by_field_name("lhs").or_else(|| parent.child(0))?;
+    let op = parent
+        .child_by_field_name("operator")
+        .or_else(|| parent.child(1))?;
+    let op_text = node_text(&op, source);
+    if op_text != "<-" && op_text != "=" && op_text != "<<-" {
+        return None;
+    }
+    if lhs.kind() != "identifier" {
+        return None;
+    }
+    Some(node_text(&lhs, source).to_string())
+}
+
 fn extract_r_params(func_def: &Node, source: &[u8]) -> Vec<Definition> {
     let mut params = Vec::new();
     let params_node = match func_def.child_by_field_name("parameters") {

@@ -87,21 +87,30 @@ function complex(x) {
     it('works for Julia, including the &&/|| operator-by-text fix (#2312)', () => {
       const source = `function classify(x)\n    if x > 0 && x < 10\n        return 1\n    elseif x < 0\n        return -1\n    else\n        return 0\n    end\nend\n`;
       const results = native.analyzeComplexity(source, 'test.jl', 'julia');
-      // NOTE: `name` resolves to "<anonymous>" here — this standalone helper's
-      // generic `function_name` only checks a direct `name` field, which
-      // Julia's `function_definition` doesn't have (the name is nested under
-      // `signature` → `call_expression`, see `extractors/julia.rs`). This is
-      // a pre-existing gap shared by every language with the same shape
-      // (e.g. R) and is unrelated to complexity/Halstead correctness — out
-      // of scope for issue #2312.
       expect(results.length).toBe(1);
       const classify = results[0]!;
+      // #2471: `name` resolves the real function name via `signature_call`
+      // (extractors/julia.rs), not the generic direct-`name`-field fallback
+      // Julia's `function_definition` doesn't have.
+      expect(classify.name).toBe('classify');
       // if: +1 cog, +1 cyc; &&: +1 cog, +1 cyc; elseif: +1 cog, +1 cyc; else: +1 cog
       expect(classify.complexity.cognitive).toBe(4);
       expect(classify.complexity.cyclomatic).toBe(4);
       // Distinct operators (+, at least >, <, &&) must not collapse onto a
       // single "operator" vocabulary entry.
       expect(classify.complexity.halstead!.n1).toBeGreaterThanOrEqual(3);
+    });
+
+    it('resolves the real function name for R (#2471)', () => {
+      // R's `function_definition` has no `name` field at all — worse than
+      // Julia's case, the generic fallback's `child_by_field_name("name")`
+      // actively matches tree-sitter-r's grammar's own field pointing at the
+      // literal `function` keyword token, so the pre-fix result was the
+      // string "function", not merely "<anonymous>".
+      const source = `greet <- function(name) {\n  if (nchar(name) > 0) {\n    return(paste("hello,", name))\n  }\n  return("hello")\n}`;
+      const results = native.analyzeComplexity(source, 'test.r', 'r');
+      expect(results.length).toBe(1);
+      expect(results[0]!.name).toBe('greet');
     });
 
     it('works for Solidity, including the else-if transparent-wrapper fix (#2312)', () => {
