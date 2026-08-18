@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { initSchema, openDb } from '../../src/db/index.js';
+import { closeDb, initSchema, openDb } from '../../src/db/index.js';
 import { PipelineContext } from '../../src/domain/graph/builder/context.js';
 import { readGitignorePatterns } from '../../src/domain/graph/builder/helpers.js';
 import { collectFiles } from '../../src/domain/graph/builder/stages/collect-files.js';
@@ -130,6 +130,7 @@ describe('collectFiles stage', () => {
     expect(relFiles).toContain('src/a.ts');
     expect(relFiles).not.toContain('vendor/stale.go');
 
+    closeDb(db);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
