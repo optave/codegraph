@@ -184,5 +184,51 @@ describe.skipIf(BASH4 === null)(
         'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
       );
     });
+
+    // Greptile round 3 on PR #2574: three further gaps in the generalized
+    // redirect handling, each verified to be a genuine bash construct
+    // before fixing (`bash -c` reproductions, not just reasoning about it).
+    it('does not register a trailing comment word as a destination', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'MAX_LIMIT=5',
+        'read -r NUM < .codegraph/nums # MAX_LIMIT\necho "leak: $MAX_LIMIT"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $MAX_LIMIT assigned in bash block 1, referenced in block 2',
+      );
+    });
+
+    it('does not register a trailing word from inside a multiword single-quoted target', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'BAZ=hello',
+        'read -r BAR <<< \'FOO BAZ\'\necho "leak: $BAZ"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $BAZ assigned in bash block 1, referenced in block 2',
+      );
+    });
+
+    it('checks every redirect on a line with more than one, not just the first', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'FOO=hello',
+        'CONFIG=cfg.txt',
+        'read -r FOO < "$CONFIG" <<< "$FOO"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 3',
+      );
+    });
+
+    it('still exempts a genuine single-redirect file read alongside an unrelated var', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'FOO=hello\nprintf \'%s\' "$FOO" > .codegraph/foo',
+        'read -r FOO < .codegraph/foo\necho "reloaded: $FOO"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).not.toContain('Cross-fence variable: $FOO');
+    });
   },
 );

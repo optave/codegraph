@@ -76,27 +76,102 @@ collect_assignments() {
     s="${s#*"${BASH_REMATCH[0]}"}"
   done
 }
-# ERE for ONE `read` input-redirection clause: 1-3 `<` characters (covers
-# `<`, `<<`, `<<<`), optional whitespace, then its target — a double-quoted
-# string (matched whole, so a space inside it can't split off a trailing
-# word) or a bare unquoted word. A single-quoted target is deliberately not
-# matched here: bash never expands `$var` inside single quotes, so it can
-# never hold a reference this file's cross-fence check cares about, and
-# excluding it avoids the quoting gymnastics of embedding a literal `'`
-# in an ERE built from bash string fragments.
-# Shared by extract_read_dest_vars (removes the clause so a destination
-# AFTER it survives extraction) and extract_read_input (captures just the
-# clause's target) so both agree on what "the redirection" is, regardless
-# of where it falls among read's other arguments (#2491 Greptile round 2:
-# `read -r <<< "$FOO" BAR` is valid bash — BAR is still a real destination
-# even though it comes after the redirection).
-READ_REDIRECT_RE='<{1,3}[[:space:]]*("[^"]*"|[^[:space:]]+)'
+# Strips a trailing, unquoted `# comment` from a read command's argument
+# text. A `#` is only a genuine shell comment when it isn't inside an open
+# double-quoted string, so this walks the string quote-span by quote-span
+# (checking for `#` only in the text BETWEEN quotes) rather than scanning
+# for the first `#` outright (#2491 Greptile round 3: `read -r NUM < f
+# # MAX_LIMIT` left `# MAX_LIMIT` for the destination grep to pick up
+# `MAX_LIMIT` as a spurious destination).
+strip_trailing_comment() {
+  local s="$1" out="" seg
+  while [[ "$s" == *'"'* ]]; do
+    seg="${s%%\"*}"
+    if [[ "$seg" == *'#'* ]]; then
+      printf '%s' "${out}${seg%%#*}"
+      return
+    fi
+    out+="${seg}\""
+    s="${s#*\"}"
+    seg="${s%%\"*}"
+    out+="${seg}\""
+    s="${s#*\"}"
+  done
+  if [[ "$s" == *'#'* ]]; then
+    printf '%s' "${out}${s%%#*}"
+  else
+    printf '%s' "${out}${s}"
+  fi
+}
+# Consumes EVERY redirection clause (operator + target) from read_args,
+# regardless of how many there are or where they fall among read's other
+# arguments, populating two caller-local outputs via dynamic scoping (the
+# caller must `local` these two names before calling):
+#   READ_DEST_ARGS    — read_args with every redirection clause removed,
+#                        leaving only flags and genuine destinations
+#   READ_INPUT_TARGETS — every redirection's target, space-joined
+# A quoted target (double OR single) is consumed in full regardless of
+# embedded whitespace, so a multiword single-quoted operand like
+# `<<< 'FOO BAZ'` doesn't leave `BAZ'` dangling for the destination grep
+# (#2491 Greptile round 3), and EVERY redirect on the line participates —
+# not just the first — since `read` permits more than one input
+# redirection syntactically and each target could independently reference
+# a stale variable (#2491 Greptile round 3: `read -r FOO < "$CONFIG" <<<
+# "$FOO"` — the later here-string must still be checked for self-reference).
+split_read_redirects() {
+  local args="$1" op op_core after target inner remaining
+  READ_DEST_ARGS="$args"
+  READ_INPUT_TARGETS=""
+  READ_HERE_TARGETS=""
+  while [[ "$READ_DEST_ARGS" =~ (\<{1,3}[[:space:]]*) ]]; do
+    op="${BASH_REMATCH[1]}"
+    op_core="${op%%[[:space:]]*}"
+    after="${READ_DEST_ARGS#*"$op"}"
+    case "$after" in
+      \"*)
+        inner="${after#\"}"
+        inner="${inner%%\"*}"
+        target="\"${inner}\""
+        remaining="${after#*\"}"
+        remaining="${remaining#*\"}"
+        ;;
+      \'*)
+        inner="${after#\'}"
+        inner="${inner%%\'*}"
+        target="'${inner}'"
+        remaining="${after#*\'}"
+        remaining="${remaining#*\'}"
+        ;;
+      *)
+        target="${after%%[[:space:]]*}"
+        if [[ "$after" == *[[:space:]]* ]]; then
+          remaining="${after#*[[:space:]]}"
+        else
+          remaining=""
+        fi
+        ;;
+    esac
+    READ_INPUT_TARGETS+="${target} "
+    # `<<`/`<<<` (heredoc/here-string) feed an IN-MEMORY value, never a
+    # file — tracked separately so has_file_redirect_in's file-persistence
+    # exemption can require $var's reference to come from a genuine
+    # single-`<` target, not from a same-line `<<<` sitting alongside an
+    # unrelated file redirect (#2491 Greptile round 3: `read -r FOO <
+    # "$CONFIG" <<< "$FOO"` — the file redirect on $CONFIG must not exempt
+    # the separate, genuine here-string leak of $FOO).
+    if [ "${#op_core}" -ge 2 ]; then
+      READ_HERE_TARGETS+="${target} "
+    fi
+    READ_DEST_ARGS="${READ_DEST_ARGS%%"$op"*}${remaining}"
+  done
+}
 # Extracts the destination variable name(s) actually bound by a `read ...`
 # command on a line (e.g. `read -r VAR1 VAR2`) — one per output line via
 # stdout — stripping everything that ISN'T a real destination first:
 #   - a trailing command on the same line (`; do`)
-#   - the input source (`< file`, `<<< "$X"` here-strings), from anywhere
-#     in the argument list, not just a trailing truncation
+#   - a trailing unquoted comment (`# ...`)
+#   - every input source (`< file`, `<<< "$X"` here-strings), from
+#     anywhere in the argument list, not just a trailing truncation
 #   - quoted option arguments (`-p "prompt text"`, which may contain
 #     arbitrary uppercase words that aren't destinations at all)
 #   - a value-taking flag's own argument (`-t 5`, `-u FD`, `-d ':'`,
@@ -114,7 +189,10 @@ extract_read_dest_vars() {
   [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]] || return 0
   local read_args="${BASH_REMATCH[2]}"
   read_args="${read_args%%;*}"
-  read_args=$(printf '%s' "$read_args" | sed -E "s/${READ_REDIRECT_RE}//")
+  read_args=$(strip_trailing_comment "$read_args")
+  local READ_DEST_ARGS READ_INPUT_TARGETS
+  split_read_redirects "$read_args"
+  read_args="$READ_DEST_ARGS"
   read_args=$(printf '%s' "$read_args" | sed -E 's/"[^"]*"//g' | sed -E "s/'[^']*'//g")
   read_args=$(printf '%s' "$read_args" | sed -E 's/-[a-zA-Z]*[ptnNdui][[:space:]]+[^[:space:]]+//g')
   printf '%s' "$read_args" | grep -oE '(^|[^A-Za-z0-9_$])[A-Z][A-Z0-9_]+' | sed -E 's/^[^A-Za-z0-9_]//'
@@ -130,17 +208,33 @@ is_read_dest_of_line() {
   done < <(extract_read_dest_vars "$line")
   return 1
 }
-# Extracts just the TARGET of a `read` line's input redirection (e.g. the
-# `"$FOO"` in `read -r BAR <<< "$FOO"`), using the same READ_REDIRECT_RE as
-# extract_read_dest_vars so the two agree on where the redirection is.
-# Empty output if the line has no redirection at all (e.g. `read -p "..." VAR`).
+# Extracts every TARGET of a `read` line's input redirections, space-joined
+# (e.g. `"$FOO"` for `read -r BAR <<< "$FOO"`), via the same
+# split_read_redirects used by extract_read_dest_vars so both agree on
+# where the redirections are. Empty output if the line has none at all
+# (e.g. `read -p "..." VAR`).
 extract_read_input() {
   local line="$1"
   [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]] || return 0
   local read_args="${BASH_REMATCH[2]}"
   read_args="${read_args%%;*}"
-  [[ "$read_args" =~ $READ_REDIRECT_RE ]] || return 0
-  printf '%s' "${BASH_REMATCH[1]}"
+  local READ_DEST_ARGS READ_INPUT_TARGETS READ_HERE_TARGETS
+  split_read_redirects "$read_args"
+  printf '%s' "$READ_INPUT_TARGETS"
+}
+# Extracts only the HERE-string/heredoc (`<<`, `<<<`) targets of a `read`
+# line, excluding genuine single-`<` file targets — the in-memory subset of
+# extract_read_input, used where a mix of a real file redirect and an
+# in-memory here-string on the SAME line must be told apart (#2491 Greptile
+# round 3).
+extract_read_here_input() {
+  local line="$1"
+  [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]] || return 0
+  local read_args="${BASH_REMATCH[2]}"
+  read_args="${read_args%%;*}"
+  local READ_DEST_ARGS READ_INPUT_TARGETS READ_HERE_TARGETS
+  split_read_redirects "$read_args"
+  printf '%s' "$READ_HERE_TARGETS"
 }
 # Whether $var (as $var, not the bare destination name) appears in this
 # line's own `read` input clause — the here-string/redirect operand, not
@@ -148,6 +242,17 @@ extract_read_input() {
 is_read_input_of_line() {
   local var="$1" line="$2" input
   input=$(extract_read_input "$line")
+  [ -n "$input" ] && [[ "$input" =~ \$\{?${var}\}?([^A-Za-z0-9_]|$) ]]
+}
+# Whether $var appears specifically within a here-string/heredoc target on
+# this `read` line, as opposed to a genuine single-`<` file target — used
+# to tell apart `read -r FOO < "$CONFIG" <<< "$FOO"`'s two redirects: the
+# first is a real (if itself possibly stale) file path, the second is an
+# in-memory leak of $FOO that a blanket "this line has a file redirect"
+# check must not paper over.
+is_read_here_input_of_line() {
+  local var="$1" line="$2" input
+  input=$(extract_read_here_input "$line")
   [ -n "$input" ] && [[ "$input" =~ \$\{?${var}\}?([^A-Za-z0-9_]|$) ]]
 }
 # Whether this line both binds $var as a `read` destination AND feeds $var
@@ -223,14 +328,20 @@ while IFS=$'\t' read -r bnum line; do
             # destination AND isn't also that same read's own input (a
             # same-line self-reference like `read -r FOO <<< "$FOO"` still
             # leaks the stale value into itself), and the redirection case
-            # excludes here-strings (`<<<`) — all were blanket substring
-            # matches that wrongly exempted a genuine cross-fence leak used
-            # as that same line's `read` INPUT (e.g. `read -r BAR <<< "$FOO"`:
-            # $FOO is a stale in-memory reference, not a file re-derivation,
-            # even though the line contains `read ` and the `<<<` operator's
-            # own text contains a trailing `< `) (#2491).
+            # excludes here-strings (`<<<`) UNLESS $var's own reference is
+            # itself the here-string's target — a line can have a genuine
+            # single-`<` file redirect ALONGSIDE an unrelated `<<<` leak
+            # (`read -r FOO < "$CONFIG" <<< "$FOO"`: the file redirect must
+            # not paper over the separate, genuine leak of $FOO) — all were
+            # blanket substring/whole-line matches that wrongly exempted a
+            # genuine cross-fence leak used as that same line's `read`
+            # INPUT (e.g. `read -r BAR <<< "$FOO"`: $FOO is a stale
+            # in-memory reference, not a file re-derivation, even though
+            # the line contains `read ` and the `<<<` operator's own text
+            # contains a trailing `< `) (#2491).
             if [[ "$line" != *'cat '* ]] && ! is_read_rebind_exempt "$var" "$line" && \
-               ! has_file_redirect_in "$line" && [[ "$line" != *'$(<'* ]]; then
+               { ! has_file_redirect_in "$line" || is_read_here_input_of_line "$var" "$line"; } && \
+               [[ "$line" != *'$(<'* ]]; then
               error "Cross-fence variable: \$$var assigned in bash block $assigned_in, referenced in block $bnum without file persistence (Pattern 1)"
             fi
           fi
