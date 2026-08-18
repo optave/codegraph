@@ -322,12 +322,26 @@ async function runPostNativeStructure(
  */
 async function runDataflowVertexPass(
   ctx: PipelineContext,
+  isFullBuild: boolean,
   changedFiles: string[] | undefined,
 ): Promise<void> {
   if (ctx.opts.dataflow === false) return;
 
   const native = loadNative();
   if (!native?.extractDataflowAnalysis) return;
+
+  // Quiet incremental: no files changed → no new dataflow edges/vertices to
+  // add, nothing to do. Without this, an incremental no-op rebuild falls
+  // through to the "full build" branch below just like a genuine full
+  // build would (changedFiles is `[]`, not `undefined`, but the `else`
+  // below treats both the same) and re-scans every eligible file for
+  // nothing — mirrors backfillEdgeTechniquesAfterNativeOrchestrator's
+  // identical guard just above (#2483 follow-up: caught by the perf-canary
+  // "No-op rebuild" benchmark after broadening which files that full-build
+  // branch considers eligible).
+  if (!isFullBuild && changedFiles && changedFiles.length === 0) {
+    return;
+  }
 
   // Determine which files to process: changed files for incremental, all for full builds.
   let filesToProcess: string[];
@@ -2948,7 +2962,7 @@ export async function tryNativeOrchestrator(
   // Languages where Rust has no dataflow rules are silently skipped; a WASM
   // fallback for those is tracked in issue #1614.
   if (ctx.opts.dataflow !== false && !needsAnalysisFallback) {
-    await runDataflowVertexPass(ctx, result.changedFiles);
+    await runDataflowVertexPass(ctx, !!result.isFullBuild, result.changedFiles);
   }
 
   session.close();
