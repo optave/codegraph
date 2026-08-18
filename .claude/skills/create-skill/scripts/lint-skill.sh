@@ -76,6 +76,55 @@ collect_assignments() {
     s="${s#*"${BASH_REMATCH[0]}"}"
   done
 }
+# Extracts the destination variable name(s) actually bound by a `read ...`
+# command on a line (e.g. `read -r VAR1 VAR2`) — one per output line via
+# stdout — stripping everything that ISN'T a real destination first:
+#   - a trailing command on the same line (`; do`)
+#   - the input source (`< file`, `<<< "$X"` here-strings)
+#   - quoted option arguments (`-p "prompt text"`, which may contain
+#     arbitrary uppercase words that aren't destinations at all)
+#   - a value-taking flag's own argument (`-t 5`, `-u FD`, `-d ':'`,
+#     `-i "initial text"`, and combined short forms like `-ei FOO`, where
+#     `-e` takes no argument but the trailing `-i` does — every read flag
+#     EXCEPT `-a` (whose argument is itself a genuine destination: the
+#     array read into), so the strip only fires when the cluster's LAST
+#     letter is one of the other value-taking flags
+#   - a `$`-prefixed token, which REFERENCES a var rather than binding it
+# Shared by collect_assignments's registration pass and the cross-fence
+# reference check's read-exemption (#2491) so both agree on what a `read`
+# line actually binds.
+extract_read_dest_vars() {
+  local line="$1"
+  [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]] || return 0
+  local read_args="${BASH_REMATCH[2]}"
+  read_args="${read_args%%;*}"
+  read_args="${read_args%%<*}"
+  read_args=$(printf '%s' "$read_args" | sed -E 's/"[^"]*"//g' | sed -E "s/'[^']*'//g")
+  read_args=$(printf '%s' "$read_args" | sed -E 's/-[a-zA-Z]*[ptnNdui][[:space:]]+[^[:space:]]+//g')
+  printf '%s' "$read_args" | grep -oE '(^|[^A-Za-z0-9_$])[A-Z][A-Z0-9_]+' | sed -E 's/^[^A-Za-z0-9_]//'
+}
+# Whether $var is one of the destination variables a `read` on this line
+# actually binds — as opposed to merely appearing somewhere else on the
+# line (e.g. as a here-string/redirection INPUT to that same read, which is
+# a genuine cross-fence reference, not a rebinding).
+is_read_dest_of_line() {
+  local var="$1" line="$2" dest
+  while IFS= read -r dest; do
+    [ "$dest" = "$var" ] && return 0
+  done < <(extract_read_dest_vars "$line")
+  return 1
+}
+# Whether $line has a genuine single-`<` file-redirection ("< file",
+# "<\"file\"") — as opposed to a `<<<` here-string, which feeds an
+# IN-MEMORY value as input (the opposite of reading from a file) but
+# contains the same `< `/`<"` substrings a blanket check would wrongly
+# treat as file persistence (#2491: `read -r BAR <<< "$FOO"` — $FOO is a
+# genuine cross-fence leak, not a file re-derivation, even though the `<<<`
+# operator's own text contains a trailing `< `).
+has_file_redirect_in() {
+  local line="$1"
+  [[ "$line" =~ (^|[^\<])\<[[:space:]] ]] || [[ "$line" =~ (^|[^\<])\<\" ]]
+}
 while IFS=$'\t' read -r bnum line; do
   # Skip comment lines — they document context but don't register variable assignments
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -89,31 +138,10 @@ while IFS=$'\t' read -r bnum line; do
   # (issue #2344 — fixer/SKILL.md's own I4 integrity check does exactly this
   # with a loop-local $COUNT that collides in name only with the unrelated
   # batch-size $COUNT set up in Phase 0).
-  if [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]]; then
-    read_args="${BASH_REMATCH[2]}"
-    # Only the destination variable *names* on a `read` line are real
-    # bindings — strip everything else first so none of it is misread as
-    # one (Greptile review on PR #2490/#2344):
-    #   - a trailing command on the same line (`; do`)
-    #   - the input source (`< file`, `<<< "$X"` here-strings)
-    #   - quoted option arguments (`-p "prompt text"`, which may contain
-    #     arbitrary uppercase words that aren't destinations at all)
-    #   - a value-taking flag's own argument (`-t 5`, `-u FD`, `-d ':'`,
-    #     `-i "initial text"`, and combined short forms like `-ei FOO`,
-    #     where `-e` takes no argument but the trailing `-i` does — every
-    #     read flag EXCEPT `-a` (whose argument is itself a genuine
-    #     destination: the array read into), so the strip only fires when
-    #     the cluster's LAST letter is one of the other value-taking flags
-    #   - a `$`-prefixed token, which REFERENCES a var rather than binding it
-    read_args="${read_args%%;*}"
-    read_args="${read_args%%<*}"
-    read_args=$(printf '%s' "$read_args" | sed -E 's/"[^"]*"//g' | sed -E "s/'[^']*'//g")
-    read_args=$(printf '%s' "$read_args" | sed -E 's/-[a-zA-Z]*[ptnNdui][[:space:]]+[^[:space:]]+//g')
-    while IFS= read -r var; do
-      [ -z "$var" ] && continue
-      register_var "$var" "$bnum"
-    done < <(printf '%s' "$read_args" | grep -oE '(^|[^A-Za-z0-9_$])[A-Z][A-Z0-9_]+' | sed -E 's/^[^A-Za-z0-9_]//')
-  fi
+  while IFS= read -r var; do
+    [ -z "$var" ] && continue
+    register_var "$var" "$bnum"
+  done < <(extract_read_dest_vars "$line")
 done < "$BLOCKS_FILE"
 
 # Check for references in later blocks without file persistence
@@ -130,9 +158,18 @@ while IFS=$'\t' read -r bnum line; do
         if [[ "$line" =~ \$${var}([^A-Za-z0-9_]|$) ]] || [[ "$line" == *'${'"${var}"'}'* ]]; then
           # Check if the same block also assigns it (re-assignment is fine) — O(1) lookup
           if [ -z "${REASSIGNED[${var}:${bnum}]+x}" ]; then
-            # Check it's not read from a file (cat, $(...) with cat/read)
-            if [[ "$line" != *'cat '* ]] && [[ "$line" != *'read '* ]] && \
-               [[ "$line" != *'< '* ]] && [[ "$line" != *'<"'* ]] && [[ "$line" != *'$(<'* ]]; then
+            # Check it's not read from a file (cat, $(...) with cat/read).
+            # The `read` case checks that $var is actually THIS line's read
+            # destination, not merely that a `read` command appears
+            # somewhere on the line, and the redirection case excludes
+            # here-strings (`<<<`) — both were blanket substring matches
+            # that wrongly exempted a genuine cross-fence leak used as that
+            # same line's `read` INPUT (e.g. `read -r BAR <<< "$FOO"`: $FOO
+            # is a stale in-memory reference, not a file re-derivation, even
+            # though the line contains `read ` and the `<<<` operator's own
+            # text contains a trailing `< `) (#2491).
+            if [[ "$line" != *'cat '* ]] && ! is_read_dest_of_line "$var" "$line" && \
+               ! has_file_redirect_in "$line" && [[ "$line" != *'$(<'* ]]; then
               error "Cross-fence variable: \$$var assigned in bash block $assigned_in, referenced in block $bnum without file persistence (Pattern 1)"
             fi
           fi
