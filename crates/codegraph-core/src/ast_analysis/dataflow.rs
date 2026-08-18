@@ -1018,8 +1018,11 @@ fn extract_param_names(node: &Node, rules: &DataflowRules, source: &[u8]) -> Vec
 /// `optional_formal_parameters`, issue #2358) groups multiple genuinely
 /// separate parameter slots — each of ITS OWN named children gets its own
 /// index, and a slot yielding zero names (a flat default-value literal
-/// sibling, not a real parameter) does NOT consume an index. This does NOT
-/// apply to an ordinary (non-grouped) top-level child, which always
+/// sibling, not a real parameter) does NOT consume an index — UNLESS the
+/// grouped node yields zero names in total, in which case it is itself one
+/// unnamed parameter slot (Go's own `parameter_declaration` can be entirely
+/// unnamed, issue #2501) and still consumes exactly one index. This does
+/// NOT apply to an ordinary (non-grouped) top-level child, which always
 /// consumes an index regardless of name count — an unnamed parameter
 /// (e.g. C/C++'s `void f(int, int value)`) is a real slot that must not
 /// collapse into the next one. Mirrors TS's `extractParams`
@@ -1030,15 +1033,28 @@ fn extract_params(params_node: &Node, rules: &DataflowRules, source: &[u8]) -> V
     let cursor = &mut params_node.walk();
     for child in params_node.named_children(cursor) {
         if rules.grouped_param_types.contains(&child.kind()) {
+            let mut matched_any = false;
             let inner_cursor = &mut child.walk();
             for slot in child.named_children(inner_cursor) {
                 let names = extract_param_names(&slot, rules, source);
                 if names.is_empty() {
                     continue;
                 }
+                matched_any = true;
                 for name in names {
                     result.push((name, index));
                 }
+                index += 1;
+            }
+            // A grouped node that yields NO names at all (Go's own entirely
+            // unnamed `parameter_declaration`, e.g. `*int` in `func f(*int,
+            // a int)` — tree-sitter-go still parses this even though real Go
+            // requires all-named-or-all-unnamed) is still exactly one real,
+            // positional slot and must consume an index like any other
+            // unnamed parameter, unlike Dart's non-slot siblings above
+            // (which never trigger this: a Dart grouped wrapper always
+            // contains at least one real named parameter) (issue #2501).
+            if !matched_any {
                 index += 1;
             }
             continue;
@@ -2030,5 +2046,36 @@ mod go_tests {
         assert_eq!(get("a"), Some(0));
         assert_eq!(get("b"), Some(1));
         assert_eq!(get("nums"), Some(2));
+    }
+
+    // Greptile review on PR #2575 for #2501: tree-sitter-go still parses an
+    // entirely unnamed `parameter_declaration` (e.g. `*int`, a compound type
+    // that can't be mistaken for an identifier) as its own node with no
+    // `name` field — confirmed via a parse-tree dump before writing this
+    // test. Grouping every `parameter_declaration` must not let a fully
+    // unnamed one collapse into the next slot instead of consuming its own
+    // index.
+    #[test]
+    fn unnamed_parameter_before_a_named_one_still_gets_correct_index() {
+        let data = extract("package main\nfunc f(*int, a int) {\n}\n");
+        let get = |n: &str| {
+            data.parameters
+                .iter()
+                .find(|p| p.func_name == "f" && p.param_name == n)
+                .map(|p| p.param_index)
+        };
+        assert_eq!(get("a"), Some(1));
+    }
+
+    #[test]
+    fn two_unnamed_parameters_before_a_named_one_still_get_correct_index() {
+        let data = extract("package main\nfunc f(*int, *string, a int) {\n}\n");
+        let get = |n: &str| {
+            data.parameters
+                .iter()
+                .find(|p| p.func_name == "f" && p.param_name == n)
+                .map(|p| p.param_index)
+        };
+        assert_eq!(get("a"), Some(2));
     }
 }

@@ -104,14 +104,25 @@ export function extractParams(
       // even with zero names, since an unnamed parameter (e.g. C++'s
       // `void f(int, int value)`) is a real slot that must not collapse
       // into the next one.
+      let matchedAny = false;
       for (const slot of child.namedChildren) {
         const names = extractParamNames(slot, rules);
         if (names.length === 0) continue;
+        matchedAny = true;
         for (const name of names) {
           result.push({ name, index });
         }
         index++;
       }
+      // A grouped node that yields NO names at all (Go's own entirely
+      // unnamed `parameter_declaration`, e.g. `*int` in `func f(*int, a
+      // int)` — tree-sitter-go still parses this even though real Go
+      // requires all-named-or-all-unnamed) is still exactly one real,
+      // positional slot and must consume an index like any other unnamed
+      // parameter, unlike Dart's non-slot siblings above (which never
+      // trigger this: a Dart grouped wrapper always contains at least one
+      // real named parameter) (issue #2501).
+      if (!matchedAny) index++;
       continue;
     }
     const names = extractParamNames(child, rules);

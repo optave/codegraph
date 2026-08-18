@@ -68,6 +68,31 @@ describe('extractDataflow — Go', () => {
         ]),
       );
     });
+
+    // Greptile review on PR #2575 for #2501: tree-sitter-go still parses an
+    // entirely unnamed `parameter_declaration` (e.g. `*int`, a compound type
+    // that can't be mistaken for an identifier) as its own node with no
+    // `name` field — confirmed via a parse-tree dump before writing this
+    // test. Grouping every `parameter_declaration` must not let a fully
+    // unnamed one collapse into the next slot instead of consuming its own
+    // index.
+    it('gives a named parameter the correct index after an unnamed one', () => {
+      const data = parseAndExtract('package main\nfunc f(*int, a int) {\n}\n');
+      expect(data.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ funcName: 'f', paramName: 'a', paramIndex: 1 }),
+        ]),
+      );
+    });
+
+    it('gives a named parameter the correct index after two unnamed ones', () => {
+      const data = parseAndExtract('package main\nfunc f(*int, *string, a int) {\n}\n');
+      expect(data.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ funcName: 'f', paramName: 'a', paramIndex: 2 }),
+        ]),
+      );
+    });
   });
 
   describe('returns', () => {
