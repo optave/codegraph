@@ -194,6 +194,30 @@ describe('guard-git.sh does not false-positive on quoted text (#2099)', () => {
     ].join('\n');
     expect(isDenied(command)).toBe(false);
   });
+
+  it('does not block a descriptive echo label mentioning git clean before an unrelated, properly-guarded real invocation (#2468)', () => {
+    // Investigated as #2468: an echo LABEL narrating what a later command
+    // does (a natural thing to write in a multi-line script, e.g.
+    // /housekeep's own dirt-discovery phase) must not be misread as its own
+    // unprotected git-clean invocation just because it happens to mention
+    // force-like flag characters and the word "dry-run" (without a leading
+    // dash, since it's prose, not a real flag) in quoted text. The mask
+    // already reduces this to inert `#` characters before verb-detection
+    // runs (mask-quoted-text.mjs) — confirmed not reproducible against the
+    // current hook end-to-end; this locks that in against regression.
+    const command = [
+      `echo "=== gitignored dirt (git clean -fdX dry-run) ==="`,
+      `git clean -fdX --dry-run`,
+    ].join('\n');
+    expect(isDenied(command)).toBe(false);
+  });
+
+  it('does not block a single-line echo whose quoted prose mentions an unprotected-looking git clean (#2468)', () => {
+    // Isolates the same false-positive shape without the second, real
+    // invocation — the prose alone, once naively unmasked, reads as
+    // "git clean -fdX" with no dash-prefixed dry-run token nearby.
+    expect(isDenied('echo "we ran git clean -fdX dry-run here"')).toBe(false);
+  });
 });
 
 describe('guard-git.sh mask-quoted-text.mjs', () => {
