@@ -230,5 +230,18 @@ describe.skipIf(BASH4 === null)(
       expect(ranSuccessfully).toBe(true);
       expect(stdout).not.toContain('Cross-fence variable: $FOO');
     });
+
+    // Greptile round 4 on PR #2574: strip_trailing_comment only alternated
+    // on double quotes, so a literal `#` inside a single-quoted redirect
+    // target was mistaken for a real comment, truncating away a genuine
+    // destination that followed it (verified against real bash first).
+    it('does not mistake a literal # inside a single-quoted target for a comment', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'EXTRA=stale',
+        'read -r <<< \'#tag value\' FOO EXTRA\necho "now fresh: $EXTRA"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).not.toContain('Cross-fence variable: $EXTRA');
+    });
   },
 );

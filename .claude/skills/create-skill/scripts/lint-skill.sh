@@ -78,24 +78,36 @@ collect_assignments() {
 }
 # Strips a trailing, unquoted `# comment` from a read command's argument
 # text. A `#` is only a genuine shell comment when it isn't inside an open
-# double-quoted string, so this walks the string quote-span by quote-span
-# (checking for `#` only in the text BETWEEN quotes) rather than scanning
-# for the first `#` outright (#2491 Greptile round 3: `read -r NUM < f
-# # MAX_LIMIT` left `# MAX_LIMIT` for the destination grep to pick up
-# `MAX_LIMIT` as a spurious destination).
+# quoted string (double OR single — a literal `#` inside a single-quoted
+# redirect target, e.g. `<<< '#tag value'`, is data, not a comment marker,
+# and must not truncate away a genuine destination that follows it (#2491
+# Greptile round 4)), so this walks the string quote-span by quote-span —
+# whichever quote character opens first — checking for `#` only in the
+# text BETWEEN quotes, rather than scanning for the first `#` outright
+# (#2491 Greptile round 3: `read -r NUM < f # MAX_LIMIT` left
+# `# MAX_LIMIT` for the destination grep to pick up `MAX_LIMIT` as a
+# spurious destination).
 strip_trailing_comment() {
-  local s="$1" out="" seg
-  while [[ "$s" == *'"'* ]]; do
-    seg="${s%%\"*}"
+  local s="$1" out="" seg q before_dq before_sq
+  while [[ "$s" == *'"'* ]] || [[ "$s" == *"'"* ]]; do
+    before_dq="${s%%\"*}"
+    before_sq="${s%%\'*}"
+    if [[ "$s" == *'"'* ]] && { [[ "$s" != *"'"* ]] || [ "${#before_dq}" -le "${#before_sq}" ]; }; then
+      q='"'
+      seg="$before_dq"
+    else
+      q="'"
+      seg="$before_sq"
+    fi
     if [[ "$seg" == *'#'* ]]; then
       printf '%s' "${out}${seg%%#*}"
       return
     fi
-    out+="${seg}\""
-    s="${s#*\"}"
-    seg="${s%%\"*}"
-    out+="${seg}\""
-    s="${s#*\"}"
+    out+="${seg}${q}"
+    s="${s#*"$q"}"
+    seg="${s%%"$q"*}"
+    out+="${seg}${q}"
+    s="${s#*"$q"}"
   done
   if [[ "$s" == *'#'* ]]; then
     printf '%s' "${out}${s%%#*}"
