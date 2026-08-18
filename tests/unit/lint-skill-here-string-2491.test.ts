@@ -138,5 +138,29 @@ describe.skipIf(BASH4 === null)(
         'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
       );
     });
+
+    // Greptile round 1 on PR #2574: is_read_dest_of_line alone only checked
+    // whether $var was *a* destination somewhere on the line, so a same-line
+    // self-reference (destination and stale here-string input sharing the
+    // same name) still slipped through undetected.
+    it('flags a same-line self-referential read (destination and input share a name)', () => {
+      const { stdout, ranSuccessfully } = runLint(['FOO=hello', 'read -r FOO <<< "$FOO"']);
+      expect(ranSuccessfully).toBe(true);
+      expect(stdout).toContain(
+        'Cross-fence variable: $FOO assigned in bash block 1, referenced in block 2',
+      );
+    });
+
+    it('does not flag a later line in the same block referencing the freshly self-bound value', () => {
+      const { stdout, ranSuccessfully } = runLint([
+        'FOO=hello',
+        'read -r FOO <<< "$FOO"\necho "now local: $FOO"',
+      ]);
+      expect(ranSuccessfully).toBe(true);
+      const crossFenceErrors = stdout
+        .split('\n')
+        .filter((l) => l.includes('Cross-fence variable: $FOO'));
+      expect(crossFenceErrors).toHaveLength(1);
+    });
   },
 );

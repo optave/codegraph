@@ -114,6 +114,46 @@ is_read_dest_of_line() {
   done < <(extract_read_dest_vars "$line")
   return 1
 }
+# Extracts the INPUT-supplying portion of a `read` line — the mirror image
+# of extract_read_dest_vars's "%%<*" truncation, keeping everything from the
+# first standalone `<` onward (`< file`, `<<< "value"`) instead of discarding
+# it. Empty output if the line has no `<` at all (e.g. `read -p "..." VAR`).
+extract_read_input() {
+  local line="$1"
+  [[ "$line" =~ (^|[^A-Za-z0-9_])read([[:space:]].*)?$ ]] || return 0
+  local read_args="${BASH_REMATCH[2]}"
+  read_args="${read_args%%;*}"
+  [[ "$read_args" == *'<'* ]] || return 0
+  printf '%s' "${read_args#*<}"
+}
+# Whether $var (as $var, not the bare destination name) appears in this
+# line's own `read` input clause — the here-string/redirect operand, not
+# the destination it binds.
+is_read_input_of_line() {
+  local var="$1" line="$2" input
+  input=$(extract_read_input "$line")
+  [ -n "$input" ] && [[ "$input" =~ \$\{?${var}\}?([^A-Za-z0-9_]|$) ]]
+}
+# Whether this line both binds $var as a `read` destination AND feeds $var
+# into that same read's own input — a same-line self-reference like
+# `read -r FOO <<< "$FOO"` genuinely leaks the stale $FOO into itself even
+# though FOO is also this line's destination, because the here-string's
+# input is evaluated before the destination is rebound. Every OTHER line in
+# the block that references $var after this one is still legitimately safe
+# (this line does bind a fresh, in-process value) — only this exact line's
+# own reference is a leak (Greptile round 1 on PR #2574 for #2491:
+# is_read_dest_of_line alone only checks whether $var is *a* destination
+# somewhere on the line, not whether the specific $var occurrence that
+# triggered the outer reference check is safe, and the block-wide
+# REASSIGNED exemption doesn't distinguish this line from later ones).
+is_self_referential_read() {
+  is_read_dest_of_line "$1" "$2" && is_read_input_of_line "$1" "$2"
+}
+# Whether $var is a destination this line's `read` binds, WITHOUT also
+# being a same-line self-reference (see is_self_referential_read above).
+is_read_rebind_exempt() {
+  is_read_dest_of_line "$1" "$2" && ! is_self_referential_read "$1" "$2"
+}
 # Whether $line has a genuine single-`<` file-redirection ("< file",
 # "<\"file\"") — as opposed to a `<<<` here-string, which feeds an
 # IN-MEMORY value as input (the opposite of reading from a file) but
@@ -156,19 +196,24 @@ while IFS=$'\t' read -r bnum line; do
         # Narrow check: ensure the $VAR reference isn't followed by [A-Za-z0-9_]
         # (which would mean it's a different, longer variable name)
         if [[ "$line" =~ \$${var}([^A-Za-z0-9_]|$) ]] || [[ "$line" == *'${'"${var}"'}'* ]]; then
-          # Check if the same block also assigns it (re-assignment is fine) — O(1) lookup
-          if [ -z "${REASSIGNED[${var}:${bnum}]+x}" ]; then
+          # Check if the same block also assigns it (re-assignment is fine) — O(1) lookup.
+          # A same-line self-referential read (`read -r FOO <<< "$FOO"`) still forces
+          # the deeper check below even though REASSIGNED is set for this block: that
+          # flag correctly protects LATER lines referencing the freshly-bound $var, but
+          # this exact line's own reference predates the rebind and is still a leak.
+          if [ -z "${REASSIGNED[${var}:${bnum}]+x}" ] || is_self_referential_read "$var" "$line"; then
             # Check it's not read from a file (cat, $(...) with cat/read).
             # The `read` case checks that $var is actually THIS line's read
-            # destination, not merely that a `read` command appears
-            # somewhere on the line, and the redirection case excludes
-            # here-strings (`<<<`) — both were blanket substring matches
-            # that wrongly exempted a genuine cross-fence leak used as that
-            # same line's `read` INPUT (e.g. `read -r BAR <<< "$FOO"`: $FOO
-            # is a stale in-memory reference, not a file re-derivation, even
-            # though the line contains `read ` and the `<<<` operator's own
-            # text contains a trailing `< `) (#2491).
-            if [[ "$line" != *'cat '* ]] && ! is_read_dest_of_line "$var" "$line" && \
+            # destination AND isn't also that same read's own input (a
+            # same-line self-reference like `read -r FOO <<< "$FOO"` still
+            # leaks the stale value into itself), and the redirection case
+            # excludes here-strings (`<<<`) — all were blanket substring
+            # matches that wrongly exempted a genuine cross-fence leak used
+            # as that same line's `read` INPUT (e.g. `read -r BAR <<< "$FOO"`:
+            # $FOO is a stale in-memory reference, not a file re-derivation,
+            # even though the line contains `read ` and the `<<<` operator's
+            # own text contains a trailing `< `) (#2491).
+            if [[ "$line" != *'cat '* ]] && ! is_read_rebind_exempt "$var" "$line" && \
                ! has_file_redirect_in "$line" && [[ "$line" != *'$(<'* ]]; then
               error "Cross-fence variable: \$$var assigned in bash block $assigned_in, referenced in block $bnum without file persistence (Pattern 1)"
             fi
