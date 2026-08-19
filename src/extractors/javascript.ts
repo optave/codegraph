@@ -210,6 +210,7 @@ const EXPORT_DECL_KIND: Record<string, string> = {
   abstract_class_declaration: 'class',
   interface_declaration: 'interface',
   type_alias_declaration: 'type',
+  enum_declaration: 'enum',
 };
 
 /**
@@ -218,8 +219,8 @@ const EXPORT_DECL_KIND: Record<string, string> = {
  * walk-based `handleExportStmt`) so they can't drift apart on what counts as
  * an export — see the "two code paths" gotcha for this extractor.
  *
- * Named function/class/interface/type declarations carry their own `name`
- * field. `export const/let/var …` has no such field — each declarator's value
+ * Named function/class/interface/type/enum declarations carry their own
+ * `name` field. `export const/let/var …` has no such field — each declarator's value
  * is classified the same way `handleVariableDeclarator` classifies it when
  * building the matching Definition (function-valued → kind 'function'; any
  * other `const` initializer shape → kind 'constant', regardless of complexity —

@@ -3161,6 +3161,7 @@ fn handle_export_declaration(decl: &Node, source: &[u8], symbols: &mut FileSymbo
         "class_declaration" | "abstract_class_declaration" => ("class", "name"),
         "interface_declaration" => ("interface", "name"),
         "type_alias_declaration" => ("type", "name"),
+        "enum_declaration" => ("enum", "name"),
         "lexical_declaration" | "variable_declaration" => {
             collect_exported_var_declarations(decl, source, symbols);
             return;
@@ -10737,6 +10738,46 @@ mod tests {
                 .iter()
                 .any(|e| e.name == "Id" && e.kind == "type" && e.line == 2),
             "expected 'Id' exported as type at line 2; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn exports_an_enum_declaration_with_kind_enum() {
+        // Regression guard for #2560: enum_declaration had no arm in
+        // handle_export_declaration's match, so `export enum Foo {}` was
+        // extracted as a Definition (via handle_enum_decl) but never marked
+        // exported.
+        let s = parse_ts("export enum Color { Red, Green, Blue }");
+        assert!(
+            s.definitions
+                .iter()
+                .any(|d| d.name == "Color" && d.kind == "enum" && d.line == 1),
+            "expected 'Color' defined as enum at line 1; got: {:?}",
+            s.definitions
+        );
+        assert!(
+            s.exports
+                .iter()
+                .any(|e| e.name == "Color" && e.kind == "enum" && e.line == 1),
+            "expected 'Color' exported as enum at line 1; got: {:?}",
+            s.exports
+        );
+    }
+
+    #[test]
+    fn does_not_export_a_non_exported_enum() {
+        let s = parse_ts("enum Internal { A, B }");
+        assert!(
+            s.definitions
+                .iter()
+                .any(|d| d.name == "Internal" && d.kind == "enum"),
+            "expected 'Internal' defined as enum; got: {:?}",
+            s.definitions
+        );
+        assert!(
+            !s.exports.iter().any(|e| e.name == "Internal"),
+            "did not expect 'Internal' to be exported; got: {:?}",
             s.exports
         );
     }
