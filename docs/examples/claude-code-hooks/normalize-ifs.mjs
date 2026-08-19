@@ -111,6 +111,18 @@
 // be set in a given shell, rather than trying to track which variables are
 // actually set.
 //
+// Also matches bash's SPECIAL parameters in that position — `?` (exit
+// status), `$` (PID), `#` (positional-parameter count), `-` (current shell
+// option flags), `!` (last background PID), and a bare digit sequence
+// (positional parameters, `${10:+ }` etc.) — verified directly against real
+// bash (Greptile review): `${?:+ }`/`${$:+ }`/`${#:+ }`/`${-:+ }` all
+// substitute the whitespace word exactly like an ordinary variable would,
+// and `?`/`$`/`#`/`-` are always set in any shell (unlike `!`/digit
+// parameters, which depend on whether a job has been backgrounded or
+// positional arguments are present — matched anyway, erring toward
+// normalizing). None of these characters overlap with the identifier
+// alternative above, so a single alternation covers both without ambiguity.
+//
 // Deliberately does NOT generalize the other three replacements below to
 // "any `${VAR<operator>...}`" — only `:+`/`+` generalizes across variable
 // names, because only its substituted text is entirely independent of the
@@ -150,7 +162,7 @@ process.stdin.on('end', () => {
   const normalized = input
     .replace(/\$\{IFS\}/g, ' ')
     .replace(/\$\{IFS: *(?:0*[0-2]|-0*[1-3]|-0+)(?::0*[1-9]\d*)?\}/g, ' ')
-    .replace(/\$\{[A-Za-z_][A-Za-z0-9_]*:?\+[ \t]+\}/g, ' ')
+    .replace(/\$\{(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[?$!#@*-]):?\+[ \t]+\}/g, ' ')
     .replace(/\$IFS(?![A-Za-z0-9_])/g, ' ');
   process.stdout.write(normalized);
 });

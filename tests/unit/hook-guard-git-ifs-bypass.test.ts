@@ -223,6 +223,32 @@ describe('guard-git.sh IFS whitespace-expansion bypass (#2451)', () => {
     expect(isDenied('git${PWD+ }reset')).toBe(true);
   });
 
+  it('still blocks git reset via a whitespace-only alternate-value expansion on the $? special parameter (Greptile review)', () => {
+    // ${?:+ } is always-set (bash's exit-status special parameter is never
+    // unset), so this substitutes the literal space "word" exactly like an
+    // ordinary variable would -- verified directly against real bash.
+    // Neither special parameters nor bare digit sequences (positional
+    // parameters) match a bash identifier shape, so they need their own
+    // branch in the alternation, not just the ordinary-variable one above.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${?:+ }reset')).toBe(true);
+  });
+
+  it('still blocks git reset via a whitespace-only alternate-value expansion on the $$ (PID) special parameter', () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${$:+ }reset')).toBe(true);
+  });
+
+  it('still blocks git reset via a whitespace-only alternate-value expansion on the $# (arg count) special parameter', () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${#:+ }reset')).toBe(true);
+  });
+
+  it('still blocks git reset via a whitespace-only alternate-value expansion on the $- (shell options) special parameter', () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash syntax under test, not a missed template literal
+    expect(isDenied('git${-:+ }reset')).toBe(true);
+  });
+
   it('does not invent a token boundary from a non-whitespace alternate-value expansion on a non-IFS variable', () => {
     // ${SOME_VAR:+x} substitutes the literal "x", not whitespace — the
     // all-whitespace-content restriction applies regardless of which
