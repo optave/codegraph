@@ -3973,6 +3973,37 @@ function runDemo(reporter: Reporter, users: string[]): void {
     });
   });
 
+  describe('export enum declarations produce an Export record (#2560)', () => {
+    // Regression guard for #2560: `enum_declaration` was extracted as a
+    // Definition (via handleEnumDecl) but had no entry in EXPORT_DECL_KIND,
+    // so collectExportedDeclarations silently no-op'd for it — the enum
+    // itself was never marked exported, even though real TS/JS semantics say
+    // `export enum Foo {}` genuinely exports `Foo`.
+    function parseTS(code) {
+      const parser = parsers.get('typescript');
+      const tree = parser.parse(code);
+      return extractSymbols(tree, 'test.ts');
+    }
+
+    it('lists an exported enum with kind "enum"', () => {
+      const symbols = parseTS(`export enum Color { Red, Green, Blue }`);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'Color', kind: 'enum', line: 1 }),
+      );
+      expect(symbols.exports).toContainEqual(
+        expect.objectContaining({ name: 'Color', kind: 'enum', line: 1 }),
+      );
+    });
+
+    it('does not list a non-exported enum', () => {
+      const symbols = parseTS(`enum Internal { A, B }`);
+      expect(symbols.definitions).toContainEqual(
+        expect.objectContaining({ name: 'Internal', kind: 'enum' }),
+      );
+      expect(symbols.exports.some((e) => e.name === 'Internal')).toBe(false);
+    });
+  });
+
   describe('export line matches the declaration, not the `export` keyword (#2293)', () => {
     // Regression guard for #2293: collectExportedDeclarations computed a single
     // `exportLine` from the wrapping `export_statement` node and applied it to
