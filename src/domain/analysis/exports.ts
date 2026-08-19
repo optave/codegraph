@@ -35,9 +35,17 @@ const _wildcardReexportTargetsStmtCache: StmtCache<{ file: string }> = new WeakM
  * `badd.jsx`, or `utils.js` matching `my-utils.js` with no path separator
  * before it). Requires an exact match or a `/`-bounded path suffix — the
  * only two cases where the match reflects genuine user intent (#2530 review).
+ *
+ * Case-insensitive to match SQLite's own default `LIKE` behavior (ASCII
+ * case-insensitive) — otherwise a target that only differs from the graph's
+ * stored casing would pass the LIKE lookup but fail this stricter check,
+ * reintroducing a false "not found" for a match SQLite itself already deemed
+ * a hit (#2530 review round 3).
  */
 function isPlausibleFileMatch(matchedFile: string, target: string): boolean {
-  return matchedFile === target || matchedFile.endsWith(`/${target}`);
+  const a = matchedFile.toLowerCase();
+  const b = target.toLowerCase();
+  return a === b || a.endsWith(`/${b}`);
 }
 
 export function exportsData(

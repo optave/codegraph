@@ -214,6 +214,16 @@ describe('exportsData', () => {
     expect(data.fileFound).toBe(true);
   });
 
+  test("fileFound is case-insensitive, matching SQLite LIKE's own default case-insensitivity (#2530 Greptile round 3)", () => {
+    // SQLite's LIKE is case-insensitive for ASCII by default, so a
+    // case-mismatched target ("Entry.js") still LIKE-matches the stored
+    // "entry.js" -- isPlausibleFileMatch must not be stricter than the LIKE
+    // lookup that already decided this is a hit.
+    const data = exportsData('Entry.js', dbPath);
+    expect(data.file).toBe('entry.js');
+    expect(data.fileFound).toBe(true);
+  });
+
   test('pagination works', () => {
     const data = exportsData('lib.js', dbPath, { limit: 1 });
     expect(data.results.length).toBe(1);
