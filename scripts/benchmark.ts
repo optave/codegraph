@@ -12,7 +12,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { resolveBenchmarkExcludes, resolveBenchmarkSource, srcImport } from './lib/bench-config.js';
 import { isWorker, workerEngine, workerTargets, forkEngines } from './lib/fork-engine.js';
@@ -92,6 +91,7 @@ try {
 } catch { /* older release — no worker pool to dispose */ }
 
 const WARMUP_RUNS = 2;
+const BUILD_RUNS = 5;
 const INCREMENTAL_RUNS = 5;
 const QUERY_RUNS = 5;
 const QUERY_WARMUP_RUNS = 3;
@@ -102,12 +102,21 @@ const BENCH_EXCLUDE = [...resolveBenchmarkExcludes()];
 const origLog = console.log;
 console.log = (...args) => console.error(...args);
 
-// Clean DB for a full build
-if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
-
-const buildStart = performance.now();
-const buildResult = await buildGraph(root, { engine, incremental: false, exclude: BENCH_EXCLUDE });
-const buildTimeMs = performance.now() - buildStart;
+// Full build (delete DB first each run). Warmup-then-median, mirroring
+// incremental-benchmark.ts's own fullBuildMs methodology (#2436) — a single
+// cold call conflates steady-state build cost with the one-time NAPI/rusqlite
+// static-init cost that can only ever land on a build's very first call in
+// this worker's process lifetime (#2549).
+for (let i = 0; i < WARMUP_RUNS; i++) {
+	if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+	await buildGraph(root, { engine, incremental: false, exclude: BENCH_EXCLUDE });
+}
+const fullBuildMedian = await timeMedianWithValue(async () => {
+	if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+	return await buildGraph(root, { engine, incremental: false, exclude: BENCH_EXCLUDE });
+}, BUILD_RUNS);
+const buildTimeMs = fullBuildMedian.ms;
+const buildResult = fullBuildMedian.value;
 
 // Warmed median of QUERY_RUNS samples with `noTests: true` to match the
 // methodology used by query-benchmark.ts and the per-target `queries.*Ms`
