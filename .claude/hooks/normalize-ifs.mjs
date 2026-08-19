@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // normalize-ifs.mjs — reads a shell command line from stdin and writes it
-// back with every $IFS/${IFS} reference replaced by a single literal space
+// back with every $IFS/${IFS} reference (plus, for the `:+`/`+`
+// alternate-value form only, the equivalent reference to any other
+// normally-set variable — #2558) replaced by a single literal space
 // (#2451). Bash's own field-splitting on an unquoted $IFS/${IFS} expansion
 // produces exactly this effect at execution time — `git${IFS}checkout`
 // looks like one token as command TEXT, but Git actually receives
@@ -82,37 +84,49 @@
 // a run of ALL zeros after the minus sign — matched separately here via
 // `-0+` (a literal minus followed by one or more zeros and nothing else).
 //
-// `${IFS:+ }`/`${IFS+ }` (alternate-value expansion, restricted to
+// `${VAR:+ }`/`${VAR+ }` (alternate-value expansion, restricted to
 // ALL-whitespace content — Greptile review): unlike substring, this
-// operator does NOT extract from IFS's own value at all — it substitutes
-// an entirely separate, attacker-chosen string `word` whenever IFS IS set
-// and non-null (`:+`) or merely set (`+`), which normally means `word` is
-// what actually comes out, not IFS's value. Because of that, this is
-// matched ONLY when `word` consists of one or more spaces/tabs and
-// NOTHING else — `${IFS:+ }` really does expand to a literal space
-// (`word` itself, not derived from IFS), so it's exactly as safe to
-// normalize as the whole-variable form; `${IFS:+x}` is not touched, since
+// operator does NOT extract from the variable's own value at all — it
+// substitutes an entirely separate, attacker-chosen string `word` whenever
+// VAR IS set and non-null (`:+`) or merely set (`+`), which normally means
+// `word` is what actually comes out, not VAR's value. Because of that,
+// this is matched ONLY when `word` consists of one or more spaces/tabs and
+// NOTHING else — `${VAR:+ }` really does expand to a literal space
+// (`word` itself, not derived from VAR), so it's exactly as safe to
+// normalize as the whole-variable form; `${VAR:+x}` is not touched, since
 // `x` is not whitespace and substituting a space for it would fabricate a
 // token boundary bash never produces (an earlier version of this
 // normalizer treated the operator as unconditionally unsafe and missed
 // this whitespace-content special case — Greptile review).
 //
-// Deliberately does NOT generalize to "any `${IFS<operator>...}`": an
-// earlier version tried that and was wrong (Greptile review) —
-// `${IFS/pattern/replacement}` (substitutes `replacement` wherever
-// `pattern` matches within IFS's value) and the bash 4.4+ `${IFS@Q}`-style
-// transformation operators (e.g. `@Q` shell-quotes the value, producing
-// `$' \t\n'`-shaped text) can ALSO produce arbitrary non-whitespace text,
-// the same class of problem `:+`/`+` have — and unlike `:+`/`+`, there is
-// no simple "restrict to all-whitespace content" fix for them, since
-// `pattern`/`replacement ` are two separate, differently-shaped fields.
-// Left unhandled rather than risk another incorrect generalization; a
-// determined obfuscator using one of these is a known, accepted gap in
-// this heuristic guard (see #2558 for tracking the closely related,
-// broader problem that `:+`/`+` with all-whitespace content isn't even
-// unique to the `IFS` name — `${HOME:+ }`/`${PWD:+ }`/any other normally-set
-// variable works identically, which a per-variable-name normalizer like
-// this one can never fully close).
+// Unlike the other three replacements below, this one is NOT restricted to
+// the literal name `IFS`: the operator's behavior has nothing to do with
+// what VAR's own value actually is, only with whether VAR is normally set
+// and non-null — true for almost any commonly-set variable (`HOME`, `PWD`,
+// `PATH`, ...), not just `IFS`. A per-variable-name check could never fully
+// close this class, since the variable name in the bypass isn't fixed
+// (#2558) — so this one matches any bash identifier shape
+// (`[A-Za-z_][A-Za-z0-9_]*`) in that position, erring toward normalizing
+// (the safe direction for a guard) even for a variable that happens not to
+// be set in a given shell, rather than trying to track which variables are
+// actually set.
+//
+// Deliberately does NOT generalize the other three replacements below to
+// "any `${VAR<operator>...}`" — only `:+`/`+` generalizes across variable
+// names, because only its substituted text is entirely independent of the
+// variable's own value. `${IFS/pattern/replacement}` (substitutes
+// `replacement` wherever `pattern` matches within IFS's value) and the
+// bash 4.4+ `${IFS@Q}`-style transformation operators (e.g. `@Q`
+// shell-quotes the value, producing `$' \t\n'`-shaped text) can ALSO
+// produce arbitrary non-whitespace text, the same class of problem `:+`/`+`
+// have — but unlike `:+`/`+`, there is no simple "restrict to all-whitespace
+// content" fix for them (`pattern`/`replacement` are two separate,
+// differently-shaped fields), AND they only produce a whitespace-only
+// result by relying on IFS's own specific default value in the first
+// place, so generalizing them to other variable names wouldn't even be
+// meaningful the way it is for `:+`/`+`. Left unhandled rather than risk
+// another incorrect generalization; a determined obfuscator using one of
+// these remains a known, accepted gap in this heuristic guard.
 //
 // The bare `$IFS` form must not swallow the start of a longer variable
 // name — `$IFSOMETHING` references a completely different (and almost
@@ -136,7 +150,7 @@ process.stdin.on('end', () => {
   const normalized = input
     .replace(/\$\{IFS\}/g, ' ')
     .replace(/\$\{IFS: *(?:0*[0-2]|-0*[1-3]|-0+)(?::0*[1-9]\d*)?\}/g, ' ')
-    .replace(/\$\{IFS:?\+[ \t]+\}/g, ' ')
+    .replace(/\$\{[A-Za-z_][A-Za-z0-9_]*:?\+[ \t]+\}/g, ' ')
     .replace(/\$IFS(?![A-Za-z0-9_])/g, ' ');
   process.stdout.write(normalized);
 });
