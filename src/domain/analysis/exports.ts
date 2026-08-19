@@ -28,6 +28,18 @@ const _reexportSymbolsStmtCache: StmtCache<NodeRow> = new WeakMap();
 const _wildcardReexportTargetsStmtCache: StmtCache<{ file: string }> = new WeakMap();
 
 /**
+ * Whether `matchedFile` is exactly (case-sensitively) the file the caller
+ * asked for, or a `/`-bounded path suffix of it. Checked before the
+ * case-insensitive variant below so that a genuine exact-case match always
+ * wins over a merely case-insensitive one when both exist among the
+ * candidates (e.g. distinct real files `src/utils.js` and `src/UTILS.js` on
+ * a case-sensitive filesystem — #2530 review round 5).
+ */
+function isExactFileMatch(matchedFile: string, target: string): boolean {
+  return matchedFile === target || matchedFile.endsWith(`/${target}`);
+}
+
+/**
  * Whether `matchedFile` (a result of the `LIKE '%target%'` fuzzy lookup used
  * throughout this module) plausibly *is* the file the caller asked for,
  * rather than an unrelated file whose path merely contains `target` as a
@@ -40,7 +52,8 @@ const _wildcardReexportTargetsStmtCache: StmtCache<{ file: string }> = new WeakM
  * case-insensitive) — otherwise a target that only differs from the graph's
  * stored casing would pass the LIKE lookup but fail this stricter check,
  * reintroducing a false "not found" for a match SQLite itself already deemed
- * a hit (#2530 review round 3).
+ * a hit (#2530 review round 3). Callers selecting among multiple candidates
+ * should prefer `isExactFileMatch` first (round 5).
  */
 function isPlausibleFileMatch(matchedFile: string, target: string): boolean {
   const a = matchedFile.toLowerCase();
@@ -92,15 +105,27 @@ export function exportsData(
       );
     }
 
-    // For single-file match return flat; for multi-match prefer a plausible
-    // match over an arbitrary (unordered LIKE query) first result, so an
-    // unrelated substring collision returned before the genuine target can't
-    // shadow it (#2530 Greptile review) — otherwise falls back to the first
-    // result, like explainData.
-    const first = fileResults.find((r) => isPlausibleFileMatch(r.file, file)) ?? fileResults[0]!;
+    // For single-file match return flat; for multi-match prefer, in order: an
+    // exact-case match, then a case-insensitive/suffix match, then an
+    // arbitrary (unordered LIKE query) first result — so neither an unrelated
+    // substring collision nor a case-variant of a different real file can
+    // shadow the genuine target (#2530 Greptile review) — otherwise falls
+    // back to the first result, like explainData.
+    const first =
+      fileResults.find((r) => isExactFileMatch(r.file, file)) ??
+      fileResults.find((r) => isPlausibleFileMatch(r.file, file)) ??
+      fileResults[0]!;
+    // fileFound must stay true whenever we're actually returning real
+    // content (results or reexports) for `first`, even if that content came
+    // from the unordered-fallback branch above with no plausible candidate —
+    // otherwise structured (JSON/MCP) consumers see the self-contradictory
+    // combination of non-empty results alongside fileFound: false (#2530
+    // review round 5). The CLI's own messaging only ever reads fileFound
+    // inside the `results.length === 0` branch, so this has no effect there.
+    const hasContent = first.results.length > 0 || first.reexportedSymbols.length > 0;
     const base = {
       file: first.file,
-      fileFound: isPlausibleFileMatch(first.file, file),
+      fileFound: hasContent || isPlausibleFileMatch(first.file, file),
       results: first.results,
       reexports: first.reexports,
       reexportedSymbols: first.reexportedSymbols,
