@@ -66,11 +66,19 @@ beforeAll(() => {
   // Entry script with a file-kind node but no exported symbols at all (#2530).
   insertNode(db, 'entry.js', 'file', 'entry.js', 0);
   insertNode(db, 'runApp', 'function', 'entry.js', 1); // never marked exported
-  // Unrelated file whose path contains "utils.js" as a mid-string substring
+  // Unrelated file whose path contains "widget.js" as a mid-string substring
   // (not a `/`-bounded suffix) and also has zero exports — a false LIKE-query
-  // collision for a query of "utils.js" that must NOT report fileFound: true
-  // (#2530 Greptile review).
+  // collision for a query of "widget.js" that must NOT report fileFound:
+  // true, with no genuine match present anywhere in the graph (#2530
+  // Greptile review).
+  insertNode(db, 'src/my-widget.js', 'file', 'src/my-widget.js', 0);
+  // Same shape, but paired with a genuine match: "src/my-utils.js" (a
+  // collision for "utils.js", inserted first) and "src/utils.js" (the
+  // genuine target, inserted after). findFileNodes has no ORDER BY, so an
+  // unordered LIKE scan would return the collision first unless a plausible
+  // match is explicitly preferred (#2530 Greptile round 2).
   insertNode(db, 'src/my-utils.js', 'file', 'src/my-utils.js', 0);
+  insertNode(db, 'src/utils.js', 'file', 'src/utils.js', 0);
 
   // Function nodes in lib.js
   const add = insertNode(db, 'add', 'function', 'lib.js', 1);
@@ -183,14 +191,27 @@ describe('exportsData', () => {
     expect(data.fileFound).toBe(true);
   });
 
-  test('fileFound is false for a target that only mid-string-collides with an unrelated file (#2530 Greptile review)', () => {
-    // "utils.js" is not a real file, but "src/my-utils.js" contains it as a
-    // substring (not a `/`-bounded suffix) and the LIKE '%utils.js%' lookup
-    // matches it. The rebuild suggestion must still fire here, since this is
-    // not genuinely the file the caller asked about.
-    const data = exportsData('utils.js', dbPath);
+  test('fileFound is false for a target that only mid-string-collides with an unrelated file, no genuine match present (#2530 Greptile review)', () => {
+    // "widget.js" is not a real file anywhere in the fixture, but
+    // "src/my-widget.js" (added below) contains it as a substring (not a
+    // `/`-bounded suffix). The rebuild suggestion must still fire, since this
+    // is not genuinely the file the caller asked about.
+    const data = exportsData('widget.js', dbPath);
     expect(data.results).toEqual([]);
     expect(data.fileFound).toBe(false);
+  });
+
+  test('prefers a genuine exact/suffix match over an unordered mid-string collision returned first (#2530 Greptile round 2)', () => {
+    // findFileNodes has no ORDER BY, so a plain LIKE '%utils.js%' scan
+    // returns whichever row SQLite visits first. "src/my-utils.js" (a
+    // collision, no `/`-bounded suffix match) was inserted BEFORE the
+    // genuine "src/utils.js" — without preferring a plausible match, the
+    // first (arbitrary) result would win and wrongly report fileFound: false
+    // plus the wrong file's (empty) data, even though "src/utils.js" is a
+    // real, matching file in the graph.
+    const data = exportsData('utils.js', dbPath);
+    expect(data.file).toBe('src/utils.js');
+    expect(data.fileFound).toBe(true);
   });
 
   test('pagination works', () => {

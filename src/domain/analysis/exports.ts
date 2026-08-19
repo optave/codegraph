@@ -84,8 +84,12 @@ export function exportsData(
       );
     }
 
-    // For single-file match return flat; for multi-match return first (like explainData)
-    const first = fileResults[0]!;
+    // For single-file match return flat; for multi-match prefer a plausible
+    // match over an arbitrary (unordered LIKE query) first result, so an
+    // unrelated substring collision returned before the genuine target can't
+    // shadow it (#2530 Greptile review) — otherwise falls back to the first
+    // result, like explainData.
+    const first = fileResults.find((r) => isPlausibleFileMatch(r.file, file)) ?? fileResults[0]!;
     const base = {
       file: first.file,
       fileFound: isPlausibleFileMatch(first.file, file),
