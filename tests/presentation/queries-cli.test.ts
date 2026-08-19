@@ -591,9 +591,10 @@ describe('fileExports', () => {
     expect(out).toContain('from math.js');
   });
 
-  it('prints message when no exports found', () => {
+  it('recommends a rebuild when the file was never found in the graph', () => {
     mocks.exportsData.mockReturnValue({
       file: 'empty.js',
+      fileFound: false,
       totalExported: 0,
       totalInternal: 0,
       totalUnused: 0,
@@ -603,6 +604,23 @@ describe('fileExports', () => {
     });
     fileExports('empty.js', '/db');
     expect(output()).toContain('No exported symbols found');
+    expect(output()).toContain('Run "codegraph build" first');
+  });
+
+  it('does not recommend a rebuild when the file is in the graph with legitimately zero exports (#2530)', () => {
+    mocks.exportsData.mockReturnValue({
+      file: 'entry.js',
+      fileFound: true,
+      totalExported: 0,
+      totalInternal: 0,
+      totalUnused: 0,
+      results: [],
+      reexportedSymbols: [],
+      reexports: [],
+    });
+    fileExports('entry.js', '/db');
+    expect(output()).toContain('No exported symbols found');
+    expect(output()).not.toContain('Run "codegraph build" first');
   });
 
   it('prints unused header when opts.unused', () => {

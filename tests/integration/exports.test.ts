@@ -63,6 +63,9 @@ beforeAll(() => {
   const fApp = insertNode(db, 'app.js', 'file', 'app.js', 0);
   const fBarrel = insertNode(db, 'barrel.js', 'file', 'barrel.js', 0);
   const fTest = insertNode(db, 'lib.test.js', 'file', 'lib.test.js', 0);
+  // Entry script with a file-kind node but no exported symbols at all (#2530).
+  insertNode(db, 'entry.js', 'file', 'entry.js', 0);
+  insertNode(db, 'runApp', 'function', 'entry.js', 1); // never marked exported
 
   // Function nodes in lib.js
   const add = insertNode(db, 'add', 'function', 'lib.js', 1);
@@ -164,6 +167,15 @@ describe('exportsData', () => {
     expect(data.totalExported).toBe(0);
     expect(data.totalInternal).toBe(0);
     expect(data.totalUnused).toBe(0);
+    // No file-kind node matched at all — genuinely unbuilt/not-found (#2530).
+    expect(data.fileFound).toBe(false);
+  });
+
+  test('fileFound is true for a file in the graph with legitimately zero exports (#2530)', () => {
+    const data = exportsData('entry.js', dbPath);
+    expect(data.results).toEqual([]);
+    expect(data.totalExported).toBe(0);
+    expect(data.fileFound).toBe(true);
   });
 
   test('pagination works', () => {

@@ -43,6 +43,8 @@ interface ReexportedSymbol extends ExportSymbol {
 
 interface ExportsDataResult {
   file: string;
+  /** Whether a file-kind node for this file exists in the graph at all (#2530). */
+  fileFound: boolean;
   totalExported: number;
   totalInternal: number;
   totalUnused: number;
@@ -151,6 +153,10 @@ export function fileExports(file: string, customDbPath: string, opts: ExportsOpt
   if (data.results.length === 0 && !hasReexported) {
     if (opts.unused) {
       console.log(`No unused exports found for "${file}".`);
+    } else if (data.fileFound) {
+      // The file is in the graph — it simply has no exports (an entry
+      // script, a side-effect-only module, etc.), not an unbuilt graph (#2530).
+      console.log(`No exported symbols found for "${file}".`);
     } else {
       console.log(`No exported symbols found for "${file}". Run "codegraph build" first.`);
     }

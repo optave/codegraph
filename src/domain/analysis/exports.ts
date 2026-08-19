@@ -56,6 +56,7 @@ export function exportsData(
       return paginateResult(
         {
           file,
+          fileFound: false,
           results: [],
           reexports: [],
           reexportedSymbols: [],
@@ -74,6 +75,7 @@ export function exportsData(
     const first = fileResults[0]!;
     const base = {
       file: first.file,
+      fileFound: true,
       results: first.results,
       reexports: first.reexports,
       reexportedSymbols: first.reexportedSymbols,
