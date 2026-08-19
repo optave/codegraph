@@ -43,7 +43,11 @@ interface ReexportedSymbol extends ExportSymbol {
 
 interface ExportsDataResult {
   file: string;
-  /** Whether a file-kind node for this file exists in the graph at all (#2530). */
+  /**
+   * Whether `file`'s matched node is plausibly the requested target itself,
+   * not just an unrelated file whose path happens to contain it as a
+   * substring (#2530).
+   */
   fileFound: boolean;
   totalExported: number;
   totalInternal: number;

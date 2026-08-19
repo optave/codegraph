@@ -27,6 +27,19 @@ const _reexportsToStmtCache: StmtCache<{ file: string }> = new WeakMap();
 const _reexportSymbolsStmtCache: StmtCache<NodeRow> = new WeakMap();
 const _wildcardReexportTargetsStmtCache: StmtCache<{ file: string }> = new WeakMap();
 
+/**
+ * Whether `matchedFile` (a result of the `LIKE '%target%'` fuzzy lookup used
+ * throughout this module) plausibly *is* the file the caller asked for,
+ * rather than an unrelated file whose path merely contains `target` as a
+ * substring somewhere in the middle (e.g. target `add.js` mid-string-matching
+ * `badd.jsx`, or `utils.js` matching `my-utils.js` with no path separator
+ * before it). Requires an exact match or a `/`-bounded path suffix — the
+ * only two cases where the match reflects genuine user intent (#2530 review).
+ */
+function isPlausibleFileMatch(matchedFile: string, target: string): boolean {
+  return matchedFile === target || matchedFile.endsWith(`/${target}`);
+}
+
 export function exportsData(
   file: string,
   customDbPath: string,
@@ -75,7 +88,7 @@ export function exportsData(
     const first = fileResults[0]!;
     const base = {
       file: first.file,
-      fileFound: true,
+      fileFound: isPlausibleFileMatch(first.file, file),
       results: first.results,
       reexports: first.reexports,
       reexportedSymbols: first.reexportedSymbols,

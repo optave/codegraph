@@ -66,6 +66,11 @@ beforeAll(() => {
   // Entry script with a file-kind node but no exported symbols at all (#2530).
   insertNode(db, 'entry.js', 'file', 'entry.js', 0);
   insertNode(db, 'runApp', 'function', 'entry.js', 1); // never marked exported
+  // Unrelated file whose path contains "utils.js" as a mid-string substring
+  // (not a `/`-bounded suffix) and also has zero exports — a false LIKE-query
+  // collision for a query of "utils.js" that must NOT report fileFound: true
+  // (#2530 Greptile review).
+  insertNode(db, 'src/my-utils.js', 'file', 'src/my-utils.js', 0);
 
   // Function nodes in lib.js
   const add = insertNode(db, 'add', 'function', 'lib.js', 1);
@@ -176,6 +181,16 @@ describe('exportsData', () => {
     expect(data.results).toEqual([]);
     expect(data.totalExported).toBe(0);
     expect(data.fileFound).toBe(true);
+  });
+
+  test('fileFound is false for a target that only mid-string-collides with an unrelated file (#2530 Greptile review)', () => {
+    // "utils.js" is not a real file, but "src/my-utils.js" contains it as a
+    // substring (not a `/`-bounded suffix) and the LIKE '%utils.js%' lookup
+    // matches it. The rebuild suggestion must still fire here, since this is
+    // not genuinely the file the caller asked about.
+    const data = exportsData('utils.js', dbPath);
+    expect(data.results).toEqual([]);
+    expect(data.fileFound).toBe(false);
   });
 
   test('pagination works', () => {
