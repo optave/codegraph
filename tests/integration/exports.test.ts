@@ -243,17 +243,18 @@ describe('exportsData', () => {
     expect(data.fileFound).toBe(true);
   });
 
-  test('fileFound is true when the unordered fallback still returns real, non-empty results (#2530 Greptile round 5)', () => {
+  test('treats a collision with no plausible candidate as not-found, even when the collision itself has real exports (#2530 Greptile round 6)', () => {
     // "gadget.js" has no plausible candidate at all -- only the collision
     // "src/my-gadget.js" LIKE-matches it, and that collision has a REAL
-    // export. fileFound must not be false here: false alongside non-empty
-    // results is a self-contradictory signal for structured/JSON consumers,
-    // even though the CLI's own text messaging never reads fileFound when
-    // results are non-empty (the results.length === 0 branch is never hit).
+    // export. Earlier this fell back to returning the collision's real data
+    // with fileFound: true, which is misleading regardless of what fileFound
+    // says (round 6) -- and fileFound: false alongside non-empty results was
+    // self-contradictory before that (round 5). Requiring a plausible
+    // candidate to exist at all resolves both: nothing plausible means
+    // nothing is returned, full stop, exactly like a genuinely missing file.
     const data = exportsData('gadget.js', dbPath);
-    expect(data.file).toBe('src/my-gadget.js');
-    expect(data.results.length).toBeGreaterThan(0);
-    expect(data.fileFound).toBe(true);
+    expect(data.results).toEqual([]);
+    expect(data.fileFound).toBe(false);
   });
 
   test('prefers an exact-case match over a same-name case-insensitive match (#2530 Greptile round 5)', () => {

@@ -86,7 +86,18 @@ export function exportsData(
     const unused = opts.unused || false;
     const fileResults = exportsFileImpl(db, file, noTests, getFileLines, unused, displayOpts);
 
-    if (fileResults.length === 0) {
+    // Prefer, in order: an exact-case match, then a case-insensitive/suffix
+    // match. If NEITHER exists among the LIKE lookup's results, treat this
+    // exactly like "no file found at all" rather than falling back to an
+    // arbitrary unrelated substring collision's real data — returning that
+    // collision's export payload under a mismatched query is misleading
+    // regardless of what `fileFound` says about it (#2530 Greptile round 6),
+    // and it can never be a plausible answer to what was actually asked.
+    const first =
+      fileResults.find((r) => isExactFileMatch(r.file, file)) ??
+      fileResults.find((r) => isPlausibleFileMatch(r.file, file));
+
+    if (!first) {
       return paginateResult(
         {
           file,
@@ -105,27 +116,12 @@ export function exportsData(
       );
     }
 
-    // For single-file match return flat; for multi-match prefer, in order: an
-    // exact-case match, then a case-insensitive/suffix match, then an
-    // arbitrary (unordered LIKE query) first result — so neither an unrelated
-    // substring collision nor a case-variant of a different real file can
-    // shadow the genuine target (#2530 Greptile review) — otherwise falls
-    // back to the first result, like explainData.
-    const first =
-      fileResults.find((r) => isExactFileMatch(r.file, file)) ??
-      fileResults.find((r) => isPlausibleFileMatch(r.file, file)) ??
-      fileResults[0]!;
-    // fileFound must stay true whenever we're actually returning real
-    // content (results or reexports) for `first`, even if that content came
-    // from the unordered-fallback branch above with no plausible candidate —
-    // otherwise structured (JSON/MCP) consumers see the self-contradictory
-    // combination of non-empty results alongside fileFound: false (#2530
-    // review round 5). The CLI's own messaging only ever reads fileFound
-    // inside the `results.length === 0` branch, so this has no effect there.
-    const hasContent = first.results.length > 0 || first.reexportedSymbols.length > 0;
     const base = {
       file: first.file,
-      fileFound: hasContent || isPlausibleFileMatch(first.file, file),
+      // Always true here: `first` only exists when isExactFileMatch or
+      // isPlausibleFileMatch accepted it, so this can never contradict
+      // non-empty results the way an unconditional plausibility check could.
+      fileFound: true,
       results: first.results,
       reexports: first.reexports,
       reexportedSymbols: first.reexportedSymbols,
