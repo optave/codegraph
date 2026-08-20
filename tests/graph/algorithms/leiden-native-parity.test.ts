@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { detectClusters } from '../../../src/graph/algorithms/leiden/index.js';
-import { louvainCommunities } from '../../../src/graph/algorithms/louvain.js';
+import { louvainCommunities, nativeParityBlocker } from '../../../src/graph/algorithms/louvain.js';
 import { CodeGraph } from '../../../src/graph/model.js';
 import { getNative, isNativeAvailable } from '../../../src/infrastructure/native.js';
 
@@ -235,5 +235,96 @@ describe.skipIf(!hasNative)('native/JS Leiden parity (issue #1804)', () => {
     }
     expect(snapshot(native.assignments)).toEqual(snapshot(jsAssignments));
     expect(native.modularity).toBe(jsResult.quality());
+  });
+});
+
+/**
+ * Graphs the native binding cannot represent (issue #1936).
+ *
+ * `toEdgeArray()` drops every edge attribute at the FFI boundary and no node
+ * attributes are passed at all, so native always optimizes a uniformly
+ * weighted graph while the JS reference honors `attrs.weight`/`attrs.size`.
+ * `nativeParityBlocker` detects that mismatch up front and defers to the JS
+ * reference. These tests pin both halves: that the mismatch is real (native
+ * genuinely cannot see the weights) and that the public API therefore returns
+ * the JS reference's answer rather than an engine-dependent one.
+ */
+describe('Leiden native/JS parity — inputs native cannot represent (#1936)', () => {
+  /**
+   * Two triangles joined by a single bridge edge whose weight dominates every
+   * intra-triangle edge. Unweighted, the triangles are the obvious partition;
+   * weighted, the bridge is by far the strongest tie in the graph, so weights
+   * are load-bearing for both the partition and the modularity score.
+   */
+  function buildWeightedBridgeGraph(bridgeWeight: number | undefined): CodeGraph {
+    const g = new CodeGraph();
+    for (const [a, b] of [
+      ['a1', 'a2'],
+      ['a2', 'a3'],
+      ['a3', 'a1'],
+      ['b1', 'b2'],
+      ['b2', 'b3'],
+      ['b3', 'b1'],
+    ] as const) {
+      g.addEdge(a, b, { weight: 1 });
+    }
+    g.addEdge('a1', 'b1', bridgeWeight == null ? {} : { weight: bridgeWeight });
+    return g;
+  }
+
+  it('flags weighted edges and unit-sized nodes correctly', () => {
+    expect(nativeParityBlocker(buildWeightedBridgeGraph(25))).toMatch(/weight=25/);
+    // weight === 1 is exactly what native assumes, so it is not a blocker --
+    // pins that the predicate stays narrow instead of rejecting every graph
+    // that merely carries a `weight` key.
+    expect(nativeParityBlocker(buildWeightedBridgeGraph(1))).toBeNull();
+    expect(nativeParityBlocker(buildWeightedBridgeGraph(undefined))).toBeNull();
+  });
+
+  it('does not flag non-numeric weight/size attrs (JS falls back to 1 for those too)', () => {
+    const g = new CodeGraph();
+    g.addEdge('a', 'b', { weight: 'heavy' });
+    g.addNode('a', { size: null });
+    expect(nativeParityBlocker(g)).toBeNull();
+  });
+
+  it('flags node size attrs', () => {
+    const g = new CodeGraph();
+    g.addEdge('a', 'b');
+    g.addNode('a', { size: 4 });
+    expect(nativeParityBlocker(g)).toMatch(/size=4/);
+  });
+
+  it.runIf(hasNative)('confirms native genuinely cannot see edge weights', () => {
+    // Justifies the guard: native returns the *same* answer whether or not
+    // the weights are present (it never sees them), while JS returns a
+    // different modularity for the two graphs (it does). Without the guard,
+    // `louvainCommunities` would hand back the weight-blind answer for a
+    // weighted graph.
+    const weighted = buildWeightedBridgeGraph(25);
+    const unweighted = buildWeightedBridgeGraph(undefined);
+
+    expect(snapshot(runNativeDirect(weighted).assignments)).toEqual(
+      snapshot(runNativeDirect(unweighted).assignments),
+    );
+    expect(runNativeDirect(weighted).modularity).toBe(runNativeDirect(unweighted).modularity);
+    expect(runJS(weighted).modularity).not.toBe(runJS(unweighted).modularity);
+  });
+
+  it('returns the JS reference result for a weighted graph', () => {
+    const g = buildWeightedBridgeGraph(25);
+    const viaPublicApi = louvainCommunities(g);
+    const js = runJS(g);
+    expect(snapshot(viaPublicApi.assignments)).toEqual(snapshot(js.assignments));
+    expect(viaPublicApi.modularity).toBe(js.modularity);
+  });
+
+  it('returns the JS reference result for a graph with node sizes', () => {
+    const g = buildWeightedBridgeGraph(undefined);
+    g.addNode('a1', { size: 8 });
+    const viaPublicApi = louvainCommunities(g);
+    const js = runJS(g);
+    expect(snapshot(viaPublicApi.assignments)).toEqual(snapshot(js.assignments));
+    expect(viaPublicApi.modularity).toBe(js.modularity);
   });
 });
