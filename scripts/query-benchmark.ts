@@ -118,9 +118,12 @@ const RUNS = 5;
 // the first WARMUP_RUNS before timing so the metric reflects warm-call
 // latency, not cold-start.
 //
-// This applies per query path, not just once per process: each of fnDeps,
-// fnImpact and diffImpact prepares its own statements and touches its own DB
-// pages, so warming one does not warm the next (#2590).
+// This applies per query path, not just once per process: fnDeps, fnImpact and
+// diffImpact each run different code over different DB pages, so warming one
+// does not warm the next (#2590). Which specific cold-start costs a warmup
+// removes differs by path, though -- the list above describes the native
+// fnDeps/fnImpact path; see benchDiffImpact for the JS/better-sqlite3 case,
+// where the statement cache does not outlive a single call.
 const WARMUP_RUNS = 3;
 
 async function benchDepths(fn, name, depths) {
@@ -172,12 +175,23 @@ async function benchDiffImpact(targets: HubTargets) {
 		execFileSync('git', ['add', hubFile], { cwd: root, stdio: 'pipe' });
 
 		// Warm the diffImpact path before timing, exactly as benchDepths does for
-		// fnDeps/fnImpact. diffImpactData is a distinct query path from those --
-		// its own prepared statements, its own DB pages, and a `git` subprocess to
-		// read the staged diff -- so the warmup those calls already paid does not
-		// carry over. Without this, diffImpact was the only query metric measured
-		// cold: the same defect #2584 fixed for benchmark.ts's Full build, and
-		// that #2436 traced part of the gate's non-determinism to (#2590).
+		// fnDeps/fnImpact. diffImpactData is a distinct query path from those -- its
+		// own DB pages, and a `git` subprocess to read the staged diff -- so the
+		// warmup those calls already paid does not carry over.
+		//
+		// What these calls warm is narrower than on the native fnDeps path, and it
+		// is deliberately not the statement cache: diffImpactData opens its own
+		// readonly better-sqlite3 handle and closes it in a `finally`, so its
+		// prepared statements are discarded per call and no timed run ever reuses
+		// one. What does carry into the timed runs is process- and OS-wide state:
+		// loadConfig's per-root cache (resolveDbConfig re-reads .codegraphrc.json
+		// only on the first call), the OS page cache for the DB file and for the
+		// `.git` data the staged-diff subprocess reads, and V8 tiering up the diff
+		// parsing and BFS code that only this path exercises.
+		//
+		// Without this, diffImpact was the only query metric measured cold: the
+		// same defect #2584 fixed for benchmark.ts's Full build, and that #2436
+		// traced part of the gate's non-determinism to (#2590).
 		for (let i = 0; i < WARMUP_RUNS; i++) {
 			diffImpactData(dbPath, { staged: true, depth: 3, noTests: true });
 		}
