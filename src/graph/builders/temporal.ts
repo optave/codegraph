@@ -44,7 +44,15 @@ export function buildTemporalGraph(
   for (const r of rows) {
     if (!graph.hasNode(r.file_a)) graph.addNode(r.file_a, { label: r.file_a });
     if (!graph.hasNode(r.file_b)) graph.addNode(r.file_b, { label: r.file_b });
-    graph.addEdge(r.file_a, r.file_b, { jaccard: r.jaccard });
+    // `weight` is the key every weight-aware consumer reads (`resolveEdgeWeight`
+    // in the Leiden adapter, and the native binding through it). Storing the
+    // Jaccard score only under a `jaccard` key -- as this builder used to --
+    // meant the graph this function advertises as "weighted by Jaccard
+    // similarity" was in fact uniformly weighted for every such consumer, which
+    // silently discards the entire co-change signal (measured on this repo:
+    // 628 pairs spanning Jaccard 0.02-1.0). `jaccard` is kept alongside it so
+    // existing readers of that key keep working.
+    graph.addEdge(r.file_a, r.file_b, { jaccard: r.jaccard, weight: r.jaccard });
   }
 
   return graph;

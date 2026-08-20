@@ -26,6 +26,7 @@
 import { debug } from '../../infrastructure/logger.js';
 import { loadNative } from '../../infrastructure/native.js';
 import type { CodeGraph } from '../model.js';
+import { resolveEdgeWeight } from './leiden/adapter.js';
 import type { DetectClustersResult } from './leiden/index.js';
 import { detectClusters } from './leiden/index.js';
 
@@ -50,37 +51,43 @@ export interface LouvainResult {
  * binding cannot see, or `null` when both engines would optimize the same
  * weighted graph.
  *
- * `louvainCommunities` hands native `graph.toEdgeArray()`, which yields
- * `{ source, target }` only -- every edge attribute is dropped at the FFI
- * boundary -- and passes no node attributes at all, so `leiden.rs` assumes a
- * uniform weight of 1.0 per edge and size of 1.0 per node. The JS reference
- * instead resolves both from attributes (`adapter.ts`'s default
- * `linkWeight`/`nodeSize`: `attrs.weight` / `attrs.size` when numeric, else
- * 1). On a graph carrying either attribute the two engines therefore
- * optimize *different* weighted graphs and can return different partitions
- * -- exactly the engine-dependent output #1804 exists to eliminate, except
- * silent, since nothing errors and both answers look plausible.
+ * The native binding receives a flat edge array across the FFI boundary and
+ * no node attributes at all, so anything the JS reference derives from an
+ * attribute native cannot see makes the two engines optimize *different*
+ * graphs and return different partitions -- exactly the engine-dependent
+ * output #1804 exists to eliminate, except silent, since nothing errors and
+ * both answers look plausible.
  *
- * No in-tree builder attaches `weight`/`size` today (`buildTemporalGraph`
- * stores its Jaccard score under a `jaccard` key, which neither engine reads,
- * and `buildDependencyGraph` sets only `kind`), so this is a trap for the
- * *next* caller rather than a live divergence. Routing such a graph to the JS
- * reference keeps the result correct-by-definition instead of engine-
- * dependent; issue #1936 tracks teaching native to read these directly.
+ * Two attributes are at stake. Per-edge `weight` is now understood natively
+ * (`leidenWeightedCommunities`), so it is only a blocker when that newer
+ * binding is missing -- an older published addon loaded by newer JS -- hence
+ * the `weightsSupported` parameter. Per-node `size` is never understood
+ * natively: nothing in-tree attaches it, so there is no caller to verify a
+ * port against, and it is not inert (the JS reference sorts communities by
+ * total size when assigning final IDs, so sizes change the labels even when
+ * the grouping matches).
  *
- * A value of exactly 1 is not a blocker: it is what native already assumes,
- * so both engines agree. Non-numeric values are not blockers either -- the JS
- * defaults fall back to 1 for those, matching native.
+ * Routing a graph native cannot represent to the JS reference keeps the
+ * result correct-by-definition instead of engine-dependent.
+ *
+ * The predicate stays deliberately narrow. A value of exactly 1 is what
+ * native already assumes, so both engines agree; non-numeric values hit the
+ * JS defaults' own fallback to 1, which also matches. Neither is a blocker.
  *
  * Exported so tests can assert the *negative* case directly: an over-eager
  * blocker would quietly route every graph to the (slower) JS reference while
  * every parity assertion still passed, since the two engines agree on
  * everything this predicate lets through.
  */
-export function nativeParityBlocker(graph: CodeGraph): string | null {
-  for (const [source, target, attrs] of graph.edges()) {
-    if (typeof attrs.weight === 'number' && attrs.weight !== 1) {
-      return `edge ${source}->${target} carries weight=${attrs.weight}`;
+export function nativeParityBlocker(
+  graph: CodeGraph,
+  { weightsSupported }: { weightsSupported: boolean },
+): string | null {
+  if (!weightsSupported) {
+    for (const [source, target, attrs] of graph.edges()) {
+      if (typeof attrs.weight === 'number' && attrs.weight !== 1) {
+        return `edge ${source}->${target} carries weight=${attrs.weight}`;
+      }
     }
   }
   for (const [id, attrs] of graph.nodes()) {
@@ -99,34 +106,73 @@ export function louvainCommunities(graph: CodeGraph, opts: LouvainOptions = {}):
   const resolution: number = opts.resolution ?? 1.0;
 
   const native = loadNative();
-  const blocker = native?.leidenCommunities ? nativeParityBlocker(graph) : null;
-  if (blocker) {
-    debug(
-      `louvainCommunities: using the JS Leiden reference instead of the native ` +
-        `binding -- native cannot represent this graph faithfully (${blocker})`,
-    );
-  }
-  if (native?.leidenCommunities && !blocker) {
-    const edges = graph.toEdgeArray();
-    const nodeIds = graph.nodeIds();
-    const result = native.leidenCommunities(
-      edges,
-      nodeIds,
-      resolution,
-      DEFAULT_RANDOM_SEED,
-      opts.maxLevels,
-      opts.maxLocalPasses,
-      opts.refinementTheta,
-      opts.capacityGrowthFactor,
-    );
-    const assignments = new Map<string, number>();
-    for (const entry of result.assignments) {
-      assignments.set(entry.node, entry.community);
+  // Prefer the weighted binding; `leidenCommunities` is the pre-#1936 export
+  // kept for the case where an older published addon is loaded by newer JS.
+  const weighted = native?.leidenWeightedCommunities;
+  const unweighted = native?.leidenCommunities;
+  const binding = weighted ?? unweighted;
+
+  if (binding) {
+    const blocker = nativeParityBlocker(graph, { weightsSupported: weighted != null });
+    if (blocker) {
+      debug(
+        `louvainCommunities: using the JS Leiden reference instead of the native ` +
+          `binding -- native cannot represent this graph faithfully (${blocker})`,
+      );
+    } else {
+      const nodeIds = graph.nodeIds();
+      const result = weighted
+        ? weighted(
+            toWeightedEdgeArray(graph),
+            nodeIds,
+            resolution,
+            DEFAULT_RANDOM_SEED,
+            opts.maxLevels,
+            opts.maxLocalPasses,
+            opts.refinementTheta,
+            opts.capacityGrowthFactor,
+          )
+        : // biome-ignore lint/style/noNonNullAssertion: `binding` is non-null
+          // and `weighted` is null here, so `unweighted` is the binding.
+          unweighted!(
+            graph.toEdgeArray(),
+            nodeIds,
+            resolution,
+            DEFAULT_RANDOM_SEED,
+            opts.maxLevels,
+            opts.maxLocalPasses,
+            opts.refinementTheta,
+            opts.capacityGrowthFactor,
+          );
+      const assignments = new Map<string, number>();
+      for (const entry of result.assignments) {
+        assignments.set(entry.node, entry.community);
+      }
+      return { assignments, modularity: result.modularity };
     }
-    return { assignments, modularity: result.modularity };
   }
 
   return louvainJS(graph, opts, resolution);
+}
+
+/**
+ * Build the native weighted binding's edge array.
+ *
+ * Weight resolution happens here, via the same `resolveEdgeWeight` the JS
+ * adapter uses, so both engines agree on what each edge weighs by
+ * construction rather than by two matching implementations. `undefined` is
+ * sent for the default so the wire format stays compact on the overwhelmingly
+ * common unweighted graph -- native reads an absent weight as 1.0.
+ */
+function toWeightedEdgeArray(
+  graph: CodeGraph,
+): { source: string; target: string; weight?: number }[] {
+  const edges: { source: string; target: string; weight?: number }[] = [];
+  for (const [source, target, attrs] of graph.edges()) {
+    const weight = resolveEdgeWeight(attrs);
+    edges.push(weight === 1 ? { source, target } : { source, target, weight });
+  }
+  return edges;
 }
 
 /** JS fallback using the vendored Leiden algorithm. */

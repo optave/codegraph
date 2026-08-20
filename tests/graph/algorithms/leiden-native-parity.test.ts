@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { resolveEdgeWeight } from '../../../src/graph/algorithms/leiden/adapter.js';
 import { detectClusters } from '../../../src/graph/algorithms/leiden/index.js';
 import { louvainCommunities, nativeParityBlocker } from '../../../src/graph/algorithms/louvain.js';
 import { CodeGraph } from '../../../src/graph/model.js';
@@ -24,7 +25,10 @@ import { getNative, isNativeAvailable } from '../../../src/infrastructure/native
 // `leidenCommunities` binding (#1804 review): without the export check,
 // assertParity would silently degrade to a JS-vs-JS comparison and
 // runNativeDirect's non-null assertion would throw a confusing TypeError.
-const hasNative = isNativeAvailable() && typeof getNative()?.leidenCommunities === 'function';
+const hasNative =
+  isNativeAvailable() &&
+  typeof getNative()?.leidenCommunities === 'function' &&
+  typeof getNative()?.leidenWeightedCommunities === 'function';
 
 /** Sorted "node:community" pairs — stable snapshot for deep-equal comparison. */
 function snapshot(assignments: Map<string, number>): string[] {
@@ -49,17 +53,46 @@ function runJS(
   return { assignments, modularity: result.quality() };
 }
 
-/** Run the native Leiden binding directly, bypassing louvainCommunities' hardcoded seed. */
+/**
+ * Run the native weighted Leiden binding directly, bypassing
+ * louvainCommunities' hardcoded seed. Resolves weights exactly as the public
+ * API does, so weighted fixtures reach the binding as real weights rather than
+ * being flattened to 1.0.
+ */
 function runNativeDirect(
   graph: CodeGraph,
   opts: { resolution?: number; randomSeed?: number } = {},
 ): { assignments: Map<string, number>; modularity: number } {
   const native = getNative();
-  const edges = graph.toEdgeArray();
-  const nodeIds = graph.nodeIds();
-  const result = native.leidenCommunities!(
+  const edges = [...graph.edges()].map(([source, target, attrs]) => ({
+    source,
+    target,
+    weight: resolveEdgeWeight(attrs),
+  }));
+  const result = native.leidenWeightedCommunities!(
     edges,
-    nodeIds,
+    graph.nodeIds(),
+    opts.resolution ?? 1.0,
+    opts.randomSeed ?? 42,
+  );
+  const assignments = new Map<string, number>();
+  for (const entry of result.assignments) assignments.set(entry.node, entry.community);
+  return { assignments, modularity: result.modularity };
+}
+
+/**
+ * Run the pre-#1936 unweighted binding, still exported for version skew (a
+ * newer addon loaded by JS that only knows the old name). Kept under test so
+ * that path cannot rot silently.
+ */
+function runNativeUnweightedDirect(
+  graph: CodeGraph,
+  opts: { resolution?: number; randomSeed?: number } = {},
+): { assignments: Map<string, number>; modularity: number } {
+  const native = getNative();
+  const result = native.leidenCommunities!(
+    graph.toEdgeArray(),
+    graph.nodeIds(),
     opts.resolution ?? 1.0,
     opts.randomSeed ?? 42,
   );
@@ -173,18 +206,27 @@ describe.skipIf(!hasNative)('native/JS Leiden parity (issue #1804)', () => {
   });
 
   it('matches on a graph with self-loops', () => {
-    // Unweighted self-loop only: custom edge weights are out of scope for
-    // the native binding (GraphEdge carries no weight field, and none of
-    // louvainCommunities' real call sites ever set one — see leiden.rs's
-    // module doc). This still guards the actual regression: the classic
-    // Louvain implementation this file replaces dropped self-loops
-    // entirely instead of counting them once toward degree/modularity.
+    // Guards the original regression: the classic Louvain implementation this
+    // file replaces dropped self-loops entirely instead of counting them once
+    // toward degree/modularity. (Weighted self-loops are covered in the
+    // per-edge-weight block below.)
     const g = new CodeGraph();
     g.addEdge('a', 'b');
     g.addEdge('b', 'c');
     g.addEdge('c', 'a');
     g.addEdge('a', 'a');
     assertParity(g);
+  });
+
+  it.runIf(hasNative)('the retained unweighted binding still agrees with JS', () => {
+    // `leidenCommunities` is no longer what `louvainCommunities` calls, but it
+    // stays exported for version skew, so it needs its own coverage — the
+    // weighted path above would not catch it rotting.
+    const g = buildClusteredGraph(8, 5, 0.03, 'unweighted-binding-seed');
+    const native = runNativeUnweightedDirect(g, { randomSeed: 42 });
+    const js = runJS(g, { randomSeed: 42 });
+    expect(snapshot(native.assignments)).toEqual(snapshot(js.assignments));
+    expect(native.modularity).toBe(js.modularity);
   });
 
   it('matches on a graph forcing multi-level coarsening', () => {
@@ -239,17 +281,14 @@ describe.skipIf(!hasNative)('native/JS Leiden parity (issue #1804)', () => {
 });
 
 /**
- * Graphs the native binding cannot represent (issue #1936).
+ * Per-edge weights and the inputs native still cannot represent (issue #1936).
  *
- * `toEdgeArray()` drops every edge attribute at the FFI boundary and no node
- * attributes are passed at all, so native always optimizes a uniformly
- * weighted graph while the JS reference honors `attrs.weight`/`attrs.size`.
- * `nativeParityBlocker` detects that mismatch up front and defers to the JS
- * reference. These tests pin both halves: that the mismatch is real (native
- * genuinely cannot see the weights) and that the public API therefore returns
- * the JS reference's answer rather than an engine-dependent one.
+ * Native reads per-edge weights through `leidenWeightedCommunities`, with the
+ * attribute-to-number rule resolved once on the TS side (`resolveEdgeWeight`)
+ * and shared with the JS adapter. Node `size` is still native-blind, so
+ * `nativeParityBlocker` keeps routing size-bearing graphs to the JS reference.
  */
-describe('Leiden native/JS parity — inputs native cannot represent (#1936)', () => {
+describe('Leiden native/JS parity — per-edge weights (#1936)', () => {
   /**
    * Two triangles joined by a single bridge edge whose weight dominates every
    * intra-triangle edge. Unweighted, the triangles are the obvious partition;
@@ -272,59 +311,131 @@ describe('Leiden native/JS parity — inputs native cannot represent (#1936)', (
     return g;
   }
 
-  it('flags weighted edges and unit-sized nodes correctly', () => {
-    expect(nativeParityBlocker(buildWeightedBridgeGraph(25))).toMatch(/weight=25/);
-    // weight === 1 is exactly what native assumes, so it is not a blocker --
-    // pins that the predicate stays narrow instead of rejecting every graph
-    // that merely carries a `weight` key.
-    expect(nativeParityBlocker(buildWeightedBridgeGraph(1))).toBeNull();
-    expect(nativeParityBlocker(buildWeightedBridgeGraph(undefined))).toBeNull();
+  describe('nativeParityBlocker', () => {
+    it('does not flag weighted edges once the weighted binding is available', () => {
+      expect(
+        nativeParityBlocker(buildWeightedBridgeGraph(25), { weightsSupported: true }),
+      ).toBeNull();
+    });
+
+    it('flags weighted edges when only the pre-#1936 unweighted binding exists', () => {
+      // Version skew: an addon published before the weighted export, loaded by
+      // this (newer) JS. Silently sending the weights to a binding that cannot
+      // read them is the exact failure this predicate exists to prevent.
+      expect(
+        nativeParityBlocker(buildWeightedBridgeGraph(25), { weightsSupported: false }),
+      ).toMatch(/weight=25/);
+    });
+
+    it('stays narrow: weight === 1 and absent weights are never blockers', () => {
+      for (const weightsSupported of [true, false]) {
+        expect(nativeParityBlocker(buildWeightedBridgeGraph(1), { weightsSupported })).toBeNull();
+        expect(
+          nativeParityBlocker(buildWeightedBridgeGraph(undefined), { weightsSupported }),
+        ).toBeNull();
+      }
+    });
+
+    it('does not flag non-numeric weight/size attrs (JS falls back to 1 for those too)', () => {
+      const g = new CodeGraph();
+      g.addEdge('a', 'b', { weight: 'heavy' });
+      g.addNode('a', { size: null });
+      expect(nativeParityBlocker(g, { weightsSupported: false })).toBeNull();
+    });
+
+    it('flags node size attrs regardless of weight support', () => {
+      // Sizes are not inert under modularity: the JS reference sorts
+      // communities by total size when assigning final IDs, so a size-bearing
+      // graph can get different community *labels* even when the grouping
+      // matches. Nothing in-tree sets `size`, so there is no caller to verify
+      // a native port against — the JS reference stays authoritative.
+      const g = new CodeGraph();
+      g.addEdge('a', 'b');
+      g.addNode('a', { size: 4 });
+      for (const weightsSupported of [true, false]) {
+        expect(nativeParityBlocker(g, { weightsSupported })).toMatch(/size=4/);
+      }
+    });
   });
 
-  it('does not flag non-numeric weight/size attrs (JS falls back to 1 for those too)', () => {
+  it.runIf(hasNative)('exposes the weighted binding', () => {
+    // If this fails the suite below silently degrades to JS-vs-JS: the public
+    // API would fall back rather than error, and every assertion would still
+    // pass. Rebuild the addon (`napi build --release`) if it does.
+    expect(typeof getNative()?.leidenWeightedCommunities).toBe('function');
+  });
+
+  it.runIf(hasNative)('weights change the answer, so parity below is meaningful', () => {
+    // Pins that the weighted fixture is actually weight-sensitive. Without
+    // this, a binding that ignored weights entirely would still pass every
+    // parity assertion in this block.
+    const weighted = runJS(buildWeightedBridgeGraph(25));
+    const unweighted = runJS(buildWeightedBridgeGraph(undefined));
+    expect(weighted.modularity).not.toBe(unweighted.modularity);
+  });
+
+  it('matches the JS reference on a weighted graph via the public API', () => {
+    for (const bridgeWeight of [0.25, 1, 2, 7, 25, 1000]) {
+      const g = buildWeightedBridgeGraph(bridgeWeight);
+      const viaPublicApi = louvainCommunities(g);
+      const js = runJS(g);
+      expect(snapshot(viaPublicApi.assignments)).toEqual(snapshot(js.assignments));
+      expect(viaPublicApi.modularity).toBe(js.modularity);
+    }
+  });
+
+  it('matches on weighted reciprocal edges (undirected averaging path)', () => {
+    // adapter.ts sums both directions then divides by how many were seen, so
+    // asymmetric reciprocal weights exercise that averaging with a non-unit
+    // numerator on both sides of the FFI boundary.
     const g = new CodeGraph();
-    g.addEdge('a', 'b', { weight: 'heavy' });
-    g.addNode('a', { size: null });
-    expect(nativeParityBlocker(g)).toBeNull();
+    g.addEdge('a', 'b', { weight: 5 });
+    g.addEdge('b', 'a', { weight: 1 });
+    g.addEdge('b', 'c', { weight: 3 });
+    g.addEdge('c', 'b', { weight: 3 });
+    g.addEdge('c', 'd', { weight: 0.5 });
+    assertParity(g);
   });
 
-  it('flags node size attrs', () => {
+  it('matches on a weighted self-loop', () => {
     const g = new CodeGraph();
-    g.addEdge('a', 'b');
-    g.addNode('a', { size: 4 });
-    expect(nativeParityBlocker(g)).toMatch(/size=4/);
+    g.addEdge('a', 'b', { weight: 2 });
+    g.addEdge('b', 'c', { weight: 2 });
+    g.addEdge('c', 'a', { weight: 2 });
+    g.addEdge('a', 'a', { weight: 9 });
+    assertParity(g);
   });
 
-  it.runIf(hasNative)('confirms native genuinely cannot see edge weights', () => {
-    // Justifies the guard: native returns the *same* answer whether or not
-    // the weights are present (it never sees them), while JS returns a
-    // different modularity for the two graphs (it does). Without the guard,
-    // `louvainCommunities` would hand back the weight-blind answer for a
-    // weighted graph.
-    const weighted = buildWeightedBridgeGraph(25);
-    const unweighted = buildWeightedBridgeGraph(undefined);
-
-    expect(snapshot(runNativeDirect(weighted).assignments)).toEqual(
-      snapshot(runNativeDirect(unweighted).assignments),
-    );
-    expect(runNativeDirect(weighted).modularity).toBe(runNativeDirect(unweighted).modularity);
-    expect(runJS(weighted).modularity).not.toBe(runJS(unweighted).modularity);
+  it('matches on zero and NaN weights (both drop the edge)', () => {
+    // `resolveEdgeWeight`'s `+w || 0` coercion maps both to 0, which the
+    // adapter drops. Native must agree rather than treating the edge as 1.0 or
+    // propagating NaN through every modularity sum.
+    for (const weight of [0, Number.NaN]) {
+      const g = new CodeGraph();
+      g.addEdge('a', 'b', { weight: 4 });
+      g.addEdge('b', 'c', { weight: 4 });
+      g.addEdge('c', 'a', { weight: 4 });
+      g.addEdge('a', 'd', { weight });
+      g.addEdge('d', 'e', { weight: 4 });
+      g.addEdge('e', 'a', { weight: 4 });
+      assertParity(g);
+    }
   });
 
-  it('returns the JS reference result for a weighted graph', () => {
-    const g = buildWeightedBridgeGraph(25);
-    const viaPublicApi = louvainCommunities(g);
-    const js = runJS(g);
-    expect(snapshot(viaPublicApi.assignments)).toEqual(snapshot(js.assignments));
-    expect(viaPublicApi.modularity).toBe(js.modularity);
-  });
-
-  it('returns the JS reference result for a graph with node sizes', () => {
-    const g = buildWeightedBridgeGraph(undefined);
-    g.addNode('a1', { size: 8 });
-    const viaPublicApi = louvainCommunities(g);
-    const js = runJS(g);
-    expect(snapshot(viaPublicApi.assignments)).toEqual(snapshot(js.assignments));
-    expect(viaPublicApi.modularity).toBe(js.modularity);
+  it('matches on a weighted multi-level graph across seeds and resolutions', () => {
+    const g = buildClusteredGraph(10, 6, 0.03, 'weighted-seed-1');
+    // Deterministic pseudo-weights derived from the endpoint ids, so the
+    // fixture is weighted without needing a second RNG in the test.
+    let i = 0;
+    for (const [src, tgt] of [...g.edges()].map(([a, b]) => [a, b] as const)) {
+      i += 1;
+      g.addEdge(src, tgt, { weight: 1 + (i % 7) * 0.5 });
+    }
+    for (const resolution of [0.5, 1.0, 2.0]) {
+      assertParity(g, { resolution });
+    }
+    for (const randomSeed of [1, 42, 2026]) {
+      assertParityDirect(g, { randomSeed });
+    }
   });
 });

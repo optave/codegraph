@@ -2809,6 +2809,30 @@ export interface NativeAddon {
     assignments: Array<{ node: string; community: number }>;
     modularity: number;
   };
+  /**
+   * Leiden community detection over per-edge weights (issue #1936) — an
+   * absent `weight` means 1.0, so this subsumes `leidenCommunities` above and
+   * is what `louvainCommunities` calls whenever it is present.
+   *
+   * Optional for the same reason as `leidenCommunities`: an addon published
+   * before #1936 lacks this export, and `louvainCommunities` must then fall
+   * back to the unweighted binding (for graphs with no weights) or to
+   * `detectClusters` (for graphs that have them) rather than silently
+   * dropping the weights.
+   */
+  leidenWeightedCommunities?(
+    edges: Array<{ source: string; target: string; weight?: number }>,
+    nodeIds: string[],
+    resolution?: number | null,
+    randomSeed?: number | null,
+    maxLevels?: number | null,
+    maxLocalPasses?: number | null,
+    refinementTheta?: number | null,
+    capacityGrowthFactor?: number | null,
+  ): {
+    assignments: Array<{ node: string; community: number }>;
+    modularity: number;
+  };
   buildCallEdges(
     files: unknown[],
     nodes: unknown[],

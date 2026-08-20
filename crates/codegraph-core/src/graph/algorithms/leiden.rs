@@ -10,22 +10,35 @@
 //!
 //! ## Scope
 //!
-//! This port covers exactly the option surface reachable through
+//! This port covers the option surface reachable through
 //! `louvainCommunities`/`LouvainOptions`
 //! (`src/graph/algorithms/louvain.ts`): undirected graphs, modularity
 //! quality (not CPM), the default "neighbors" candidate strategy,
-//! `refine: true` (always), uniform node size (1.0) and edge weight (1.0
-//! per edge — `GraphEdge` carries no weight field), no
-//! `maxCommunitySize`/`fixedNodes`/`preserveLabels` overrides. These are the
-//! *only* knobs `louvainCommunities` ever threads through to either engine
-//! (see `LouvainOptions` and `louvainJS()`'s call into `detectClusters`).
+//! `refine: true` (always), per-edge weights, uniform node size (1.0), no
+//! `maxCommunitySize`/`fixedNodes`/`preserveLabels` overrides.
 //!
-//! The TS `leiden/` directory's directed-graph mode, CPM quality function,
-//! alternate candidate strategies (all/random/random-neighbor),
-//! `allowNewCommunity`, `fixedNodes`, and `preserveLabels` knobs are **not**
-//! ported — they are unreachable from this binding today. Issue #1936
-//! tracks porting that remaining surface if a caller ever needs to drive
-//! native Leiden with it.
+//! Per-edge weights arrive through `leiden_weighted_communities` and are
+//! resolved *on the TypeScript side* (`resolveEdgeWeight` in
+//! `src/graph/algorithms/leiden/adapter.ts`, shared with the JS reference's
+//! own adapter) so that the rule mapping an edge attribute to a number has
+//! exactly one implementation across both engines. This binding therefore
+//! takes already-resolved numbers and does not reimplement that rule — see
+//! `resolve_weight` below. The older `leiden_communities` entry point is
+//! retained for version skew (newer addon, older JS) and is exactly the
+//! all-weights-1.0 case.
+//!
+//! Node size is still uniform 1.0: nothing in-tree attaches a `size`
+//! attribute, so there is no caller to verify a port against. Sizes are not
+//! inert under modularity — `compact_community_ids` sorts communities by
+//! total size to assign final IDs — so `nativeParityBlocker` in `louvain.ts`
+//! routes any size-bearing graph to the JS reference rather than letting the
+//! two engines label communities differently.
+//!
+//! The TS `leiden/` directory's CPM quality function, alternate candidate
+//! strategies (all/random/random-neighbor), `allowNewCommunity`,
+//! `fixedNodes`, and `preserveLabels` knobs are **not** ported — they are
+//! unreachable from this binding today. Issue #1936 tracks porting that
+//! remaining surface if a caller ever needs to drive native Leiden with it.
 //!
 //! ## Determinism
 //!
@@ -61,6 +74,24 @@ use crate::types::GraphEdge;
 // napi-facing types + entry point
 // ════════════════════════════════════════════════════════════════════════
 
+/// A graph edge carrying an already-resolved weight.
+///
+/// Distinct from the shared `GraphEdge` on purpose: `GraphEdge` is also the
+/// input to `detect_cycles`, `shortest_path`, `fan_in_out` and `bfs`, none of
+/// which read a weight. Adding an inert field there would let a caller set a
+/// weight on, say, a `shortest_path` edge and have it silently ignored —
+/// which is the same class of quiet-wrong-answer bug that per-edge weight
+/// support exists to close.
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct LeidenWeightedEdge {
+    pub source: String,
+    pub target: String,
+    /// Resolved edge weight; `None` means 1.0 (see the module doc — the
+    /// attribute-to-number rule lives on the TypeScript side).
+    pub weight: Option<f64>,
+}
+
 #[napi(object)]
 #[derive(Debug, Clone)]
 pub struct LeidenCommunityAssignment {
@@ -75,7 +106,23 @@ pub struct LeidenCommunitiesResult {
     pub modularity: f64,
 }
 
-/// Leiden community detection (undirected modularity optimization).
+/// Resolve one edge's weight for the adapter.
+///
+/// Weights arrive already resolved from TypeScript (see the module doc), so
+/// this is deliberately not a reimplementation of the attribute-to-number
+/// rule — only the two mappings that cannot be expressed across the FFI
+/// boundary by the caller: an absent weight means 1.0, and NaN means 0.0
+/// (matching the JS adapter's `+w || 0` coercion, which turns NaN into a
+/// dropped edge rather than poisoning every modularity sum downstream).
+fn resolve_weight(weight: Option<f64>) -> f64 {
+    match weight {
+        None => 1.0,
+        Some(w) if w.is_nan() => 0.0,
+        Some(w) => w,
+    }
+}
+
+/// Leiden community detection over per-edge weights (undirected modularity).
 ///
 /// Mirrors `detectClusters(graph, { resolution, randomSeed, directed: false,
 /// maxLevels, maxLocalPasses, refinementTheta, capacityGrowthFactor })` in
@@ -83,9 +130,68 @@ pub struct LeidenCommunitiesResult {
 /// the precise (and deliberately narrower) option surface covered.
 #[napi]
 #[allow(clippy::too_many_arguments)]
+pub fn leiden_weighted_communities(
+    edges: Vec<LeidenWeightedEdge>,
+    node_ids: Vec<String>,
+    resolution: Option<f64>,
+    random_seed: Option<u32>,
+    max_levels: Option<u32>,
+    max_local_passes: Option<u32>,
+    refinement_theta: Option<f64>,
+    capacity_growth_factor: Option<f64>,
+) -> LeidenCommunitiesResult {
+    leiden_impl(
+        &edges,
+        &node_ids,
+        resolution,
+        random_seed,
+        max_levels,
+        max_local_passes,
+        refinement_theta,
+        capacity_growth_factor,
+    )
+}
+
+/// Unweighted entry point — every edge weighs 1.0.
+///
+/// Retained for version skew (a newer addon loaded by older JS that only
+/// knows this name); current JS always calls `leiden_weighted_communities`.
+#[napi]
+#[allow(clippy::too_many_arguments)]
 pub fn leiden_communities(
     edges: Vec<GraphEdge>,
     node_ids: Vec<String>,
+    resolution: Option<f64>,
+    random_seed: Option<u32>,
+    max_levels: Option<u32>,
+    max_local_passes: Option<u32>,
+    refinement_theta: Option<f64>,
+    capacity_growth_factor: Option<f64>,
+) -> LeidenCommunitiesResult {
+    let weighted: Vec<LeidenWeightedEdge> = edges
+        .into_iter()
+        .map(|e| LeidenWeightedEdge {
+            source: e.source,
+            target: e.target,
+            weight: None,
+        })
+        .collect();
+    leiden_impl(
+        &weighted,
+        &node_ids,
+        resolution,
+        random_seed,
+        max_levels,
+        max_local_passes,
+        refinement_theta,
+        capacity_growth_factor,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn leiden_impl(
+    edges: &[LeidenWeightedEdge],
+    node_ids: &[String],
     resolution: Option<f64>,
     random_seed: Option<u32>,
     max_levels: Option<u32>,
@@ -125,16 +231,14 @@ pub fn leiden_communities(
     for (i, id) in node_ids.iter().enumerate() {
         id_to_idx.insert(id.as_str(), i);
     }
-    // Edge weight is always 1.0: `GraphEdge` carries no weight field, and
-    // `graph.toEdgeArray()` (the sole caller, in louvain.ts) never attaches
-    // one either -- matching the TS reference's default `linkWeight`
-    // fallback, which is the only value ever exercised by this binding.
+    // Edges whose endpoints are not in `node_ids` are skipped, matching the
+    // JS adapter's `if (a == null || b == null) continue`.
     let raw_edges: Vec<(usize, usize, f64)> = edges
         .iter()
         .filter_map(|e| {
             let a = *id_to_idx.get(e.source.as_str())?;
             let b = *id_to_idx.get(e.target.as_str())?;
-            Some((a, b, 1.0))
+            Some((a, b, resolve_weight(e.weight)))
         })
         .collect();
 
@@ -1159,6 +1263,102 @@ fn compute_final_modularity(base: &GraphAdapter, original_to_current: &[usize]) 
 mod tests {
     use super::*;
     use std::collections::HashMap as StdHashMap;
+
+    fn wedge(src: &str, tgt: &str, weight: Option<f64>) -> LeidenWeightedEdge {
+        LeidenWeightedEdge {
+            source: src.to_string(),
+            target: tgt.to_string(),
+            weight,
+        }
+    }
+
+    /// The two mappings `resolve_weight` owns (everything else is resolved on
+    /// the TS side): absent means 1.0, NaN means 0.0 so it drops the edge
+    /// instead of poisoning every modularity sum downstream.
+    #[test]
+    fn resolve_weight_maps_absent_to_one_and_nan_to_zero() {
+        assert_eq!(resolve_weight(None), 1.0);
+        assert_eq!(resolve_weight(Some(f64::NAN)), 0.0);
+        assert_eq!(resolve_weight(Some(0.0)), 0.0);
+        assert_eq!(resolve_weight(Some(2.5)), 2.5);
+        assert_eq!(resolve_weight(Some(-3.0)), -3.0);
+    }
+
+    /// An all-absent-weight weighted call must equal the unweighted binding:
+    /// the retained `leiden_communities` entry point is defined as exactly
+    /// that case, so any drift between the two is a bug.
+    #[test]
+    fn weighted_with_no_weights_equals_unweighted_binding() {
+        let nodes: Vec<String> = ["a", "b", "c", "x", "y", "z"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let pairs = [
+            ("a", "b"),
+            ("b", "c"),
+            ("c", "a"),
+            ("x", "y"),
+            ("y", "z"),
+            ("z", "x"),
+            ("c", "x"),
+        ];
+
+        let unweighted = leiden_communities(
+            pairs.iter().map(|(a, b)| edge(a, b)).collect(),
+            nodes.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let weighted = leiden_weighted_communities(
+            pairs.iter().map(|(a, b)| wedge(a, b, None)).collect(),
+            nodes.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(unweighted.modularity, weighted.modularity);
+        let as_pairs = |r: &LeidenCommunitiesResult| {
+            let mut v: Vec<(String, i32)> = r
+                .assignments
+                .iter()
+                .map(|a| (a.node.clone(), a.community))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(as_pairs(&unweighted), as_pairs(&weighted));
+    }
+
+    /// Explicit weight 1.0 must also be identical to an absent weight --
+    /// `louvainCommunities` omits the field for weight-1 edges to keep the
+    /// wire format compact, so the two spellings have to agree.
+    #[test]
+    fn explicit_unit_weight_equals_absent_weight() {
+        let nodes: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let pairs = [("a", "b"), ("b", "c"), ("c", "a")];
+        let run = |w: Option<f64>| {
+            leiden_weighted_communities(
+                pairs.iter().map(|(a, b)| wedge(a, b, w)).collect(),
+                nodes.clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .modularity
+        };
+        assert_eq!(run(None), run(Some(1.0)));
+    }
 
     fn edge(src: &str, tgt: &str) -> GraphEdge {
         GraphEdge {
