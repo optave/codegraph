@@ -54,9 +54,18 @@ function defaultLinkWeight(attrs: EdgeAttrs): number {
 }
 
 /**
- * Numeric coercion applied to every resolved link weight. Non-finite and
- * zero results collapse to 0, which drops the edge from the adapter rather
- * than propagating NaN through every modularity sum downstream.
+ * Numeric coercion applied to every resolved link weight: `NaN`, zero, and
+ * anything non-numeric collapse to 0, which drops the edge from the adapter
+ * rather than propagating NaN through every modularity sum downstream.
+ *
+ * `Infinity`/`-Infinity` are *not* collapsed -- they are truthy, so `+w || 0`
+ * keeps them, and they then poison the modularity sums via
+ * `Infinity - Infinity`. That is a real gap rather than intended design, but
+ * both engines share it (the native binding's `resolve_weight` mirrors this
+ * rule exactly, NaN included) and nothing in-tree can produce an infinite
+ * weight today, so it is tracked in #2597 rather than changed here: clamping
+ * would alter the vendored reference's numeric semantics and needs its own
+ * decision plus a matching native change.
  */
 function coerceLinkWeight(w: number): number {
   return +w || 0;
