@@ -31,6 +31,7 @@ export {
   diffImpactData,
   fnImpactData,
   impactAnalysisData,
+  runGitDiff,
 } from './analysis/impact.js';
 export { implementationsData, interfacesData } from './analysis/implementations.js';
 export {

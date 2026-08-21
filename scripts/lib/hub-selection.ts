@@ -52,11 +52,26 @@ export interface HubTargets {
 	 */
 	mid: string;
 	leaf: string;
+	/**
+	 * 1-based line range of the resolved hub definition, when the graph
+	 * recorded one.
+	 *
+	 * `benchDiffImpact` needs it to place its probe edit *inside* the hub
+	 * function's body. Appending the probe after the last line instead (what it
+	 * did before #2598) puts the changed range outside every function, so
+	 * `diffImpactData` finds zero affected functions and short-circuits before
+	 * the BFS/co-change/ownership work the metric exists to guard — measuring
+	 * the short-circuit rather than the analysis.
+	 */
+	hubLine: number | null;
+	hubEndLine: number | null;
 }
 
 interface NodeRow {
 	name: string;
 	file: string;
+	line: number | null;
+	end_line: number | null;
 }
 
 interface RankedNodeRow extends NodeRow {
@@ -84,10 +99,12 @@ export function selectHubTargets(dbPath: string, pinnedCandidates: readonly stri
 
 		let hub: string | null = null;
 		let hubFile: string | null = null;
+		let hubLine: number | null = null;
+		let hubEndLine: number | null = null;
 		for (const candidate of pinnedCandidates) {
 			const row = db
 				.prepare(
-					`SELECT n.name, n.file FROM nodes n
+					`SELECT n.name, n.file, n.line, n.end_line FROM nodes n
            JOIN edges e ON e.source_id = n.id OR e.target_id = n.id
            WHERE n.name = ? AND n.kind IN (${kindPlaceholders})
              AND n.file NOT LIKE '%test%' AND n.file NOT LIKE '%spec%'
@@ -98,13 +115,15 @@ export function selectHubTargets(dbPath: string, pinnedCandidates: readonly stri
 			if (row) {
 				hub = row.name;
 				hubFile = row.file;
+				hubLine = row.line;
+				hubEndLine = row.end_line;
 				break;
 			}
 		}
 
 		const rows = db
 			.prepare(
-				`SELECT n.id, n.name, n.file, COUNT(e.id) AS cnt
+				`SELECT n.id, n.name, n.file, n.line, n.end_line, COUNT(e.id) AS cnt
          FROM nodes n
          JOIN edges e ON e.source_id = n.id OR e.target_id = n.id
          WHERE n.kind IN (${kindPlaceholders})
@@ -121,12 +140,14 @@ export function selectHubTargets(dbPath: string, pinnedCandidates: readonly stri
 		if (!hub) {
 			hub = rows[0].name;
 			hubFile = rows[0].file;
+			hubLine = rows[0].line;
+			hubEndLine = rows[0].end_line;
 		}
 
 		const mid = rows[Math.floor(rows.length / 2)].name;
 		const leaf = rows[rows.length - 1].name;
 
-		return { hub, hubFile: hubFile as string, mid, leaf };
+		return { hub, hubFile: hubFile as string, mid, leaf, hubLine, hubEndLine };
 	} finally {
 		db.close();
 	}
