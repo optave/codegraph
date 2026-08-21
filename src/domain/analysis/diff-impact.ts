@@ -37,8 +37,13 @@ function findGitRoot(repoRoot: string): boolean {
 /**
  * Execute git diff and return the raw output string.
  * Returns `{ output: string }` on success or `{ error: string }` on failure.
+ *
+ * Exported so a caller that wants to time the *analysis* can hoist the
+ * subprocess out of its measured region and feed the result back through
+ * `diffImpactData`'s `diffText` option, while still measuring the exact diff
+ * this function would have produced -- see that option's doc comment.
  */
-function runGitDiff(
+export function runGitDiff(
   repoRoot: string,
   opts: { staged?: boolean; ref?: string },
   maxBuffer: number,
@@ -267,6 +272,22 @@ export function diffImpactData(
     limit?: number;
     offset?: number;
     config?: any;
+    /**
+     * Pre-captured `git diff` output to analyze instead of shelling out.
+     *
+     * Exists because this function's cost is dominated by the `git`
+     * subprocess, not by the graph work: measured on this repo, `git diff
+     * --cached --unified=0` alone is ~8ms of a ~9ms total call. A caller that
+     * wants to measure the analysis -- the `diffImpact` benchmark in
+     * `scripts/query-benchmark.ts` -- cannot do so while the spawn sits inside
+     * the timed region, because spawn cost swamps the signal and varies with
+     * machine load (see #2598).
+     *
+     * Pass the output of the exported `runGitDiff` to measure (or re-analyze)
+     * exactly what this function would otherwise have produced itself. When
+     * set, `staged`/`ref` are unused.
+     */
+    diffText?: string;
   } = {},
 ) {
   // Resolve config before opening the DB so config.db.busyTimeoutMs can be
@@ -291,7 +312,10 @@ export function diffImpactData(
       return { error: `Not a git repository: ${repoRoot}` };
     }
 
-    const gitResult = runGitDiff(repoRoot, opts, config.check.execMaxBufferBytes);
+    const gitResult =
+      opts.diffText != null
+        ? { output: opts.diffText }
+        : runGitDiff(repoRoot, opts, config.check.execMaxBufferBytes);
     if ('error' in gitResult) return { error: gitResult.error };
 
     if (!gitResult.output.trim()) {
