@@ -596,6 +596,70 @@ REASONS: (STALE/UNVERIFIABLE only) one bullet per finding — what changed, wher
 
 ## Phase: Execute — Dispatch the Build
 
+**First, recover an execute PR that already exists — a resumed run must never re-dispatch.** The build is only reachable through this phase, so a second `/oversee #<plan-PR>` (a fresh context, a `/clear` between the build and reconciliation, a wakeup whose state dir is gone) arrives here with the execute PR already open on GitHub. Re-dispatching cannot recover it: the execute agent claims the tracking issue first, finds it already claimed, and aborts with `executePR=null` **by design** — so the engine returns no PR number, `.codegraph/oversee/execute-pr` stays empty, and the open PR is stranded with nobody reconciling its reviewer. Re-derive it from GitHub instead:
+
+```bash
+S=.codegraph/oversee
+REPO=$(cat "$S/repo")
+ISSUE=$(cat "$S/issue")
+PLAN_PR=$(cat "$S/plan-pr")
+
+# Both reach a shell substitution and a grep pattern below. They were parsed under a
+# strict allow-list in Phase: Execute — Confirm Approval; re-assert it here so this
+# block is safe to run on its own in a resumed context.
+grep -qE '^[0-9]+$' "$S/issue" && grep -qE '^[0-9]+$' "$S/plan-pr" \
+  || { echo "STOP: .codegraph/oversee/{issue,plan-pr} must each hold a plain integer — re-run Phase: Execute — Confirm Approval."; exit 1; }
+
+# Candidates: every OPEN, non-[Plan] PR that cross-references the tracking issue. The
+# issue timeline is exact and fully paginated — unlike `gh pr list` it needs no guessed
+# --limit that could silently truncate past the execute PR, and unlike a code search it
+# has no indexing lag in the minutes right after that PR opens.
+gh api "repos/$REPO/issues/$ISSUE/timeline" --paginate \
+  --jq '.[] | select(.event == "cross-referenced") | .source.issue
+        | select(.pull_request != null and .state == "open")
+        | select((.title | startswith("[Plan]")) | not)
+        | .number' > "$S/xref.raw" \
+  || { echo "STOP: could not read issue #$ISSUE's timeline to check for an existing execute PR."; exit 1; }
+# Redirected to a file rather than piped into sort: a POSIX pipeline reports only its
+# LAST command's status, so `gh ... | sort` would swallow a gh failure as success.
+sort -u "$S/xref.raw" > "$S/xref"
+
+# A bare cross-reference is NOT an execute PR — merely linking the issue from a comment
+# creates one too. Require a CLOSING keyword in the body: `executePrompt` mandates
+# "Closes #<issue>" on the execute PR, while the plan PR's own closing keywords were
+# rewritten to "Part of" when its gate was installed, so this separates the two cleanly.
+: > "$S/exec-prs"
+while read -r C; do
+  [ -n "$C" ] || continue
+  [ "$C" = "$PLAN_PR" ] && continue
+  BODY=$(gh pr view "$C" --repo "$REPO" --json body --jq '.body // ""') \
+    || { echo "STOP: could not read PR #$C's body while recovering the execute PR."; exit 1; }
+  if printf '%s' "$BODY" \
+    | grep -Eiq "(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))[[:space:]]+#$ISSUE([^0-9]|$)"; then
+    printf '%s\n' "$C" >> "$S/exec-prs"
+  fi
+done < "$S/xref"
+rm -f "$S/xref" "$S/xref.raw"
+
+COUNT=$(grep -c '^[0-9]' "$S/exec-prs" || true)
+# || true: grep -c exits 1 on zero matches, which is the normal first-run case.
+if [ "${COUNT:-0}" -gt 1 ]; then
+  echo "STOP: issue #$ISSUE has $COUNT open execute PRs ($(tr '\n' ' ' < "$S/exec-prs")). /oversee will not guess which one to reconcile — close the stale one, then re-run."
+  rm -f "$S/exec-prs"
+  exit 1
+elif [ "${COUNT:-0}" -eq 1 ]; then
+  head -1 "$S/exec-prs" > "$S/execute-pr"
+  rm -f "$S/exec-prs"
+  echo "recover: execute PR #$(cat "$S/execute-pr") already exists for issue #$ISSUE — SKIPPING dispatch."
+  echo "Continue at Phase: Execute — Reconcile the Reviewer. Do NOT run the Workflow below."
+else
+  rm -f "$S/exec-prs" "$S/execute-pr"
+  echo "recover: no open execute PR for issue #$ISSUE — dispatching the build."
+fi
+```
+
+**If the recovery found a PR, this phase is already done** — skip the dispatch below entirely and continue at Phase: Execute — Reconcile the Reviewer. Dispatch only when it found none.
+
 Dispatch on top of the approved (unmerged) plan PR, **pinned to the verified head SHA** from Phase: Execute — Confirm Approval. The execute agent builds *that exact commit* rather than whatever the plan branch resolves to at checkout time, and re-checks `oversee/plan-gate=success` on it before building — so a push to the plan PR between approval and checkout fails closed instead of silently building an unapproved head.
 
 ```text
@@ -788,6 +852,7 @@ The durable artifacts live outside this directory, and are the point of the run:
 - **Sync local `main` before each phase's context read.** Check the tree is clean first (`[ -z "$(git status --porcelain)" ]`): `git switch main` succeeds silently on non-conflicting uncommitted changes, tracked or untracked, and would carry them onto `main`. Then `git fetch origin && git switch main && git merge --ff-only origin/main`, failing closed on a dirty tree or a non-fast-forward. Never force, reset, or rebase past local work.
 - **Readiness is warn-and-confirm**, not a gate: a `blocked` label, a self-gated issue, an open dependency, or a missing ADR is surfaced with the exact gate named and the human asked. The invariants and never-merge stay hard regardless of the answer.
 - **Reconcile the reviewer as a re-entrant, scheduler-paced batch — never a live loop.** One bounded batch per tick: read state, spawn a single-round sweep if unsatisfied, then `ScheduleWakeup` (~360–420s) and end the turn, or stop when satisfied. Compare Greptile's summary **body**, not just the comment list — it edits in place. Escalate to the human only on genuine non-convergence (the same comment ids open across 2 consecutive ticks, re-derived from GitHub).
+- **Recover before you re-dispatch.** The execute phase re-derives an already-open execute PR from the tracking issue's cross-references and skips the build. Re-dispatching a resumed run cannot recover it — the builder claim-aborts on the already-claimed issue and returns no PR number, stranding the open PR with nobody reconciling its reviewer.
 - **Every dispatched agent runs in worktree isolation and runs `.claude/scripts/assert-worktree.sh` before any branch-mutating git operation** (CLAUDE.md "Parallel Sessions"). Branch names must carry a hook-approved prefix — a `/worktree` `claude/...` branch is rejected on push.
 - **Never merge anything.** Not the plan PR, not the execute PR. Humans own every merge to `main`.
 - **Never weaken a gate to make a review pass**, and never document a native/WASM divergence as expected behavior — fix the root cause (CLAUDE.md).
