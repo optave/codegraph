@@ -870,7 +870,7 @@ State lives in `.codegraph/oversee/` (git-ignored via `**/.codegraph/*`). Every 
 | `plan-pr` | Plan dispatch / gate recovery | `[Plan]` PR number |
 | `plan-ref` | Plan dispatch / gate recovery | Plan doc path |
 | `plan-head-sha` | Gate stamp / provenance check | The verified approved-plan commit |
-| `execute-pr` | Execute dispatch | Execute PR number |
+| `execute-pr` | Execute recovery / dispatch | Execute PR number — recovered from GitHub on a resumed run, otherwise written by the dispatch |
 | `open-ids` | Reconcile | Comma-joined root comment ids of the last tick's UNRESOLVED, non-outdated reviewer threads |
 
 The durable artifacts live outside this directory, and are the point of the run: the plan doc under `docs/plans/`, the `[Plan]` PR with its approval gate, the `oversee/plan-gate` commit status, the execute PR, and — on a rejected plan — the `plan-carry-forward` comment on the tracking issue.
