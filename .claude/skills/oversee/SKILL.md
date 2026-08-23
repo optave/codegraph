@@ -496,7 +496,7 @@ A second invocation is a fresh session — the model, effort, and auto-mode coul
 
 This check sits **before** Phase: Execute — Validate Plan Freshness on purpose. Once an execute PR exists the build already happened, against a head whose human approval this phase just re-verified — so re-checking the plan's freshness cannot change what was built, and its **STALE** branch is actively destructive: it would close the `[Plan]` PR and re-plan, orphaning an open and possibly already-verified execute PR. Recover first, and the freshness gate runs only on a plan that has yet to be built.
 
-Because skipping that gate removes the last downstream check, a candidate is adopted only on **provenance**, never on issue linkage: the approved `planHeadSha` must be an **ancestor** of its head. The execute agent branches from that exact commit, so a real execute PR always is descended from it, and an unrelated PR that merely says `Closes #<issue>` never can be. Candidates that fail are named and skipped, not silently ignored.
+Because skipping that gate removes the last downstream check, a candidate is adopted only on **provenance**, never on issue linkage: it must target `main` and be **strictly ahead** of the approved `planHeadSha`. The execute agent branches from that exact commit and commits the code on top, so a real execute PR always adds at least one commit to it, while an unrelated PR that merely says `Closes #<issue>` is not descended from it at all. *Strictly* matters: a PR pointing **at** the plan head is the plan carrying no build, and adopting it would hand reconciliation an empty delivery — the same defect as adopting an unrelated PR. Candidates that fail either test are named and skipped, not silently ignored.
 
 ```bash
 S=.codegraph/oversee
@@ -546,18 +546,35 @@ while read -r C; do
     | grep -Eiq "(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))[[:space:]]+#$ISSUE([^0-9]|$)" \
     || continue
 
-  # `compare/<base>...<head>` reports how head relates to base: "ahead" or "identical"
-  # means base IS an ancestor, "behind"/"diverged" means it is not. An unrelated PR that
-  # merely closes the same issue cannot be ahead of a commit it was never branched from.
-  C_HEAD=$(gh pr view "$C" --repo "$REPO" --json headRefOid -q .headRefOid) \
+  # Two provenance facts, both read from the PR in one call.
+  META=$(gh pr view "$C" --repo "$REPO" --json headRefOid,baseRefName \
+           --jq '"\(.headRefOid) \(.baseRefName)"') \
     || { echo "STOP: could not read PR #$C's head while recovering the execute PR."; exit 1; }
-  # An unrelated history makes the compare API 404, which is a legitimate "not built from
-  # the approved plan" answer rather than an error to surface; the case below treats the
-  # resulting empty REL as a rejection. 2>/dev/null is expected and tolerated here.
+  C_HEAD=${META%% *}
+  C_BASE=${META##* }
+
+  # (a) It targets main. `executePrompt` opens the execute PR against main (the same
+  # branch this skill syncs and merges elsewhere), so a PR based on the plan branch is
+  # somebody stacking work on the plan, not the build.
+  if [ "$C_BASE" != "main" ]; then
+    echo "recover: skipping PR #$C — it closes issue #$ISSUE but targets '$C_BASE', not main, so it is not an /oversee execute PR."
+    continue
+  fi
+
+  # (b) It is STRICTLY AHEAD of the approved plan head. `compare/<base>...<head>` reports
+  # "ahead" when base is an ancestor AND head adds commits, "identical" when they are the
+  # same commit, and "behind"/"diverged" when base is not an ancestor at all. Only "ahead"
+  # is an execute PR: the agent branches from `planHeadSha` and commits the code on top,
+  # so a real one always adds at least one commit. "identical" is a PR pointing AT the
+  # plan head — the plan carrying no build — and adopting it would hand
+  # reconciliation an empty delivery, which is the same defect as adopting an unrelated PR.
+  # An unrelated history 404s, a legitimate "not built from the approved plan" answer
+  # rather than an error to surface; an empty REL falls through to the rejection below.
+  # 2>/dev/null is expected and tolerated here.
   REL=$(gh api "repos/$REPO/compare/$PLAN_SHA...$C_HEAD" --jq '.status' 2>/dev/null)
   case "${REL:-none}" in
-    ahead|identical) printf '%s\n' "$C" >> "$S/exec-prs" ;;
-    *) echo "recover: skipping PR #$C — it closes issue #$ISSUE but the approved plan head $PLAN_SHA is not an ancestor of its head (compare=${REL:-unavailable}), so /oversee did not build it." ;;
+    ahead) printf '%s\n' "$C" >> "$S/exec-prs" ;;
+    *) echo "recover: skipping PR #$C — it closes issue #$ISSUE but is not strictly ahead of the approved plan head $PLAN_SHA (compare=${REL:-unavailable}), so /oversee did not build it." ;;
   esac
 done < "$S/xref"
 rm -f "$S/xref" "$S/xref.raw"
@@ -921,7 +938,7 @@ The durable artifacts live outside this directory, and are the point of the run:
 - **Sync local `main` before each phase's context read.** Check the tree is clean first (`[ -z "$(git status --porcelain)" ]`): `git switch main` succeeds silently on non-conflicting uncommitted changes, tracked or untracked, and would carry them onto `main`. Then `git fetch origin && git switch main && git merge --ff-only origin/main`, failing closed on a dirty tree or a non-fast-forward. Never force, reset, or rebase past local work.
 - **Readiness is warn-and-confirm**, not a gate: a `blocked` label, a self-gated issue, an open dependency, or a missing ADR is surfaced with the exact gate named and the human asked. The invariants and never-merge stay hard regardless of the answer.
 - **Reconcile the reviewer as a re-entrant, scheduler-paced batch — never a live loop.** One bounded batch per tick: read state, spawn a single-round sweep if unsatisfied, then `ScheduleWakeup` (~360–420s) and end the turn, or stop when satisfied. Compare Greptile's summary **body**, not just the comment list — it edits in place. Escalate to the human only on genuine non-convergence: the same **unresolved** thread ids across 2 consecutive ticks, read from the GraphQL `reviewThreads` connection so resolved, outdated, and self-authored comments cannot pin a set that never shrinks.
-- **Recover before you re-dispatch, and before the freshness gate.** Confirm Approval re-derives an already-open execute PR from the tracking issue's cross-references and routes straight to reconciliation, skipping both the freshness gate and the build. Adoption requires **provenance** (the approved plan head must be an ancestor of the candidate's head), not issue linkage, which any PR can claim. Ordering is load-bearing: a STALE verdict closes the `[Plan]` PR and re-plans, which on a resumed run would orphan an open, possibly already-verified execute PR. Re-dispatching a resumed run cannot recover it — the builder claim-aborts on the already-claimed issue and returns no PR number, stranding the open PR with nobody reconciling its reviewer.
+- **Recover before you re-dispatch, and before the freshness gate.** Confirm Approval re-derives an already-open execute PR from the tracking issue's cross-references and routes straight to reconciliation, skipping both the freshness gate and the build. Adoption requires **provenance** — the candidate must target `main` and be strictly ahead of the approved plan head — not issue linkage, which any PR can claim. Strictly ahead, because a PR pointing at the plan head carries no build. Ordering is load-bearing: a STALE verdict closes the `[Plan]` PR and re-plans, which on a resumed run would orphan an open, possibly already-verified execute PR. Re-dispatching a resumed run cannot recover it — the builder claim-aborts on the already-claimed issue and returns no PR number, stranding the open PR with nobody reconciling its reviewer.
 - **Every dispatched agent runs in worktree isolation and runs `.claude/scripts/assert-worktree.sh` before any branch-mutating git operation** (CLAUDE.md "Parallel Sessions"). Branch names must carry a hook-approved prefix — a `/worktree` `claude/...` branch is rejected on push.
 - **Never merge anything.** Not the plan PR, not the execute PR. Humans own every merge to `main`.
 - **Never weaken a gate to make a review pass**, and never document a native/WASM divergence as expected behavior — fix the root cause (CLAUDE.md).
