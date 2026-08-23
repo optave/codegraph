@@ -708,22 +708,62 @@ Run **ONE bounded reconcile batch per invocation**:
 
 4. If **satisfied**, go to Phase: Report.
 
-**Escalate on genuine non-convergence.** Track the open finding ids across ticks, derived from GitHub rather than from an in-memory counter (the reviewer's inline-comment ids are stable across a push and re-anchor):
+**Escalate on genuine non-convergence.** Track the **open** finding ids across ticks, derived from GitHub rather than from an in-memory counter (a review thread's root comment id is stable across a push and re-anchor). *Open* is the load-bearing word: the set has to shrink as findings get addressed, or it compares equal on every tick and escalates a PR that was converging normally.
+
+Read it from the GraphQL `reviewThreads` connection, **not** the REST comment list. REST `/pulls/<n>/comments` cannot express any of the three properties that decide whether a comment is still a finding: it has **no resolved flag**, so an addressed-and-resolved thread stays in the list forever and pins the id set; it **flattens our own replies in** among the findings, so answering a comment *grows* the set; and it carries **no thread identity**, so a live finding is indistinguishable from a closed one or from an unrelated remark.
 
 ```bash
 S=.codegraph/oversee
 REPO=$(cat "$S/repo")
 PR=$(cat "$S/execute-pr")
+OWNER=${REPO%%/*}
+NAME=${REPO##*/}
 
-gh api "repos/$REPO/pulls/$PR/comments" --paginate \
-  --jq '[.[] | select(.line != null) | .id] | sort | join(",")' > "$S/open-ids.new" \
-  || { echo "STOP: could not read PR #$PR's review comments."; exit 1; }
+# The acting account authors the replies, so its own threads are never findings.
+ME=$(gh api user --jq .login) \
+  || { echo "STOP: could not resolve the acting account — cannot separate reviewer findings from our own replies."; exit 1; }
+
+# isResolved:false  - the thread has not been marked addressed.
+# isOutdated:false  - the diff hunk it flagged still exists (the REST equivalent of the
+#                     comment's `line` going null once the code it anchored to is gone).
+# comments(first:1) - the thread ROOT: the finding itself, never a reply to it.
+gh api graphql --paginate \
+  -F owner="$OWNER" -F name="$NAME" -F pr="$PR" -f query='
+  query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved
+            isOutdated
+            comments(first: 1) { nodes { databaseId author { login } } }
+          }
+        }
+      }
+    }
+  }' \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+        | select(.isResolved == false and .isOutdated == false)
+        | .comments.nodes[0] // empty' > "$S/open-threads.raw" \
+  || { echo "STOP: could not read PR #$PR's review threads."; exit 1; }
+
+NOW_RAW=$(jq -rs --arg me "$ME" \
+  '[.[] | select(.author.login != $me) | .databaseId] | sort | join(",")' \
+  "$S/open-threads.raw") \
+  || { echo "STOP: could not reduce PR #$PR's review threads to an open-finding key."; exit 1; }
+# -s (slurp): --paginate emits one object per thread across all pages, not one array.
+rm -f "$S/open-threads.raw"
+
+# tr -d '\r': a native Windows `jq` build writes CRLF, and a stray CR would ride into
+# both the comparison key and the state file. `gh`'s own --jq writes LF, standalone jq
+# does not, and this is the one place the skill shells out to jq directly.
+NOW=$(printf '%s' "$NOW_RAW" | tr -d '\r')
 
 PREV=$(cat "$S/open-ids" 2>/dev/null || echo "")
 # 2>/dev/null || echo "": no previous tick file is expected on the first reconcile — an
 # empty PREV correctly means "nothing to compare", never a false stall match.
-NOW=$(cat "$S/open-ids.new")
-mv "$S/open-ids.new" "$S/open-ids"
+printf '%s\n' "$NOW" > "$S/open-ids"
 
 if [ -n "$PREV" ] && [ "$PREV" = "$NOW" ] && [ -n "$NOW" ]; then
   echo "ESCALATE: the same reviewer findings ($NOW) are still open on PR #$PR after 2 consecutive reconcile ticks."
@@ -802,7 +842,7 @@ State lives in `.codegraph/oversee/` (git-ignored via `**/.codegraph/*`). Every 
 | `plan-ref` | Plan dispatch / gate recovery | Plan doc path |
 | `plan-head-sha` | Gate stamp / provenance check | The verified approved-plan commit |
 | `execute-pr` | Execute dispatch | Execute PR number |
-| `open-ids` | Reconcile | Comma-joined open reviewer comment ids from the last tick |
+| `open-ids` | Reconcile | Comma-joined root comment ids of the last tick's UNRESOLVED, non-outdated reviewer threads |
 
 The durable artifacts live outside this directory, and are the point of the run: the plan doc under `docs/plans/`, the `[Plan]` PR with its approval gate, the `oversee/plan-gate` commit status, the execute PR, and — on a rejected plan — the `plan-carry-forward` comment on the tracking issue.
 
@@ -851,7 +891,7 @@ The durable artifacts live outside this directory, and are the point of the run:
 - **Read the authority first, or abort.** `CLAUDE.md`, `.codegraph/basics.md`, the issue and its comments, the roadmap entry, and the relevant ADRs — never derive scope from an issue title.
 - **Sync local `main` before each phase's context read.** Check the tree is clean first (`[ -z "$(git status --porcelain)" ]`): `git switch main` succeeds silently on non-conflicting uncommitted changes, tracked or untracked, and would carry them onto `main`. Then `git fetch origin && git switch main && git merge --ff-only origin/main`, failing closed on a dirty tree or a non-fast-forward. Never force, reset, or rebase past local work.
 - **Readiness is warn-and-confirm**, not a gate: a `blocked` label, a self-gated issue, an open dependency, or a missing ADR is surfaced with the exact gate named and the human asked. The invariants and never-merge stay hard regardless of the answer.
-- **Reconcile the reviewer as a re-entrant, scheduler-paced batch — never a live loop.** One bounded batch per tick: read state, spawn a single-round sweep if unsatisfied, then `ScheduleWakeup` (~360–420s) and end the turn, or stop when satisfied. Compare Greptile's summary **body**, not just the comment list — it edits in place. Escalate to the human only on genuine non-convergence (the same comment ids open across 2 consecutive ticks, re-derived from GitHub).
+- **Reconcile the reviewer as a re-entrant, scheduler-paced batch — never a live loop.** One bounded batch per tick: read state, spawn a single-round sweep if unsatisfied, then `ScheduleWakeup` (~360–420s) and end the turn, or stop when satisfied. Compare Greptile's summary **body**, not just the comment list — it edits in place. Escalate to the human only on genuine non-convergence: the same **unresolved** thread ids across 2 consecutive ticks, read from the GraphQL `reviewThreads` connection so resolved, outdated, and self-authored comments cannot pin a set that never shrinks.
 - **Recover before you re-dispatch.** The execute phase re-derives an already-open execute PR from the tracking issue's cross-references and skips the build. Re-dispatching a resumed run cannot recover it — the builder claim-aborts on the already-claimed issue and returns no PR number, stranding the open PR with nobody reconciling its reviewer.
 - **Every dispatched agent runs in worktree isolation and runs `.claude/scripts/assert-worktree.sh` before any branch-mutating git operation** (CLAUDE.md "Parallel Sessions"). Branch names must carry a hook-approved prefix — a `/worktree` `claude/...` branch is rejected on push.
 - **Never merge anything.** Not the plan PR, not the execute PR. Humans own every merge to `main`.
