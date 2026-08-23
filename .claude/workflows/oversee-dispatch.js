@@ -869,14 +869,31 @@ const results = await pipeline(
         }
         return { task: t, exec }
       }),
-  // Stage 2 — VERIFY (independent; never the builder)
+  // Stage 2 — VERIFY (independent; never the builder).
+  // NEVER throws and never returns a null verdict. An execute PR is already OPEN on
+  // GitHub by this point, so letting a verifier failure reject the promise would drop
+  // the whole item to null: the PR number would vanish from the results, Stage 3 would
+  // be skipped, and the item would be counted as an in-flight claim-abort in the
+  // summary — reporting "already claimed by another agent" for a task that in fact
+  // left an unverified PR open. Degrade to changes-requested instead, which keeps the
+  // PR number and the real reason in front of the human.
   (prev) => {
     const { task, exec } = prev
     if (!exec || !exec.executePR) {
       return { ...prev, verify: { verdict: 'changes-requested', blocking: ['no execute PR opened'], summary: exec ? exec.summary : 'execute stage produced no result' } }
     }
+    const unverified = (reason) => ({
+      ...prev,
+      verify: { verdict: 'changes-requested', blocking: [`verification did not complete: ${reason}`], summary: `execute PR #${exec.executePR} is OPEN but UNVERIFIED — ${reason}. Re-verify before merging; /oversee never approves its own build.` },
+    })
     return agent(verifyPrompt(task, exec), { label: `verify:${task.id}`, phase: 'Verify', isolation: 'worktree', model: 'sonnet', schema: VERIFY_SCHEMA })
-      .then((verify) => ({ ...prev, verify }))
+      // agent() resolves null when the subagent is skipped or dies on a terminal API
+      // error after retries — that is a failed verification, not an approval.
+      .then((verify) => (verify ? { ...prev, verify } : unverified('the verify agent returned no result')))
+      .catch((e) => {
+        log(`* ${task.id}: VERIFY errored (${e.message}) — execute PR #${exec.executePR} stays open and is reported UNVERIFIED.`)
+        return unverified(`the verify agent errored: ${e.message}`)
+      })
   },
   // Stage 3 — SWEEP THE EXECUTE PR (never throws — a verified PR still completes)
   (prev) => {
