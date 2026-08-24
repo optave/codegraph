@@ -100,7 +100,7 @@ crates/codegraph-core/src/domain/graph/builder/stages/import_edges.rs
 crates/codegraph-core/src/db/connection.rs                     MODIFIED  mirror the v32 CREATE TABLE statements
 src/domain/graph/builder/stages/native-orchestrator.ts         MODIFIED  thread objectLiteralSites through the NAPI FileEdgeInput payload
 
-tests/integration/issue-2088-correlated-property-evidence.test.ts   NEW   the three canonical shapes; both engines
+tests/integration/issue-2088-correlated-property-evidence.test.ts   NEW   the seven canonical shapes; both engines
 tests/integration/issue-2088-escape-fallback.test.ts               NEW   escaping sites keep today's exact behavior (the soundness regression gate)
 tests/parsers/javascript.test.ts                                   MODIFIED  site emission + escape-bit unit assertions
 tests/benchmarks/resolution/fixtures/pts-javascript/objlit-site.js  NEW   handler-array + alias correlation fixture
@@ -352,7 +352,7 @@ export function correlatedEvidenceKey(siteKey: string, propertyName: string): st
 - **Input contract:** tree-sitter AST for one JS/TS/TSX file; the file's own `definitions` and `exports` (already collected before the post-pass runs)
 - **Output contract:** `ExtractorOutput.objectLiteralSites`; `Call.objectLiteralSite` set on object-literal pair and shorthand value-refs
 - **Verification:** `npx vitest run tests/parsers/javascript.test.ts`
-- **Risk:** Medium — the escape analysis is the correctness-critical piece. Mitigated by defaulting `escapes: true` on every unrecognised shape, and, as of round 8, by a standing non-vacuous-coverage requirement on `allReferencesTracked` itself (see its doc comment below) that fails closed on a walk bug rather than relying solely on review to catch the next one — round 8 found the deepest gap yet in this exact function (a self-shadowing walk that silently examined nothing for every non-module-scope table), which seven prior rounds of inspecting individual reference POSITIONS never surfaced because none of them questioned whether the walk was reaching those positions at all. **Round 9 found that "defaulting `escapes: true` on every unrecognised shape" was itself not yet true of condition 4's own detector** — `literalHasUnmodeledThisReference` was a positive-only detector that silently voted non-escaping on any pair-value or object-member shape it did not recognise (a `spread_element`, a call-expression-valued pair, a parenthesized function, etc.), the exact inversion of every other condition's default. Closed by rewriting it to the same fail-closed contract, now stated once at the level of `computeObjectLiteralSiteEscapes` itself so it binds every current and future predicate uniformly — see the round-9 standing rule in that function's doc comment below, and `literalHasUnmodeledThisReference`'s own doc comment for the rewrite.
+- **Risk:** Medium — the escape analysis is the correctness-critical piece. Mitigated by defaulting `escapes: true` on every unrecognised shape, and, as of round 8, by a standing non-vacuous-coverage requirement on `allReferencesTracked` itself (see its doc comment below) that fails closed on a walk bug rather than relying solely on review to catch the next one — round 8 found the deepest gap yet in this exact function (a self-shadowing walk that silently examined nothing for every non-module-scope table), which seven prior rounds of inspecting individual reference POSITIONS never surfaced because none of them questioned whether the walk was reaching those positions at all. **Round 9 found that "defaulting `escapes: true` on every unrecognised shape" was itself not yet true of condition 4's own detector** — `literalHasUnmodeledThisReference` was a positive-only detector that silently voted non-escaping on any pair-value or object-member shape it did not recognise (a `spread_element`, a call-expression-valued pair, a parenthesized function, etc.), the exact inversion of every other condition's default. Closed by rewriting it to the same fail-closed contract, now stated once at the level of `computeObjectLiteralSiteEscapes` itself so it binds every current and future predicate uniformly — see the round-9 standing rule in that function's doc comment below, and `literalHasUnmodeledThisReference`'s own doc comment for the rewrite. **Round 10 found that condition 4's own identifier-RESOLUTION chain — not the shape-recognition switch round 9 rewrote — still violated the same fail-closed discipline, in two places: `findTopLevelFunctionNodeByName` resolves DOWN from the module root, so a same-named function-scoped shadow resolves to the wrong (module-level) function with full confidence rather than failing safe; and the shorthand arm's `BUILTIN_GLOBALS` guard short-circuits to a silent non-escaping vote for any builtin-named property, including one this file itself shadows.** Closed by resolving outward from the object literal via round 8's own `findDeclaringScopeNode` before ever falling back to the module-level search, and by replacing the bare builtin-name guard with a shared `isUnshadowedBuiltinGlobal` check applied identically in both the `pair` and `shorthand_property_identifier` arms — see the round-10 essay in `computeObjectLiteralSiteEscapes`'s doc comment below.
 
 #### Implementation
 
@@ -992,6 +992,141 @@ function isTrackedReferencePosition(refNode: TreeSitterNode, isArrayOwner: boole
  * > accepts; getting it wrong the other way is precisely the class of bug
  * > both standing rules now exist to catch structurally, in every future
  * > change to this function, not only in the one instance found this round.
+ *
+ * > **ROUND 10 (#2088 findings 1 and 2) — condition 4's own
+ * > identifier-RESOLUTION chain still violated a fail-closed discipline in
+ * > two places, even after round 9's rewrite made the shape-recognition
+ * > switch itself fail closed.** Both gaps live one layer deeper than round
+ * > 9 touched: not in WHICH pair-value shapes `literalHasUnmodeledThisReference`
+ * > recognises, but in HOW it resolves the one shape that requires finding a
+ * > same-file declaration by name — an identifier value or a shorthand
+ * > property.
+ * >
+ * > **Finding 1 — `findTopLevelFunctionNodeByName` searches DOWN from the
+ * > module root, so a shadowing declaration resolves to the WRONG function
+ * > with full confidence instead of failing safe.**
+ * > `resolveIdentifierValueThisReference` resolved an identifier-valued
+ * > pair/shorthand property by searching ONLY `root`'s direct (module-level)
+ * > children. Its pre-round-10 doc comment claimed this was safely
+ * > backstopped: a nested-past-module-scope declaration this bounded search
+ * > cannot reach returns `null`, which the caller already treats as
+ * > unresolved and fails safe on. That backstop fires only when NO
+ * > module-level declaration of the name exists at all. When one ALSO
+ * > exists — shadowed, at the object literal's own lexical position, by a
+ * > closer, non-module declaration — the search returns that unrelated
+ * > module-level node with full confidence, never `null`, so the backstop
+ * > this doc comment relied on never actually fires:
+ * >
+ * > ```js
+ * > function fnA() { return 1; }
+ * > function run() { return 0; }                  // module-level, this-free
+ * > function install() {
+ * >   function run() { return this.alpha(); }     // shadows it, uses `this`
+ * >   const T = { alpha: fnA, run };
+ * >   T.run();
+ * > }
+ * > install();
+ * > ```
+ * >
+ * > Conditions 1–3 pass (`T` is a plain local binding, never exported, and
+ * > `T.run()` is `T`'s only tracked reference). Condition 4's shorthand arm
+ * > resolves `run` via `findTopLevelFunctionNodeByName(root, 'run')`, which
+ * > returns the OUTER, `this`-free `run` — the INNER, `this`-using `run`
+ * > actually in scope at `T`'s own position is invisible to a search that
+ * > only ever looks at `root`'s direct children.
+ * > `subtreeContainsThisKeyword` finds nothing in the wrong function's body,
+ * > condition 4 votes safe, `escapes` reads `false`, T1 is exclusive over
+ * > zero evidence for `alpha`, and `fnA` is reported dead though
+ * > `install() → T.run() → this.alpha() → fnA()` runs on every invocation.
+ * > This is a strictly worse failure than an unresolved identifier: a
+ * > sub-predicate that returns a WRONG answer with full confidence is worse
+ * > than one that returns no answer, because nothing downstream carries any
+ * > signal that something went wrong. Fixed by resolving OUTWARD from the
+ * > object literal's own position FIRST, reusing round 8's own
+ * > `findDeclaringScopeNode(objectNode, name)`: when it finds a scope
+ * > strictly between `objectNode` and the module root that ALSO declares
+ * > `name`, `resolveIdentifierValueThisReference` now fails safe
+ * > immediately, before `findTopLevelFunctionNodeByName` ever runs, rather
+ * > than trusting a search that structurally cannot see the shadowing
+ * > declaration at all. See `resolveIdentifierValueThisReference`'s own doc
+ * > comment for why failing safe — rather than resolving INTO the shadowing
+ * > scope — is the chosen remedy, and `findTopLevelFunctionNodeByName`'s own
+ * > doc comment for the corrected backstop claim.
+ * >
+ * > **Finding 2 — the shorthand arm's `BUILTIN_GLOBALS` guard short-circuits
+ * > to a silent, unproven "non-escaping" vote.** The shorthand arm's round-9
+ * > guard, `!BUILTIN_GLOBALS.has(child.text) &&
+ * > resolveIdentifierValueThisReference(...)`, short-circuits to `continue`
+ * > (non-escaping) the instant `child.text` merely TEXTUALLY MATCHES a known
+ * > global's name — `Stream`, `Buffer`, `process`, `document`, `URL`, and
+ * > everything else `BUILTIN_GLOBALS` lists (`src/extractors/javascript.ts:37-95`)
+ * > — with NO check for whether this file itself SHADOWS that name with its
+ * > own, potentially `this`-using, declaration. This is precisely the
+ * > "silently skip and implicitly vote non-escaping" outcome the round-9
+ * > standing rule above forbids for every predicate this function consults,
+ * > condition 4's own detector included:
+ * >
+ * > ```js
+ * > function fnA() { return 1; }
+ * > function Stream() { return this.alpha(); }   // shadows the global Stream
+ * > const T = { alpha: fnA, Stream };
+ * > T.Stream();
+ * > ```
+ * >
+ * > `Stream` here names a same-file, `this`-using function, not the global
+ * > it happens to share a name with — but the guard never calls
+ * > `resolveIdentifierValueThisReference` to find that out, because
+ * > `BUILTIN_GLOBALS.has('Stream')` is true regardless of what this file
+ * > itself declares. `escapes` reads `false`, T1 is exclusive, and `fnA` is
+ * > reported dead though `T.Stream()` invokes it on every call. The `pair`
+ * > arm does not share this SPECIFIC hole — a builtin-named identifier VALUE
+ * > there falls through to `isPositivelyThisFreeLiteral` (false for
+ * > `identifier`) and hits the fail-closed default — which is what made the
+ * > round-9 doc comment's claim that the two arms get "the IDENTICAL
+ * > identifier-resolution treatment" false, not true: the `pair` arm's
+ * > fallthrough ALWAYS escapes on a builtin-named identifier, shadowed or
+ * > not, which is sound but neither identical to the shorthand arm's
+ * > behavior nor itself precise — it fails to credit a genuinely unshadowed
+ * > builtin (a real, structural non-escape) as safe. Fixed by replacing the
+ * > bare `!BUILTIN_GLOBALS.has(name)` guard, in BOTH arms identically, with
+ * > a new shared `isUnshadowedBuiltinGlobal(name, definitionNames)`: skip
+ * > resolution (vote safe) only when `name` is a builtin AND this file
+ * > defines no same-file symbol by that name at all — a genuine, unshadowed
+ * > native global whose internals are not this file's code and so cannot
+ * > reference a sibling property via `this`. The instant `definitionNames`
+ * > also contains the name, it routes through
+ * > `resolveIdentifierValueThisReference` exactly like any other same-file
+ * > identifier, escaping when that resolution is unproven `this`-free. This
+ * > is not merely a shorthand-arm patch: applying the identical guard to the
+ * > `pair` arm's identifier branch too is what makes the two arms' treatment
+ * > ACTUALLY identical, as the prose already claimed, rather than
+ * > superficially similar in shape but different in the builtin-name case —
+ * > and it is a strict recall IMPROVEMENT for the `pair` arm's own
+ * > previously-unconditional builtin escape, not a new exclusion (see
+ * > Success Criteria).
+ * >
+ * > **Both findings fix condition 4's identifier-RESOLUTION chain
+ * > specifically, not the shape-recognition rewrite round 9 already
+ * > completed.** Round 9 established WHICH pair-value shapes are positively
+ * > recognised as `this`-free; round 10 fixes HOW the one shape that
+ * > requires resolving a same-file declaration by name actually finds that
+ * > declaration. Finding 1 is thematically continuous with round 8 (a
+ * > search returning a confidently WRONG answer, rather than an honestly
+ * > absent one); finding 2 is a direct instance of the round-9 standing rule
+ * > that round 9's own rewrite did not audit its way into, since
+ * > `resolveIdentifierValueThisReference` and `isUnshadowedBuiltinGlobal`'s
+ * > predecessor guard predate round 9 and were not themselves part of what
+ * > round 9 rewrote. Every other condition, and every pair-value shape round
+ * > 9 already covers, is unaffected: this essay and the fix beneath it touch
+ * > only `resolveIdentifierValueThisReference`, `findTopLevelFunctionNodeByName`'s
+ * > doc comment (never its body — it was never the bug; the caller's missing
+ * > precondition was), and the two call sites' guard expression. Failing
+ * > safe on a shadowed identifier (finding 1) costs recall for the narrow
+ * > case where the shadowing declaration is itself `this`-free — filed as a
+ * > follow-up rather than silently accepted, see Success Criteria and
+ * > #2625. Finding 2 costs no recall anywhere; it is a soundness fix with a
+ * > strict recall improvement as a side effect, per round 8's own framing of
+ * > what does and does not need a new exclusion.
  */
 function computeObjectLiteralSiteEscapes(
   sites: Map<string, ObjectLiteralSite>,
@@ -1081,26 +1216,42 @@ function computeObjectLiteralSiteEscapes(
  *     the site read as local-closed while `this.alpha()` produced zero
  *     correlated evidence — `alphaImpl` would be reported dead where today
  *     it is live) — resolved via `resolveIdentifierValueThisReference`
- *     below, with the SAME conservative, three-way fail-safe structure the
- *     rest of this design already uses: resolves in-file to a non-arrow
+ *     below, with the SAME conservative, FOUR-way (round 10, #2088 finding
+ *     1, adds the second bullet below; through round 9 this was three-way)
+ *     fail-safe structure the rest of this design already uses: is a
+ *     BUILTIN name this file does not itself shadow (`isUnshadowedBuiltinGlobal`,
+ *     round 10, #2088 finding 2 — see that helper's own doc comment) → never
+ *     even reaches this resolution at all, handled at the call site instead;
+ *     is SHADOWED — some scope strictly between the object literal and the
+ *     module root also declares this name (round 10, #2088 finding 1;
+ *     `findDeclaringScopeNode`, reused from round 8) → FAIL SAFE without
+ *     attempting to resolve into that shadowing declaration, since doing so
+ *     would return the WRONG (module-level) function with false confidence
+ *     rather than an honest "unresolved" — see `resolveIdentifierValueThisReference`'s
+ *     own doc comment for why fail-safe, not deeper resolution, is the
+ *     chosen remedy; resolves in-file, UNSHADOWED, to a non-arrow
  *     function/method → check its body for `this`, same as the inline case;
- *     resolves in-file to an ARROW function → excluded, same reasoning as an
- *     inline arrow-valued pair above; does not resolve to any in-file
- *     function-shaped definition at all (imported, global, a non-function
- *     binding, or nested past this file's module-level-only search) → FAIL
- *     SAFE, treated as if it might contain `this`.
+ *     resolves in-file, UNSHADOWED, to an ARROW function → excluded, same
+ *     reasoning as an inline arrow-valued pair above; does not resolve to
+ *     any in-file function-shaped definition at all (imported, global, a
+ *     non-function binding, or declared only in some OTHER scope that is
+ *     neither the module root nor an ancestor of this object literal) →
+ *     FAIL SAFE, treated as if it might contain `this`.
  *   - a `shorthand_property_identifier` (round 9, #2088 finding 1 — `{ run }`
  *     rather than `{ run: run }`) — the IDENTICAL identifier-resolution
- *     treatment as the bullet above, keyed off the shorthand node's own text
- *     (a shorthand property's key and value name the same binding). This is
- *     not an incidental addition: shorthand properties are common enough
- *     that, without this bullet, round 9's inverted default just below would
- *     make EVERY object literal that uses one escape unconditionally —
- *     `shorthand_property_identifier` is a distinct tree-sitter node type
- *     from `pair` (verified: `collectObjectPropBindings`,
- *     `src/extractors/javascript.ts:4437`, already branches on it
- *     separately for the identical reason), so it needs its own explicit
- *     case rather than falling out of the `pair` handling above.
+ *     treatment as the bullet above (as of round 10 this is actually true —
+ *     see `isUnshadowedBuiltinGlobal`'s doc comment for why it was not,
+ *     through round 9, for a builtin-named property specifically), keyed
+ *     off the shorthand node's own text (a shorthand property's key and
+ *     value name the same binding). This is not an incidental addition:
+ *     shorthand properties are common enough that, without this bullet,
+ *     round 9's inverted default just below would make EVERY object literal
+ *     that uses one escape unconditionally — `shorthand_property_identifier`
+ *     is a distinct tree-sitter node type from `pair` (verified:
+ *     `collectObjectPropBindings`, `src/extractors/javascript.ts:4437`,
+ *     already branches on it separately for the identical reason), so it
+ *     needs its own explicit case rather than falling out of the `pair`
+ *     handling above.
  *   - a `pair` whose value is a positively-safe non-function LITERAL or
  *     PRIMITIVE (`string`, `number`, `true`, `false`, `null`,
  *     `template_string`, `regex`, or a nested `array`/`object`) — safe not
@@ -1168,10 +1319,13 @@ function literalHasUnmodeledThisReference(
       // needs the identical identifier-resolution treatment a `pair`'s
       // identifier value gets, rather than falling through to the
       // fail-closed default just below (which would otherwise make every
-      // shorthand-using literal escape unconditionally).
+      // shorthand-using literal escape unconditionally). ROUND 10 (#2088
+      // finding 2) — the guard is `isUnshadowedBuiltinGlobal`, not a bare
+      // `!BUILTIN_GLOBALS.has(...)`: see that helper's doc comment for why
+      // a SHADOWED builtin name must still be resolved, not skipped.
       if (
-        !BUILTIN_GLOBALS.has(child.text) &&
-        resolveIdentifierValueThisReference(root, child.text, definitionNames)
+        !isUnshadowedBuiltinGlobal(child.text, definitionNames) &&
+        resolveIdentifierValueThisReference(objectNode, root, child.text, definitionNames)
       ) {
         return true;
       }
@@ -1186,13 +1340,30 @@ function literalHasUnmodeledThisReference(
         if (subtreeContainsThisKeyword(value, 0)) return true;
         continue;
       }
-      if (value.type === 'identifier' && !BUILTIN_GLOBALS.has(value.text)) {
+      if (value.type === 'identifier') {
         // Round 7 (finding 3) — see doc comment above for the regression
         // this closes. Resolved and handled here directly (rather than
         // falling through to the fail-closed default below) because a
         // resolved arrow function must be excluded the same way an inline
-        // arrow-valued pair already is.
-        if (resolveIdentifierValueThisReference(root, value.text, definitionNames)) return true;
+        // arrow-valued pair already is. ROUND 10 (#2088 finding 2) — the
+        // guard is now `isUnshadowedBuiltinGlobal`, the SAME helper the
+        // shorthand arm above uses, in place of the bare
+        // `!BUILTIN_GLOBALS.has(...)` this arm used through round 9: a
+        // `pair` value naming a SHADOWED builtin (e.g. `run: Stream` where
+        // `Stream` is a same-file, `this`-using function) must be resolved
+        // like any other same-file identifier, not assumed to be the real
+        // global merely because its text matches one. This is also what
+        // makes this arm's treatment of a builtin-named value GENUINELY
+        // identical to the shorthand arm's, rather than only similarly
+        // shaped — see this function's own doc comment and
+        // `isUnshadowedBuiltinGlobal`'s for why that claim was false
+        // through round 9.
+        if (
+          !isUnshadowedBuiltinGlobal(value.text, definitionNames) &&
+          resolveIdentifierValueThisReference(objectNode, root, value.text, definitionNames)
+        ) {
+          return true;
+        }
         continue;
       }
       if (isPositivelyThisFreeLiteral(value)) continue;
@@ -1223,6 +1394,39 @@ function literalHasUnmodeledThisReference(
 }
 
 /**
+ * ROUND 10 (#2088 finding 2) — true only for a name that is BOTH a known
+ * JS/DOM/Node global (`BUILTIN_GLOBALS`) AND has no same-file definition at
+ * all (`definitionNames`): a genuine, unshadowed native global this file
+ * cannot possibly have redefined. Only for THIS case is it safe to skip
+ * identifier resolution entirely — the value is necessarily the actual
+ * global object/constructor, whose internals are not this file's code and
+ * so cannot reference a sibling property of the literal via `this`. The
+ * instant `definitionNames` ALSO contains the name, the identifier could
+ * equally name a same-file, potentially `this`-using declaration that
+ * shadows the global at the object literal's own lexical position, and must
+ * be resolved like any other same-file identifier — see
+ * `resolveIdentifierValueThisReference` below for how that resolution
+ * itself stays sound in the presence of shadowing (round 10, finding 1).
+ * Called from BOTH the `pair`-value and `shorthand_property_identifier` arms
+ * above, via one call each, so the two can never again silently diverge on
+ * this guard the way finding 2 found them to: through round 9 the
+ * shorthand arm used a bare `!BUILTIN_GLOBALS.has(name)` that, for a
+ * builtin-named but SHADOWED property, short-circuited straight to
+ * `continue` (a silent, unproven non-escaping vote — the round-9 standing
+ * rule's own forbidden outcome) without ever calling
+ * `resolveIdentifierValueThisReference`, while the `pair` arm's differently
+ * shaped guard fell through to the unconditional fail-closed default
+ * instead — sound, but not actually the "IDENTICAL identifier-resolution
+ * treatment" the doc comment above claimed, and not itself precise (it
+ * never credited a genuinely unshadowed builtin as safe either). One
+ * shared helper, called identically from both arms, is what makes that
+ * claim true rather than aspirational.
+ */
+function isUnshadowedBuiltinGlobal(name: string, definitionNames: ReadonlySet<string>): boolean {
+  return BUILTIN_GLOBALS.has(name) && !definitionNames.has(name);
+}
+
+/**
  * True for a `pair`-VALUE node whose own shape guarantees it can never
  * itself be invoked as `T.key()` with `this` bound to `T` later — condition
  * 4's only concern (round 9, #2088 finding 1). A positive allowlist, not a
@@ -1250,11 +1454,23 @@ function isPositivelyThisFreeLiteral(value: TreeSitterNode): boolean {
 
 /**
  * Round 7 (#2088 finding 3) — resolve a plain identifier that is the value
- * of an object-literal pair to the same-file function it names, and report
- * whether that function's body contains `this`. Three-way fail-safe
- * structure — see `literalHasUnmodeledThisReference`'s doc comment for the
- * full argument; this function implements exactly those three branches and
- * nothing else.
+ * of an object-literal pair (or, round 9, a shorthand property) to the
+ * same-file function it names, and report whether that function's body
+ * contains `this`. FOUR-way fail-safe structure as of round 10 (three-way
+ * through round 9) — see `literalHasUnmodeledThisReference`'s doc comment
+ * for the full argument; this function implements exactly those branches
+ * and nothing else.
+ *
+ * `objectNode` (round 10, #2088 finding 1) is the object-literal node this
+ * identifier is a property VALUE of — never the identifier node itself —
+ * threaded through purely so `findDeclaringScopeNode` can walk OUTWARD from
+ * the literal's own lexical position, below. This is an independent reuse
+ * of the same primitive round 8's `allReferencesTracked` boundary uses, for
+ * a different purpose: round 8 bounds a REFERENCE WALK to one scope; this
+ * disambiguates WHICH declaration an identifier resolves to. Both questions
+ * reduce to the same one — "what does JS scoping actually resolve this name
+ * to, from this position" — which is why both reuse `findDeclaringScopeNode`
+ * rather than each rolling its own ancestor walk.
  *
  * `definitionNames` is this file's own definition names — built the same
  * way `points-to.ts` already builds its own `definitionNames` from
@@ -1268,16 +1484,46 @@ function isPositivelyThisFreeLiteral(value: TreeSitterNode): boolean {
  * checks are intentionally layered rather than either one alone being load
  * bearing — the same defense-in-depth relationship the `MAX_WALK_DEPTH` cap
  * already has with the (structurally acyclic) rebinding recursion below.
+ *
+ * > **ROUND 10 (#2088 finding 1) — why fail safe, rather than fully
+ * > resolve, when a shadowing scope is found.** A more complete fix would
+ * > resolve `name` INSIDE the shadowing scope `findDeclaringScopeNode`
+ * > finds and check THAT declaration's own body for `this`, preserving
+ * > correlation for a shadowing function that itself happens to be
+ * > `this`-free. This function deliberately does not: doing so would mean
+ * > generalising `findTopLevelFunctionNodeByName`'s declaration-shape
+ * > matching to run against an ARBITRARY block/function scope rather than
+ * > only `program`'s direct children — a second AST-search shape to keep
+ * > correct, in both engines, for a pattern (`{ run }` shadowing a
+ * > same-named module-level sibling) the `#1771`/`#1784` "restrict to the
+ * > simplest syntactic shape" precedent was never asked to cover. Failing
+ * > safe costs recall only for the narrow case where the shadowing
+ * > declaration is itself `this`-free — filed as a follow-up rather than
+ * > silently accepted; see Success Criteria and #2625.
  */
 function resolveIdentifierValueThisReference(
+  objectNode: TreeSitterNode,
   root: TreeSitterNode,
   name: string,
   definitionNames: ReadonlySet<string>,
 ): boolean {
   if (!definitionNames.has(name)) return true; // not a same-file definition at all — fail-safe.
 
+  // ROUND 10 (#2088 finding 1) — resolve OUTWARD from the object literal's
+  // own lexical position BEFORE ever consulting the module-level-only
+  // search below. When some scope strictly between `objectNode` and the
+  // module root ALSO declares `name`, that closer declaration — not
+  // whatever `findTopLevelFunctionNodeByName` would find at module level —
+  // is what `name` actually refers to at `objectNode`'s position, and
+  // searching the module level anyway would return a CONFIDENTLY WRONG
+  // node rather than this function's own promised "unresolved" fail-safe.
+  // See this function's own doc comment for the counter-example this
+  // closes and why fail-safe, not deeper resolution, is the chosen remedy.
+  const declaringScope = findDeclaringScopeNode(objectNode, name) ?? root;
+  if (declaringScope !== root) return true; // shadowed by a non-module scope — fail-safe.
+
   const fnNode = findTopLevelFunctionNodeByName(root, name);
-  if (!fnNode) return true; // resolves to a non-function shape, or nested past this search — fail-safe.
+  if (!fnNode) return true; // no module-level declaration of this name exists at all — fail-safe.
 
   if (fnNode.type === 'arrow_function') return false; // never binds its own `this`.
   return subtreeContainsThisKeyword(fnNode, 0);
@@ -1286,25 +1532,51 @@ function resolveIdentifierValueThisReference(
 /**
  * Bounded, MODULE-LEVEL-ONLY resolution of a plain identifier to the
  * function node it names — a "restrict to the simplest syntactic shape"
- * precedent (#1771/#1784), applied one hop through an identifier, and
- * BACKSTOPPED by its own fail-safe: a nested-past-module-scope declaration
- * this bounded search does not reach returns `null` here, which
- * `resolveIdentifierValueThisReference` (above) already treats as
- * unresolved and fails safe on (round 9, #2088 finding 1, distinguishes
- * this from the file's PRE-round-9 use of the same precedent to justify
- * `literalHasUnmodeledThisReference`'s own now-removed silent-skip default —
- * that citation was a safety predicate wrongly leaning on a recall-scoping
- * precedent; this one is a genuine recall-scoping choice with its own
- * fail-safe backstop, which is what makes it still sound). Unwraps one
- * leading `export_statement` (`export function f(){}` / `export const f = …`
- * are still module-level declarations).
+ * precedent (#1771/#1784), applied one hop through an identifier. Unwraps
+ * one leading `export_statement` (`export function f(){}` / `export const
+ * f = …` are still module-level declarations).
  * Returns the `function_declaration` node itself (its own subtree is what
  * `subtreeContainsThisKeyword` searches) or a `variable_declarator`'s
  * `value` node (`arrow_function`, `function_expression`, or `function`) —
  * never a declaration nested inside a block, matching `resolveSiteOwner`'s
- * own module-level bias. Returns `null` for anything else — a class, a
- * plain variable, or a same-named declaration this search does not reach —
+ * own module-level bias. Returns `null` when NO module-level declaration of
+ * `name` exists at all — a class, a plain variable, an import, or a name
+ * declared only inside some block/function this search never looks inside —
  * which `resolveIdentifierValueThisReference` above treats as fail-safe.
+ *
+ * > **ROUND 10 (#2088 finding 1) corrects a backstop claim this doc
+ * > comment made through round 9 that did not actually hold.** It used to
+ * > claim this function's `null` return was ALSO the backstop for a
+ * > nested-past-module-scope declaration — i.e. that when `name` is
+ * > declared only inside some block or function, this search's inability to
+ * > see it would surface as `null`, which the caller already treats as
+ * > fail-safe. That is true ONLY when no module-level declaration of `name`
+ * > exists at all. It is false the moment a module-level declaration of the
+ * > SAME name ALSO exists, shadowed at the reference's own lexical position
+ * > by a closer, non-module declaration: this function has no way to know
+ * > shadowing occurred, so it confidently returns the (wrong,
+ * > out-of-lexical-scope-at-that-position) module-level node instead of
+ * > `null` — a CONFIDENTLY WRONG answer, not an honest "unresolved" one,
+ * > and strictly worse than the fail-safe this doc comment claimed
+ * > backstopped it. Concretely: `function run() { return 0; }`
+ * > (module-level, `this`-free) shadowed by `function install() { function
+ * > run() { return this.alpha(); } const T = { alpha: fnA, run };
+ * > T.run(); }` — this function returns the OUTER, `this`-free `run`,
+ * > `subtreeContainsThisKeyword` finds nothing, `resolveIdentifierValueThisReference`
+ * > reads `run` as safe, and `fnA` is reported dead though `T.run()`
+ * > invokes it via the INNER, `this`-using `run` every time. Greptile
+ * > flagged exactly this shape against this plan ("Shadowed handler
+ * > resolves incorrectly"). Fixed not here but in the CALLER: as of round
+ * > 10, `resolveIdentifierValueThisReference` checks
+ * > `findDeclaringScopeNode(objectNode, name)` BEFORE ever calling this
+ * > function, and fails safe outright whenever that returns a non-module
+ * > scope — so by the time this function's own module-level search runs,
+ * > `name` is already known to have no CLOSER, shadowing declaration
+ * > relative to the object literal, and this function's `null` return is
+ * > once again an honest "no module-level declaration of this name exists
+ * > at all," restoring the backstop this doc comment always intended to
+ * > describe. This function's own body is UNCHANGED by round 10 — it was
+ * > never the bug; the caller's missing precondition was.
  */
 function findTopLevelFunctionNodeByName(root: TreeSitterNode, name: string): TreeSitterNode | null {
   for (let i = 0; i < root.childCount; i++) {
@@ -1784,7 +2056,7 @@ The rebuilt file's own sites and correlated evidence are recomputed in memory an
 
 #### Implementation
 
-Mirrors WU-2 one-for-one, including every round-7, round-8, AND round-9 refinement — dual-engine parity (ADR-001) means none of round 7's finding 1/2/3/4/5 fixes, round 8's finding 1/2/3 fixes, nor round 9's finding 1 fix, are TS-only:
+Mirrors WU-2 one-for-one, including every round-7, round-8, round-9, AND round-10 refinement — dual-engine parity (ADR-001) means none of round 7's finding 1/2/3/4/5 fixes, round 8's finding 1/2/3 fixes, round 9's finding 1 fix, nor round 10's finding 1/2 fixes, are TS-only:
 
 - `types.rs` — `ObjectLiteralSite { site: String, owner: Option<String>, escapes: bool }` with serde field names matching the TS shape (`objectLiteralSite` ↔ `object_literal_site` via the existing rename convention used for `key_expr`/`dynamic_kind`); `Call.object_literal_site: Option<String>`.
 - `javascript.rs` — `object_literal_site_id`, `enclosing_object_literal`; `handle_object_literal_pair_value_ref` (line 4456) and `handle_object_literal_shorthand_value_ref` (line 4493) each gain the site seed + tag; new `compute_object_literal_site_escapes(sites, root, source, exported_names, definition_names)` — the trailing `definition_names: &HashSet<String>` parameter mirrors the TS side's round-7 addition (finding 3) and is built the same way, from `symbols.definitions` — with:
@@ -1801,13 +2073,15 @@ Mirrors WU-2 one-for-one, including every round-7, round-8, AND round-9 refineme
     - the round-8 non-vacuous-coverage requirement: the walk returns `true` only when it PROVABLY examined every reference in that scope — truncation by the shared `MAX_WALK_DEPTH` cap, or by the pre-existing depth-6 alias/for-of recursion cap below, makes the result `false` (escaping) unconditionally, never a silently-trusted vacuous `true`;
     - BOTH pre-existing recursive branches, threading the SAME fixed declaring-scope node down unchanged rather than recomputing it: the round-4 rebinding recursion (`is_array_owner` unchanged across the recursive call) and the round-7 for-of-loop-variable recursion (finding 2 — `is_array_owner` hardcoded `false` for the recursive call, and the reference rejected outright, no recursive call attempted, when the loop variable's `left` is not a single plain identifier — reusing `collect_for_of_binding`'s own `var_name` extraction shape at `javascript.rs:7576-7597` to decide "single plain identifier" the same way the TS side reuses `collectForOfBinding`'s);
   - `resolve_site_owner(object_node: &Node, source: &[u8]) -> Option<SiteOwner>` where `SiteOwner { key: String, binding_name: Option<String> }` — round 7 / finding 5: `binding_name` is always the bare declarator identifier (never `[*]`- or `::return`-suffixed), matching the TS contract field-for-field, for the identical reason (an `is_array_owner` derived from `key != binding_name` that could ever be wrong for the array case would silently disable finding 1's fix and condition 2's export check together, on this engine too). ROUND 8 (#2088 finding 2) extends the identical guarantee one step further: `binding_name` also never carries the `#{line}` suffix `find_enclosing_table_name`/`find_declaring_scope_line`-style disambiguation appends (`javascript.rs:4419-4425`) — it is always the `name` field's own `utf8_text(source)`, verbatim, never routed through `find_enclosing_table_name`'s suffix-appending return construction (only its ancestor-walk SHAPE is reused, not its return value). Getting this wrong would make `all_references_tracked` search for an identifier literally spelled `T#7` — text that cannot exist in the grammar — silently reopening finding 1's exact vacuous-walk failure mode for every non-module-scope binding on this engine too, the round-8 counterpart of finding 5's `[*]`/`::return` case just above;
-  - `literal_has_unmodeled_this_reference(object_node, root, definition_names, source) -> bool` and its depth-capped `this`-kind subtree search, mirroring `literalHasUnmodeledThisReference` / `subtreeContainsThisKeyword` one-for-one, including the truncate-toward-`true` direction (the inverse of `block_contains_identifier_excluding`'s own truncate-toward-`false`, for the same reason the TS side documents) — PLUS, round 7 / finding 3, the identifier-valued-pair branch: new `resolve_identifier_value_this_reference(root, name, definition_names, source) -> bool` and `find_top_level_function_node_by_name(root, name, source) -> Option<Node>`, mirroring `resolveIdentifierValueThisReference` / `findTopLevelFunctionNodeByName` one-for-one, including the identical three-way fail-safe (resolves to a same-file non-arrow function → check its body; resolves to an arrow function → excluded; does not resolve in-file → fail-safe `true`).
+  - `literal_has_unmodeled_this_reference(object_node, root, definition_names, source) -> bool` and its depth-capped `this`-kind subtree search, mirroring `literalHasUnmodeledThisReference` / `subtreeContainsThisKeyword` one-for-one, including the truncate-toward-`true` direction (the inverse of `block_contains_identifier_excluding`'s own truncate-toward-`false`, for the same reason the TS side documents) — PLUS, round 7 / finding 3, the identifier-valued-pair branch: new `resolve_identifier_value_this_reference(object_node, root, name, definition_names, source) -> bool` (round 10 adds the leading `object_node` parameter — see below) and `find_top_level_function_node_by_name(root, name, source) -> Option<Node>`, mirroring `resolveIdentifierValueThisReference` / `findTopLevelFunctionNodeByName` one-for-one, including the identical fail-safe branches (resolves, unshadowed, to a same-file non-arrow function → check its body; resolves, unshadowed, to an arrow function → excluded; shadowed by a non-module scope, or does not resolve in-file at all → fail-safe `true`).
     - ROUND 9 (#2088 finding 1) — REWRITES the match arms inside `literal_has_unmodeled_this_reference`'s own child loop to the same fail-closed contract the TS side adopts: a `method_definition` or inline `function_expression`/`function`-valued `pair` still has its subtree searched; an `arrow_function`-valued `pair` is still excluded; an identifier-valued `pair` still routes through `resolve_identifier_value_this_reference`; new `shorthand_property_identifier` arm, resolving the shorthand node's own text through the identical `resolve_identifier_value_this_reference` call (necessary, not optional — without it, round 9's inverted default would make every literal using a shorthand property escape unconditionally on this engine too); new `is_positively_this_free_literal(value: &Node) -> bool` mirroring `isPositivelyThisFreeLiteral`'s exact node-kind list (`string`, `number`, `true`, `false`, `null`, `template_string`, `regex`, `array`, `object`); and — the actual fix — the match's fall-through arm, covering `spread_element` and every `pair`-value kind not named above (`call_expression`, `parenthesized_expression`, `member_expression`, `as_expression`, a logical/ternary expression, or anything else), now returns `true` (escaping) instead of falling out of the loop with no arm taken. Round 7's Rust mirror already established the convention of matching the TS side's fail-safe direction exactly rather than a locally-"reasonable" approximation (see the `$`-guard parity risk this same section calls out below); this is the identical discipline applied to this function's own default.
-  - `compute_object_literal_site_escapes` gains no new PARAMETER for this round (unlike round 7's `definition_names` and round 8's `declaring_scope`/`source`-threading) — round 9 is entirely internal to `literal_has_unmodeled_this_reference`'s own shape recognition, so its call site in `compute_object_literal_site_escapes` is unchanged.
+    - ROUND 10 (#2088 finding 1) — `resolve_identifier_value_this_reference` gains the leading `object_node: &Node` parameter and, immediately after its existing `definition_names.contains(name)` check, calls `find_declaring_scope_node(object_node, name, source)` (the SAME round-8 helper `all_references_tracked` already uses for a different purpose) and returns `true` (fail-safe) whenever it resolves to `Some` — i.e. whenever some scope strictly between `object_node` and the module root also declares `name`. Only when it resolves to `None` does execution reach `find_top_level_function_node_by_name`, exactly mirroring the TS side's `findDeclaringScopeNode(objectNode, name) ?? root` / `!== root` check. Both call sites inside `literal_has_unmodeled_this_reference` (the `shorthand_property_identifier` arm and the `pair` arm's identifier branch) pass `object_node` straight through — it is already a parameter of the enclosing function, so this needs no new plumbing beyond the one added parameter. `find_top_level_function_node_by_name`'s own body and doc comment are UNCHANGED by round 10 (only its Rust doc comment gains the identical backstop correction the TS side's does) — it was never the bug; the missing precondition in its caller was.
+    - ROUND 10 (#2088 finding 2) — new `is_unshadowed_builtin_global(name: &str, definition_names: &HashSet<String>) -> bool { BUILTIN_GLOBALS.contains(name) && !definition_names.contains(name) }`, mirroring `isUnshadowedBuiltinGlobal` verbatim, and used as the guard in BOTH the `shorthand_property_identifier` arm and the `pair` arm's identifier branch, replacing a bare `!BUILTIN_GLOBALS.contains(name)` in each — mirroring the TS side's unification of what was, through round 9, two differently-shaped (and differently buggy) guards into one shared predicate.
+  - `compute_object_literal_site_escapes` gains no new PARAMETER for round 9 or round 10 (unlike round 7's `definition_names` and round 8's `declaring_scope`/`source`-threading) — both rounds are entirely internal to `literal_has_unmodeled_this_reference`'s own shape recognition and its identifier-resolution helper, so its call site in `compute_object_literal_site_escapes` is unchanged since round 8.
 
 Every new Rust item carries a `/// Mirrors <tsSymbol> in src/extractors/javascript.ts` line — the convention `handle_object_literal_pair_value_ref` already follows.
 
-> **Parity risk specific to round 7, round 8, and round 9:** round 7's `is_array_owner` short-circuit, round 8's stripped-text/no-`$` check applied uniformly to both subscript index kinds (replacing round 7's template-only version), round 8's declaring-scope/non-vacuous-coverage walk, and round 9's fall-through-arm inversion in `literal_has_unmodeled_this_reference` are all easy to port correctly for the obvious cases and easy to narrow silently in a hand-written port — exactly the class of mistake round 7's Rust mirror of the `$`-guard itself would repeat if copied without noticing round 8's TS-side correction. Round 9 specifically: a Rust `match` on `child.kind()` with an explicit `_ => false` fall-through arm looks, on a quick read, like ordinary exhaustiveness hygiene rather than a safety-critical default — the reviewer diffing the two engines side by side (below) must confirm that arm is `true`, not `false`, and that `spread_element` is not silently absent from the match altogether (which would compile fine under a wildcard arm and be just as wrong). WU-10's dual-engine assertion on the new escape-fallback cases (below) is what actually catches a missed one — a reviewer diffing the two `is_tracked_reference_position`/`isTrackedReferencePosition` and `all_references_tracked`/`allReferencesTracked` bodies side by side, now extended to `literal_has_unmodeled_this_reference`/`literalHasUnmodeledThisReference` for this round, is the other half of the gate, per the Testing Strategy section's "what no tier catches" note.
+> **Parity risk specific to round 7 through round 10:** round 7's `is_array_owner` short-circuit, round 8's stripped-text/no-`$` check applied uniformly to both subscript index kinds (replacing round 7's template-only version), round 8's declaring-scope/non-vacuous-coverage walk, round 9's fall-through-arm inversion in `literal_has_unmodeled_this_reference`, and round 10's shadow-check-before-module-search ordering in `resolve_identifier_value_this_reference` plus its shared builtin guard are all easy to port correctly for the obvious cases and easy to narrow silently in a hand-written port — exactly the class of mistake round 7's Rust mirror of the `$`-guard itself would repeat if copied without noticing round 8's TS-side correction. Round 9 specifically: a Rust `match` on `child.kind()` with an explicit `_ => false` fall-through arm looks, on a quick read, like ordinary exhaustiveness hygiene rather than a safety-critical default — the reviewer diffing the two engines side by side (below) must confirm that arm is `true`, not `false`, and that `spread_element` is not silently absent from the match altogether (which would compile fine under a wildcard arm and be just as wrong). Round 10 specifically: it is easy to port `is_unshadowed_builtin_global` correctly while forgetting to apply it to BOTH arms — e.g. fixing only the `shorthand_property_identifier` arm and leaving the `pair` arm's identifier branch on its old, differently-shaped guard would compile, pass every existing single-arm-focused assertion, and silently reintroduce the exact "not actually identical" gap finding 2 closes, just moved to the other arm. WU-10's dual-engine assertion on the new escape-fallback cases (below) is what actually catches a missed one — a reviewer diffing the two `is_tracked_reference_position`/`isTrackedReferencePosition` and `all_references_tracked`/`allReferencesTracked` bodies side by side, now extended to `literal_has_unmodeled_this_reference`/`literalHasUnmodeledThisReference` and `resolve_identifier_value_this_reference`/`resolveIdentifierValueThisReference` for rounds 9 and 10, is the other half of the gate, per the Testing Strategy section's "what no tier catches" note.
 
 ---
 
@@ -1968,7 +2242,9 @@ T.resolve();
 >
 > **Case 2 re-verified against round 7's tightened rules.** `RESOLVERS` is an array-element owner (`isArrayOwner = true`), so its own reference — the for-of head in `for (const r of RESOLVERS) …` — is checked on the `for_in_statement` branch, which does not gate on `isArrayOwner` at all (only the member/subscript branch does, per finding 1). Accepting that reference now additionally requires `allReferencesTracked(root, 'r', objectNode, false, declaringScope)` to hold (finding 2) — `declaringScope` being the SAME fixed node established for `RESOLVERS` itself (round 8, #2088 finding 1; `RESOLVERS` is module-scope here, so that node is `root`): `r`'s only two references, `r.matches(x)` and `r.resolve(x)`, are both call-position member expressions checked with `isArrayOwner = false` (a loop variable always denotes a single element), so both pass unchanged. This shape was the plan's own headline #1771 idiom and is confirmed unaffected by round 7 or round 8 — the array-owned shape round 7 actually excludes is the CONTAINER-level `.forEach`/`.map`/etc. call, added as new case (i) below, which this correlation test does not and should not exercise; round 8's declaring-scope restriction changes nothing here either, since `RESOLVERS`' own declaring scope was already `root` (module scope was never affected by the bug it fixes).
 
-**Naming convention:** the correlation test's seven shapes (used by their numbers, 1–7, throughout this plan) and the escape-fallback test's shapes ((a)–(u), used by their letters) are two independent, alphabetically/numerically-keyed lists — a re-verified shape 2 above is unrelated to the lettered cases below.
+> **Builder note (round 10) — an IMPORTED handler makes condition 4 fail safe, which fails these shapes' own `escapes = 0` assertion outright, not merely "passes without proving T1."** Shapes 1, 3, and 6 each carry at least one identifier-valued handler property (`resolve: neverCalled`/`reject: isCalled`; `alpha: fnA`; `resolve: isBaz`) that condition 4 must positively resolve to a same-file, `this`-free function for the site to read `escapes = 0` at all — and, on inspection, this requirement is not unique to 1/3/6: EVERY one of the seven shapes above (2, 4, 5, and 7 included) uses at least one identifier-valued pair for the same reason. `resolveIdentifierValueThisReference`'s first check is `definitionNames.has(name)` — this is a FILE-WIDE, flat set (built the same way `points-to.ts` builds its own from `symbols.definitions`), so it is true for a same-file declaration at ANY depth, but false for anything imported. An IMPORTED handler (`import { neverCalled } from './handlers.js'`) therefore fails this very first check and returns `true` (fail-safe) — and because condition 4 is a WHOLE-SITE check (one `false` from any child fails the whole literal), THIS SITE's `escapes` flips to `1`, directly contradicting the shape's own required `escapes === 0` assertion (the round-3 rule, above) — a hard, loud test failure, not a silent pass. The same fate befalls a handler that is same-file but declared ONLY inside some nested function/block: `definitionNames.has(name)` still passes (the set is flat, not scope-aware), but `findTopLevelFunctionNodeByName`'s own module-level-only search then fails to find it, hitting the identical fail-safe. **The correct fix, if this friction is hit while implementing WU-10, is to make every correlation-shape handler a genuine same-file, TOP-LEVEL (module-scope) declaration or `const` arrow/function-expression — never an import, never nested-only — not to weaken or drop the shape's own `escapes = 0` assertion to make the failure go away.** Dropping that assertion is exactly how a fixture could end up "passing" while proving nothing about T1: liveness alone can still be explained by an unrelated T2 match (shape 1's own decoy is a standing example of that risk), which is precisely why the round-3 rule requires checking `escapes` explicitly for every shape in the first place.
+
+**Naming convention:** the correlation test's seven shapes (used by their numbers, 1–7, throughout this plan) and the escape-fallback test's shapes ((a)–(z), used by their letters) are two independent, alphabetically/numerically-keyed lists — a re-verified shape 2 above is unrelated to the lettered cases below.
 
 **The escape-fallback test is the soundness gate.** Each case must be classified live *only* because the site escapes and T2 catches it — assert the classification, and assert `object_literal_sites.escapes = 1` for the site, so the test fails loudly if a future change flips the bit rather than silently passing on the wrong tier:
 
@@ -2274,6 +2550,124 @@ function maybeInstallT8(cond) {
   }
 }
 maybeInstallT8(true);
+// (v) (ROUND 10, #2088 finding 1) A FUNCTION-SCOPED shadow — a shorthand
+//     property AND a pair-identifier property both name a LOCAL,
+//     `this`-using declaration that shadows a same-named MODULE-level,
+//     `this`-free one — the headline counter-example motivating the
+//     round-10 fix to `resolveIdentifierValueThisReference`'s search
+//     direction. Greptile flagged exactly this shape against this plan
+//     ("Shadowed handler resolves incorrectly"). Pre-round-10,
+//     `findTopLevelFunctionNodeByName` searched DOWN from the module root
+//     and found the OUTER, `this`-free `run`/`run2` with full confidence —
+//     never the INNER, `this`-using ones actually in scope at `T9`'s own
+//     position — so condition 4 voted safe for BOTH properties. `T9.run()`
+//     and `T9.other()` are `T9`'s only tracked references besides its
+//     declaration (conditions 1-3 pass), so the site read as local-closed
+//     while the inner `run`'s `this.alpha()` and the inner `run2`'s
+//     `this.gamma()` — reached only because `install9` assigns THOSE
+//     closures onto `T9`, never the outer module-level ones — produced zero
+//     correlated evidence, reporting `fnAlpha9`/`fnGamma9` dead though
+//     `T9.run()`/`T9.other()` invoke them on every call. No decoy needed:
+//     each inner function's own `this.xxx()` call populates T2 once the
+//     site correctly escapes, the same way case (g)/(q) already rely on
+//     their own inline `this.alpha()` doing so. Condition 4 short-circuits
+//     on the first disqualifying child, so this one fixture's `escapes = 1`
+//     assertion is satisfied by whichever of `run`/`other` is visited
+//     first; it does not independently prove both arms in isolation, but
+//     both route through the identical `resolveIdentifierValueThisReference`
+//     call post-fix (see that function's own doc comment), so one fixture
+//     exercising both AST shapes is representative of both.
+function run() { return 0; }                    // module-level, this-free
+function run2() { return 0; }                   // module-level, this-free
+function fnAlpha9() { return 1; }
+function fnGamma9() { return 1; }
+function install9() {
+  function run() { return this.alpha(); }       // shadows it: shorthand target
+  function run2() { return this.gamma(); }      // shadows it: pair target
+  const T9 = { alpha: fnAlpha9, gamma: fnGamma9, run, other: run2 };
+  T9.run();
+  T9.other();
+}
+install9();
+// (w) (ROUND 10, #2088 finding 1) The SAME shadow shape as case (v), but
+//     BLOCK-scoped (an `if` body, not a function body) — completing the
+//     function/block trio the Testing Strategy's own scope-coverage rule
+//     requires going forward. There is deliberately no MODULE-scope member
+//     of this trio: the bug requires a scope strictly between the object
+//     literal and the module root to shadow through, which is structurally
+//     impossible for a module-scope literal — there is no shallower scope
+//     left to be confused with. Correlation shapes 1-7 (all module-scope,
+//     or array/alias variants declared at module scope) are this fix's
+//     module-scope regression coverage instead — see the Testing Strategy
+//     section's own round-10 note.
+function run3() { return 0; }                   // module-level, this-free
+function fnAlpha10() { return 1; }
+function maybeInstallT10(cond) {
+  if (cond) {
+    function run3() { return this.alpha(); }    // shadows it, block-scoped
+    const T10 = { alpha: fnAlpha10, run3 };
+    T10.run3();
+  }
+}
+maybeInstallT10(true);
+// (x) (ROUND 10, #2088 finding 2) A MODULE-scoped BUILTIN-NAMED shorthand
+//     shadow — `Stream` (`BUILTIN_GLOBALS`) is redefined, at module scope,
+//     as a `this`-using local function — the headline counter-example
+//     motivating the round-10 fix to the `BUILTIN_GLOBALS` guard itself.
+//     Pre-round-10, the shorthand arm's `!BUILTIN_GLOBALS.has(child.text)`
+//     guard short-circuited to `continue` (non-escaping) for ANY
+//     builtin-named property, shadowed or not, WITHOUT ever calling
+//     `resolveIdentifierValueThisReference` — so this file's OWN
+//     `this`-using `Stream` was never even inspected. `T11.Stream()` is
+//     `T11`'s only tracked reference besides its declaration, so the site
+//     read as local-closed while `Stream`'s own `this.alpha()` produced
+//     zero correlated evidence, reporting `fnAlpha11` dead though
+//     `T11.Stream()` invokes it every call. No decoy needed: `this.alpha()`
+//     itself populates T2 once the site correctly escapes.
+function fnAlpha11() { return 1; }
+function Stream() { return this.alpha(); }
+const T11 = { alpha: fnAlpha11, Stream };
+T11.Stream();
+// (y) (ROUND 10, #2088 finding 2) The SAME builtin-shadow shape, but
+//     FUNCTION-scoped — proves finding 2's fix is necessary INDEPENDENTLY
+//     of finding 1's, not merely subsumed by it: even after finding 1's
+//     shadow-fail-safe lands inside `resolveIdentifierValueThisReference`,
+//     the PRE-round-10 shorthand guard still short-circuits on
+//     `BUILTIN_GLOBALS.has('Stream')` BEFORE `resolveIdentifierValueThisReference`
+//     — and so before finding 1's own `findDeclaringScopeNode` check inside
+//     it — ever runs at all. Finding 1's fix alone, without finding 2's,
+//     would NOT catch this shape, which is exactly why both are blocking
+//     fixes rather than one subsuming the other.
+function fnAlpha12() { return 1; }
+function install12() {
+  function Stream() { return this.alpha(); }
+  const T12 = { alpha: fnAlpha12, Stream };
+  T12.Stream();
+}
+install12();
+// (z) (ROUND 10, #2088 finding 2) The SAME builtin-shadow shape again,
+//     BLOCK-scoped (an `if` body, not a function body) — completing the
+//     module/function/block trio for this finding. Unlike finding 1's own
+//     trio (cases (v)/(w), which deliberately omit a module-scope member),
+//     this finding's fix IS scope-independent: `definitionNames` is a
+//     flat, file-wide set with no notion of lexical position, so
+//     `isUnshadowedBuiltinGlobal`'s answer for `'Stream'` does not depend
+//     on WHERE in the file the shadowing declaration or the object literal
+//     sit, only on whether a same-file declaration of that name exists at
+//     all — which is exactly why this finding, unlike finding 1, gets a
+//     genuine three-member trio (module, function, block all independently
+//     load-bearing) rather than two, mirroring round 9's own precedent for
+//     a scope-independent fix (cases (q)/(t)/(u)) rather than round 8's for
+//     a scope-DEPENDENT one (cases 4/5, no module-scope member).
+function fnAlpha13() { return 1; }
+function maybeInstall13(cond) {
+  if (cond) {
+    function Stream() { return this.alpha(); }
+    const T13 = { alpha: fnAlpha13, Stream };
+    T13.Stream();
+  }
+}
+maybeInstall13(true);
 // EXPECT (all): live, escapes === 1.
 ```
 
@@ -2301,7 +2695,7 @@ WU-4 (solver) is off the critical path and should be built in parallel with WU-2
 | Tier | What it covers here | Files |
 |---|---|---|
 | **Unit / parser extraction** | Site ids are stable and unique per file; `escapes` is correct for each recognised shape and defaults `true` for unrecognised ones; value-ref calls carry `objectLiteralSite`. | `tests/parsers/javascript.test.ts` |
-| **Integration over a fixture project** | The seven correlation shapes and the 21 escape-fallback shapes (eight from earlier rounds, six added in round 7 for findings 1, 2 — split into its plain-forwarding and destructuring sub-cases — 3, 4, and 5, two added in round 8 for the headline shadow-prune fix and finding 3's `$`-guard gap, and five added in round 9 for finding 1's fail-open condition-4 default, spanning module, function, and block scope), end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
+| **Integration over a fixture project** | The seven correlation shapes and the 26 escape-fallback shapes (eight from earlier rounds, six added in round 7 for findings 1, 2 — split into its plain-forwarding and destructuring sub-cases — 3, 4, and 5, two added in round 8 for the headline shadow-prune fix and finding 3's `$`-guard gap, five added in round 9 for finding 1's fail-open condition-4 default spanning module, function, and block scope, and five added in round 10 for finding 1's shadowed-identifier-resolution fix (function + block, no module member — see the round-10 scope-coverage note below) and finding 2's `BUILTIN_GLOBALS`-guard fix (module + function + block)), end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
 | **Resolution precision/recall** | The new `pts-javascript/objlit-site.js` fixture's expected edges. `javascript`'s precision-1.0 floor must not move — that fixture is the false-positive canary per ADR-002. | `tests/benchmarks/resolution/` |
 | **Dual-engine parity** | Every integration assertion runs under `--engine wasm` and `--engine native`; `npm run build` runs first so WASM sees the new `dist/`. | both `issue-2088-*` tests + `/parity` |
 | **Incremental vs full** | A `codegraph watch`-shaped single-file rebuild reaches the same tier decision as a full build, via the two persisted tables. | `issue-2087-…` + the incremental case in `issue-2088-correlated-property-evidence` |
@@ -2309,7 +2703,9 @@ WU-4 (solver) is off the critical path and should be built in parallel with WU-2
 
 **Scope coverage is a first-class testing requirement, not an incidental property (ROUND 8).** Every WU-10 fixture through round 7 declared its table at MODULE scope — the one scope `introducesShadowedBinding` never self-shadows by construction (`default: return false` for `program`) — which is exactly why the round-8 shadow-prune bug (finding 1) went undetected for seven rounds: the test suite was structurally incapable of exercising the code path it broke. Closing that blind spot for THIS round's fix is not enough on its own to guarantee it stays closed. **Fixtures for every branch of the escape predicate — conditions 1–4 in `computeObjectLiteralSiteEscapes`, `isTrackedReferencePosition`'s member/subscript/for-of branches, and both recursive branches of `allReferencesTracked` — must include at least one MODULE-scope, one FUNCTION-scope, and one BLOCK-scope (an `if`/`for`/bare-block body, not a function body) case going forward.** Correlation shapes 4 and 5 (function- and block-scoped tables used correctly) and escape-fallback case (o) (a function-scoped table that must escape) establish this baseline for round 8's own fix; a reviewer adding a new branch to the escape predicate in a future round must add its own module/function/block trio rather than defaulting to module scope alone, the same way the original seven rounds did. **Round 9 follows this discipline for its own condition-4 fix**, even though the fix itself is not scope-sensitive the way round 8's shadow-prune bug was (`literalHasUnmodeledThisReference` inspects an object literal's own direct children regardless of where the literal sits in the tree) — cases (q), (t), and (u) exercise the identical object-spread shape at module, function, and block scope respectively, precisely BECAUSE assuming a new branch is scope-independent without a fixture proving it is the same assumption that let round 8's bug stand for seven rounds; (u) also closes a standing asymmetry noted while writing it — round 8 never added a BLOCK-scoped ESCAPING case of its own (only a function-scoped one, (o)), so (u) is the first in the suite.
 
-**What no tier catches, and what a human must check instead.** The escape analysis is a *judgment* about completeness, and no test can enumerate every JS shape that leaks an object identity. The tests above prove the recognised shapes are right and that the fail-safe default is `true`; they cannot prove the recognised set is exhaustive. **A reviewer must read `computeObjectLiteralSiteEscapes` (WU-2b) and its Rust mirror against `TRACKED_REFERENCE_PARENTS`, `isTrackedReferencePosition`, and `literalHasUnmodeledThisReference`, and satisfy themselves — against the stated invariant, not just against parent-type membership — that every position/shape they do not accept is genuinely treated as an escape.** That review is the real gate on the soundness requirement; the WU-10 tests are a sample of it — and, as of round 8, that sample must itself span module, function, and block scope, not stand in for a single scope repeated across all 21 lettered cases.
+**Round 10 splits across BOTH precedents above, because its two findings differ on exactly the axis that distinguishes them.** Finding 1 (the shadowed-identifier fix) is scope-DEPENDENT the way round 8's shadow-prune bug was — it can only manifest when some scope strictly between the object literal and the module root ALSO declares the shadowed name, which is structurally impossible when the literal itself sits at module scope (there is no shallower scope to be confused with) — so, mirroring round 8's own cases 4/5, it gets a two-member trio: case (v) is function-scoped, case (w) is block-scoped, and correlation shapes 1-7's existing module-scope coverage stands in for the missing third member, exactly as round 8's own case-4 comment already established this precedent. Finding 2 (the `BUILTIN_GLOBALS`-guard fix) is scope-INDEPENDENT the way round 9's fall-through-arm fix was — `isUnshadowedBuiltinGlobal` consults only `BUILTIN_GLOBALS` and the flat, file-wide `definitionNames` set, neither of which has any notion of lexical position — so, mirroring round 9's own cases (q)/(t)/(u), it gets a genuine three-member trio: case (x) is module-scoped (matching the finding's own repro), case (y) is function-scoped, and case (z) is block-scoped, each independently load-bearing because the pre-round-10 shorthand guard short-circuits BEFORE finding 1's own shadow check ever runs, so finding 1's fix alone would not have caught cases (y)/(z) either. A reviewer adding a new branch to the escape predicate in a future round should determine which of these two shapes their own fix has — scope-dependent (two-member trio, module coverage inherited from existing shapes) or scope-independent (three-member trio) — rather than mechanically adding three cases regardless of whether a module-scope member can even exist.
+
+**What no tier catches, and what a human must check instead.** The escape analysis is a *judgment* about completeness, and no test can enumerate every JS shape that leaks an object identity. The tests above prove the recognised shapes are right and that the fail-safe default is `true`; they cannot prove the recognised set is exhaustive. **A reviewer must read `computeObjectLiteralSiteEscapes` (WU-2b) and its Rust mirror against `TRACKED_REFERENCE_PARENTS`, `isTrackedReferencePosition`, `literalHasUnmodeledThisReference`, AND (round 10) the identifier-resolution helpers those two shape-recognition functions call into — `resolveIdentifierValueThisReference`, `findDeclaringScopeNode`, and `findTopLevelFunctionNodeByName` — and satisfy themselves — against the stated invariant, not just against parent-type membership — that every position/shape they do not accept is genuinely treated as an escape.** Round 10's own two findings are exactly what this last clause was added to name explicitly: both rounds 7 and 9 correctly reviewed WHICH shapes `literalHasUnmodeledThisReference` recognises, but neither round's review descended into HOW the identifier-valued shapes it recognises actually get resolved, which is precisely where both round-10 bugs hid. That review is the real gate on the soundness requirement; the WU-10 tests are a sample of it — and, as of round 8, that sample must itself span module, function, and block scope wherever the branch under test is scope-dependent (round 10's own Scope coverage note above states when a two-member, rather than three-member, trio is the correct sample), not stand in for a single scope repeated across all 26 lettered cases.
 
 ## Verification Commands
 
@@ -2346,7 +2742,7 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 
 | Risk | Mitigation |
 |---|---|
-| Tightening turns a conservative false negative into a **false positive** (live code reported dead) | Structural, not incidental: T1 is reachable only when `escapes === false`, and `escapes` defaults `true` on every unrecognised shape (WU-2b). Escaping sites take T2 — today's exact predicate. Gated by `tests/integration/issue-2088-escape-fallback.test.ts` (WU-10), which asserts both the classification *and* `escapes = 1`, so it fails if the guard is bypassed rather than passing on the wrong tier. Round 6 found and closed four such gaps (the alias, parameter-flow, same-literal `this`, and bare-read branches); round 7 re-applied the SAME invariant test to the round-6 result itself and found and closed five more (array-owned container calls, for-of loop-variable forwarding, identifier-valued `this`, interpolated template keys, and the owner `bindingName`/`key` contract) — see the round-7 annotations throughout WU-2b and the six new WU-10 cases (i)–(n) added to gate them. **Round 8 found the deepest gap yet by re-applying the same invariant test to the WALK ITSELF rather than to another reference position**: the shadow-prune `allReferencesTracked` reused (`introducesShadowedBinding`) self-shadows the site's own declaring scope whenever that scope is not the module (every fixture through round 7 was module-scope, which is why this survived seven rounds), silently vacuously "tracking" a table that was never actually examined at all — a strictly worse failure than any round-6/7 gap, since those each mis-tracked one REACHED reference, while this one meant entire scopes were never reached. Closed two ways, not one: (a) the walk is now rooted at, and exempts from the shadow-prune, only the site's own declaring scope (mirroring `hasLaterReferenceInEnclosingBlock`'s existing, narrower carve-out for the identical trap); and (b) a new standing rule requires the walk to PROVE it was exhaustive — any truncation now forces `escapes = true` unconditionally — so a FUTURE walk bug of this same shape fails closed instead of silently passing, rather than relying on finding every instance of it by inspection one round at a time. Round 8 also fixed a second, independent bug in the same area (`bindingName` could inherit a `#line` suffix `allReferencesTracked` could never match against real identifier text — the same "structurally can never match" failure mode finding 5 already named for `A[*]`) and a third in `isTrackedReferencePosition`'s subscript branch (the `$`-guard was mirrored onto `template_string` only, not `string`, so `T['co$t']()` was wrongly accepted — Greptile flagged this independently on this PR). See the round-8 annotations throughout WU-2b, the withdrawn round-7 vacuous-truth argument, and WU-10 correlation shapes 4–5 plus escape-fallback cases (o)–(p). **Round 9 found a gap of the SAME class in condition 4 specifically**: `literalHasUnmodeledThisReference` was a positive-only detector that silently voted non-escaping (rather than escaping) on any shape it did not recognise — a `spread_element`, or a `pair` valued by a `call_expression`/`parenthesized_expression`/other unrecognised expression — the exact inversion of this row's own stated mitigation, which through round 8 was true of every OTHER condition but not yet of condition 4's own internals. Closed by rewriting the function to the same fail-closed contract, now stated once at the level of `computeObjectLiteralSiteEscapes` itself (a standing rule, mirroring round 8's `allReferencesTracked`-specific one) so a future predicate cannot repeat this exact class of gap unnoticed. See the round-9 annotations in WU-2b and WU-10 correlation shapes 6–7 plus escape-fallback cases (q)–(u). |
+| Tightening turns a conservative false negative into a **false positive** (live code reported dead) | Structural, not incidental: T1 is reachable only when `escapes === false`, and `escapes` defaults `true` on every unrecognised shape (WU-2b). Escaping sites take T2 — today's exact predicate. Gated by `tests/integration/issue-2088-escape-fallback.test.ts` (WU-10), which asserts both the classification *and* `escapes = 1`, so it fails if the guard is bypassed rather than passing on the wrong tier. Round 6 found and closed four such gaps (the alias, parameter-flow, same-literal `this`, and bare-read branches); round 7 re-applied the SAME invariant test to the round-6 result itself and found and closed five more (array-owned container calls, for-of loop-variable forwarding, identifier-valued `this`, interpolated template keys, and the owner `bindingName`/`key` contract) — see the round-7 annotations throughout WU-2b and the six new WU-10 cases (i)–(n) added to gate them. **Round 8 found the deepest gap yet by re-applying the same invariant test to the WALK ITSELF rather than to another reference position**: the shadow-prune `allReferencesTracked` reused (`introducesShadowedBinding`) self-shadows the site's own declaring scope whenever that scope is not the module (every fixture through round 7 was module-scope, which is why this survived seven rounds), silently vacuously "tracking" a table that was never actually examined at all — a strictly worse failure than any round-6/7 gap, since those each mis-tracked one REACHED reference, while this one meant entire scopes were never reached. Closed two ways, not one: (a) the walk is now rooted at, and exempts from the shadow-prune, only the site's own declaring scope (mirroring `hasLaterReferenceInEnclosingBlock`'s existing, narrower carve-out for the identical trap); and (b) a new standing rule requires the walk to PROVE it was exhaustive — any truncation now forces `escapes = true` unconditionally — so a FUTURE walk bug of this same shape fails closed instead of silently passing, rather than relying on finding every instance of it by inspection one round at a time. Round 8 also fixed a second, independent bug in the same area (`bindingName` could inherit a `#line` suffix `allReferencesTracked` could never match against real identifier text — the same "structurally can never match" failure mode finding 5 already named for `A[*]`) and a third in `isTrackedReferencePosition`'s subscript branch (the `$`-guard was mirrored onto `template_string` only, not `string`, so `T['co$t']()` was wrongly accepted — Greptile flagged this independently on this PR). See the round-8 annotations throughout WU-2b, the withdrawn round-7 vacuous-truth argument, and WU-10 correlation shapes 4–5 plus escape-fallback cases (o)–(p). **Round 9 found a gap of the SAME class in condition 4 specifically**: `literalHasUnmodeledThisReference` was a positive-only detector that silently voted non-escaping (rather than escaping) on any shape it did not recognise — a `spread_element`, or a `pair` valued by a `call_expression`/`parenthesized_expression`/other unrecognised expression — the exact inversion of this row's own stated mitigation, which through round 8 was true of every OTHER condition but not yet of condition 4's own internals. Closed by rewriting the function to the same fail-closed contract, now stated once at the level of `computeObjectLiteralSiteEscapes` itself (a standing rule, mirroring round 8's `allReferencesTracked`-specific one) so a future predicate cannot repeat this exact class of gap unnoticed. See the round-9 annotations in WU-2b and WU-10 correlation shapes 6–7 plus escape-fallback cases (q)–(u). **Round 10 found that condition 4's identifier-RESOLUTION chain — one layer beneath the shape-recognition switch round 9 rewrote — still violated a fail-closed discipline in two places, both flagged independently (finding 1 by Greptile, "Shadowed handler resolves incorrectly").** Finding 1: `findTopLevelFunctionNodeByName` searches DOWN from the module root only, so a function-scoped shorthand/pair-identifier property that shadows a same-named MODULE-level declaration resolved to the WRONG (module-level) function with full confidence — worse than round 8's vacuous-truth bug, because a sub-predicate returning a confidently wrong answer gives downstream code no signal anything is amiss, whereas an honest "unresolved" at least triggers the caller's own fail-safe. Finding 2: the shorthand arm's `!BUILTIN_GLOBALS.has(name)` guard short-circuited to a silent non-escaping vote for ANY builtin-named property, shadowed or not — exactly the round-9 standing rule's forbidden outcome, just in a helper round 9's own audit did not reach. Closed by resolving OUTWARD from the object literal via `findDeclaringScopeNode` (reusing round 8's own helper) before ever falling back to the module-level search, and by unifying both arms' builtin guard into one shared `isUnshadowedBuiltinGlobal(name, definitionNames)` predicate that skips resolution only for a genuinely unshadowed global. See the round-10 essay in WU-2b, `resolveIdentifierValueThisReference`'s and `findTopLevelFunctionNodeByName`'s own doc comments, and WU-10 escape-fallback cases (v)–(z). |
 | WU-5's `collectInvokedPropertySites` resolves calls against the WRONG file's points-to map (ROUND 9, #2088 finding 2) — silently under-populates T1, the exact false-dead class this plan is gated on, in a way no single-file fixture can reveal | `collectInvokedPropertyNames`/`computedDispatchTableEvidence` are pure name/file aggregations needing no points-to information, so `buildCallEdgesJS` builds them once, globally, before any file's points-to map exists. `collectInvokedPropertySites` cannot use that same pre-loop position unchanged, because resolving a receiver is inherently per-file. Mitigated structurally, not by convention: `buildCallEdgesJS` is restructured into three explicit passes (pts pre-pass → evidence assembly → per-file edge resolution, WU-5(a)), and `collectInvokedPropertySites`'s own signature is keyed by file (`ReadonlyMap<string, Iterable<Call>>` plus a `relPath`-aware `resolveReceiverSites`) rather than a flattened list, so a caller cannot wire it up without supplying the right map for each file. Gated by WU-10 correlation shape 7, a two-file fixture built specifically because every other WU-10 fixture is single-file and so cannot distinguish "resolved against the right map" from "resolved against the only map." Mirrored on the Rust side, where `EdgeContext::new` has the identical ordering shape (WU-8's own pass-ordering note). |
 | Reviewer objection: "this contradicts §8.3's field-based decision" | Pre-rebutted in [Reconciling the tension](#reconciling-the-tension-with-roadmap-83-field-based-not-field-sensitive): field-sensitivity and allocation-site abstraction are orthogonal axes, and §8.3's own Approach block already commits to allocation-site abstraction. The pts lattice stays field-based; the `site\|key` set is computed outside the solver. |
 | Reviewer objection: "this duplicates #2260's `receiver` channel" | It does not — T3 is kept name-keyed, unconditional, and untouched (WU-5b). #2088 adds a third tier beside it. The array-literal gap in #2260's own channel is filed separately as #2611 rather than folded in. |
@@ -2354,7 +2750,7 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 | WASM/native escape-bit drift | The bit is persisted in `object_literal_sites`, so a divergence is directly observable by diffing that table between engine runs rather than only inferable from a differing `roles` output. WU-10 runs every integration assertion under both engines; `/parity` gates. |
 | Solver cost grows with object-literal count | Constraints added are O(sites) + O(callAssignments with a matching `::return` key), and the `callAssignments` loop is guarded on that key existing, so it adds no rows for the common case. `MAX_SOLVER_ITERATIONS` is unchanged at 50. `npm run benchmark` is in the verification block; a >5% full-build regression on this repo is reported, not absorbed. |
 | Full-vs-incremental divergence in the new channel | Both new tables are persisted and purged per file exactly as `invoked_property_names` (#2087) is — WU-5(c), WU-6. This is deliberately *not* the shortcut #2260 took, whose in-memory-only aggregation is filed as #2610. |
-| Scope growth during implementation | Two adjacent findings were filed as issues before this plan was written (#2610, #2611) rather than absorbed. Every review round since has kept the same discipline for findings that narrow the escape-analysis design rather than fix it (#2617–#2620 from rounds 4–6; #2621–#2623 from round 7) — see the Success Criteria exclusion list. Round 8 filed no new follow-up issues: all three of its findings are soundness fixes to what earlier rounds already claimed the design covers, not new named exclusions from it — see the Success Criteria note on round 8 for why that distinction matters here specifically. **Round 9 filed one — #2624** — because, unlike round 8's findings, inverting condition 4's default genuinely narrows recall for shapes the pre-round-9 code (incorrectly) accepted: an object literal using object-spread, or a pair valued by anything other than the positively-safe enumeration, now escapes where it previously (unsoundly) did not. Finding 2 (the WU-5 pass-ordering fix) filed no issue: it is a soundness/buildability fix to how a not-yet-implemented WU is sequenced, not a narrowing of any capability the design claims. One PR = one concern. |
+| Scope growth during implementation | Two adjacent findings were filed as issues before this plan was written (#2610, #2611) rather than absorbed. Every review round since has kept the same discipline for findings that narrow the escape-analysis design rather than fix it (#2617–#2620 from rounds 4–6; #2621–#2623 from round 7) — see the Success Criteria exclusion list. Round 8 filed no new follow-up issues: all three of its findings are soundness fixes to what earlier rounds already claimed the design covers, not new named exclusions from it — see the Success Criteria note on round 8 for why that distinction matters here specifically. **Round 9 filed one — #2624** — because, unlike round 8's findings, inverting condition 4's default genuinely narrows recall for shapes the pre-round-9 code (incorrectly) accepted: an object literal using object-spread, or a pair valued by anything other than the positively-safe enumeration, now escapes where it previously (unsoundly) did not. Finding 2 (the WU-5 pass-ordering fix) filed no issue: it is a soundness/buildability fix to how a not-yet-implemented WU is sequenced, not a narrowing of any capability the design claims. **Round 10 filed one of its own two findings — #2625** — for finding 1: failing safe on ANY non-module shadowing scope, rather than fully resolving into it, costs recall for a shadowing declaration that happens to itself be `this`-free, a capability a fuller (but more invasive) fix could have preserved. Finding 2 filed no issue: unifying both arms onto `isUnshadowedBuiltinGlobal` is a soundness fix for the shorthand arm and a strict recall IMPROVEMENT for the `pair` arm's own previously-unconditional builtin escape, not a narrowing of anything the design claims, matching round 8's own framing for a fix that makes an existing claim true rather than trading it away. One PR = one concern. |
 
 ## Out of Scope (filed, not silently dropped)
 
@@ -2379,8 +2775,12 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
   - **(round 8) One narrow, EXPECTED conservative consequence of finding 1(b), not a new exclusion needing its own issue:** a declaring scope whose AST subtree is deep enough to hit the pre-existing `MAX_WALK_DEPTH` cap now unconditionally escapes, per the non-vacuous-coverage requirement below — where pre-round-8 (buggy) behavior would have silently returned "not found" and read a truncated walk as tracked. This is the SAME depth-cap convention already applied uniformly throughout this file's other recursive walks (`blockContainsIdentifierExcluding`, `patternBindsName`, `scanPatternDefaultsForReference`, `subtreeContainsThisKeyword`) — Category F, a standard safety boundary, not a newly-discovered gap in this design specifically — so it is not filed as a follow-up capability the way #2617–#2623 are; those name shapes the design does not yet recognise at all, while this names a depth the AST would have to be pathological to reach.
   - **(round 9, #2088 finding 1) A NEW exclusion, unlike round 8's — genuinely narrower recall, not a detection-gap fix.** A `pair` whose value is not positively proven `this`-free — an object-spread source (`const T = { alpha: fnA, ...mixin }`), a call-expression-valued pair (`run: makeRunner()`), a parenthesized function expression (`run: (function () { … })`), a bare member-expression read, an `as`/`satisfies` cast, or a logical/ternary expression — now marks the site escaping, where the pre-round-9 implementation (unsoundly) treated it as safe by omission. Unlike round 7's identifier-valued-pair fix (which closed a DETECTION gap in an already-sound exclusion, condition 4's own `this`-using-method rule), round 9 removes a capability the pre-round-9 code claimed to have but never actually had soundly: correlating a value-ref inside a literal that ALSO carries one of these shapes. Recall is smaller than the pre-round-9 draft implied for this narrow case; filed as a follow-up rather than silently narrowed — #2624.
   - **(round 9, #2088 finding 2) No new exclusion — a buildability/soundness fix, not a design narrowing.** WU-5(a)'s three-pass restructuring (pts pre-pass → evidence assembly → per-file edge resolution) does not remove any capability the design claims; it is what makes `collectInvokedPropertySites` implementable at all against a per-file points-to map, a requirement WU-5's own doc comment already implied ("the receiver-CORRELATED counterpart of `collectInvokedPropertyNames`") but never stated precisely enough to build correctly. No follow-up issue.
+  - **(round 10, #2088 finding 1) A NEW exclusion, narrower for a different reason than round 9's: implementation-simplicity, not an unavoidable safety boundary.** Once `resolveIdentifierValueThisReference` finds that some scope strictly between the object literal and the module root also declares the identifier's name, it fails safe UNCONDITIONALLY rather than resolving into that shadowing scope's own declaration and checking whether THAT declaration is itself `this`-free. A shadowing declaration that happens to be genuinely `this`-free would, under a fuller fix, still correlate via T1; under this one it always escapes and falls to T2, because doing otherwise would require generalising `findTopLevelFunctionNodeByName`'s module-level-only declaration matching into a second, arbitrary-scope traversal — another AST-search shape to keep correct, in both engines, for a pattern the `#1771`/`#1784` precedent was never asked to cover. Filed as a follow-up rather than silently accepted — #2625.
+  - **(round 10, #2088 finding 2) No new exclusion — a soundness fix with a strict recall IMPROVEMENT as a side effect, matching round 8's framing rather than round 9's.** Unifying the `pair` and `shorthand_property_identifier` arms onto one shared `isUnshadowedBuiltinGlobal` guard closes the shorthand arm's silent-safe-vote hole (a soundness fix — nothing the design claimed to cover gets narrower) AND, as a side effect, lets the `pair` arm correctly credit a genuinely UNSHADOWED builtin-named property as safe — a case the pre-round-10 `pair` arm always, unnecessarily, escaped. No follow-up issue.
 - [ ] **(round 9, #2088 finding 1 — the fail-closed contract, generalised).** Every predicate `computeObjectLiteralSiteEscapes` consults returns "escaping" for any shape it does not positively recognise as safe — not just `allReferencesTracked`'s own coverage (round 8's standing rule, above), and not just condition 4's enumerated `this`-free shapes (`isPositivelyThisFreeLiteral`, an `arrow_function`, an inline function/method whose subtree was searched, or an identifier/shorthand-property resolved in-file to a non-arrow `this`-free function). This is a standing contract on `computeObjectLiteralSiteEscapes`'s own return value, not a one-off patch to condition 4: any predicate this function gains in a future round — a hypothetical condition 5, or a further refinement of conditions 1–3 — inherits it automatically, the same way round 8's non-vacuous-coverage requirement binds every future change to `allReferencesTracked` specifically. Verified by WU-10 correlation shape 6 (a mixed data/handler table does NOT over-escape) and escape-fallback cases (q)–(u) (the five shapes named in the bullet above DO escape, across module, function, and block scope).
 - [ ] **(round 9, #2088 finding 2 — the pass-ordering contract).** `collectInvokedPropertySites` never resolves a call's receiver against any file's points-to map other than the one for the file that call is declared in — enforced by the revised signature (`ReadonlyMap<string, Iterable<Call>>` plus a `relPath`-aware `resolveReceiverSites`, WU-5(a)/WU-8), not merely by caller discipline. Verified by WU-10 correlation shape 7, a two-file fixture built specifically because a single-file fixture cannot distinguish "resolved against the right file's map" from "resolved against the only map there is."
+- [ ] **(round 10, #2088 finding 1 — the identifier-resolution shadow contract).** `resolveIdentifierValueThisReference` never resolves an identifier-valued pair/shorthand property against a declaration OUTSIDE the one actually in lexical scope at the object literal's own position — enforced structurally by checking `findDeclaringScopeNode(objectNode, name)` before ever consulting `findTopLevelFunctionNodeByName`'s module-level-only search, not merely by caller discipline or by that search's own (previously mis-stated) fail-safe backstop. Verified by WU-10 escape-fallback cases (v)–(w): a function- and a block-scoped shadow of a `this`-free module-level sibling must escape, not silently resolve to the wrong, harmless declaration.
+- [ ] **(round 10, #2088 finding 2 — the shared builtin-guard contract).** Both the `pair`-value and `shorthand_property_identifier` arms of `literalHasUnmodeledThisReference` skip identifier resolution only for a name that is both a `BUILTIN_GLOBALS` member AND absent from this file's own `definitionNames` — enforced by one shared `isUnshadowedBuiltinGlobal` helper called identically from both arms, not by two independently-maintained guards that can silently diverge the way they did through round 9. Verified by WU-10 escape-fallback cases (x)–(z): a builtin-named property shadowed by a same-file, `this`-using declaration must escape at module, function, and block scope alike.
 - [ ] `resolveViaPointsTo` never returns a site token to name resolution.
 - [ ] For any site with `escapes === true`, resolution is **byte-identical to pre-#2088**, and all nine listed existing tests pass unedited.
 - [ ] `resolveSiteOwner`'s `key`/`bindingName` contract (round 7 finding 5, extended round 8 finding 2) holds for every owner shape, verified by WU-10's dedicated `export const A = [{…}]` case (round 7) and by correlation shapes 4/5 and escape-fallback case (o) (round 8): condition 2's export check, the `isArrayOwner` derivation, and (round 8) `allReferencesTracked`'s own AST search all depend on `bindingName` never carrying a `[*]`/`::return` suffix (round 7) NOR a `#${scopeLine}` disambiguating suffix (round 8) — the latter being exactly what `findEnclosingTableName` would otherwise append for any non-module-scope declaration.
