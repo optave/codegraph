@@ -1762,6 +1762,15 @@ function isPositivelyThisFreeLiteral(value: TreeSitterNode): boolean {
  * > benefit — exactly the risk rounds 11 and 12 already declined to take for
  * > the for-in and arrow-parameter gaps, applied here a third time. Closes
  * > #2632.
+ * >
+ * > This new disjunct is scoped to a `statement_block` ancestor only,
+ * > matching #2632's own repro exactly — it does not check a `switch_body`
+ * > ancestor, whose own case/default-clause enumeration (in
+ * > `introducesShadowedBinding`) carries the identical missing-`using_declaration`
+ * > gap `statement_block`'s did. Not verified either way this round, and not
+ * > silently left as an unstated gap: filed as its own follow-up — #2637 —
+ * > rather than assumed safe or fixed here without first confirming the
+ * > `switch_body` case actually reaches it.
  */
 function unwrapParens(node: TreeSitterNode, depth = 0): TreeSitterNode {
   if (depth >= MAX_WALK_DEPTH) return node;
@@ -4428,6 +4437,7 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 - **`findEnclosingTableName` does not traverse array literals** — `TABLE_NAME_PASSTHROUGH_TYPES` (and its Rust mirror `TABLE_NAME_PASSTHROUGH_KINDS`) omit `array`, so `const RESOLVERS = [{ matches, resolve }]` yields no `receiver` and the #2260 computed-access pathway can never credit a handler array — the exact idiom named in `collectObjectLiteralValueRefCall`'s own doc comment as #1771's motivating case. Not closed by this plan, which leaves T3 name-keyed. → issue **#2611**
 - **`-T` under-filters `tests/`**, inflating this repo's dead-symbol count ~3x. Already tracked; relevant here only because WU-10's dogfood measurement must filter `tests/` by hand rather than trust the raw number. → issue **#2256** (pre-existing, referenced in `.codegraph/basics.md`)
 - **Cross-module allocation-site propagation** — `importedNames` propagates cross-module *names*, not *sites*, which is why exported tables are classified escaping (WU-2b, condition 2). Shrinking the escape set by propagating sites through import edges is a natural follow-up, in the spirit of ROADMAP §8.3b. **Not filed yet**: it is a design direction rather than a defect, it has no user-visible symptom today (escaping sites simply keep current behavior), and its right shape depends on what WU-10 measures. To be filed at execute time if the measured delta shows exported tables dominate the remaining false negatives.
+- **`introducesShadowedBinding`'s `switch_body` case may carry the identical missing-`using_declaration` gap round 16 closed for its `statement_block` case (#2632)** — surfaced while implementing that fix, not verified either way this round: an unbraced `case`/`default` clause's own `using` declaration might be as invisible to a `switch_body` ancestor as a block-scoped one was to a `statement_block` ancestor before round 16. `findResolvingScopeNode`'s new disjunct is scoped to `statement_block` only, matching #2632's own repro exactly, so it does not (and, per this plan's own standing rule, may not silently be assumed to) cover this. → issue **#2637**
 
 ## Success Criteria
 
