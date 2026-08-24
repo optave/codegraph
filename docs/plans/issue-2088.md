@@ -100,10 +100,10 @@ crates/codegraph-core/src/domain/graph/builder/stages/import_edges.rs
 crates/codegraph-core/src/db/connection.rs                     MODIFIED  mirror the v32 CREATE TABLE statements
 src/domain/graph/builder/stages/native-orchestrator.ts         MODIFIED  thread objectLiteralSites through the NAPI FileEdgeInput payload
 
-tests/integration/issue-2088-correlated-property-evidence.test.ts   NEW   the four canonical shapes; both engines
+tests/integration/issue-2088-correlated-property-evidence.test.ts   NEW   the three canonical shapes; both engines
 tests/integration/issue-2088-escape-fallback.test.ts               NEW   escaping sites keep today's exact behavior (the soundness regression gate)
 tests/parsers/javascript.test.ts                                   MODIFIED  site emission + escape-bit unit assertions
-tests/benchmarks/resolution/fixtures/pts-javascript/objlit-site.js  NEW   handler-array + alias + param-flow correlation fixture
+tests/benchmarks/resolution/fixtures/pts-javascript/objlit-site.js  NEW   handler-array + alias correlation fixture
 tests/benchmarks/resolution/fixtures/pts-javascript/expected-edges.json  MODIFIED  expected edges for the new fixture file
 
 docs/roadmap/ROADMAP.md                                        MODIFIED  §8.3 progress sub-bullet; object literals added to the allocation-site bullet
@@ -460,13 +460,18 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
  *      site read as local-closed while it still escapes through `u` — e.g.
  *      `const u = T; importedFn(u)` — which is exactly the class of gap
  *      condition 1 already calls out for a return-captured binding, here
- *      recurring one hop later for an alias-captured one). Or is a
- *      bare-identifier argument to a LOCALLY-DEFINED, NON-EXPORTED function
- *      — the shape `paramBindings` (Phase 8.3c) already propagates (the
- *      identical recursive gap exists on this branch too — filed
- *      separately as #2617 rather than folded in here, since it requires
- *      scoping the recursive check into the callee's own body rather than
- *      the same file-level walk the alias case reuses).
+ *      recurring one hop later for an alias-captured one).
+ *
+ *      A bare-identifier argument to a function is deliberately NOT treated
+ *      as a tracked reference: `buildParamFlowConstraints` (`points-to.ts`,
+ *      Phase 8.3c) adds `pts(callee::paramName) ⊇ pts(argName)` with no
+ *      escape check of its own, so crediting this position without recursing
+ *      into the callee's own body to verify it stays tracked there too would
+ *      reopen the same class of gap condition 1 and the rebinding branch
+ *      above both close — regardless of whether the callee is local and
+ *      non-exported. Parameter-passing positions therefore always mark the
+ *      site escaping in this iteration; recursing into the callee's body to
+ *      lift this is filed as a follow-up, not attempted here — see #2617.
  *
  * Fail-safe: anything unrecognised leaves the seeded `escapes: true`. Getting
  * this wrong in the `true` direction costs recall (today's behavior); getting
@@ -477,7 +482,6 @@ function computeObjectLiteralSiteEscapes(
   sites: Map<string, ObjectLiteralSite>,
   root: TreeSitterNode,
   exportedNames: ReadonlySet<string>,
-  localNonExportedFns: ReadonlySet<string>,
 ): void {
   for (const entry of sites.values()) {
     const objectNode = findNodeAtSite(root, entry.site);
@@ -502,7 +506,7 @@ function computeObjectLiteralSiteEscapes(
     if (exportedNames.has(owner.bindingName)) continue;
 
     entry.escapes = !allReferencesTracked(
-      root, owner.bindingName, objectNode, localNonExportedFns,
+      root, owner.bindingName, objectNode,
     );
   }
 }
@@ -510,9 +514,9 @@ function computeObjectLiteralSiteEscapes(
 
 `resolveSiteOwner` reuses the existing walk shape of `findEnclosingTableName` (variable-declarator lookup through `TABLE_NAME_PASSTHROUGH_TYPES`), extended with two extra cases — `array` parent → `` `${arrayVarName}[*]` `` (the pts key `buildArrayElemConstraints` already produces), and `return_statement` parent → `` `${enclosingFnName}::return` ``.
 
-`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Every surviving reference must have a parent in `TRACKED_REFERENCE_PARENTS`; be the `value` field of a `variable_declarator` whose own `name` field is a plain `identifier` (a rebinding — `const u = T` — rejecting a destructuring `name` the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference); or be an `arguments`-position identifier whose callee is in `localNonExportedFns`.
+`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Every surviving reference must have a parent in `TRACKED_REFERENCE_PARENTS`, or be the `value` field of a `variable_declarator` whose own `name` field is a plain `identifier` (a rebinding — `const u = T` — rejecting a destructuring `name` the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference). An `arguments`-position identifier is never treated as tracked, regardless of the callee — see the parameter-passing exclusion in condition 3 above.
 
-> **The rebinding branch recurses — accepting the `const u = T` reference is not enough on its own** (round-4 critic finding). `allReferencesTracked` must additionally hold, recursively, for the new alias name (`allReferencesTracked(root, aliasName, objectNode, localNonExportedFns)`), or a site reads as local-closed while it can still escape through `u` — e.g. `const u = T; importedFn(u)`. The first cut of this branch (round-3) checked only the reference to `T` and never followed where `u` goes; that is exactly the same shape of gap condition 1 already documents for a return-captured binding, one alias hop later. The recursion depth is capped at 6, reusing `findEnclosingTableName`'s own `hops` bound rather than inventing a new one — a chain of `const a = T; const b = a; const c = b; …` cannot cycle (each step names a fresh `const` binding), so the cap is defense-in-depth, not a correctness requirement. A recursive call returning `false` (including by hitting the cap) makes that reference — and so the whole site — escaping; it is not a partial result the other branches paper over.
+> **The rebinding branch recurses — accepting the `const u = T` reference is not enough on its own** (round-4 critic finding). `allReferencesTracked` must additionally hold, recursively, for the new alias name (`allReferencesTracked(root, aliasName, objectNode)`), or a site reads as local-closed while it can still escape through `u` — e.g. `const u = T; importedFn(u)`. The first cut of this branch (round-3) checked only the reference to `T` and never followed where `u` goes; that is exactly the same shape of gap condition 1 already documents for a return-captured binding, one alias hop later. The recursion depth is capped at 6, reusing `findEnclosingTableName`'s own `hops` bound rather than inventing a new one — a chain of `const a = T; const b = a; const c = b; …` cannot cycle (each step names a fresh `const` binding), so the cap is defense-in-depth, not a correctness requirement. A recursive call returning `false` (including by hitting the cap) makes that reference — and so the whole site — escaping; it is not a partial result the other branches paper over.
 >
 > **Why walk for references rather than reuse `blockContainsIdentifierExcluding`:** that helper answers "does this block contain a reference at all", which is the wrong question here — we need to classify *every* reference's position, not detect the first one. The shadow-detection primitive is shared; the traversal is not.
 
@@ -593,10 +597,22 @@ Seeding and constraints — one new builder function appended to the existing `a
  * given a new extractor channel.
  *
  * Everything downstream of these four — aliasing (`const u = t`, via
- * fnRefBindings), for-of over an array of literals (via forOfBindings ⊇
- * `A[*]`), and parameter flow (`f(T)`, via paramBindings) — comes for free
- * from constraints that already exist. That is the whole reason this lands
- * in the existing solver instead of a bespoke matcher.
+ * fnRefBindings) and for-of over an array of literals (via forOfBindings ⊇
+ * `A[*]`) — comes for free from constraints that already exist. That is the
+ * whole reason those two shapes land in the existing solver instead of a
+ * bespoke matcher.
+ *
+ * Parameter flow (`f(T)`) does NOT come for free in the same sense:
+ * `buildParamFlowConstraints` (Phase 8.3c) still propagates
+ * `pts(callee::paramName) ⊇ pts(argName)` for a site token exactly as it
+ * does for any other value, but that propagation has no escape check of its
+ * own and is documented "Scope: intra-module only". WU-2b's escape analysis
+ * (condition 3) treats a bare-identifier argument to a function as escaping
+ * regardless, so a site reached only through a parameter never becomes
+ * `localClosed` and always resolves on T2 — the solver constraint is
+ * harmless but unused for this purpose. Extending correlation to this shape
+ * by recursing into the callee's own body is filed as a follow-up (#2617),
+ * not attempted here.
  */
 function buildObjectLiteralSiteConstraints(
   pts: PointsToMap,
@@ -930,7 +946,7 @@ The `correlatedPropertyEvidence` flag reaches Rust through the same `BuildConfig
 
 #### Implementation
 
-**The correlation test** covers the four shapes the design claims, each asserted under **both** engines (`--engine wasm` and `--engine native`, skipped with an explicit message rather than silently if `isNativeAvailable()` is false — never a silent skip):
+**The correlation test** covers the three shapes the design claims, each asserted under **both** engines (`--engine wasm` and `--engine native`, skipped with an explicit message rather than silently if `isNativeAvailable()` is false — never a silent skip):
 
 ```js
 // 1. Direct local table — the headline case from the issue body.
@@ -949,10 +965,6 @@ function pick(x) { for (const r of RESOLVERS) if (r.matches(x)) return r.resolve
 // 3. Alias — via fnRefBindings.
 const T = { alpha: fnA }; const u = T; u.alpha();
 // EXPECT: fnA live.
-
-// 4. Param flow into a local non-exported callee — via paramBindings (8.3c).
-const P = { beta: fnB }; function use(t) { return t.beta(); } use(P);
-// EXPECT: fnB live.
 ```
 
 > **Each case must also assert `escapes = 0`** for its site (`SELECT escapes FROM object_literal_sites WHERE file = ? AND site = ?`), not just the liveness outcome shown above (round-3 critic finding). Liveness alone does not prove T1 fired: if a site were wrongly classified escaping, T2's bare-name fallback would report the same property live for an unrelated reason, and the test would pass while silently losing coverage of the tier it claims to exercise — symmetric to how the escape-fallback test below asserts `escapes = 1` rather than trusting liveness alone. Case 3 (alias) is the load-bearing one: it is exactly the shape WU-2's `variable_declarator` handling in `allReferencesTracked` (condition 3 above) must classify non-escaping, and a regression there would otherwise pass this test unnoticed.
@@ -981,6 +993,16 @@ X.zeta();
 //     must escape even though the direct reference to U looks safe.
 import { sink } from './sink.js';
 const U = { eta: fnH }; const w = U; sink(w); w.eta();
+// (f) Table passed as a bare-identifier argument to a LOCAL, non-exported
+//     function — the regression case for dropping the parameter-flow branch
+//     from WU-2b's condition 3 (round-5 critic finding): the branch used to
+//     credit this shape as tracked without ever inspecting what the callee
+//     does with the parameter, and `buildParamFlowConstraints` (points-to.ts)
+//     has no escape check of its own — so the site must escape even though
+//     the callee's own use of the parameter (`t.beta()`) is itself a tracked
+//     shape. Recursing into the callee's body to lift this is filed as a
+//     follow-up (#2617), not attempted here.
+const P = { beta: fnB }; function use(t) { return t.beta(); } use(P);
 // EXPECT (all): live, escapes === 1.
 ```
 
@@ -989,7 +1011,7 @@ const U = { eta: fnH }; const w = U; sink(w); w.eta();
 
 > Note on #1895 specifically: its fixture's literal is returned from an **exported** `makeTable()`, so its site escapes and it resolves on T2 — today's exact path. It must pass untouched. If it does not, the escape analysis is wrong, not the test.
 
-**Benchmark fixture** — `pts-javascript/objlit-site.js` carries shapes 2–4 with their expected `calls` edges added to `expected-edges.json`. `pts-javascript` is the correct home per ADR-002 §Costs.5; the `javascript` fixture's precision-1.0 floor must not move.
+**Benchmark fixture** — `pts-javascript/objlit-site.js` carries shapes 2–3 with their expected `calls` edges added to `expected-edges.json`. `pts-javascript` is the correct home per ADR-002 §Costs.5; the `javascript` fixture's precision-1.0 floor must not move.
 
 **Dogfood measurement** — record `codegraph roles --role dead -T` on this repo before and after, filtering `tests/` out by hand per `.codegraph/basics.md`'s documented `-T` under-filtering caveat (tracked as #2256). Report the delta as a measured number; do not predict one in advance.
 
@@ -1008,7 +1030,7 @@ WU-4 (solver) is off the critical path and should be built in parallel with WU-2
 | Tier | What it covers here | Files |
 |---|---|---|
 | **Unit / parser extraction** | Site ids are stable and unique per file; `escapes` is correct for each recognised shape and defaults `true` for unrecognised ones; value-ref calls carry `objectLiteralSite`. | `tests/parsers/javascript.test.ts` |
-| **Integration over a fixture project** | The four correlation shapes and the three escape-fallback shapes, end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
+| **Integration over a fixture project** | The three correlation shapes and the six escape-fallback shapes, end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
 | **Resolution precision/recall** | The new `pts-javascript/objlit-site.js` fixture's expected edges. `javascript`'s precision-1.0 floor must not move — that fixture is the false-positive canary per ADR-002. | `tests/benchmarks/resolution/` |
 | **Dual-engine parity** | Every integration assertion runs under `--engine wasm` and `--engine native`; `npm run build` runs first so WASM sees the new `dist/`. | both `issue-2088-*` tests + `/parity` |
 | **Incremental vs full** | A `codegraph watch`-shaped single-file rebuild reaches the same tier decision as a full build, via the two persisted tables. | `issue-2087-…` + the incremental case in `issue-2088-correlated-property-evidence` |
@@ -1071,7 +1093,7 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 
 - [ ] `codegraph roles --role dead -T` no longer credits an unrelated `x.name(...)` call as liveness evidence for a **non-escaping** object literal's `{ name: fn }` property — the exact behavior issue #2088 asks for.
 - [ ] Every object literal producing a value-ref carries a stable allocation-site id, and its `escapes` bit is persisted in `object_literal_sites`.
-- [ ] The points-to solver propagates those sites through the flows it already models — direct binding, array element + for-of, alias, and parameter passing — with **no** change to `buildCallSiteTypeMap` / `MAX_SOLVER_ITERATIONS`, per ADR-002's "no new subsystem".
+- [ ] The points-to solver propagates those sites through the flows it already models and treats as tracked — direct binding, array element + for-of, and alias — with **no** change to `buildCallSiteTypeMap` / `MAX_SOLVER_ITERATIONS`, per ADR-002's "no new subsystem". Parameter-passing positions are treated as escaping in this iteration (WU-2b, WU-4) and are deliberately excluded from the correlated set; extending to them is filed as a follow-up (#2617).
 - [ ] `resolveViaPointsTo` never returns a site token to name resolution.
 - [ ] For any site with `escapes === true`, resolution is **byte-identical to pre-#2088**, and all nine listed existing tests pass unedited.
 - [ ] WASM and native engines produce identical `object_literal_sites`, identical `invoked_property_sites`, and identical `roles --role dead -T` output on this repo.
