@@ -345,7 +345,7 @@ export function correlatedEvidenceKey(siteKey: string, propertyName: string): st
 - **Input contract:** tree-sitter AST for one JS/TS/TSX file; the file's own `definitions` and `exports` (already collected before the post-pass runs)
 - **Output contract:** `ExtractorOutput.objectLiteralSites`; `Call.objectLiteralSite` set on object-literal pair and shorthand value-refs
 - **Verification:** `npx vitest run tests/parsers/javascript.test.ts`
-- **Risk:** Medium — the escape analysis is the correctness-critical piece. Mitigated by defaulting `escapes: true` on every unrecognised shape.
+- **Risk:** Medium — the escape analysis is the correctness-critical piece. Mitigated by defaulting `escapes: true` on every unrecognised shape, and, as of round 8, by a standing non-vacuous-coverage requirement on `allReferencesTracked` itself (see its doc comment below) that fails closed on a walk bug rather than relying solely on review to catch the next one — round 8 found the deepest gap yet in this exact function (a self-shadowing walk that silently examined nothing for every non-module-scope table), which seven prior rounds of inspecting individual reference POSITIONS never surfaced because none of them questioned whether the walk was reaching those positions at all.
 
 #### Implementation
 
@@ -501,26 +501,46 @@ The shorthand collector (`shorthand_property_identifier` in `runCollectorWalk`) 
  *                         `collectComputedDispatchTableEvidence` already
  *                         makes for the same reason.
  *
- *                         ROUND 7: a `template_string` index additionally
- *                         requires NO `${…}` interpolation in its text — a
- *                         plain `` T[`resolve`]() `` is static, but
- *                         `` T[`al${x}pha`]() `` is not, and the earlier
- *                         draft's bare `indexType === 'template_string'`
- *                         check accepted both. This mirrors the extractor's
- *                         OWN guard exactly, not a new distinction invented
- *                         for the escape check:
- *                         `extractSubscriptCallInfo` (and its Rust mirror
- *                         `extract_call_info`) only emits a named,
- *                         receiver-carrying `computed-literal` Call when
- *                         `methodName` (the index text with quote/backtick
- *                         characters stripped) contains no `$` — an
- *                         interpolated template falls through to
- *                         `<dynamic:unresolved>`, with no name and no
- *                         receiver at all, so `` T[`al${x}pha`]() `` can
- *                         never produce `collectInvokedPropertySites`
- *                         evidence for `alpha` regardless of how `T` is
- *                         referenced elsewhere. Filed as a follow-up
- *                         capability (not modeled here) — #2623.
+ *                         ROUND 8 (#2088 finding 3) — REPLACES round 7's fix
+ *                         below, which was itself incomplete. Round 7 required
+ *                         a `template_string` index to contain no `${…}`
+ *                         interpolation, but left the `string` arm
+ *                         unconditional — so `T['co$t'](…)` (a plain,
+ *                         non-interpolated string key that happens to
+ *                         CONTAIN a `$` character) was accepted as tracked
+ *                         even though it can never produce correlated
+ *                         evidence, for the identical reason an interpolated
+ *                         template can't. Verified against the live
+ *                         extractor, not assumed: `extractSubscriptCallInfo`
+ *                         (`src/extractors/javascript.ts:5897-5900`) and its
+ *                         Rust mirror `extract_call_info`
+ *                         (`!method_name.contains('$')`,
+ *                         `crates/codegraph-core/src/extractors/javascript.rs:6479`)
+ *                         apply ONE check to BOTH index types identically —
+ *                         strip quote/backtick characters from the index
+ *                         text, then require the result to be non-empty and
+ *                         free of `$` — with no special case for `string`.
+ *                         `T['co$t']()` strips to `methodName = 'co$t'`,
+ *                         which contains `$`, so the extractor emits no
+ *                         named, receiver-carrying Call for it either: it
+ *                         falls through to `<dynamic:unresolved>`, with no
+ *                         name and no receiver, exactly like an interpolated
+ *                         template. Greptile flagged this exact gap on this
+ *                         PR, against round 7's code, before this fix landed
+ *                         ("Quoted dollar keys lose evidence",
+ *                         `docs/plans/issue-2088.md:676-679` at the time of
+ *                         that review) — the round-8 fix below closes it by
+ *                         applying the SAME stripped-text/no-`$` check to
+ *                         both index types, rather than gating only the
+ *                         `template_string` arm on it. Neither a `$`-bearing
+ *                         static string key nor an interpolated template can
+ *                         ever produce `collectInvokedPropertySites` evidence
+ *                         for the property it names, regardless of how `T` is
+ *                         referenced elsewhere — filed as a follow-up
+ *                         capability (not modeled here, and unchanged by
+ *                         round 8: it was already scoped to interpolation
+ *                         only, not to `$`-bearing static keys, which round 8
+ *                         fixes outright rather than exclude) — #2623.
  *   for_in_statement     `for (const r of T)` ONLY, i.e. the `of` variant
  *                         with the reference in the node's `right` field —
  *                         modelled by forOfBindings. The `in` variant is
@@ -652,31 +672,32 @@ function isTrackedReferencePosition(refNode: TreeSitterNode, isArrayOwner: boole
       // (`src/extractors/javascript.ts:5509-5511` doc, `:5533-5534` guard:
       // `if (indexNode?.type === 'string' || indexNode?.type ===
       // 'template_string') return;`) — genuinely correlatable, safe to
-      // track. A DYNAMIC key (`T[k]()`) is not: the call has no
-      // statically-known property name, so it can never produce a
-      // `collectInvokedPropertySites` entry for any specific property no
-      // matter how `T` is referenced elsewhere — the same reasoning that
-      // excludes the `for...in` variant below, generalised to every dynamic
-      // subscript call, not only ones reached through a loop. Filed as a
-      // follow-up capability (not modeled here) — #2619.
+      // track, PROVIDED the extractor itself actually emits a named Call for
+      // this exact index text (see ROUND 8 below — round 7's version of this
+      // check got that proviso only half right). A DYNAMIC key (`T[k]()`) is
+      // not: the call has no statically-known property name, so it can never
+      // produce a `collectInvokedPropertySites` entry for any specific
+      // property no matter how `T` is referenced elsewhere — the same
+      // reasoning that excludes the `for...in` variant below, generalised to
+      // every dynamic subscript call, not only ones reached through a loop.
+      // Filed as a follow-up capability (not modeled here) — #2619.
       const indexNode = parent.childForFieldName('index');
       const indexType = indexNode?.type;
-      // Round 7 (finding 4): a `template_string` is only genuinely static
-      // when its text contains no `${…}` interpolation — mirrors
-      // `extractSubscriptCallInfo`'s own guard verbatim (`methodName &&
-      // !methodName.includes('$')`, `src/extractors/javascript.ts:5898-5900`;
-      // Rust: `extract_call_info`, `!method_name.contains('$')`,
-      // `crates/codegraph-core/src/extractors/javascript.rs:6479`), not a
-      // new distinction invented for the escape check. An interpolated
-      // template produces `<dynamic:unresolved>` at extraction — no name,
-      // no receiver — so `` T[`al${x}pha`]() `` can never produce
-      // `collectInvokedPropertySites` evidence for `alpha` regardless of how
-      // `T` is referenced elsewhere. Filed as a follow-up capability (not
-      // modeled here) — #2623.
-      const isTrackedStaticKey =
-        indexType === 'string' ||
-        (indexType === 'template_string' && !indexNode!.text.includes('$'));
-      if (!isTrackedStaticKey) return false;
+      if (indexType !== 'string' && indexType !== 'template_string') return false;
+      // ROUND 8 (#2088 finding 3) — REPLACES round 7's `isTrackedStaticKey`,
+      // which mirrored `extractSubscriptCallInfo`'s `$`-guard onto the
+      // `template_string` arm only, leaving `string` unconditional. The
+      // extractor (and its Rust mirror `extract_call_info`,
+      // `crates/codegraph-core/src/extractors/javascript.rs:6479`) apply ONE
+      // check to BOTH index types identically — strip quote/backtick
+      // characters from the index text, then require the result to be
+      // non-empty and `$`-free — with no special case for either kind of
+      // quoting. Mirrored here verbatim rather than re-deriving a "static"
+      // notion of its own, exactly as round 7 already intended but did not
+      // fully implement. See the doc comment above this bullet for the
+      // concrete `T['co$t']()` case this closes.
+      const methodName = indexNode!.text.replace(/['"`]/g, '');
+      if (!methodName || methodName.includes('$')) return false;
     }
     return true;
   }
@@ -820,35 +841,85 @@ function isTrackedReferencePosition(refNode: TreeSitterNode, isArrayOwner: boole
  * it wrong in the `false` direction would cost soundness. The asymmetry is
  * deliberate.
  *
- * > **A vacuous `allReferencesTracked` is TRUE, not FALSE — reasoned
- * > explicitly, round 7.** `allReferencesTracked` (and its recursive calls
- * > for a rebinding alias or a for-of loop variable) can find ZERO surviving
- * > references — e.g. `T` is declared and never mentioned again anywhere in
- * > the file, or an alias `u`/loop variable `r` is created and never used.
- * > "Every surviving reference satisfies P" is then vacuously true, and it
- * > STAYS true here rather than being forced to `false`, because an empty
- * > reference set is not a gap in the analysis's coverage — it is a (trivial)
- * > proof that this specific channel of escape does not exist: every escape
- * > channel this design accounts for (a bare read, a parameter, a rebinding
- * > that itself escapes, a destructuring loop variable, an export, an
- * > assignment to some other expression, a re-export specifier) manifests as
- * > SOME AST reference node with that identifier's text, so an empty
- * > surviving-reference set cannot be silently hiding one. Concretely: a
- * > `const u = T;` with `u` never used again, or a `for (const r of A) {}`
- * > with an empty body, means `fnA`'s only possible invocation paths are
- * > exactly the ones already checked and found tracked — there is no
- * > additional, unmodeled path a vacuous result could be masking. Forcing
- * > vacuous to `false` would not close any soundness gap (every real escape
- * > channel already produces a concrete, non-vacuous failing reference); it
- * > would only forfeit T1 correlation for legitimately fully-local,
- * > single-purpose dispatch tables — re-widening, for exactly those tables,
- * > the bare-name imprecision #2088 exists to remove. Condition 2 already
- * > independently excludes the cross-file-export channel before condition 3
- * > runs, so it is not relying on condition 3's vacuous case to catch
- * > exports either. Conclusion: **no code change** — `allReferencesTracked`
- * > returning `true` on an empty reference set (JavaScript `Array.prototype
- * > .every`'s native behavior on `[]`, requiring no special-casing) is
- * > correct as designed, not a latent bug.
+ * > **ROUND 8 (#2088 finding 1) WITHDRAWS the round-7 conclusion below —
+ * > it does not merely patch it.** Round 7 argued that a vacuous
+ * > `allReferencesTracked` result is always safe because "every escape
+ * > channel this design accounts for... manifests as SOME AST reference
+ * > node," so an empty SURVIVING set could not be hiding one. That argument
+ * > is true of the RAW AST and false of the SURVIVING set, and round 7
+ * > conflated the two: it implicitly assumed the walk that PRODUCES the
+ * > surviving set always sees every reference the raw AST actually
+ * > contains. It does not. `introducesShadowedBinding`'s `statement_block`
+ * > case returns `true` whenever the checked name is declared directly
+ * > inside it (verified at `src/extractors/javascript.ts:4744-4771`) — correct
+ * > when applied to some OTHER, later-encountered nested scope, but wrong
+ * > when applied to the site's OWN declaring scope, which trivially
+ * > "declares" the name by construction. A walk that checks every
+ * > `SCOPE_NODE_TYPES` node it meets uniformly, INCLUDING the declaring
+ * > scope itself, self-shadows: it prunes the entire block a non-module-scope
+ * > table is declared in, finds zero references anywhere, and `.every()`
+ * > reads that as vacuously true — not because no escape channel exists, but
+ * > because the walk never looked. Concretely, this is not hypothetical:
+ * >
+ * > ```js
+ * > // b.js
+ * > export function register(t) { return t.alpha(); }
+ * > // a.js
+ * > import { register } from './b.js';
+ * > function fnA() { return 1; }
+ * > function install() {
+ * >   const T = { alpha: fnA };   // declared inside a function
+ * >   register(T);                // real escape — the pre-round-8 walk never sees it
+ * > }
+ * > install();
+ * > ```
+ * >
+ * > `T`'s declaring scope is `install`'s own body block, which the naive walk
+ * > self-shadows; `register(T)` — the ONLY other reference to `T` in the file
+ * > — is inside that same pruned block, so it is never visited, the
+ * > surviving set is empty, and pre-round-8 `allReferencesTracked` returns
+ * > `true`. `T` reads as local-closed; `collectInvokedPropertySites` finds no
+ * > correlated call in `a.js` (the real invocation, `t.alpha()`, is in
+ * > `b.js`, and the points-to map is per-file, and parameter flow into an
+ * > IMPORTED callee is not modeled — see WU-4's own "Scope: intra-module
+ * > only" note); T1 becomes exclusive over zero evidence; `fnA` is reported
+ * > **dead**, though it is genuinely reachable. This silently defeats
+ * > condition 3's parameter-flow exclusion (round 5, #2617) for every
+ * > NON-module-scope table specifically BECAUSE the walk never reaches the
+ * > `register(T)` reference at all — condition 3 cannot exclude a reference
+ * > it never sees. Every WU-10 fixture through round 7 declares its table at
+ * > MODULE scope, where the declaring "scope" is `program` — a node type
+ * > `introducesShadowedBinding`'s switch has no case for (`default: return
+ * > false`, `javascript.ts:4813-4814`) — which is exactly why this survived
+ * > seven rounds of review restating and re-verifying the SAME invariant
+ * > against a test suite that structurally could not exercise it.
+ * >
+ * > **The corrected rule, replacing round 7's:** a vacuous (empty-surviving-set)
+ * > result is trustworthy ONLY when the walk that produced it is PROVEN
+ * > exhaustive over the binding's actual scope — i.e. (a) it never
+ * > self-shadows the one scope it is rooted at, and (b) it was never
+ * > truncated. Part (a) is fixed structurally below (the walk is rooted at,
+ * > and exempts from the shadow-prune, ONLY the site's own declaring scope —
+ * > see `allReferencesTracked`'s own doc comment, later in this file, for the
+ * > full mechanism and its `hasLaterReferenceInEnclosingBlock` precedent).
+ * > Part (b) is the STANDING RULE this round adds and the more consequential
+ * > half: `allReferencesTracked` returns `true` only when it can PROVE it
+ * > examined every reference in scope; any truncation — this walk's own
+ * > `MAX_WALK_DEPTH` cap, or the alias-chain/for-of recursion's existing
+ * > depth-6 cap — makes the result unproven, and unproven is treated exactly
+ * > like "found a disqualifying reference": the site escapes. This converts
+ * > the gate from "enumerate positions that look safe" to "escape unless
+ * > coverage is proven," so that the NEXT walk bug — not just this one — fails
+ * > CLOSED (today's conservative behavior) instead of silently promoting an
+ * > incomplete search to non-escaping. Getting this wrong toward "unproven ⇒
+ * > escapes" costs recall, the same asymmetry as every other fail-safe
+ * > default in this design; that is the price of the standing rule, paid
+ * > deliberately. What survives from round 7's discussion is narrower than
+ * > its conclusion: a search that actually runs to completion and finds
+ * > nothing (`const u = T;` with `u` never used again, an empty for-of body)
+ * > still correctly reads as tracked — `covered === true` there, nothing was
+ * > truncated, there is genuinely nothing to find. What is withdrawn is the
+ * > broader claim that vacuous truth needs no exhaustiveness proof at all.
  */
 function computeObjectLiteralSiteEscapes(
   sites: Map<string, ObjectLiteralSite>,
@@ -894,6 +965,12 @@ function computeObjectLiteralSiteEscapes(
     // comment) — reusing that difference as the isArrayOwner signal avoids
     // a second, redundant way to ask the same question.
     const isArrayOwner = owner.key !== owner.bindingName;
+    // Top-level call — `declaringScope` is omitted, so `allReferencesTracked`
+    // computes it once via `findDeclaringScopeNode(objectNode, owner.bindingName)
+    // ?? root` (round 8, #2088 finding 1) and threads that fixed node through
+    // its own recursive calls unchanged. See `allReferencesTracked`'s own doc
+    // comment below for why the boundary must be computed exactly once, here,
+    // rather than re-derived per recursive call.
     entry.escapes = !allReferencesTracked(
       root, owner.bindingName, objectNode, isArrayOwner,
     );
@@ -1082,20 +1159,24 @@ function subtreeContainsThisKeyword(node: TreeSitterNode, depth: number): boolea
 }
 ```
 
-`resolveSiteOwner` reuses the existing walk shape of `findEnclosingTableName` (variable-declarator lookup through `TABLE_NAME_PASSTHROUGH_TYPES`), extended with two extra cases — `array` parent → `` `${arrayVarName}[*]` `` (the pts key `buildArrayElemConstraints` already produces), and `return_statement` parent → `` `${enclosingFnName}::return` ``.
+`resolveSiteOwner` reuses the existing walk SHAPE of `findEnclosingTableName` (variable-declarator lookup through `TABLE_NAME_PASSTHROUGH_TYPES`) — the traversal only, never `findEnclosingTableName`'s return-value construction — extended with two extra cases — `array` parent → `` `${arrayVarName}[*]` `` (the pts key `buildArrayElemConstraints` already produces), and `return_statement` parent → `` `${enclosingFnName}::return` ``.
 
-> **`resolveSiteOwner`'s return contract, stated explicitly** (round-7 critic finding, #2088 finding 5 — the previous draft left this implicit, which is itself the bug): `resolveSiteOwner(objectNode): { key: string; bindingName: string | null } | null`.
-> - `key` is the pts-constraint LHS `buildObjectLiteralSiteConstraints` (WU-4) flows this site's pts fact into, and is also what `entry.owner` is set to, verbatim, regardless of owner kind: the bare variable name for a direct binding (`const T = {…}` → `"T"`), the array-element wildcard key for an array element (`const A = [{…}]` → `"A[*]"`), or the scoped return key for a returned literal (`return {…}` inside `f` → `"f::return"`).
-> - `bindingName` is **always the bare declarator identifier** that `allReferencesTracked` walks the file for, and **never** carries a `[*]` or `::return` suffix: `"T"` for a direct binding, `"A"` (never `"A[*]"`) for an array element, or `null` for a return-owner (there is no binding at all to scan — condition 1 already makes every return-owner escape unconditionally, before condition 3 ever runs `allReferencesTracked`).
-> - The two fields are EQUAL (`key === bindingName`) for exactly one owner kind — direct binding — and differ for exactly one other — array element (`"A[*]" !== "A"`). This is what `isArrayOwner = owner.key !== owner.bindingName` (condition 3, above) relies on, and it is why `bindingName` cannot be left to be "whatever seems natural": were it ever `"A[*]"` instead of `"A"`, `allReferencesTracked` would search the AST for an identifier literally spelled `A[*]` — text that can never appear as identifier syntax — find zero surviving references for every array-owned site, and read that vacuous walk as non-escaping (see the vacuous-`allReferencesTracked` discussion above: vacuous truth is CORRECT when the search is actually exhaustive over real references, but a search that structurally can never match anything is not exhaustive, it is broken), silently bypassing condition 2's export check for every array-owned site, exported or not, and `isArrayOwner` would also be permanently `false` for every array owner, silently bypassing finding 1's fix at the same time. Both failure modes are why WU-10 adds a dedicated `export const A = [{…}]` regression case (below) rather than trusting this contract to prose alone.
+> **`resolveSiteOwner`'s return contract, stated explicitly** (round-7 critic finding, #2088 finding 5 — the previous draft left this implicit, which is itself the bug; ROUND 8, #2088 finding 2, extends it one guarantee further): `resolveSiteOwner(objectNode): { key: string; bindingName: string | null } | null`.
+> - `key` is the pts-constraint LHS `buildObjectLiteralSiteConstraints` (WU-4) flows this site's pts fact into, and is also what `entry.owner` is set to, verbatim, regardless of owner kind: the bare variable name for a direct binding (`const T = {…}` → `"T"`), the array-element wildcard key for an array element (`const A = [{…}]` → `"A[*]"`), or the scoped return key for a returned literal (`return {…}` inside `f` → `"f::return"`). This is the ONLY field the points-to solver (WU-4) or T1's evidence matching (WU-5b) ever reads — both work purely in terms of site tokens and pts facts, never by textually matching a binding name.
+> - `bindingName` is **always the bare declarator identifier** that `allReferencesTracked` walks the binding's declaring scope for, and **never** carries a `[*]` or `::return` suffix (round-7, finding 5) — **nor, round 8 (finding 2), a `#${scopeLine}` disambiguating suffix either**: it is always `nameNode.text` read directly off the `variable_declarator`'s `name` field, never the string `findEnclosingTableName` itself would return for that same declarator. `findEnclosingTableName` (`src/extractors/javascript.ts:4513-4528`) appends exactly that suffix — `` `${nameNode.text}#${scopeLine}` `` — for any declaration scoped inside a block, via `findDeclaringScopeLine`; `resolveSiteOwner` must stop at `nameNode.text` and never call through to that suffix-appending return construction, precisely because `bindingName` is consumed as an AST SEARCH TARGET (`allReferencesTracked` looks for identifier nodes whose `.text` equals it), not as a human-readable disambiguating label the way `findEnclosingTableName`'s result is. Concretely: `"T"` for a direct binding regardless of what scope it's declared in, `"A"` (never `"A[*]"`) for an array element, or `null` for a return-owner (there is no binding at all to scan — condition 1 already makes every return-owner escape unconditionally, before condition 3 ever runs `allReferencesTracked`). This is unrelated to, and must never be confused with, `Call.receiver` (set by the pre-existing, UNCHANGED `collectObjectLiteralValueRefCall` as `findEnclosingTableName(pairNode)` — see WU-2's implementation above): `receiver` is #2260's own T3 (`computedDispatchTableEvidence`) matching key and is EXPECTED to keep its `#line` suffix, since T3 disambiguates by exactly that string; `bindingName` is WU-2b's own escape-analysis input and must NOT carry it. Two different fields, two different consumers, two different rules — round 8 exists because an earlier draft let them blur.
+> - The two fields are EQUAL (`key === bindingName`) for exactly one owner kind — direct binding — and differ for exactly one other — array element (`"A[*]" !== "A"`). This is what `isArrayOwner = owner.key !== owner.bindingName` (condition 3, above) relies on, and it is why `bindingName` cannot be left to be "whatever seems natural": were it ever `"A[*]"` instead of `"A"`, or ever `"T#7"` instead of `"T"`, `allReferencesTracked` would search the AST for an identifier literally spelled `A[*]` or `T#7` — text that can never appear as identifier syntax — find zero surviving references for every affected site, and read that vacuous walk as non-escaping. Round 8 (see the withdrawal of round 7's vacuous-truth conclusion, above) is precisely why this can no longer be waved away as "vacuous truth is always fine": a search that structurally can never match anything is not an exhaustive, PROVEN-COVERED search — it is a broken one, and must be treated as unproven, not as a trivial pass. This would silently bypass condition 2's export check for every affected site, exported or not, and (for the `A[*]` case specifically) would also make `isArrayOwner` permanently `false`, silently bypassing round 7 finding 1's fix at the same time. Both failure modes are why WU-10 adds a dedicated `export const A = [{…}]` regression case (below) rather than trusting this contract to prose alone.
 
-`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Its signature is `allReferencesTracked(root, bindingName, objectNode, isArrayOwner): boolean`, where `isArrayOwner` is threaded straight into every `isTrackedReferencePosition(refNode, isArrayOwner)` call for this walk's references — see condition 3 above for where the initial value comes from and how it changes across the two recursive branches below. Every surviving reference must satisfy `isTrackedReferencePosition`, or be accepted on one of the two recursive branches immediately below; an `arguments`-position identifier is never treated as tracked on its own, regardless of the callee — see the parameter-passing exclusion in condition 3 above.
+> **ROUND 8 (#2088 finding 1) — `allReferencesTracked`'s search boundary.** New helper `findDeclaringScopeNode(node: TreeSitterNode, name: string): TreeSitterNode | undefined` — the node-returning counterpart of the existing `findDeclaringScopeLine` (`src/extractors/javascript.ts:4484-4491`), which now becomes a thin wrapper over it (`return findDeclaringScopeNode(node, name)?.startPosition.row;`) so the two functions can never silently disagree about what "the declaring scope" is for the same node. `allReferencesTracked(root, bindingName, objectNode, isArrayOwner, declaringScope?)` gains an optional trailing parameter: on the TOP-level call (from `computeObjectLiteralSiteEscapes`, which never passes it), the function computes it once, `findDeclaringScopeNode(objectNode, bindingName) ?? root` — `root` covers module scope, since `introducesShadowedBinding` has no case for `program` and always returns `false` for it (confirmed at `javascript.ts:4813-4814`), exactly the property that let every module-scope WU-10 fixture pass by accident before this fix existed. On every RECURSIVE call (rebinding alias, for-of loop variable — below), this SAME node is threaded through unchanged as the explicit argument, never recomputed from the alias/loop-variable's own position: that position is not necessarily an ancestor of `objectNode`, so re-deriving the boundary from it would walk the wrong ancestor chain. This is always safe, never merely convenient: any binding reachable ONLY through a reference to the original site (an alias, a loop variable) must itself be declared somewhere lexically inside the original site's own declaring-scope subtree, or it could never have seen `bindingName` in scope to reference it in the first place — so the fixed boundary is never too narrow for a recursive check, only ever exactly as wide as it needs to be.
 
-> **The rebinding branch recurses — accepting the `const u = T` reference is not enough on its own** (round-4 critic finding). `allReferencesTracked` must additionally hold, recursively, for the new alias name, with `isArrayOwner` UNCHANGED (`allReferencesTracked(root, aliasName, objectNode, isArrayOwner)`) — an alias of the CONTAINER is still the container, not a single element, so it must keep whatever `isArrayOwner` value the site already has — or a site reads as local-closed while it can still escape through `u` — e.g. `const u = T; importedFn(u)`. The `name` field of the `variable_declarator` must itself be a plain `identifier`; a destructuring `name` such as `const { k } = T` is rejected the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference. The first cut of this branch (round-3) checked only the reference to `T` and never followed where `u` goes; that is exactly the same shape of gap condition 1 already documents for a return-captured binding, one alias hop later. The recursion depth is capped at 6, reusing `findEnclosingTableName`'s own `hops` bound rather than inventing a new one — a chain of `const a = T; const b = a; const c = b; …` cannot cycle (each step names a fresh `const` binding), so the cap is defense-in-depth, not a correctness requirement. A recursive call returning `false` (including by hitting the cap) makes that reference — and so the whole site — escaping; it is not a partial result the other branches paper over.
+`allReferencesTracked` walks the DESCENDANTS of that one declaring scope (never the whole file, and never a scope wider than the site could actually be referenced from) for identifier nodes whose text equals the name currently being checked, skipping the declaration itself and any node under a NESTED scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine` — with exactly ONE exemption: the shadow-check is never applied to the fixed `declaringScope` node itself, at any recursion level, for any name. That exemption is not optional polish; it is the fix. `introducesShadowedBinding`'s own `statement_block` case returns `true` for a block that DIRECTLY declares the checked name (`src/extractors/javascript.ts:4744-4771`) — correct signal for a nested scope encountered deeper in the walk, but always true, vacuously, of the declaring scope itself, which is exactly why applying the check there uniformly self-shadows. `hasLaterReferenceInEnclosingBlock` (`src/extractors/javascript.ts:5393-5435`) already documents this identical trap for its own, narrower (single-block, first-match) search and already works around it by scanning the block's CHILDREN rather than the block itself (`javascript.ts:5411-5415`'s own comment: "running the shadow check... on the block itself would always find that declaration and wrongly treat the whole block as shadowed"); this fix generalises the SAME carve-out from "one block's direct children, stop at the first match" to "one scope's full recursive descendant subtree, collect every match." `allReferencesTracked`'s signature is `allReferencesTracked(root, bindingName, objectNode, isArrayOwner, declaringScope?): boolean`, where `isArrayOwner` is threaded straight into every `isTrackedReferencePosition(refNode, isArrayOwner)` call for this walk's references — see condition 3 above for where the initial value comes from and how it changes across the two recursive branches below.
+
+> **The non-vacuous-coverage requirement (ROUND 8, #2088 finding 1 — the structurally important half).** `allReferencesTracked` returns `true` only when BOTH: (1) the walk is PROVEN exhaustive over the declaring scope's subtree — it did not truncate at `MAX_WALK_DEPTH` anywhere within it; AND (2) every reference the (proven-exhaustive) walk found satisfies `isTrackedReferencePosition`, or is accepted on a recursive branch that ALSO satisfies this same two-part contract. Either an unproven walk OR a disqualifying reference makes the result `false` (escaping) — there is no third, "we're not sure, but let's call it safe" outcome. This is a STANDING RULE about the function's return contract, not a special case bolted onto the vacuous-empty-set scenario specifically: it applies identically whether the surviving set is empty, has one reference, or has a hundred. Getting this wrong toward "unproven ⇒ escapes" costs recall — the same asymmetry every other fail-safe default in this design accepts; getting it wrong the other way is precisely the class of bug this rule exists to catch structurally, in every FUTURE change to this walk, not only in the one instance found this round.
+
+> **The rebinding branch recurses — accepting the `const u = T` reference is not enough on its own** (round-4 critic finding). `allReferencesTracked` must additionally hold, recursively, for the new alias name, with `isArrayOwner` UNCHANGED and `declaringScope` UNCHANGED (`allReferencesTracked(root, aliasName, objectNode, isArrayOwner, declaringScope)`) — an alias of the CONTAINER is still the container, not a single element, so it must keep whatever `isArrayOwner` value the site already has, and (round 8) the search boundary established for the original binding, since `u`'s own declaration is necessarily somewhere inside that same subtree (see the `findDeclaringScopeNode` note above) — or a site reads as local-closed while it can still escape through `u` — e.g. `const u = T; importedFn(u)`. The `name` field of the `variable_declarator` must itself be a plain `identifier`; a destructuring `name` such as `const { k } = T` is rejected the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference. The first cut of this branch (round-3) checked only the reference to `T` and never followed where `u` goes; that is exactly the same shape of gap condition 1 already documents for a return-captured binding, one alias hop later. The recursion depth is capped at 6, reusing `findEnclosingTableName`'s own `hops` bound rather than inventing a new one — a chain of `const a = T; const b = a; const c = b; …` cannot cycle (each step names a fresh `const` binding), so the cap is defense-in-depth, not a correctness requirement. A recursive call returning `false` — including by hitting the cap, and, as of round 8, by failing its own non-vacuous-coverage requirement — makes that reference, and so the whole site, escaping; it is not a partial result the other branches paper over. Coverage composes the same way: the OUTER call is proven-covered only if every recursive call it makes is also proven-covered.
 >
-> **The for-of branch ALSO recurses, into the loop variable — the same principle, one binding further** (round-7 critic finding, #2088 finding 2). Accepting `A`'s reference in `for (const r of A) …` on `isTrackedReferencePosition`'s `for_in_statement` branch is not enough on its own: `r` is a brand-new binding, and this analysis must follow it exactly as it follows a rebinding alias, or a site reads as local-closed while it can still escape through `r` — e.g. `for (const r of A) sink(r)` with `sink` imported (or local — the parameter-passing exclusion in condition 3 does not care which). Concretely: when a for-of-parented reference passes `isTrackedReferencePosition`, `allReferencesTracked` extracts the loop variable's name using the exact same shape `collectForOfBinding` itself already requires before it will emit a `forOfBindings` entry at all (a `variable_declarator`'s plain-`identifier` `name` field, or a bare pre-declared `identifier` `left` with no declaration keyword) and, ONLY when that yields a single plain identifier, requires `allReferencesTracked(root, loopVarName, objectNode, false)` to also hold, under the same depth-6 cap shared with the rebinding recursion above — `isArrayOwner` is hardcoded `false` for this recursive call regardless of the outer site's own `isArrayOwner`, because a for-of loop variable always denotes a single ELEMENT of the array, never the array itself, so `r.matches(...)`/`r.resolve(...)` must be checked as direct-binding-shaped member calls (see WU-10's re-verification of its own handler-array shape against this exact rule, condition 3 above). When the loop variable's shape is anything OTHER than a single plain identifier — most notably a destructuring pattern, `for (const { matches } of B) matches(x)` — the reference to `A`/`B` is REJECTED outright on this branch, full stop, with no recursive call to attempt at all: `collectForOfBinding` never emits a `forOfBindings` entry for a destructured loop variable (verified: it requires the declarator's `name` field to be a plain `identifier`), so nothing seeds a points-to fact for `matches` here, and `matches(x)` can never be a correlated call on a receiver pointing at `B`'s site no matter how `B` is referenced elsewhere — treating the reference as tracked regardless would silently reopen this exact gap for every destructuring for-of. Filed as a follow-up capability, the array-element analogue of #2620's bare-property-read gap — #2622.
+> **The for-of branch ALSO recurses, into the loop variable — the same principle, one binding further** (round-7 critic finding, #2088 finding 2). Accepting `A`'s reference in `for (const r of A) …` on `isTrackedReferencePosition`'s `for_in_statement` branch is not enough on its own: `r` is a brand-new binding, and this analysis must follow it exactly as it follows a rebinding alias, or a site reads as local-closed while it can still escape through `r` — e.g. `for (const r of A) sink(r)` with `sink` imported (or local — the parameter-passing exclusion in condition 3 does not care which). Concretely: when a for-of-parented reference passes `isTrackedReferencePosition`, `allReferencesTracked` extracts the loop variable's name using the exact same shape `collectForOfBinding` itself already requires before it will emit a `forOfBindings` entry at all (a `variable_declarator`'s plain-`identifier` `name` field, or a bare pre-declared `identifier` `left` with no declaration keyword) and, ONLY when that yields a single plain identifier, requires `allReferencesTracked(root, loopVarName, objectNode, false, declaringScope)` to also hold — the SAME fixed `declaringScope` from the outer call, per the round-8 note above, never recomputed from `r`'s own position — under the same depth-6 cap shared with the rebinding recursion above, and the same non-vacuous-coverage requirement — `isArrayOwner` is hardcoded `false` for this recursive call regardless of the outer site's own `isArrayOwner`, because a for-of loop variable always denotes a single ELEMENT of the array, never the array itself, so `r.matches(...)`/`r.resolve(...)` must be checked as direct-binding-shaped member calls (see WU-10's re-verification of its own handler-array shape against this exact rule, condition 3 above). When the loop variable's shape is anything OTHER than a single plain identifier — most notably a destructuring pattern, `for (const { matches } of B) matches(x)` — the reference to `A`/`B` is REJECTED outright on this branch, full stop, with no recursive call to attempt at all: `collectForOfBinding` never emits a `forOfBindings` entry for a destructured loop variable (verified: it requires the declarator's `name` field to be a plain `identifier`), so nothing seeds a points-to fact for `matches` here, and `matches(x)` can never be a correlated call on a receiver pointing at `B`'s site no matter how `B` is referenced elsewhere — treating the reference as tracked regardless would silently reopen this exact gap for every destructuring for-of. Filed as a follow-up capability, the array-element analogue of #2620's bare-property-read gap — #2622.
 >
-> **Why walk for references rather than reuse `blockContainsIdentifierExcluding`:** that helper answers "does this block contain a reference at all", which is the wrong question here — we need to classify *every* reference's position, not detect the first one. The shadow-detection primitive is shared; the traversal is not.
+> **Why walk for references rather than reuse `blockContainsIdentifierExcluding`:** that helper answers "does this block contain a reference at all", which is the wrong question here — we need to classify *every* reference's position, not detect the first one. The shadow-detection primitive is shared; the traversal is not. (Round 8: this is also why `blockContainsIdentifierExcluding`'s OWN `MAX_WALK_DEPTH` truncation — which fails toward "not found," i.e. toward NOT flagging a problem — is not reused here unmodified: `allReferencesTracked` needs to know not just "was a disqualifying reference found" but "did the search even finish," which `blockContainsIdentifierExcluding`'s boolean return conflates. The non-vacuous-coverage requirement above is what keeps that conflation from becoming a silent false-negative once this design's own walk hits the same cap.)
 
 ---
 
@@ -1453,7 +1534,7 @@ The rebuilt file's own sites and correlated evidence are recomputed in memory an
 
 #### Implementation
 
-Mirrors WU-2 one-for-one, including every round-7 refinement — dual-engine parity (ADR-001) means none of finding 1/2/3/4/5's fixes are TS-only:
+Mirrors WU-2 one-for-one, including every round-7 AND round-8 refinement — dual-engine parity (ADR-001) means none of round 7's finding 1/2/3/4/5 fixes, nor round 8's finding 1/2/3 fixes, are TS-only:
 
 - `types.rs` — `ObjectLiteralSite { site: String, owner: Option<String>, escapes: bool }` with serde field names matching the TS shape (`objectLiteralSite` ↔ `object_literal_site` via the existing rename convention used for `key_expr`/`dynamic_kind`); `Call.object_literal_site: Option<String>`.
 - `javascript.rs` — `object_literal_site_id`, `enclosing_object_literal`; `handle_object_literal_pair_value_ref` (line 4456) and `handle_object_literal_shorthand_value_ref` (line 4493) each gain the site seed + tag; new `compute_object_literal_site_escapes(sites, root, source, exported_names, definition_names)` — the trailing `definition_names: &HashSet<String>` parameter mirrors the TS side's round-7 addition (finding 3) and is built the same way, from `symbols.definitions` — with:
@@ -1461,17 +1542,20 @@ Mirrors WU-2 one-for-one, including every round-7 refinement — dual-engine par
   - `is_tracked_reference_position(ref_node: &Node, is_array_owner: bool, source: &[u8]) -> bool` mirroring `isTrackedReferencePosition` one-for-one, including:
     - the member/subscript call-position narrowing;
     - round 7 / finding 1: `is_array_owner` short-circuits the member/subscript branch to `false` before any other check runs, exactly as the TS side does — an array-owned site's container is tracked only through the for-of branch;
-    - the subscript static-key requirement, round 7 / finding 4: a `string` index, or a `template_string` index whose text contains no `$` — mirroring `extract_call_info`'s OWN guard verbatim (`!method_name.contains('$')`, `javascript.rs:6479`, subscript arm at `javascript.rs:6469-6489`), not a new distinction invented for the escape check;
+    - the subscript static-key requirement, ROUND 8 (#2088 finding 3 — REPLACES round 7's finding-4 version of this same check): a `string` OR `template_string` index, quote/backtick-stripped, then required non-empty and `$`-free — ONE check, applied identically to BOTH index kinds, mirroring `extract_call_info`'s OWN guard verbatim (`!method_name.contains('$')`, `javascript.rs:6479`, subscript arm at `javascript.rs:6469-6489`). Round 7's Rust mirror must not repeat the TS side's round-7 mistake of gating the `$` check on `template_string` alone — `T['co$t'](…)` needs the identical rejection as `` T[`al${x}pha`]() ``, for the identical reason: neither can ever produce a named, receiver-carrying `computed-literal` Call at extraction, in either engine;
     - the for-of/for-in discriminator (reusing the same `is_for_of` child-text scan `collect_for_of_binding` already applies at `javascript.rs:7553`).
 
     Node-identity comparisons use `.id()`, not `==` — not a new convention for this engine's Rust side: `handle_accessor_property_read` (the existing mirror of `collectAccessorPropertyRead`) already compares this exact shape via `.id()` at `javascript.rs:2323-2326` (`parent.child_by_field_name("function").map(|f| f.id()) == Some(node.id())`), so this bullet reuses that idiom rather than introducing one;
-  - `all_references_tracked(root, binding_name, object_node, is_array_owner, source) -> bool` mirroring `allReferencesTracked` one-for-one, including BOTH recursive branches: the round-4 rebinding recursion (`is_array_owner` unchanged across the recursive call) and the round-7 for-of-loop-variable recursion (finding 2 — `is_array_owner` hardcoded `false` for the recursive call, and the reference rejected outright, no recursive call attempted, when the loop variable's `left` is not a single plain identifier — reusing `collect_for_of_binding`'s own `var_name` extraction shape at `javascript.rs:7576-7597` to decide "single plain identifier" the same way the TS side reuses `collectForOfBinding`'s);
-  - `resolve_site_owner(object_node: &Node, source: &[u8]) -> Option<SiteOwner>` where `SiteOwner { key: String, binding_name: Option<String> }` — round 7 / finding 5: `binding_name` is always the bare declarator identifier (never `[*]`- or `::return`-suffixed), matching the TS contract field-for-field, for the identical reason (an `is_array_owner` derived from `key != binding_name` that could ever be wrong for the array case would silently disable finding 1's fix and condition 2's export check together, on this engine too);
+  - ROUND 8 (#2088 finding 1) — new `find_declaring_scope_node<'a>(node: &Node<'a>, name: &str, source: &[u8]) -> Option<Node<'a>>`, the node-returning counterpart of the existing `find_declaring_scope_line` (`javascript.rs:4400`) — mirroring the identical TS-side refactor, `find_declaring_scope_line` becomes a thin wrapper (`find_declaring_scope_node(node, name, source).map(|n| n.start_position().row as u32)`), so the two engines' escape analyses and #2260's own disambiguation share one ancestor-walk implementation each, rather than two copies that could silently drift. `all_references_tracked<'a>(root: &Node<'a>, binding_name: &str, object_node: &Node<'a>, is_array_owner: bool, source: &[u8], declaring_scope: Option<&Node<'a>>) -> bool` mirrors `allReferencesTracked` one-for-one — Rust has no default-parameter sugar, so `declaring_scope: Option<&Node>` is the direct, idiomatic mirror of the TS side's optional trailing parameter: the TOP-level call passes `None` (the function then computes `find_declaring_scope_node(object_node, binding_name, source)` internally), and every RECURSIVE call passes `Some(&fixed_scope)` explicitly — never re-deriving it. It now includes:
+    - the round-8 declaring-scope restriction: the walk is bounded to, and exempts from the shadow-prune, ONLY the one scope `find_declaring_scope_node(object_node, binding_name, source)` returns (`root`/`program` when it returns `None`, i.e. a module-scope binding) — never `root` unconditionally regardless of nesting, and this fixed scope is established ONCE, at the top-level call, never re-derived per recursive call (re-deriving it from the alias/loop-variable's own position would walk the wrong ancestor chain, since that position is not necessarily an ancestor of `object_node` — see the TS-side doc comment for the full argument);
+    - the round-8 non-vacuous-coverage requirement: the walk returns `true` only when it PROVABLY examined every reference in that scope — truncation by the shared `MAX_WALK_DEPTH` cap, or by the pre-existing depth-6 alias/for-of recursion cap below, makes the result `false` (escaping) unconditionally, never a silently-trusted vacuous `true`;
+    - BOTH pre-existing recursive branches, threading the SAME fixed declaring-scope node down unchanged rather than recomputing it: the round-4 rebinding recursion (`is_array_owner` unchanged across the recursive call) and the round-7 for-of-loop-variable recursion (finding 2 — `is_array_owner` hardcoded `false` for the recursive call, and the reference rejected outright, no recursive call attempted, when the loop variable's `left` is not a single plain identifier — reusing `collect_for_of_binding`'s own `var_name` extraction shape at `javascript.rs:7576-7597` to decide "single plain identifier" the same way the TS side reuses `collectForOfBinding`'s);
+  - `resolve_site_owner(object_node: &Node, source: &[u8]) -> Option<SiteOwner>` where `SiteOwner { key: String, binding_name: Option<String> }` — round 7 / finding 5: `binding_name` is always the bare declarator identifier (never `[*]`- or `::return`-suffixed), matching the TS contract field-for-field, for the identical reason (an `is_array_owner` derived from `key != binding_name` that could ever be wrong for the array case would silently disable finding 1's fix and condition 2's export check together, on this engine too). ROUND 8 (#2088 finding 2) extends the identical guarantee one step further: `binding_name` also never carries the `#{line}` suffix `find_enclosing_table_name`/`find_declaring_scope_line`-style disambiguation appends (`javascript.rs:4419-4425`) — it is always the `name` field's own `utf8_text(source)`, verbatim, never routed through `find_enclosing_table_name`'s suffix-appending return construction (only its ancestor-walk SHAPE is reused, not its return value). Getting this wrong would make `all_references_tracked` search for an identifier literally spelled `T#7` — text that cannot exist in the grammar — silently reopening finding 1's exact vacuous-walk failure mode for every non-module-scope binding on this engine too, the round-8 counterpart of finding 5's `[*]`/`::return` case just above;
   - `literal_has_unmodeled_this_reference(object_node, root, definition_names, source) -> bool` and its depth-capped `this`-kind subtree search, mirroring `literalHasUnmodeledThisReference` / `subtreeContainsThisKeyword` one-for-one, including the truncate-toward-`true` direction (the inverse of `block_contains_identifier_excluding`'s own truncate-toward-`false`, for the same reason the TS side documents) — PLUS, round 7 / finding 3, the identifier-valued-pair branch: new `resolve_identifier_value_this_reference(root, name, definition_names, source) -> bool` and `find_top_level_function_node_by_name(root, name, source) -> Option<Node>`, mirroring `resolveIdentifierValueThisReference` / `findTopLevelFunctionNodeByName` one-for-one, including the identical three-way fail-safe (resolves to a same-file non-arrow function → check its body; resolves to an arrow function → excluded; does not resolve in-file → fail-safe `true`).
 
 Every new Rust item carries a `/// Mirrors <tsSymbol> in src/extractors/javascript.ts` line — the convention `handle_object_literal_pair_value_ref` already follows.
 
-> **Parity risk specific to round 7:** finding 1's `is_array_owner` short-circuit and finding 4's `$`-interpolation guard are both one-line conditions that are trivial to omit silently in a hand-written port. WU-10's dual-engine assertion on the new escape-fallback cases (below) is what actually catches a missed one — a reviewer diffing the two `is_tracked_reference_position`/`isTrackedReferencePosition` bodies side by side is the other half of the gate, per the Testing Strategy section's "what no tier catches" note.
+> **Parity risk specific to round 7 and round 8:** round 7's `is_array_owner` short-circuit, round 8's stripped-text/no-`$` check applied uniformly to both subscript index kinds (replacing round 7's template-only version), and round 8's declaring-scope/non-vacuous-coverage walk are all easy to port correctly for the obvious cases and easy to narrow silently in a hand-written port — exactly the class of mistake round 7's Rust mirror of the `$`-guard itself would repeat if copied without noticing round 8's TS-side correction. WU-10's dual-engine assertion on the new escape-fallback cases (below) is what actually catches a missed one — a reviewer diffing the two `is_tracked_reference_position`/`isTrackedReferencePosition` and `all_references_tracked`/`allReferencesTracked` bodies side by side is the other half of the gate, per the Testing Strategy section's "what no tier catches" note.
 
 ---
 
@@ -1536,7 +1620,7 @@ The `correlatedPropertyEvidence` flag reaches Rust through the same `BuildConfig
 
 #### Implementation
 
-**The correlation test** covers the three shapes the design claims, each asserted under **both** engines (`--engine wasm` and `--engine native`, skipped with an explicit message rather than silently if `isNativeAvailable()` is false — never a silent skip):
+**The correlation test** covers the five shapes the design claims (three from earlier rounds, two added in round 8 to close the testing blind spot described below), each asserted under **both** engines (`--engine wasm` and `--engine native`, skipped with an explicit message rather than silently if `isNativeAvailable()` is false — never a silent skip):
 
 ```js
 // 1. Direct local table — the headline case from the issue body.
@@ -1555,13 +1639,44 @@ function pick(x) { for (const r of RESOLVERS) if (r.matches(x)) return r.resolve
 // 3. Alias — via fnRefBindings.
 const T = { alpha: fnA }; const u = T; u.alpha();
 // EXPECT: fnA live.
+
+// 4. (ROUND 8, #2088 finding 1) FUNCTION-SCOPED table, referenced only
+//    through a tracked position — every shape above declares its table at
+//    MODULE scope, which is exactly why the round-8 shadow-prune bug
+//    survived seven rounds undetected (see the withdrawn round-7
+//    vacuous-truth argument in WU-2b for the counter-example this shape
+//    guards against: a function-scoped table forwarded to an IMPORTED
+//    callee, which must escape — that is a NEW escape-fallback case (o)
+//    below, not this one). This shape proves the fix does not OVER-escape
+//    the common case once it stops self-shadowing.
+function makeLocal() {
+  const L = { iota: fnI };
+  return L.iota();
+}
+makeLocal();
+// EXPECT: fnI live, escapes === 0 for L's site.
+
+// 5. (ROUND 8, #2088 finding 1) BLOCK-SCOPED table — an `if` body, not a
+//    function body. `M`'s declaring `statement_block` is a direct child of
+//    `if_statement`, not of any function-like node: a different AST shape
+//    than case 4, exercising `findDeclaringScopeNode`/`introducesShadowedBinding`'s
+//    shared `SCOPE_NODE_TYPES` path for a BARE block specifically, proving
+//    the round-8 fix generalises beyond function bodies to any block scope.
+function maybeRun(cond) {
+  if (cond) {
+    const M = { kappa: fnJ };
+    M.kappa();
+  }
+}
+maybeRun(true);
+// EXPECT: fnJ live, escapes === 0 for M's site.
 ```
 
-> **Each case must also assert `escapes = 0`** for its site (`SELECT escapes FROM object_literal_sites WHERE file = ? AND site = ?`), not just the liveness outcome shown above (round-3 critic finding). Liveness alone does not prove T1 fired: if a site were wrongly classified escaping, T2's bare-name fallback would report the same property live for an unrelated reason, and the test would pass while silently losing coverage of the tier it claims to exercise — symmetric to how the escape-fallback test below asserts `escapes = 1` rather than trusting liveness alone. Case 3 (alias) is the load-bearing one: it is exactly the shape WU-2's `variable_declarator` handling in `allReferencesTracked` (condition 3 above) must classify non-escaping, and a regression there would otherwise pass this test unnoticed.
+> **Each case must also assert `escapes = 0`** for its site (`SELECT escapes FROM object_literal_sites WHERE file = ? AND site = ?`), not just the liveness outcome shown above (round-3 critic finding). Liveness alone does not prove T1 fired: if a site were wrongly classified escaping, T2's bare-name fallback would report the same property live for an unrelated reason, and the test would pass while silently losing coverage of the tier it claims to exercise — symmetric to how the escape-fallback test below asserts `escapes = 1` rather than trusting liveness alone. Case 3 (alias) is the load-bearing one: it is exactly the shape WU-2's `variable_declarator` handling in `allReferencesTracked` (condition 3 above) must classify non-escaping, and a regression there would otherwise pass this test unnoticed. Cases 4 and 5 (round 8) are equally load-bearing for finding 1 specifically: without the declaring-scope exemption, BOTH would (wrongly, per the withdrawn round-7 argument) still read as `escapes = 0` today for the SAME reason the headline counter-example does — a vacuous walk, not a genuine one — so passing this assertion alone does not yet distinguish "the walk is exhaustive and found nothing disqualifying" from "the walk never looked." That distinction is exactly what escape-fallback case (o) below is for: it is cases 4/5's photographic negative, using the SAME function-scope shape but with a reference the fix must NOT accept.
 >
-> **Case 2 re-verified against round 7's tightened rules.** `RESOLVERS` is an array-element owner (`isArrayOwner = true`), so its own reference — the for-of head in `for (const r of RESOLVERS) …` — is checked on the `for_in_statement` branch, which does not gate on `isArrayOwner` at all (only the member/subscript branch does, per finding 1). Accepting that reference now additionally requires `allReferencesTracked(root, 'r', objectNode, false)` to hold (finding 2): `r`'s only two references, `r.matches(x)` and `r.resolve(x)`, are both call-position member expressions checked with `isArrayOwner = false` (a loop variable always denotes a single element), so both pass unchanged. This shape was the plan's own headline #1771 idiom and is confirmed unaffected by round 7 — the array-owned shape round 7 actually excludes is the CONTAINER-level `.forEach`/`.map`/etc. call, added as new case (i) below, which this correlation test does not and should not exercise.
+> **Case 2 re-verified against round 7's tightened rules.** `RESOLVERS` is an array-element owner (`isArrayOwner = true`), so its own reference — the for-of head in `for (const r of RESOLVERS) …` — is checked on the `for_in_statement` branch, which does not gate on `isArrayOwner` at all (only the member/subscript branch does, per finding 1). Accepting that reference now additionally requires `allReferencesTracked(root, 'r', objectNode, false, declaringScope)` to hold (finding 2) — `declaringScope` being the SAME fixed node established for `RESOLVERS` itself (round 8, #2088 finding 1; `RESOLVERS` is module-scope here, so that node is `root`): `r`'s only two references, `r.matches(x)` and `r.resolve(x)`, are both call-position member expressions checked with `isArrayOwner = false` (a loop variable always denotes a single element), so both pass unchanged. This shape was the plan's own headline #1771 idiom and is confirmed unaffected by round 7 or round 8 — the array-owned shape round 7 actually excludes is the CONTAINER-level `.forEach`/`.map`/etc. call, added as new case (i) below, which this correlation test does not and should not exercise; round 8's declaring-scope restriction changes nothing here either, since `RESOLVERS`' own declaring scope was already `root` (module scope was never affected by the bug it fixes).
 
-**Naming convention:** the correlation test's three shapes (used by their numbers, 1–3, throughout this plan) and the escape-fallback test's shapes ((a)–(n), used by their letters) are two independent, alphabetically/numerically-keyed lists — a re-verified shape 2 above is unrelated to the lettered cases below.
+**Naming convention:** the correlation test's five shapes (used by their numbers, 1–5, throughout this plan) and the escape-fallback test's shapes ((a)–(p), used by their letters) are two independent, alphabetically/numerically-keyed lists — a re-verified shape 2 above is unrelated to the lettered cases below.
 
 **The escape-fallback test is the soundness gate.** Each case must be classified live *only* because the site escapes and T2 catches it — assert the classification, and assert `object_literal_sites.escapes = 1` for the site, so the test fails loudly if a future change flips the bit rather than silently passing on the wrong tier:
 
@@ -1728,6 +1843,69 @@ otherObj.alpha();
 //     stated, condition 2 catches this BEFORE condition 3 ever runs.
 export const W = [{ theta: fnT }];
 otherObj.theta();
+// (o) (ROUND 8, #2088 finding 1) A FUNCTION-SCOPED table forwarded to an
+//     IMPORTED function — the headline counter-example motivating the
+//     round-8 shadow-prune fix (see the withdrawn round-7 vacuous-truth
+//     argument in WU-2b for the full mechanism). `T`'s declaring scope is
+//     `install`'s own body block; `register(T)` is the ONLY other
+//     reference to `T` in this file, and it is a bare-identifier argument
+//     to an IMPORTED function — condition 3's existing parameter-flow
+//     exclusion (round 5, #2617) already treats this as untracked once the
+//     walk actually reaches it, exactly as it already does for a
+//     module-scope table (case (f) above). BEFORE round 8, the walk
+//     self-shadowed `install`'s entire body — `introducesShadowedBinding`
+//     found `T`'s OWN declaration as a direct child of that block and
+//     pruned it whole — so `register(T)` was never visited at all, the
+//     surviving-reference set was empty, and the (wrongly) vacuous result
+//     read as tracked; this is cases 4/5's photographic negative, using the
+//     SAME function-scope AST shape but with a reference the fix must NOT
+//     accept. `register`'s own `t.alpha()` (reusing case (b)'s `./reg.js`
+//     import — its body is exactly this shape, which case (b) never needed
+//     to specify since its own literal has no owner) is the real
+//     invocation, but the points-to map is per-file and parameter flow into
+//     an IMPORTED callee is not modeled (WU-4's "Scope: intra-module
+//     only"), so it produces no T1 evidence for THIS site regardless of the
+//     round-8 fix — the site must escape, and T2's bare-name match (`alpha`
+//     was invoked somewhere, via `t.alpha()` itself — the same coarse
+//     evidence the Overview's own headline example describes) is what
+//     correctly keeps `fnA3` live, for the right (T2) reason.
+// reg.js:
+export function register(t) { return t.alpha(); }
+// consumer file:
+import { register } from './reg.js';
+function fnA3() { return 1; }
+function install() {
+  const T3 = { alpha: fnA3 };
+  register(T3);
+}
+install();
+// (p) (ROUND 8, #2088 finding 3) A subscript CALL keyed by a STATIC STRING
+//     containing `$` — the regression case for finding 3. Round 7's
+//     `isTrackedStaticKey` accepted ANY `string` index unconditionally, but
+//     `extractSubscriptCallInfo`'s own guard (`!methodName.includes('$')`,
+//     applied identically to `string` and `template_string`) never produces
+//     a named, receiver-carrying Call once the stripped index text contains
+//     `$` — regardless of whether the `$` arrived via interpolation
+//     (case (m), already covered) or is simply part of a literal string key
+//     ACCESSED VIA BRACKETS (this case, previously uncovered — Greptile
+//     flagged exactly this gap on this PR, "Quoted dollar keys lose
+//     evidence", against round 7's code). `co$t` is an unusual but
+//     syntactically valid property name — `$` is a legal identifier
+//     character in JS, so the DECLARATION below needs no quoting at all —
+//     but `V2['co$t']()` deliberately accesses it through a quoted BRACKET
+//     subscript, which is what routes it through `extractSubscriptCallInfo`'s
+//     string-index arm rather than the plain member-expression path: it
+//     produces `<dynamic:unresolved>` at extraction — no name, no receiver
+//     — so correlated evidence for `co$t` can never exist regardless of how
+//     `V2` is referenced elsewhere. The cross-file decoy calls the SAME
+//     property through ORDINARY DOT notation (`co$t` needs no bracket at
+//     all there), which goes through the plain member-expression path with
+//     no `$`-stripping and no exclusion — genuinely populating T2's
+//     bare-name evidence for `co$t` — and is what correctly keeps `fnA4`
+//     live once `V2` is (rightly) classified escaping.
+const V2 = { co$t: fnA4 };
+V2['co$t']();
+otherObj.co$t();
 // EXPECT (all): live, escapes === 1.
 ```
 
@@ -1755,13 +1933,15 @@ WU-4 (solver) is off the critical path and should be built in parallel with WU-2
 | Tier | What it covers here | Files |
 |---|---|---|
 | **Unit / parser extraction** | Site ids are stable and unique per file; `escapes` is correct for each recognised shape and defaults `true` for unrecognised ones; value-ref calls carry `objectLiteralSite`. | `tests/parsers/javascript.test.ts` |
-| **Integration over a fixture project** | The three correlation shapes and the fourteen escape-fallback shapes (eight from earlier rounds plus six added in round 7 for findings 1, 2 — split into its plain-forwarding and destructuring sub-cases — 3, 4, and 5), end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
+| **Integration over a fixture project** | The five correlation shapes and the sixteen escape-fallback shapes (eight from earlier rounds, six added in round 7 for findings 1, 2 — split into its plain-forwarding and destructuring sub-cases — 3, 4, and 5, and two added in round 8 for the headline shadow-prune fix and finding 3's `$`-guard gap), end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
 | **Resolution precision/recall** | The new `pts-javascript/objlit-site.js` fixture's expected edges. `javascript`'s precision-1.0 floor must not move — that fixture is the false-positive canary per ADR-002. | `tests/benchmarks/resolution/` |
 | **Dual-engine parity** | Every integration assertion runs under `--engine wasm` and `--engine native`; `npm run build` runs first so WASM sees the new `dist/`. | both `issue-2088-*` tests + `/parity` |
 | **Incremental vs full** | A `codegraph watch`-shaped single-file rebuild reaches the same tier decision as a full build, via the two persisted tables. | `issue-2087-…` + the incremental case in `issue-2088-correlated-property-evidence` |
 | **Benchmark / perf canary** | The solver gains constraint rows proportional to object-literal count. `npm run benchmark` guards build time; a >5% regression on this repo's full build is a finding to report, not to absorb. | `npm run benchmark` |
 
-**What no tier catches, and what a human must check instead.** The escape analysis is a *judgment* about completeness, and no test can enumerate every JS shape that leaks an object identity. The tests above prove the recognised shapes are right and that the fail-safe default is `true`; they cannot prove the recognised set is exhaustive. **A reviewer must read `computeObjectLiteralSiteEscapes` (WU-2b) and its Rust mirror against `TRACKED_REFERENCE_PARENTS`, `isTrackedReferencePosition`, and `literalHasUnmodeledThisReference`, and satisfy themselves — against the stated invariant, not just against parent-type membership — that every position/shape they do not accept is genuinely treated as an escape.** That review is the real gate on the soundness requirement; the WU-10 tests are a sample of it.
+**Scope coverage is a first-class testing requirement, not an incidental property (ROUND 8).** Every WU-10 fixture through round 7 declared its table at MODULE scope — the one scope `introducesShadowedBinding` never self-shadows by construction (`default: return false` for `program`) — which is exactly why the round-8 shadow-prune bug (finding 1) went undetected for seven rounds: the test suite was structurally incapable of exercising the code path it broke. Closing that blind spot for THIS round's fix is not enough on its own to guarantee it stays closed. **Fixtures for every branch of the escape predicate — conditions 1–4 in `computeObjectLiteralSiteEscapes`, `isTrackedReferencePosition`'s member/subscript/for-of branches, and both recursive branches of `allReferencesTracked` — must include at least one MODULE-scope, one FUNCTION-scope, and one BLOCK-scope (an `if`/`for`/bare-block body, not a function body) case going forward.** Correlation shapes 4 and 5 (function- and block-scoped tables used correctly) and escape-fallback case (o) (a function-scoped table that must escape) establish this baseline for round 8's own fix; a reviewer adding a new branch to the escape predicate in a future round must add its own module/function/block trio rather than defaulting to module scope alone, the same way the original seven rounds did.
+
+**What no tier catches, and what a human must check instead.** The escape analysis is a *judgment* about completeness, and no test can enumerate every JS shape that leaks an object identity. The tests above prove the recognised shapes are right and that the fail-safe default is `true`; they cannot prove the recognised set is exhaustive. **A reviewer must read `computeObjectLiteralSiteEscapes` (WU-2b) and its Rust mirror against `TRACKED_REFERENCE_PARENTS`, `isTrackedReferencePosition`, and `literalHasUnmodeledThisReference`, and satisfy themselves — against the stated invariant, not just against parent-type membership — that every position/shape they do not accept is genuinely treated as an escape.** That review is the real gate on the soundness requirement; the WU-10 tests are a sample of it — and, as of round 8, that sample must itself span module, function, and block scope, not stand in for a single scope repeated sixteen times.
 
 ## Verification Commands
 
@@ -1798,14 +1978,14 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 
 | Risk | Mitigation |
 |---|---|
-| Tightening turns a conservative false negative into a **false positive** (live code reported dead) | Structural, not incidental: T1 is reachable only when `escapes === false`, and `escapes` defaults `true` on every unrecognised shape (WU-2b). Escaping sites take T2 — today's exact predicate. Gated by `tests/integration/issue-2088-escape-fallback.test.ts` (WU-10), which asserts both the classification *and* `escapes = 1`, so it fails if the guard is bypassed rather than passing on the wrong tier. Round 6 found and closed four such gaps (the alias, parameter-flow, same-literal `this`, and bare-read branches); round 7 re-applied the SAME invariant test to the round-6 result itself and found and closed five more (array-owned container calls, for-of loop-variable forwarding, identifier-valued `this`, interpolated template keys, and the owner `bindingName`/`key` contract) — see the round-7 annotations throughout WU-2b and the six new WU-10 cases (i)–(n) added to gate them. |
+| Tightening turns a conservative false negative into a **false positive** (live code reported dead) | Structural, not incidental: T1 is reachable only when `escapes === false`, and `escapes` defaults `true` on every unrecognised shape (WU-2b). Escaping sites take T2 — today's exact predicate. Gated by `tests/integration/issue-2088-escape-fallback.test.ts` (WU-10), which asserts both the classification *and* `escapes = 1`, so it fails if the guard is bypassed rather than passing on the wrong tier. Round 6 found and closed four such gaps (the alias, parameter-flow, same-literal `this`, and bare-read branches); round 7 re-applied the SAME invariant test to the round-6 result itself and found and closed five more (array-owned container calls, for-of loop-variable forwarding, identifier-valued `this`, interpolated template keys, and the owner `bindingName`/`key` contract) — see the round-7 annotations throughout WU-2b and the six new WU-10 cases (i)–(n) added to gate them. **Round 8 found the deepest gap yet by re-applying the same invariant test to the WALK ITSELF rather than to another reference position**: the shadow-prune `allReferencesTracked` reused (`introducesShadowedBinding`) self-shadows the site's own declaring scope whenever that scope is not the module (every fixture through round 7 was module-scope, which is why this survived seven rounds), silently vacuously "tracking" a table that was never actually examined at all — a strictly worse failure than any round-6/7 gap, since those each mis-tracked one REACHED reference, while this one meant entire scopes were never reached. Closed two ways, not one: (a) the walk is now rooted at, and exempts from the shadow-prune, only the site's own declaring scope (mirroring `hasLaterReferenceInEnclosingBlock`'s existing, narrower carve-out for the identical trap); and (b) a new standing rule requires the walk to PROVE it was exhaustive — any truncation now forces `escapes = true` unconditionally — so a FUTURE walk bug of this same shape fails closed instead of silently passing, rather than relying on finding every instance of it by inspection one round at a time. Round 8 also fixed a second, independent bug in the same area (`bindingName` could inherit a `#line` suffix `allReferencesTracked` could never match against real identifier text — the same "structurally can never match" failure mode finding 5 already named for `A[*]`) and a third in `isTrackedReferencePosition`'s subscript branch (the `$`-guard was mirrored onto `template_string` only, not `string`, so `T['co$t']()` was wrongly accepted — Greptile flagged this independently on this PR). See the round-8 annotations throughout WU-2b, the withdrawn round-7 vacuous-truth argument, and WU-10 correlation shapes 4–5 plus escape-fallback cases (o)–(p). |
 | Reviewer objection: "this contradicts §8.3's field-based decision" | Pre-rebutted in [Reconciling the tension](#reconciling-the-tension-with-roadmap-83-field-based-not-field-sensitive): field-sensitivity and allocation-site abstraction are orthogonal axes, and §8.3's own Approach block already commits to allocation-site abstraction. The pts lattice stays field-based; the `site\|key` set is computed outside the solver. |
 | Reviewer objection: "this duplicates #2260's `receiver` channel" | It does not — T3 is kept name-keyed, unconditional, and untouched (WU-5b). #2088 adds a third tier beside it. The array-literal gap in #2260's own channel is filed separately as #2611 rather than folded in. |
 | New `ExtractorOutput` field silently dropped at the Worker boundary | ADR-002 §Costs.2 names this the primary parity risk, so it is its own work unit (WU-3) with its own verification, following the `computedDispatchTableEvidence` precedent in the same three files. `Call.objectLiteralSite` needs no protocol edit — verified by reading `wasm-worker-protocol.ts:51` (`calls: Call[]`, passed whole), not assumed. |
 | WASM/native escape-bit drift | The bit is persisted in `object_literal_sites`, so a divergence is directly observable by diffing that table between engine runs rather than only inferable from a differing `roles` output. WU-10 runs every integration assertion under both engines; `/parity` gates. |
 | Solver cost grows with object-literal count | Constraints added are O(sites) + O(callAssignments with a matching `::return` key), and the `callAssignments` loop is guarded on that key existing, so it adds no rows for the common case. `MAX_SOLVER_ITERATIONS` is unchanged at 50. `npm run benchmark` is in the verification block; a >5% full-build regression on this repo is reported, not absorbed. |
 | Full-vs-incremental divergence in the new channel | Both new tables are persisted and purged per file exactly as `invoked_property_names` (#2087) is — WU-5(c), WU-6. This is deliberately *not* the shortcut #2260 took, whose in-memory-only aggregation is filed as #2610. |
-| Scope growth during implementation | Two adjacent findings were filed as issues before this plan was written (#2610, #2611) rather than absorbed. Every review round since has kept the same discipline for findings that narrow the escape-analysis design rather than fix it (#2617–#2620 from rounds 4–6; #2621–#2623 from round 7) — see the Success Criteria exclusion list. One PR = one concern. |
+| Scope growth during implementation | Two adjacent findings were filed as issues before this plan was written (#2610, #2611) rather than absorbed. Every review round since has kept the same discipline for findings that narrow the escape-analysis design rather than fix it (#2617–#2620 from rounds 4–6; #2621–#2623 from round 7) — see the Success Criteria exclusion list. Round 8 filed no new follow-up issues: all three of its findings are soundness fixes to what earlier rounds already claimed the design covers, not new named exclusions from it — see the Success Criteria note on round 8 for why that distinction matters here specifically. One PR = one concern. |
 
 ## Out of Scope (filed, not silently dropped)
 
@@ -1826,9 +2006,12 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
   - (round 7) A member/subscript call on an ARRAY-OWNED site's CONTAINER (`RESOLVERS.forEach(...)`, `.map`, `.find`, `.filter`, `.some`) — only a `for...of` head over the container is admissible; `buildArrayCallbackConstraints` seeds no points-to fact for any of these callbacks' parameters — #2621.
   - (round 7) A `for...of` loop variable forwarded into a position this analysis does not itself follow, beyond the plain parameter-passing case above — specifically, a DESTRUCTURING loop variable (`for (const { k } of A) k()`), which `collectForOfBinding` never seeds a points-to fact for at all — #2622.
   - (round 7) A subscript call keyed by an interpolated template string (`` T[`al${x}pha`]() ``) — the extractor's own guard never produces a named, receiver-carrying call for it, so no property name is ever available to correlate, regardless of how the receiver is referenced — #2623.
+  - **(round 8) No new exclusion added to this list.** Round 8's three findings (below and throughout WU-2b) are SOUNDNESS fixes to the escape analysis's own implementation, not new accepted recall limitations in its DESIGN — unlike every bullet above, none of them names a shape the design deliberately declines to model. Finding 1 (the declaring-scope shadow-prune) and finding 2 (the `bindingName` suffix) together made the escape check WRONGLY non-escaping for every non-module-scope table regardless of how it was actually used — fixing them does not shrink what the design already claimed was trackable, it makes the claim true instead of vacuously true for shapes it was already supposed to cover (correlation shapes 4/5 above confirm function- and block-scoped tables used correctly still correlate after the fix). Finding 3 (the `$`-guard) made the escape check WRONGLY tracked for a reference the extractor can never actually produce T1 evidence for; the fix aligns it with what #2623 already correctly assumed the extractor does, for a case #2623 was never scoped to cover (a `$`-bearing STATIC key, as opposed to genuine interpolation). Recall for the shapes round 8 touches is therefore unchanged from what earlier rounds already claimed, once "claimed" means "actually verified against a fixture in that scope," which is precisely what correlation shapes 4/5 and escape-fallback cases (o)/(p) now do.
+  - **(round 8) One narrow, EXPECTED conservative consequence of finding 1(b), not a new exclusion needing its own issue:** a declaring scope whose AST subtree is deep enough to hit the pre-existing `MAX_WALK_DEPTH` cap now unconditionally escapes, per the non-vacuous-coverage requirement below — where pre-round-8 (buggy) behavior would have silently returned "not found" and read a truncated walk as tracked. This is the SAME depth-cap convention already applied uniformly throughout this file's other recursive walks (`blockContainsIdentifierExcluding`, `patternBindsName`, `scanPatternDefaultsForReference`, `subtreeContainsThisKeyword`) — Category F, a standard safety boundary, not a newly-discovered gap in this design specifically — so it is not filed as a follow-up capability the way #2617–#2623 are; those name shapes the design does not yet recognise at all, while this names a depth the AST would have to be pathological to reach.
+- [ ] **(round 8, #2088 finding 1 — the standing rule).** `allReferencesTracked` treats a scope's references as fully tracked ONLY when the walk PROVES it examined every one of them: any truncation (`MAX_WALK_DEPTH`, or the pre-existing depth-6 alias/for-of recursion cap) makes the result `escapes = true` unconditionally, regardless of what was or was not found. This is a standing contract on the function's return value, not a special case for the empty-reference-set scenario — it applies identically whether the walk's surviving set has zero references or many, and every future change to this walk must preserve it, so that a NEW walk bug (not just the round-8 shadow-prune one) fails closed rather than silently reopening this same class of soundness gap.
 - [ ] `resolveViaPointsTo` never returns a site token to name resolution.
 - [ ] For any site with `escapes === true`, resolution is **byte-identical to pre-#2088**, and all nine listed existing tests pass unedited.
-- [ ] `resolveSiteOwner`'s `key`/`bindingName` contract (round 7, #2088 finding 5) holds for every owner shape, verified by WU-10's dedicated `export const A = [{…}]` case: condition 2's export check and the `isArrayOwner` derivation both depend on `bindingName` never carrying a `[*]`/`::return` suffix.
+- [ ] `resolveSiteOwner`'s `key`/`bindingName` contract (round 7 finding 5, extended round 8 finding 2) holds for every owner shape, verified by WU-10's dedicated `export const A = [{…}]` case (round 7) and by correlation shapes 4/5 and escape-fallback case (o) (round 8): condition 2's export check, the `isArrayOwner` derivation, and (round 8) `allReferencesTracked`'s own AST search all depend on `bindingName` never carrying a `[*]`/`::return` suffix (round 7) NOR a `#${scopeLine}` disambiguating suffix (round 8) — the latter being exactly what `findEnclosingTableName` would otherwise append for any non-module-scope declaration.
 - [ ] WASM and native engines produce identical `object_literal_sites`, identical `invoked_property_sites`, and identical `roles --role dead -T` output on this repo.
 - [ ] A scoped incremental rebuild reaches the same tier decision as a full build for the same file.
 - [ ] `analysis.correlatedPropertyEvidence` is the only new behavioral constant, lives in `DEFAULTS`, is wired to both engines, and setting it `false` restores pre-#2088 behavior exactly.
