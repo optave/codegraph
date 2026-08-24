@@ -452,9 +452,21 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
  *      (round-3 critic finding: without this guard, the alias case in
  *      WU-10's correlation test never actually exercises T1 — it stays
  *      escaping and falls through to T2's bare-name match, which reports the
- *      same "live" outcome for the wrong reason); or is a bare-identifier
- *      argument to a LOCALLY-DEFINED, NON-EXPORTED function — the shape
- *      `paramBindings` (Phase 8.3c) already propagates.
+ *      same "live" outcome for the wrong reason) — AND, when a reference is
+ *      accepted on that rebinding branch, condition 3 must ALSO hold,
+ *      recursively, for the new alias name itself (round-4 critic finding on
+ *      the round-3 fix: accepting the `const u = T` reference alone, without
+ *      then requiring every reference to `u` to be tracked too, lets the
+ *      site read as local-closed while it still escapes through `u` — e.g.
+ *      `const u = T; importedFn(u)` — which is exactly the class of gap
+ *      condition 1 already calls out for a return-captured binding, here
+ *      recurring one hop later for an alias-captured one). Or is a
+ *      bare-identifier argument to a LOCALLY-DEFINED, NON-EXPORTED function
+ *      — the shape `paramBindings` (Phase 8.3c) already propagates (the
+ *      identical recursive gap exists on this branch too — filed
+ *      separately as #2617 rather than folded in here, since it requires
+ *      scoping the recursive check into the callee's own body rather than
+ *      the same file-level walk the alias case reuses).
  *
  * Fail-safe: anything unrecognised leaves the seeded `escapes: true`. Getting
  * this wrong in the `true` direction costs recall (today's behavior); getting
@@ -500,6 +512,8 @@ function computeObjectLiteralSiteEscapes(
 
 `allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Every surviving reference must have a parent in `TRACKED_REFERENCE_PARENTS`; be the `value` field of a `variable_declarator` whose own `name` field is a plain `identifier` (a rebinding — `const u = T` — rejecting a destructuring `name` the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference); or be an `arguments`-position identifier whose callee is in `localNonExportedFns`.
 
+> **The rebinding branch recurses — accepting the `const u = T` reference is not enough on its own** (round-4 critic finding). `allReferencesTracked` must additionally hold, recursively, for the new alias name (`allReferencesTracked(root, aliasName, objectNode, localNonExportedFns)`), or a site reads as local-closed while it can still escape through `u` — e.g. `const u = T; importedFn(u)`. The first cut of this branch (round-3) checked only the reference to `T` and never followed where `u` goes; that is exactly the same shape of gap condition 1 already documents for a return-captured binding, one alias hop later. The recursion depth is capped at 6, reusing `findEnclosingTableName`'s own `hops` bound rather than inventing a new one — a chain of `const a = T; const b = a; const c = b; …` cannot cycle (each step names a fresh `const` binding), so the cap is defense-in-depth, not a correctness requirement. A recursive call returning `false` (including by hitting the cap) makes that reference — and so the whole site — escaping; it is not a partial result the other branches paper over.
+>
 > **Why walk for references rather than reuse `blockContainsIdentifierExcluding`:** that helper answers "does this block contain a reference at all", which is the wrong question here — we need to classify *every* reference's position, not detect the first one. The shadow-detection primitive is shared; the traversal is not.
 
 ---
@@ -960,6 +974,13 @@ const D = { eps: fnE }; const { eps } = D; eps();
 function factory() { return { zeta: fnZ }; }
 export const X = factory();
 X.zeta();
+// (e) Aliased, then the alias itself passed to an IMPORTED function — the
+//     regression case for the round-4 fix to allReferencesTracked's
+//     rebinding branch: accepting `const w = U` is not enough on its own,
+//     `w`'s own references must also be tracked, recursively, or the site
+//     must escape even though the direct reference to U looks safe.
+import { sink } from './sink.js';
+const U = { eta: fnH }; const w = U; sink(w); w.eta();
 // EXPECT (all): live, escapes === 1.
 ```
 
