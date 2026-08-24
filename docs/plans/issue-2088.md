@@ -429,8 +429,13 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
  * complete (`escapes: false`) or is necessarily partial (`escapes: true`).
  *
  * A site is NON-escaping only when all of the following hold:
- *   1. It has a recognised owner — `const X = { … }`, an element of a declared
- *      array literal, or a direct `return { … }` from a named function.
+ *   1. It has a recognised BINDING owner — `const X = { … }`, or an element
+ *      of a declared array literal. A direct `return { … }` from a named
+ *      function is also a recognised owner (WU-4 still seeds `pts(f::return)
+ *      ⊇ pts(siteKey)` from it) but never satisfies this bullet: the binding
+ *      that actually captures the return value (`const X = f()`) is a
+ *      call-assignment this per-file pass cannot see, so it always escapes
+ *      regardless of whether `f` itself is exported.
  *   2. That owner is not exported from this file. An exported binding can be
  *      read from a file this pass may not be looking at, and cross-module SITE
  *      propagation does not exist yet (only cross-module NAME propagation via
@@ -459,8 +464,16 @@ function computeObjectLiteralSiteEscapes(
     if (!owner) continue;                            // inline argument, etc.
     entry.owner = owner.key;
 
-    if (owner.bindingName === null) {                // `return { … }` — no binding to scan
-      entry.escapes = exportedNames.has(owner.enclosingFn);
+    if (owner.bindingName === null) {                // `return { … }` — no binding to scan.
+      // Always escapes (round-2 critic finding): the call-assignment that
+      // captures this return value (`const X = f()`) can land in ANY
+      // binding, exported or not, and buildObjectLiteralSiteConstraints
+      // (WU-4) flows the site into it with no escape check of its own — see
+      // condition 1 above. `entry.owner` is already set just above, so
+      // WU-4's seeding is unaffected; only the escape bit changes, from
+      // checking the wrong binding's export status to never being provably
+      // non-escaping.
+      entry.escapes = true;
       continue;
     }
     if (exportedNames.has(owner.bindingName)) continue;
@@ -662,7 +675,7 @@ export function collectInvokedPropertySites(
 }
 ```
 
-The `resolveReceiverSites` adapter passed in by `buildCallEdgesJS` tries the scoped pts key first, then the bare one — the same two-step lookup `resolveReceiverPtsAliases` already performs at `incremental.ts:1436`:
+The `resolveReceiverSites` adapter passed in by `buildCallEdgesJS` tries the scoped pts key first, then the bare one. This is the same caller-scoped-then-bare shape `resolveReceiverEdge` already uses against `typeMap`, in this same file (`call-resolver.ts:773-775`) — a shape `build-edges.ts:2123`'s CHA-expansion block explicitly mirrors by name for the identical reason ("mirroring resolveReceiverEdge/resolveReceiverTypeName"). The `ptsMap`-specific sibling of the same idea is the `scopedPtsKey`-then-fallback lookup in `emitPtsNoReceiverEdges` (`build-edges.ts:1965`), mirrored on the incremental path by `emitIncrementalPtsNoReceiverEdges` (`incremental.ts:1350`):
 
 ```ts
 const resolveReceiverSites = (receiver: string, callerName: string | null) =>
@@ -927,6 +940,13 @@ import { T } from './a.js'; T.gamma();      // b.js
 import { register } from './reg.js'; register({ delta: fnD });
 // (c) Destructured rather than member-called.
 const D = { eps: fnE }; const { eps } = D; eps();
+// (d) Returned from a factory and captured by an exported call-assignment —
+//     the regression case for the round-2 fix to computeObjectLiteralSiteEscapes's
+//     return-statement-owner branch (WU-2b): the site must escape regardless
+//     of whether the factory FUNCTION itself is exported.
+function factory() { return { zeta: fnZ }; }
+export const X = factory();
+X.zeta();
 // EXPECT (all): live, escapes === 1.
 ```
 
