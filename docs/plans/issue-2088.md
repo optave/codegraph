@@ -232,11 +232,18 @@ export interface ExtractorOutput {
  * `resolveReceiverSites` is supplied by the caller and wraps the points-to
  * lookup, so this function stays engine-agnostic and testable in isolation —
  * the same adapter pattern `CallNodeLookup` already uses in this module.
+ *
+ * Keyed by file (`fileCalls`), not a flattened call list, and
+ * `resolveReceiverSites` takes the calling file's `relPath` as its first
+ * argument — round 9, #2088 finding 2: unlike `collectInvokedPropertyNames`,
+ * this function resolves through a points-to map, and that map is inherently
+ * per-file, so the caller must be able to dispatch to the right one for each
+ * call. See WU-5(a)'s pass-ordering note for the full argument and the
+ * three-pass restructuring of `buildCallEdgesJS` this requires.
  */
 export function collectInvokedPropertySites(
-  callsList: Iterable<Iterable<{ name: string; receiver?: string; dynamicKind?: string | null }>>,
-  resolveReceiverSites: (receiver: string, callerName: string | null) => ReadonlyArray<string>,
-  callerNameOf: (call: { name: string; receiver?: string }) => string | null,
+  fileCalls: ReadonlyMap<string, Iterable<{ name: string; receiver?: string; dynamicKind?: string | null; callerName?: string | null }>>,
+  resolveReceiverSites: (relPath: string, receiver: string, callerName: string | null) => ReadonlyArray<string>,
 ): Set<string>;
 
 // ── src/domain/graph/resolver/points-to.ts ──────────────────────────────────
@@ -345,7 +352,7 @@ export function correlatedEvidenceKey(siteKey: string, propertyName: string): st
 - **Input contract:** tree-sitter AST for one JS/TS/TSX file; the file's own `definitions` and `exports` (already collected before the post-pass runs)
 - **Output contract:** `ExtractorOutput.objectLiteralSites`; `Call.objectLiteralSite` set on object-literal pair and shorthand value-refs
 - **Verification:** `npx vitest run tests/parsers/javascript.test.ts`
-- **Risk:** Medium — the escape analysis is the correctness-critical piece. Mitigated by defaulting `escapes: true` on every unrecognised shape, and, as of round 8, by a standing non-vacuous-coverage requirement on `allReferencesTracked` itself (see its doc comment below) that fails closed on a walk bug rather than relying solely on review to catch the next one — round 8 found the deepest gap yet in this exact function (a self-shadowing walk that silently examined nothing for every non-module-scope table), which seven prior rounds of inspecting individual reference POSITIONS never surfaced because none of them questioned whether the walk was reaching those positions at all.
+- **Risk:** Medium — the escape analysis is the correctness-critical piece. Mitigated by defaulting `escapes: true` on every unrecognised shape, and, as of round 8, by a standing non-vacuous-coverage requirement on `allReferencesTracked` itself (see its doc comment below) that fails closed on a walk bug rather than relying solely on review to catch the next one — round 8 found the deepest gap yet in this exact function (a self-shadowing walk that silently examined nothing for every non-module-scope table), which seven prior rounds of inspecting individual reference POSITIONS never surfaced because none of them questioned whether the walk was reaching those positions at all. **Round 9 found that "defaulting `escapes: true` on every unrecognised shape" was itself not yet true of condition 4's own detector** — `literalHasUnmodeledThisReference` was a positive-only detector that silently voted non-escaping on any pair-value or object-member shape it did not recognise (a `spread_element`, a call-expression-valued pair, a parenthesized function, etc.), the exact inversion of every other condition's default. Closed by rewriting it to the same fail-closed contract, now stated once at the level of `computeObjectLiteralSiteEscapes` itself so it binds every current and future predicate uniformly — see the round-9 standing rule in that function's doc comment below, and `literalHasUnmodeledThisReference`'s own doc comment for the rewrite.
 
 #### Implementation
 
@@ -839,7 +846,10 @@ function isTrackedReferencePosition(refNode: TreeSitterNode, isArrayOwner: boole
  * Fail-safe: anything unrecognised leaves the seeded `escapes: true`. Getting
  * this wrong in the `true` direction costs recall (today's behavior); getting
  * it wrong in the `false` direction would cost soundness. The asymmetry is
- * deliberate.
+ * deliberate. (Round 9: this sentence describes the CONTRACT every condition
+ * below must satisfy; condition 4's own detector did not yet satisfy it
+ * through round 8 — see the round-9 standing rule after the round-8 essay
+ * below, and `literalHasUnmodeledThisReference`'s doc comment for the fix.)
  *
  * > **ROUND 8 (#2088 finding 1) WITHDRAWS the round-7 conclusion below —
  * > it does not merely patch it.** Round 7 argued that a vacuous
@@ -920,6 +930,68 @@ function isTrackedReferencePosition(refNode: TreeSitterNode, isArrayOwner: boole
  * > still correctly reads as tracked — `covered === true` there, nothing was
  * > truncated, there is genuinely nothing to find. What is withdrawn is the
  * > broader claim that vacuous truth needs no exhaustiveness proof at all.
+ *
+ * > **ROUND 9 (#2088 finding 1) — the fail-closed contract, generalised from
+ * > the walk to the whole function.** Round 8 made `allReferencesTracked`
+ * > prove its own coverage before trusting a vacuous result — but that
+ * > discipline was scoped to condition 3's walk specifically. Condition 4's
+ * > own detector, `literalHasUnmodeledThisReference`, sat outside it: through
+ * > round 8 it was a POSITIVE detector — it returned `true` only for a closed
+ * > enumeration of recognised `this`-using shapes (a `method_definition`, an
+ * > inline `function_expression`/`function`-valued pair, or a same-file
+ * > resolved identifier-valued pair) and silently returned `false` — voting
+ * > NON-escaping — for every shape it had never seen before. That is the
+ * > exact inversion of every other condition in this function. Concretely:
+ * >
+ * > ```js
+ * > function fnA() { return 1; }
+ * > const mixin = { run() { return this.alpha(); } };
+ * > const T = { alpha: fnA, ...mixin };
+ * > T.run();
+ * > ```
+ * >
+ * > `literalHasUnmodeledThisReference` walks `T`'s direct children: the
+ * > `alpha` pair (identifier value, resolves in-file to `fnA`, no `this` in
+ * > its body → safe) and the `...mixin` `spread_element`, which matches
+ * > NEITHER the `pair` nor the `method_definition` branch, so the pre-round-9
+ * > loop skips it without comment. `T.run()` is condition 3's only reference
+ * > to `T`, and it is a genuine tracked call — so the site reads as
+ * > local-closed while `this.alpha()` (reached only through the spread-copied
+ * > `run` method, which DOES reference `this`) produces zero correlated
+ * > evidence: nothing seeds a points-to fact for `this` here, the same gap
+ * > condition 4 exists to catch for an inline `this.k()` method. `fnA` is
+ * > reported dead, though `T.run()` calls it on every invocation. Two
+ * > equivalent variants need no second literal at all: `run:
+ * > (function () { return this.alpha(); })` (a `pair` whose value is a
+ * > `parenthesized_expression`) and `run: makeRunner()` (a `pair` whose value
+ * > is a `call_expression`) — neither matches any branch of the pre-round-9
+ * > loop either. The line-991 "restrict to the simplest syntactic shape"
+ * > precedent (#1771/#1784) the pre-round-9 doc comment cited for this
+ * > silence governs *edge emission* — a recall choice about which
+ * > resolutions to attempt — never a *safety predicate* about which shapes
+ * > are proven harmless; conflating the two is what let this stand as an
+ * > unreviewed exception to every other condition's fail-closed default.
+ * >
+ * > **The corrected, and now function-wide, rule:** every predicate
+ * > `computeObjectLiteralSiteEscapes` consults — not just
+ * > `allReferencesTracked`'s coverage (round 8), and not just condition 4 —
+ * > must return "escaping" for any shape it does not POSITIVELY recognise as
+ * > safe, with no third "silently skip and implicitly vote non-escaping"
+ * > outcome anywhere in the chain. `literalHasUnmodeledThisReference` (below)
+ * > is rewritten to this contract: it now enumerates the shapes POSITIVELY
+ * > PROVEN never to bind their own `this` to the literal, and escapes on
+ * > everything else — see its own doc comment for the exact enumeration. This
+ * > is a STANDING RULE on `computeObjectLiteralSiteEscapes`'s own contract,
+ * > not a one-off patch to condition 4 alone: any predicate added to this
+ * > function in a future round — a hypothetical condition 5, or a further
+ * > refinement of conditions 1–3 — inherits it automatically, exactly as
+ * > round 8's non-vacuous-coverage requirement is a standing rule on
+ * > `allReferencesTracked` specifically rather than a one-off fix to the
+ * > shadow-prune bug that motivated it. Getting this wrong toward "escaping"
+ * > costs recall, the same asymmetry every fail-safe default in this design
+ * > accepts; getting it wrong the other way is precisely the class of bug
+ * > both standing rules now exist to catch structurally, in every future
+ * > change to this function, not only in the one instance found this round.
  */
 function computeObjectLiteralSiteEscapes(
   sites: Map<string, ObjectLiteralSite>,
@@ -978,50 +1050,104 @@ function computeObjectLiteralSiteEscapes(
 }
 
 /**
- * True when the object literal itself defines a shorthand method
- * (`method_definition`), a non-arrow function-expression-valued property, OR
- * (round 7, #2088 finding 3) a plain-IDENTIFIER-valued property that itself
- * names a same-file non-arrow function — whose body contains a `this`
- * reference anywhere in its subtree (round-6 critic finding, condition 4
- * above). Walks `objectNode`'s DIRECT children only — `pair` and
- * `method_definition` — the same one-level shape `extractObjectLiteralFunctions`
- * already uses to enumerate an object literal's own methods
- * (`src/extractors/javascript.ts:2065-2091`), including its exact three
- * function-valued type names (`arrow_function`, `function_expression`,
- * `function`). A more deeply nested wrapped/IIFE form is left unrecognised,
- * matching this file's established "restrict to the simplest syntactic
- * shape" precedent (#1771/#1784).
+ * True unless the object literal's own direct children are ALL positively
+ * proven never to bind their own `this` to the literal (round-6 critic
+ * finding, condition 4 above; round 7, #2088 finding 3, added the
+ * identifier-valued-pair case; **round 9, #2088 finding 1, inverted the
+ * default itself** — see the ROUND 9 standing rule in
+ * `computeObjectLiteralSiteEscapes`'s doc comment above for why). Walks
+ * `objectNode`'s DIRECT children only — the same one-level shape
+ * `extractObjectLiteralFunctions` already uses to enumerate an object
+ * literal's own methods (`src/extractors/javascript.ts:2065-2091`) — and
+ * classifies each one as one of:
  *
- * `arrow_function`-valued properties are deliberately EXCLUDED: an arrow
- * function never binds its own `this` — inside one, `this` resolves
- * lexically to whatever `this` was where the literal itself was written,
- * which is never the literal, regardless of how the enclosing method is
- * later called. Excluding it costs no soundness and preserves recall.
+ *   - `method_definition` — its own subtree is searched for `this`.
+ *   - a `pair` whose value is `arrow_function` — POSITIVELY SAFE, never
+ *     unrecognised: an arrow function never binds its own `this` — inside
+ *     one, `this` resolves lexically to whatever `this` was where the
+ *     literal itself was written, which is never the literal, regardless of
+ *     how the enclosing method is later called. Excluding it costs no
+ *     soundness and preserves recall.
+ *   - a `pair` whose value is `function_expression` or `function` (written
+ *     INLINE) — its own subtree is searched for `this`, same as the
+ *     `method_definition` case.
+ *   - a `pair` whose value is a plain `identifier` (round 7, #2088 finding
+ *     3 — round 6 only inspected an INLINE function/method value, so
+ *     `{ alpha: alphaImpl, run: runImpl }` with `function runImpl() {
+ *     return this.alpha(); }` defined elsewhere in the same file slipped
+ *     through entirely: `run`'s value is `identifier`, not
+ *     `function_expression`, so the round-6 walk never looked at it,
+ *     `T.run()` read as a genuine tracked call (condition 3 satisfied), and
+ *     the site read as local-closed while `this.alpha()` produced zero
+ *     correlated evidence — `alphaImpl` would be reported dead where today
+ *     it is live) — resolved via `resolveIdentifierValueThisReference`
+ *     below, with the SAME conservative, three-way fail-safe structure the
+ *     rest of this design already uses: resolves in-file to a non-arrow
+ *     function/method → check its body for `this`, same as the inline case;
+ *     resolves in-file to an ARROW function → excluded, same reasoning as an
+ *     inline arrow-valued pair above; does not resolve to any in-file
+ *     function-shaped definition at all (imported, global, a non-function
+ *     binding, or nested past this file's module-level-only search) → FAIL
+ *     SAFE, treated as if it might contain `this`.
+ *   - a `shorthand_property_identifier` (round 9, #2088 finding 1 — `{ run }`
+ *     rather than `{ run: run }`) — the IDENTICAL identifier-resolution
+ *     treatment as the bullet above, keyed off the shorthand node's own text
+ *     (a shorthand property's key and value name the same binding). This is
+ *     not an incidental addition: shorthand properties are common enough
+ *     that, without this bullet, round 9's inverted default just below would
+ *     make EVERY object literal that uses one escape unconditionally —
+ *     `shorthand_property_identifier` is a distinct tree-sitter node type
+ *     from `pair` (verified: `collectObjectPropBindings`,
+ *     `src/extractors/javascript.ts:4437`, already branches on it
+ *     separately for the identical reason), so it needs its own explicit
+ *     case rather than falling out of the `pair` handling above.
+ *   - a `pair` whose value is a positively-safe non-function LITERAL or
+ *     PRIMITIVE (`string`, `number`, `true`, `false`, `null`,
+ *     `template_string`, `regex`, or a nested `array`/`object`) — safe not
+ *     because it cannot contain a `this` token in its own text (a
+ *     `template_string`'s `${…}` interpolation can), but because condition 4
+ *     only cares whether invoking `T.key()` LATER can bind `this` to `T`,
+ *     and none of these value shapes is itself directly callable: a
+ *     `template_string`'s interpolation is evaluated EAGERLY, once, at
+ *     object-construction time, in the SURROUNDING scope's own `this` (T
+ *     does not exist yet), never creating a property invocable as `T.key()`
+ *     later; and a nested `array`/`object` cannot itself be invoked as
+ *     `T.key()` either — reaching a function nested inside it requires an
+ *     extra property hop (`T.key[0]()`, `T.key.method()`) that rebinds the
+ *     receiver to the nested value, never to `T`, so any `this` arbitrarily
+ *     deep inside it can never resolve to `T` when called through `T`. See
+ *     `isPositivelyThisFreeLiteral` below for the exact enumeration.
+ *   - anything else — a `spread_element`, or a `pair` whose value is a
+ *     `call_expression`, `parenthesized_expression`, `member_expression`,
+ *     `as_expression`/`satisfies_expression`, a logical/ternary expression,
+ *     or any other shape this function does not positively recognise —
+ *     **round 9, #2088 finding 1: now escaping, not silently skipped.**
+ *     Through round 8 this function fell through such a child with no
+ *     branch taken at all, implicitly voting non-escaping — the exact
+ *     inversion of every other condition's fail-closed default. Concretely:
+ *     `const mixin = { run() { return this.alpha(); } }; const T = {
+ *     alpha: fnA, ...mixin }; T.run();` — the `...mixin` `spread_element`
+ *     matched no branch, `T.run()` is condition 3's only (tracked) reference
+ *     to `T`, so the site read as local-closed while the spread-copied
+ *     `run` method's `this.alpha()` produced zero correlated evidence,
+ *     reporting `fnA` dead though `T.run()` calls it every time. `run:
+ *     (function () { return this.alpha(); })` (`parenthesized_expression`)
+ *     and `run: makeRunner()` (`call_expression`) are equivalent variants
+ *     needing no second literal. The line-991-era "restrict to the simplest
+ *     syntactic shape" precedent (#1771/#1784) previously cited to justify
+ *     this silence governs *edge emission* — a recall choice about which
+ *     resolutions to attempt — never a *safety predicate* about which shapes
+ *     are proven harmless; this function no longer cites it for that
+ *     purpose. Recall for these shapes is genuinely narrower than before
+ *     this round (an object literal using object-spread, or any of the
+ *     value shapes just listed, alongside a call the design would otherwise
+ *     have correlated, now escapes and falls to T2) — tracked as a follow-up
+ *     capability rather than silently accepted, per the Success Criteria
+ *     note and #2624.
  *
- * Round 7 (#2088 finding 3): round 6 only inspected a `pair`'s value when it
- * was written INLINE (`function_expression`/`function`), so
- * `{ alpha: alphaImpl, run: runImpl }` with `function runImpl() { return
- * this.alpha(); }` defined elsewhere in the same file slipped through
- * entirely — `run`'s value is `identifier`, not `function_expression`, so
- * the round-6 walk never looked at it, `T.run()` read as a genuine tracked
- * call (condition 3 satisfied), and the site read as local-closed while
- * `this.alpha()` produced zero correlated evidence, exactly the failure mode
- * condition 4 exists to prevent — `alphaImpl` would be reported dead where
- * today it is live. An identifier-valued pair is resolved via the new
- * `resolveIdentifierValueThisReference` below, with the SAME conservative,
- * three-way fail-safe structure the rest of this design already uses:
- *   - resolves in-file to a non-arrow function/method → check its body for
- *     `this`, same as the inline case;
- *   - resolves in-file to an ARROW function → excluded, same reasoning as
- *     an inline arrow-valued pair just above — never binds its own `this`;
- *   - does not resolve to any in-file function-shaped definition at all
- *     (imported, global, a non-function binding, or nested past this file's
- *     module-level-only search) → FAIL SAFE, treated as if it might contain
- *     `this`. Getting this wrong toward `true` costs recall, not soundness —
- *     the same asymmetry this whole design is built on.
- *
- * Conservative exclusion, not correlation — see condition 4's doc comment
- * and #2618 for the fuller design tradeoff this accepts.
+ * Conservative exclusion, not correlation, for the shapes this function DOES
+ * recognise as `this`-using — see condition 4's doc comment and #2618 for
+ * the fuller design tradeoff that acceptance path takes.
  */
 function literalHasUnmodeledThisReference(
   objectNode: TreeSitterNode,
@@ -1031,28 +1157,95 @@ function literalHasUnmodeledThisReference(
   for (let i = 0; i < objectNode.childCount; i++) {
     const child = objectNode.child(i);
     if (!child) continue;
-    let fn: TreeSitterNode | null = null;
+
     if (child.type === 'method_definition') {
-      fn = child;
-    } else if (child.type === 'pair') {
+      if (subtreeContainsThisKeyword(child, 0)) return true;
+      continue;
+    }
+
+    if (child.type === 'shorthand_property_identifier') {
+      // Round 9 (#2088 finding 1) — see doc comment above for why this
+      // needs the identical identifier-resolution treatment a `pair`'s
+      // identifier value gets, rather than falling through to the
+      // fail-closed default just below (which would otherwise make every
+      // shorthand-using literal escape unconditionally).
+      if (
+        !BUILTIN_GLOBALS.has(child.text) &&
+        resolveIdentifierValueThisReference(root, child.text, definitionNames)
+      ) {
+        return true;
+      }
+      continue;
+    }
+
+    if (child.type === 'pair') {
       const value = child.childForFieldName('value');
-      if (value && (value.type === 'function_expression' || value.type === 'function')) {
-        fn = value;
-      } else if (value?.type === 'identifier' && !BUILTIN_GLOBALS.has(value.text)) {
+      if (!value) return true; // malformed pair — fail safe, not silently skipped.
+      if (value.type === 'arrow_function') continue; // never binds its own `this`.
+      if (value.type === 'function_expression' || value.type === 'function') {
+        if (subtreeContainsThisKeyword(value, 0)) return true;
+        continue;
+      }
+      if (value.type === 'identifier' && !BUILTIN_GLOBALS.has(value.text)) {
         // Round 7 (finding 3) — see doc comment above for the regression
         // this closes. Resolved and handled here directly (rather than
-        // falling through to the `fn`-based check below) because a resolved
-        // arrow function must be excluded the same way an inline
-        // arrow-valued pair already is, which the shared `fn`-truthiness
-        // check below cannot express on its own.
+        // falling through to the fail-closed default below) because a
+        // resolved arrow function must be excluded the same way an inline
+        // arrow-valued pair already is.
         if (resolveIdentifierValueThisReference(root, value.text, definitionNames)) return true;
         continue;
       }
-      // `arrow_function` is deliberately excluded — see doc comment above.
+      if (isPositivelyThisFreeLiteral(value)) continue;
+      // Round 9 (#2088 finding 1) — every other pair-value shape (a
+      // `call_expression`, a `parenthesized_expression`, a
+      // `member_expression`, an `as_expression`, a logical/ternary
+      // expression, or anything else this function does not positively
+      // recognise) is NOT proven `this`-free, so it now escapes rather
+      // than being silently skipped. See the doc comment above for the
+      // counter-example this closes.
+      return true;
     }
-    if (fn && subtreeContainsThisKeyword(fn, 0)) return true;
+
+    if (child.type === 'spread_element') {
+      // Round 9 (#2088 finding 1) — a spread's own source object can carry
+      // ANY property, including a method that references `this` (see the
+      // `{ ...mixin }` counter-example in the doc comment above). Nothing
+      // about `spread_element`'s own shape lets this function positively
+      // rule that out, so it now escapes rather than being silently
+      // skipped — previously it matched no branch at all.
+      return true;
+    }
+
+    // Punctuation (`{`, `,`, `}`) and comments are not a property at all
+    // and are never escaping.
   }
   return false;
+}
+
+/**
+ * True for a `pair`-VALUE node whose own shape guarantees it can never
+ * itself be invoked as `T.key()` with `this` bound to `T` later — condition
+ * 4's only concern (round 9, #2088 finding 1). A positive allowlist, not a
+ * negative denylist: a value type not in this set falls through to the
+ * caller's fail-closed default, it is not treated as safe by omission. See
+ * `literalHasUnmodeledThisReference`'s doc comment for why a `template_string`
+ * (eager, once-only interpolation in the SURROUNDING scope's `this`, never
+ * `T`'s) and a nested `array`/`object` (reaching a function inside one
+ * requires an extra property hop that rebinds the receiver away from `T`)
+ * are both included despite not being JS primitives in the strict sense.
+ */
+function isPositivelyThisFreeLiteral(value: TreeSitterNode): boolean {
+  return (
+    value.type === 'string' ||
+    value.type === 'number' ||
+    value.type === 'true' ||
+    value.type === 'false' ||
+    value.type === 'null' ||
+    value.type === 'template_string' ||
+    value.type === 'regex' ||
+    value.type === 'array' ||
+    value.type === 'object'
+  );
 }
 
 /**
@@ -1092,11 +1285,19 @@ function resolveIdentifierValueThisReference(
 
 /**
  * Bounded, MODULE-LEVEL-ONLY resolution of a plain identifier to the
- * function node it names — the same "restrict to the simplest syntactic
- * shape" precedent (#1771/#1784) `literalHasUnmodeledThisReference`'s own
- * direct-value handling already follows, applied one hop through an
- * identifier. Unwraps one leading `export_statement` (`export function
- * f(){}` / `export const f = …` are still module-level declarations).
+ * function node it names — a "restrict to the simplest syntactic shape"
+ * precedent (#1771/#1784), applied one hop through an identifier, and
+ * BACKSTOPPED by its own fail-safe: a nested-past-module-scope declaration
+ * this bounded search does not reach returns `null` here, which
+ * `resolveIdentifierValueThisReference` (above) already treats as
+ * unresolved and fails safe on (round 9, #2088 finding 1, distinguishes
+ * this from the file's PRE-round-9 use of the same precedent to justify
+ * `literalHasUnmodeledThisReference`'s own now-removed silent-skip default —
+ * that citation was a safety predicate wrongly leaning on a recall-scoping
+ * precedent; this one is a genuine recall-scoping choice with its own
+ * fail-safe backstop, which is what makes it still sound). Unwraps one
+ * leading `export_statement` (`export function f(){}` / `export const f = …`
+ * are still module-level declarations).
  * Returns the `function_declaration` node itself (its own subtree is what
  * `subtreeContainsThisKeyword` searches) or a `variable_declarator`'s
  * `value` node (`arrow_function`, `function_expression`, or `function`) —
@@ -1340,14 +1541,47 @@ export function resolveSitesViaPointsTo(varName: string, pts: PointsToMap): stri
 
 #### Implementation
 
-**(a) `collectInvokedPropertySites` in `call-resolver.ts`,** the receiver-correlated sibling of `collectInvokedPropertyNames`. Note that `collectInvokedPropertyNames` itself is **left exactly as it is** — it remains the fallback tier, and changing it would change behavior for escaping sites:
+**(a) `collectInvokedPropertySites` in `call-resolver.ts`,** the receiver-correlated sibling of `collectInvokedPropertyNames`. Note that `collectInvokedPropertyNames` itself is **left exactly as it is** — it remains the fallback tier, and changing it would change behavior for escaping sites.
+
+> **Pass ordering (ROUND 9, #2088 finding 2) — load-bearing, not incidental.** `collectInvokedPropertyNames` and `computedDispatchTableEvidence` are pure name/file aggregations over `fileSymbols` — resolving them needs no points-to information at all, which is exactly why `buildCallEdgesJS` builds both of them ONCE, up front, at `build-edges.ts:1350-1373`, **before** the existing per-file loop that builds each file's own points-to map via `buildPointsToMapForFile` (`build-edges.ts:1425`). `collectInvokedPropertySites` cannot be slotted into that same pre-loop position unchanged: resolving a call's receiver through the points-to map is inherently a PER-FILE operation — a receiver variable can only be resolved against the points-to map for the file its own call sits in — and no such map exists yet, for ANY file, at the point `invokedPropertyNames`/`computedDispatchTableEvidence` are assembled. A builder who reads this WU's doc-comment framing ("the receiver-CORRELATED counterpart of `collectInvokedPropertyNames`") as license to slot it into the identical pre-loop position, closing `resolveReceiverSites` over whatever `ptsMap` binding happens to be lexically nearest, gets code that either fails to compile (no `ptsMap` in scope yet) or — worse, because it WOULD compile and pass every single-file fixture in WU-10 — silently resolves every file's calls against one arbitrary file's map (e.g. whichever file's `ptsMap` a hoisted variable last held), under-populating `correlated` for every other file and reporting some of their sites' properties dead. `buildCallEdgesJS` is therefore restructured into three passes, not two:
+>
+> 1. **Pts pre-pass.** For every file, call `buildImportedNamesMap` and `buildPointsToMapForFile` exactly once each and cache both results, keyed by `relPath`:
+>    ```ts
+>    const importedNamesByFile = new Map<string, ReturnType<typeof buildImportedNamesMap>>();
+>    const ptsMapsByFile = new Map<string, PointsToMap>();
+>    for (const [relPath, symbols] of fileSymbols) {
+>      if (barrelOnlyFiles.has(relPath)) continue;
+>      const importedNames = buildImportedNamesMap(ctx, relPath, symbols, rootDir);
+>      importedNamesByFile.set(relPath, importedNames);
+>      ptsMapsByFile.set(
+>        relPath,
+>        buildPointsToMapForFile(symbols, importedNames.importedNames, ctx.config.analysis.pointsToMaxIterations),
+>      );
+>    }
+>    ```
+> 2. **Evidence pass.** Assemble `nonEscapingSites` — a pure per-file read of each file's own already-extracted `objectLiteralSites`, needing no points-to information, so it may run in either order relative to pass 1:
+>    ```ts
+>    const nonEscapingSites = new Set<string>();
+>    for (const [relPath, symbols] of fileSymbols) {
+>      for (const site of symbols.objectLiteralSites ?? []) {
+>        if (!site.escapes) nonEscapingSites.add(objectLiteralSiteKey(relPath, site.site));
+>      }
+>    }
+>    ```
+>    — and `correlated`, via `collectInvokedPropertySites`, now reading `ptsMapsByFile` instead of a single closed-over map (signature below).
+> 3. **Edge-resolution pass.** The existing per-file loop, unchanged in shape, now reading `importedNamesByFile.get(relPath)!` / `ptsMapsByFile.get(relPath)!` instead of recomputing either — both to avoid computing each exactly twice, and, more importantly, so `resolveFallbackTargets` never runs for any file before `correlated`/`nonEscapingSites` are fully assembled across every file.
+>
+> This ordering requirement holds regardless of how many files a given site's OWN correlation actually spans — see the two-file WU-10 fixture below for why it must be tested with more than one file even though a single non-escaping site's own evidence is always intra-file (condition 2 forces any genuinely cross-file reference to be exported, hence escaping, hence T2 — see WU-2b). Mirrored on the Rust side by WU-8's own pass-ordering note, since `EdgeContext::new` aggregates `invoked_property_names`/`computed_dispatch_table_evidence` globally in the identical "before any file's points-to map exists" position.
+
+`collectInvokedPropertySites` is therefore keyed by file from the start, not a flattened call list — the Interface Definitions section above states the same signature:
 
 ```ts
 /**
  * #2088 — the receiver-CORRELATED counterpart of
  * `collectInvokedPropertyNames`. For every member call `x.name(...)`, resolve
- * `x` through the points-to map to the object-literal allocation sites it may
- * refer to, and record `${siteKey}|${name}` for each.
+ * `x` through the points-to map for the FILE THAT CALL IS IN to the
+ * object-literal allocation sites it may refer to, and record
+ * `${siteKey}|${name}` for each.
  *
  * Where `collectInvokedPropertyNames` answers "was this property name ever
  * invoked ANYWHERE", this answers "was this property invoked on THIS literal" —
@@ -1356,16 +1590,23 @@ export function resolveSitesViaPointsTo(varName: string, pts: PointsToMap): stri
  *
  * Value-ref calls are excluded for the same reason they are excluded there: a
  * value-ref is a bare VALUE reference, never an invocation.
+ *
+ * Unlike `collectInvokedPropertyNames`, this function is keyed by file, not a
+ * flattened `Iterable<Iterable<Call>>` — see the pass-ordering note above for
+ * why: `resolveReceiverSites` must dispatch to the points-to map for the
+ * SAME file a given call belongs to, so the caller (and this function) must
+ * know which file each call came from, not just have an undifferentiated
+ * stream of calls.
  */
 export function collectInvokedPropertySites(
-  callsList: Iterable<Iterable<CallWithCaller>>,
-  resolveReceiverSites: (receiver: string, callerName: string | null) => ReadonlyArray<string>,
+  fileCalls: ReadonlyMap<string, Iterable<{ name: string; receiver?: string; dynamicKind?: string | null; callerName?: string | null }>>,
+  resolveReceiverSites: (relPath: string, receiver: string, callerName: string | null) => ReadonlyArray<string>,
 ): Set<string> {
   const keys = new Set<string>();
-  for (const calls of callsList) {
+  for (const [relPath, calls] of fileCalls) {
     for (const call of calls) {
       if (!call.receiver || call.dynamicKind === 'value-ref') continue;
-      for (const siteKey of resolveReceiverSites(call.receiver, call.callerName ?? null)) {
+      for (const siteKey of resolveReceiverSites(relPath, call.receiver, call.callerName ?? null)) {
         keys.add(correlatedEvidenceKey(siteKey, call.name));
       }
     }
@@ -1374,14 +1615,23 @@ export function collectInvokedPropertySites(
 }
 ```
 
-The `resolveReceiverSites` adapter passed in by `buildCallEdgesJS` tries the scoped pts key first, then the bare one. This is the same caller-scoped-then-bare shape `resolveReceiverEdge` already uses against `typeMap`, in this same file (`call-resolver.ts:773-775`) — a shape `build-edges.ts:2123`'s CHA-expansion block explicitly mirrors by name for the identical reason ("mirroring resolveReceiverEdge/resolveReceiverTypeName"). The `ptsMap`-specific sibling of the same idea is the `scopedPtsKey`-then-fallback lookup in `emitPtsNoReceiverEdges` (`build-edges.ts:1965`), mirrored on the incremental path by `emitIncrementalPtsNoReceiverEdges` (`incremental.ts:1350`):
+The `resolveReceiverSites` adapter passed in by `buildCallEdgesJS` tries the scoped pts key first, then the bare one, against the CALLING file's own cached map. This is the same caller-scoped-then-bare shape `resolveReceiverEdge` already uses against `typeMap`, in this same file (`call-resolver.ts:773-775`) — a shape `build-edges.ts:2123`'s CHA-expansion block explicitly mirrors by name for the identical reason ("mirroring resolveReceiverEdge/resolveReceiverTypeName"). The `ptsMap`-specific sibling of the same idea is the `scopedPtsKey`-then-fallback lookup in `emitPtsNoReceiverEdges` (`build-edges.ts:1965`), mirrored on the incremental path by `emitIncrementalPtsNoReceiverEdges` (`incremental.ts:1350`):
 
 ```ts
-const resolveReceiverSites = (receiver: string, callerName: string | null) =>
-  (callerName ? resolveSitesViaPointsTo(`${callerName}::${receiver}`, ptsMap) : []).concat(
+const resolveReceiverSites = (relPath: string, receiver: string, callerName: string | null) => {
+  const ptsMap = ptsMapsByFile.get(relPath);
+  if (!ptsMap) return [];
+  return (callerName ? resolveSitesViaPointsTo(`${callerName}::${receiver}`, ptsMap) : []).concat(
     resolveSitesViaPointsTo(receiver, ptsMap),
   );
+};
+const correlated = collectInvokedPropertySites(
+  new Map(Array.from(fileSymbols, ([relPath, symbols]) => [relPath, symbols.calls])),
+  resolveReceiverSites,
+);
 ```
+
+> **Why `collectInvokedPropertyNames`'s OWN call site does not need this treatment:** it takes `Array.from(fileSymbols.values(), (s) => s.calls)` — a flattened, file-blind list — precisely because it never resolves anything through a points-to map; it only tests `call.receiver`/`call.dynamicKind`/`call.name`, all of which are already on the `Call` object regardless of which file it came from. `collectInvokedPropertySites` cannot use the same flattened shape for the reason stated above, which is also why it is a genuinely new, not merely copy-pasted, sibling rather than a one-line variation.
 
 **(b) The tier ladder in `resolveFallbackTargets`.** The existing `if (call.keyExpr && …)` block is replaced by an explicit three-tier predicate. Read the tiers top-down; the ordering is the soundness argument:
 
@@ -1534,7 +1784,7 @@ The rebuilt file's own sites and correlated evidence are recomputed in memory an
 
 #### Implementation
 
-Mirrors WU-2 one-for-one, including every round-7 AND round-8 refinement — dual-engine parity (ADR-001) means none of round 7's finding 1/2/3/4/5 fixes, nor round 8's finding 1/2/3 fixes, are TS-only:
+Mirrors WU-2 one-for-one, including every round-7, round-8, AND round-9 refinement — dual-engine parity (ADR-001) means none of round 7's finding 1/2/3/4/5 fixes, round 8's finding 1/2/3 fixes, nor round 9's finding 1 fix, are TS-only:
 
 - `types.rs` — `ObjectLiteralSite { site: String, owner: Option<String>, escapes: bool }` with serde field names matching the TS shape (`objectLiteralSite` ↔ `object_literal_site` via the existing rename convention used for `key_expr`/`dynamic_kind`); `Call.object_literal_site: Option<String>`.
 - `javascript.rs` — `object_literal_site_id`, `enclosing_object_literal`; `handle_object_literal_pair_value_ref` (line 4456) and `handle_object_literal_shorthand_value_ref` (line 4493) each gain the site seed + tag; new `compute_object_literal_site_escapes(sites, root, source, exported_names, definition_names)` — the trailing `definition_names: &HashSet<String>` parameter mirrors the TS side's round-7 addition (finding 3) and is built the same way, from `symbols.definitions` — with:
@@ -1552,10 +1802,12 @@ Mirrors WU-2 one-for-one, including every round-7 AND round-8 refinement — dua
     - BOTH pre-existing recursive branches, threading the SAME fixed declaring-scope node down unchanged rather than recomputing it: the round-4 rebinding recursion (`is_array_owner` unchanged across the recursive call) and the round-7 for-of-loop-variable recursion (finding 2 — `is_array_owner` hardcoded `false` for the recursive call, and the reference rejected outright, no recursive call attempted, when the loop variable's `left` is not a single plain identifier — reusing `collect_for_of_binding`'s own `var_name` extraction shape at `javascript.rs:7576-7597` to decide "single plain identifier" the same way the TS side reuses `collectForOfBinding`'s);
   - `resolve_site_owner(object_node: &Node, source: &[u8]) -> Option<SiteOwner>` where `SiteOwner { key: String, binding_name: Option<String> }` — round 7 / finding 5: `binding_name` is always the bare declarator identifier (never `[*]`- or `::return`-suffixed), matching the TS contract field-for-field, for the identical reason (an `is_array_owner` derived from `key != binding_name` that could ever be wrong for the array case would silently disable finding 1's fix and condition 2's export check together, on this engine too). ROUND 8 (#2088 finding 2) extends the identical guarantee one step further: `binding_name` also never carries the `#{line}` suffix `find_enclosing_table_name`/`find_declaring_scope_line`-style disambiguation appends (`javascript.rs:4419-4425`) — it is always the `name` field's own `utf8_text(source)`, verbatim, never routed through `find_enclosing_table_name`'s suffix-appending return construction (only its ancestor-walk SHAPE is reused, not its return value). Getting this wrong would make `all_references_tracked` search for an identifier literally spelled `T#7` — text that cannot exist in the grammar — silently reopening finding 1's exact vacuous-walk failure mode for every non-module-scope binding on this engine too, the round-8 counterpart of finding 5's `[*]`/`::return` case just above;
   - `literal_has_unmodeled_this_reference(object_node, root, definition_names, source) -> bool` and its depth-capped `this`-kind subtree search, mirroring `literalHasUnmodeledThisReference` / `subtreeContainsThisKeyword` one-for-one, including the truncate-toward-`true` direction (the inverse of `block_contains_identifier_excluding`'s own truncate-toward-`false`, for the same reason the TS side documents) — PLUS, round 7 / finding 3, the identifier-valued-pair branch: new `resolve_identifier_value_this_reference(root, name, definition_names, source) -> bool` and `find_top_level_function_node_by_name(root, name, source) -> Option<Node>`, mirroring `resolveIdentifierValueThisReference` / `findTopLevelFunctionNodeByName` one-for-one, including the identical three-way fail-safe (resolves to a same-file non-arrow function → check its body; resolves to an arrow function → excluded; does not resolve in-file → fail-safe `true`).
+    - ROUND 9 (#2088 finding 1) — REWRITES the match arms inside `literal_has_unmodeled_this_reference`'s own child loop to the same fail-closed contract the TS side adopts: a `method_definition` or inline `function_expression`/`function`-valued `pair` still has its subtree searched; an `arrow_function`-valued `pair` is still excluded; an identifier-valued `pair` still routes through `resolve_identifier_value_this_reference`; new `shorthand_property_identifier` arm, resolving the shorthand node's own text through the identical `resolve_identifier_value_this_reference` call (necessary, not optional — without it, round 9's inverted default would make every literal using a shorthand property escape unconditionally on this engine too); new `is_positively_this_free_literal(value: &Node) -> bool` mirroring `isPositivelyThisFreeLiteral`'s exact node-kind list (`string`, `number`, `true`, `false`, `null`, `template_string`, `regex`, `array`, `object`); and — the actual fix — the match's fall-through arm, covering `spread_element` and every `pair`-value kind not named above (`call_expression`, `parenthesized_expression`, `member_expression`, `as_expression`, a logical/ternary expression, or anything else), now returns `true` (escaping) instead of falling out of the loop with no arm taken. Round 7's Rust mirror already established the convention of matching the TS side's fail-safe direction exactly rather than a locally-"reasonable" approximation (see the `$`-guard parity risk this same section calls out below); this is the identical discipline applied to this function's own default.
+  - `compute_object_literal_site_escapes` gains no new PARAMETER for this round (unlike round 7's `definition_names` and round 8's `declaring_scope`/`source`-threading) — round 9 is entirely internal to `literal_has_unmodeled_this_reference`'s own shape recognition, so its call site in `compute_object_literal_site_escapes` is unchanged.
 
 Every new Rust item carries a `/// Mirrors <tsSymbol> in src/extractors/javascript.ts` line — the convention `handle_object_literal_pair_value_ref` already follows.
 
-> **Parity risk specific to round 7 and round 8:** round 7's `is_array_owner` short-circuit, round 8's stripped-text/no-`$` check applied uniformly to both subscript index kinds (replacing round 7's template-only version), and round 8's declaring-scope/non-vacuous-coverage walk are all easy to port correctly for the obvious cases and easy to narrow silently in a hand-written port — exactly the class of mistake round 7's Rust mirror of the `$`-guard itself would repeat if copied without noticing round 8's TS-side correction. WU-10's dual-engine assertion on the new escape-fallback cases (below) is what actually catches a missed one — a reviewer diffing the two `is_tracked_reference_position`/`isTrackedReferencePosition` and `all_references_tracked`/`allReferencesTracked` bodies side by side is the other half of the gate, per the Testing Strategy section's "what no tier catches" note.
+> **Parity risk specific to round 7, round 8, and round 9:** round 7's `is_array_owner` short-circuit, round 8's stripped-text/no-`$` check applied uniformly to both subscript index kinds (replacing round 7's template-only version), round 8's declaring-scope/non-vacuous-coverage walk, and round 9's fall-through-arm inversion in `literal_has_unmodeled_this_reference` are all easy to port correctly for the obvious cases and easy to narrow silently in a hand-written port — exactly the class of mistake round 7's Rust mirror of the `$`-guard itself would repeat if copied without noticing round 8's TS-side correction. Round 9 specifically: a Rust `match` on `child.kind()` with an explicit `_ => false` fall-through arm looks, on a quick read, like ordinary exhaustiveness hygiene rather than a safety-critical default — the reviewer diffing the two engines side by side (below) must confirm that arm is `true`, not `false`, and that `spread_element` is not silently absent from the match altogether (which would compile fine under a wildcard arm and be just as wrong). WU-10's dual-engine assertion on the new escape-fallback cases (below) is what actually catches a missed one — a reviewer diffing the two `is_tracked_reference_position`/`isTrackedReferencePosition` and `all_references_tracked`/`allReferencesTracked` bodies side by side, now extended to `literal_has_unmodeled_this_reference`/`literalHasUnmodeledThisReference` for this round, is the other half of the gate, per the Testing Strategy section's "what no tier catches" note.
 
 ---
 
@@ -1576,6 +1828,8 @@ Every new Rust item carries a `/// Mirrors <tsSymbol> in src/extractors/javascri
 - `import_edges.rs` — `persist_invoked_property_sites` + `persist_object_literal_sites` beside the existing `persist_invoked_property_names`.
 - `db/connection.rs` — the two `CREATE TABLE` statements from WU-5(c), verbatim, beside the existing `invoked_property_names` DDL at ~line 497.
 - `src/domain/graph/builder/stages/build-edges.ts` — `NativeFileEntry` (line 118) gains a matching `objectLiteralSites?: ObjectLiteralSite[]` field beside the existing `computedDispatchTableEvidence?: string[]` (line 143); `buildNativeFileEntry` (line 879) populates it from `symbols.objectLiteralSites`, mirroring the existing `computedDispatchTableEvidence` population (lines 918–920) verbatim. `Call.objectLiteralSite` needs no equivalent edit: `calls: symbols.calls` (line 901) already carries the whole `Call` object across this boundary via napi-rs's own struct serialization — the same whole-object reasoning WU-3 establishes for the WASM-worker-protocol seam.
+
+> **Pass ordering on the Rust side (ROUND 9, #2088 finding 2) — mirrors WU-5(a)'s note exactly, and for the identical reason.** Verified against the real source: `build_call_edges` (`build_edges.rs:1264`) calls `EdgeContext::new(&all_nodes, &builtin_receivers, &files, &extra_names)` (`build_edges.rs:1272`) — which eagerly aggregates `invoked_property_names` and `computed_dispatch_table_evidence` across the FULL `files: &[FileEdgeInput]` slice inside its own constructor (`build_edges.rs:322-327`) — **before** the per-file loop (`for file_input in &files { process_file(&ctx, file_input, ...) }`, `build_edges.rs:1274-1276`) that calls `build_points_to_map` once per file from inside `process_file`. This is the exact same shape as the TS side's `invokedPropertyNames`/`computedDispatchTableEvidence`-before-`buildPointsToMapForFile` ordering, and it means the Rust mirror of `collect_invoked_property_sites` has the identical problem `collectInvokedPropertySites` does: it cannot be added as another field `EdgeContext::new` computes the same way `invoked_property_names` is computed today, because no file's points-to map exists yet at that point in construction. The fix is the same three-pass shape: `EdgeContext::new` (or a helper it calls before its own field-initializer list runs) must build every file's points-to map FIRST — reusing whatever per-file inputs `process_file`'s own points-to construction already assembles — cache them (e.g. `HashMap<&str, PointsToMap>`, keyed by `rel_path`), compute `correlated_property_sites`/`non_escaping_sites` from that cache exactly as `collect_invoked_property_names`/`collect_computed_dispatch_table_evidence` are computed today, and store the SAME cached maps on `EdgeContext` so `process_file`'s own per-file points-to step becomes a lookup into the cache rather than a second `build_points_to_map` call. WU-10's dual-engine assertion on the new two-file correlation shape (below) is what actually forces this: a Rust implementation that (like a naive TS one) tries to resolve `collect_invoked_property_sites` against a single, most-recently-built map would pass every single-file WU-10 fixture and only diverge from the TS engine's (correctly three-passed) output once a second file with its own local, same-named table is present.
 
 > **Not `native-orchestrator.ts` — and why this needs its own verification step.** `native-orchestrator.ts` contains zero occurrences of `computedDispatchTableEvidence` (verified by reading the full 2970-line file) and constructs no `FileEdgeInput`. It is `tryNativeOrchestrator`'s **post**-build JS passes (CHA expansion, this-dispatch, structure, dataflow-vertices), which run only *after* Rust's own full-pipeline build (`pipeline.rs`) has already extracted and consumed `computed_dispatch_table_evidence` (and will consume `object_literal_sites`) entirely inside Rust memory — no NAPI crossing for this data occurs on that path at all. `FileEdgeInput` is a Rust-only struct name (it never appears under `src/`); its TS-side counterpart is `NativeFileEntry`, above.
 >
@@ -1620,7 +1874,7 @@ The `correlatedPropertyEvidence` flag reaches Rust through the same `BuildConfig
 
 #### Implementation
 
-**The correlation test** covers the five shapes the design claims (three from earlier rounds, two added in round 8 to close the testing blind spot described below), each asserted under **both** engines (`--engine wasm` and `--engine native`, skipped with an explicit message rather than silently if `isNativeAvailable()` is false — never a silent skip):
+**The correlation test** covers the seven shapes the design claims (three from earlier rounds, two added in round 8 to close the testing blind spot described below, and two added in round 9 for finding 1's over-escape check and finding 2's pass-ordering check), each asserted under **both** engines (`--engine wasm` and `--engine native`, skipped with an explicit message rather than silently if `isNativeAvailable()` is false — never a silent skip):
 
 ```js
 // 1. Direct local table — the headline case from the issue body.
@@ -1670,13 +1924,51 @@ function maybeRun(cond) {
 }
 maybeRun(true);
 // EXPECT: fnJ live, escapes === 0 for M's site.
+
+// 6. (ROUND 9, #2088 finding 1) A table mixing DATA properties (safe,
+//    non-function literal values) with a correlated method — proves the
+//    round-9 fail-closed rewrite of literalHasUnmodeledThisReference does
+//    not over-correct: a `number`/`string`/`array` value must not itself
+//    trip the new default, or every real-world dispatch table that pairs
+//    routing metadata with a handler (an extremely common shape) would
+//    wrongly and permanently escape.
+const N = { priority: 1, label: 'default', tags: ['x', 'y'], resolve: isBaz };
+N.resolve();
+// EXPECT: isBaz live, escapes === 0 for N's site.
+
+// 7. (ROUND 9, #2088 finding 2) TWO independent, same-named local tables in
+//    SEPARATE files — the pass-ordering regression case. Each site's own
+//    correlation is still fully intra-file: condition 2 forces any
+//    genuinely cross-file reference to be exported, hence escaping, hence
+//    T2 (see WU-2b) — no shape can make ONE site's own T1 evidence span two
+//    files. What this shape actually exercises is WU-5(a)'s pass
+//    restructuring: collectInvokedPropertySites needs EVERY file's
+//    points-to map, built before evidence assembly runs (see WU-5(a)'s
+//    pass-ordering note) — an implementation that resolves a call against
+//    the WRONG file's map (e.g. the last one built, instead of its own)
+//    would be invisible in every single-file shape above, since with one
+//    file there is no "wrong" map to confuse it with. Reusing the SAME
+//    local name `T` and the SAME property name `resolve` in both files
+//    makes exactly that class of mix-up observable: if file B's calls were
+//    ever resolved against file A's map (or vice versa), `fnA5`/`fnB5`
+//    would swap liveness outcomes, or one would lose its evidence outright.
+// file-a.js:
+const T = { resolve: fnA5 };
+T.resolve();
+// file-b.js:
+const T = { resolve: fnB5 };
+T.resolve();
+// EXPECT: fnA5 live via file-a.js's OWN T1 evidence, escapes === 0 for
+// file-a.js's site; fnB5 live via file-b.js's OWN T1 evidence, escapes ===
+// 0 for file-b.js's site — each independently, regardless of fileSymbols
+// iteration order.
 ```
 
-> **Each case must also assert `escapes = 0`** for its site (`SELECT escapes FROM object_literal_sites WHERE file = ? AND site = ?`), not just the liveness outcome shown above (round-3 critic finding). Liveness alone does not prove T1 fired: if a site were wrongly classified escaping, T2's bare-name fallback would report the same property live for an unrelated reason, and the test would pass while silently losing coverage of the tier it claims to exercise — symmetric to how the escape-fallback test below asserts `escapes = 1` rather than trusting liveness alone. Case 3 (alias) is the load-bearing one: it is exactly the shape WU-2's `variable_declarator` handling in `allReferencesTracked` (condition 3 above) must classify non-escaping, and a regression there would otherwise pass this test unnoticed. Cases 4 and 5 (round 8) are equally load-bearing for finding 1 specifically: without the declaring-scope exemption, BOTH would (wrongly, per the withdrawn round-7 argument) still read as `escapes = 0` today for the SAME reason the headline counter-example does — a vacuous walk, not a genuine one — so passing this assertion alone does not yet distinguish "the walk is exhaustive and found nothing disqualifying" from "the walk never looked." That distinction is exactly what escape-fallback case (o) below is for: it is cases 4/5's photographic negative, using the SAME function-scope shape but with a reference the fix must NOT accept.
+> **Each case must also assert `escapes = 0`** for its site (`SELECT escapes FROM object_literal_sites WHERE file = ? AND site = ?`), not just the liveness outcome shown above (round-3 critic finding). Liveness alone does not prove T1 fired: if a site were wrongly classified escaping, T2's bare-name fallback would report the same property live for an unrelated reason, and the test would pass while silently losing coverage of the tier it claims to exercise — symmetric to how the escape-fallback test below asserts `escapes = 1` rather than trusting liveness alone. Case 3 (alias) is the load-bearing one: it is exactly the shape WU-2's `variable_declarator` handling in `allReferencesTracked` (condition 3 above) must classify non-escaping, and a regression there would otherwise pass this test unnoticed. Cases 4 and 5 (round 8) are equally load-bearing for finding 1 specifically: without the declaring-scope exemption, BOTH would (wrongly, per the withdrawn round-7 argument) still read as `escapes = 0` today for the SAME reason the headline counter-example does — a vacuous walk, not a genuine one — so passing this assertion alone does not yet distinguish "the walk is exhaustive and found nothing disqualifying" from "the walk never looked." That distinction is exactly what escape-fallback case (o) below is for: it is cases 4/5's photographic negative, using the SAME function-scope shape but with a reference the fix must NOT accept. Case 6 (round 9) is the equivalent load-bearing check for finding 1's OTHER direction — over-escaping rather than under-escaping — and case 7 (round 9) must additionally assert `escapes = 0` for BOTH files' sites independently, since a pass-ordering bug that resolves one file's calls against the other's map could plausibly leave one of the two sites falsely `escapes = 1` while the other stays `0`, which liveness alone (both `fnA5` and `fnB5` might still end up "live" via T2's bare-name coincidence) would not by itself reveal.
 >
 > **Case 2 re-verified against round 7's tightened rules.** `RESOLVERS` is an array-element owner (`isArrayOwner = true`), so its own reference — the for-of head in `for (const r of RESOLVERS) …` — is checked on the `for_in_statement` branch, which does not gate on `isArrayOwner` at all (only the member/subscript branch does, per finding 1). Accepting that reference now additionally requires `allReferencesTracked(root, 'r', objectNode, false, declaringScope)` to hold (finding 2) — `declaringScope` being the SAME fixed node established for `RESOLVERS` itself (round 8, #2088 finding 1; `RESOLVERS` is module-scope here, so that node is `root`): `r`'s only two references, `r.matches(x)` and `r.resolve(x)`, are both call-position member expressions checked with `isArrayOwner = false` (a loop variable always denotes a single element), so both pass unchanged. This shape was the plan's own headline #1771 idiom and is confirmed unaffected by round 7 or round 8 — the array-owned shape round 7 actually excludes is the CONTAINER-level `.forEach`/`.map`/etc. call, added as new case (i) below, which this correlation test does not and should not exercise; round 8's declaring-scope restriction changes nothing here either, since `RESOLVERS`' own declaring scope was already `root` (module scope was never affected by the bug it fixes).
 
-**Naming convention:** the correlation test's five shapes (used by their numbers, 1–5, throughout this plan) and the escape-fallback test's shapes ((a)–(p), used by their letters) are two independent, alphabetically/numerically-keyed lists — a re-verified shape 2 above is unrelated to the lettered cases below.
+**Naming convention:** the correlation test's seven shapes (used by their numbers, 1–7, throughout this plan) and the escape-fallback test's shapes ((a)–(u), used by their letters) are two independent, alphabetically/numerically-keyed lists — a re-verified shape 2 above is unrelated to the lettered cases below.
 
 **The escape-fallback test is the soundness gate.** Each case must be classified live *only* because the site escapes and T2 catches it — assert the classification, and assert `object_literal_sites.escapes = 1` for the site, so the test fails loudly if a future change flips the bit rather than silently passing on the wrong tier:
 
@@ -1906,6 +2198,82 @@ install();
 const V2 = { co$t: fnA4 };
 V2['co$t']();
 otherObj.co$t();
+// (q) (ROUND 9, #2088 finding 1) MODULE-scoped OBJECT-SPREAD — the headline
+//     counter-example motivating the round-9 fail-closed rewrite of
+//     literalHasUnmodeledThisReference. `T4`'s own reference besides its
+//     declaration is `T4.run()`, a genuine tracked call-position member
+//     expression (condition 3 is satisfied) — so before round 9, condition
+//     4's positive-only detector matched neither the `alpha` pair (an
+//     identifier resolving to a same-file, `this`-free function — correctly
+//     recognised as safe both before and after round 9) nor the
+//     `...mixin4` `spread_element` (which matched NO branch at all,
+//     pre-round-9, and so was silently treated as safe by omission), and
+//     the site read as local-closed while `mixin4.run`'s `this.alpha()` —
+//     reached only because the spread copies `run`'s function reference
+//     onto `T4`, so `T4.run()` invokes it with `this === T4` — produced
+//     zero correlated evidence for `alpha`. `run` is a plain method here,
+//     never itself a value-ref target (spread never produces one — see the
+//     doc comment above), so it needs no evidence of its own; `fnAlpha4` is
+//     what is at risk. T2 catches it via `this.alpha()` ITSELF, the same
+//     way case (g)/(l) already rely on their own inline `this.alpha()`
+//     populating T2 once the site correctly escapes — no separate decoy
+//     needed, since `this.alpha()` is a genuine, receiver-bearing call
+//     regardless of which function body it is textually written inside.
+function fnAlpha4() { return 1; }
+const mixin4 = { run() { return this.alpha(); } };
+const T4 = { alpha: fnAlpha4, ...mixin4 };
+T4.run();
+// (r) (ROUND 9, #2088 finding 1) A pair valued by a CALL EXPRESSION — the
+//     same underlying gap as case (q), a different unrecognised pair-value
+//     shape: `makeRunner()` is evaluated once, at object-construction time,
+//     to whatever function it returns, and nothing rules out that returned
+//     function referencing `this`. Pre-round-9, a `call_expression` value
+//     matched no branch in `literalHasUnmodeledThisReference` either. No
+//     decoy needed, for the identical reason as case (q): the returned
+//     function's own `this.alpha()` is what populates T2.
+function fnAlpha5() { return 1; }
+function makeRunner() { return function () { return this.alpha(); }; }
+const T5 = { alpha: fnAlpha5, run: makeRunner() };
+T5.run();
+// (s) (ROUND 9, #2088 finding 1) A pair valued by a PARENTHESIZED function
+//     expression — a third unrecognised pair-value shape reaching the same
+//     gap: parentheses around an inline function expression change its AST
+//     type from `function_expression` to `parenthesized_expression`, which
+//     (pre-round-9) also matched no branch. No decoy needed, same as (q).
+function fnAlpha6() { return 1; }
+const T6 = { alpha: fnAlpha6, run: (function () { return this.alpha(); }) };
+T6.run();
+// (t) (ROUND 9, #2088 finding 1) The SAME object-spread shape as case (q),
+//     but FUNCTION-scoped — proving the round-9 fix is scope-independent:
+//     literalHasUnmodeledThisReference inspects `objectNode`'s direct
+//     children regardless of where `objectNode` itself sits in the tree, so
+//     nothing about round 8's declaring-scope machinery should interact
+//     with round 9's fix, and this case is what confirms that rather than
+//     assumes it — the same discipline the Testing Strategy's module/
+//     function/block trio requires of every branch going forward. No decoy
+//     needed, same as (q).
+function fnAlpha7() { return 1; }
+function installT7() {
+  const mixin7 = { run() { return this.alpha(); } };
+  const T7 = { alpha: fnAlpha7, ...mixin7 };
+  T7.run();
+}
+installT7();
+// (u) (ROUND 9, #2088 finding 1) The SAME object-spread shape again,
+//     BLOCK-scoped (an `if` body, not a function body) — completing the
+//     module/function/block trio for this round's fix, and, as a side
+//     effect, this is also the FIRST bare-block-scoped ESCAPING case in the
+//     whole suite (round 8 never added one: its own escaping case, (o), is
+//     function-scoped). No decoy needed, same as (q).
+function fnAlpha8() { return 1; }
+function maybeInstallT8(cond) {
+  if (cond) {
+    const mixin8 = { run() { return this.alpha(); } };
+    const T8 = { alpha: fnAlpha8, ...mixin8 };
+    T8.run();
+  }
+}
+maybeInstallT8(true);
 // EXPECT (all): live, escapes === 1.
 ```
 
@@ -1933,15 +2301,15 @@ WU-4 (solver) is off the critical path and should be built in parallel with WU-2
 | Tier | What it covers here | Files |
 |---|---|---|
 | **Unit / parser extraction** | Site ids are stable and unique per file; `escapes` is correct for each recognised shape and defaults `true` for unrecognised ones; value-ref calls carry `objectLiteralSite`. | `tests/parsers/javascript.test.ts` |
-| **Integration over a fixture project** | The five correlation shapes and the sixteen escape-fallback shapes (eight from earlier rounds, six added in round 7 for findings 1, 2 — split into its plain-forwarding and destructuring sub-cases — 3, 4, and 5, and two added in round 8 for the headline shadow-prune fix and finding 3's `$`-guard gap), end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
+| **Integration over a fixture project** | The seven correlation shapes and the 21 escape-fallback shapes (eight from earlier rounds, six added in round 7 for findings 1, 2 — split into its plain-forwarding and destructuring sub-cases — 3, 4, and 5, two added in round 8 for the headline shadow-prune fix and finding 3's `$`-guard gap, and five added in round 9 for finding 1's fail-open condition-4 default, spanning module, function, and block scope), end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
 | **Resolution precision/recall** | The new `pts-javascript/objlit-site.js` fixture's expected edges. `javascript`'s precision-1.0 floor must not move — that fixture is the false-positive canary per ADR-002. | `tests/benchmarks/resolution/` |
 | **Dual-engine parity** | Every integration assertion runs under `--engine wasm` and `--engine native`; `npm run build` runs first so WASM sees the new `dist/`. | both `issue-2088-*` tests + `/parity` |
 | **Incremental vs full** | A `codegraph watch`-shaped single-file rebuild reaches the same tier decision as a full build, via the two persisted tables. | `issue-2087-…` + the incremental case in `issue-2088-correlated-property-evidence` |
 | **Benchmark / perf canary** | The solver gains constraint rows proportional to object-literal count. `npm run benchmark` guards build time; a >5% regression on this repo's full build is a finding to report, not to absorb. | `npm run benchmark` |
 
-**Scope coverage is a first-class testing requirement, not an incidental property (ROUND 8).** Every WU-10 fixture through round 7 declared its table at MODULE scope — the one scope `introducesShadowedBinding` never self-shadows by construction (`default: return false` for `program`) — which is exactly why the round-8 shadow-prune bug (finding 1) went undetected for seven rounds: the test suite was structurally incapable of exercising the code path it broke. Closing that blind spot for THIS round's fix is not enough on its own to guarantee it stays closed. **Fixtures for every branch of the escape predicate — conditions 1–4 in `computeObjectLiteralSiteEscapes`, `isTrackedReferencePosition`'s member/subscript/for-of branches, and both recursive branches of `allReferencesTracked` — must include at least one MODULE-scope, one FUNCTION-scope, and one BLOCK-scope (an `if`/`for`/bare-block body, not a function body) case going forward.** Correlation shapes 4 and 5 (function- and block-scoped tables used correctly) and escape-fallback case (o) (a function-scoped table that must escape) establish this baseline for round 8's own fix; a reviewer adding a new branch to the escape predicate in a future round must add its own module/function/block trio rather than defaulting to module scope alone, the same way the original seven rounds did.
+**Scope coverage is a first-class testing requirement, not an incidental property (ROUND 8).** Every WU-10 fixture through round 7 declared its table at MODULE scope — the one scope `introducesShadowedBinding` never self-shadows by construction (`default: return false` for `program`) — which is exactly why the round-8 shadow-prune bug (finding 1) went undetected for seven rounds: the test suite was structurally incapable of exercising the code path it broke. Closing that blind spot for THIS round's fix is not enough on its own to guarantee it stays closed. **Fixtures for every branch of the escape predicate — conditions 1–4 in `computeObjectLiteralSiteEscapes`, `isTrackedReferencePosition`'s member/subscript/for-of branches, and both recursive branches of `allReferencesTracked` — must include at least one MODULE-scope, one FUNCTION-scope, and one BLOCK-scope (an `if`/`for`/bare-block body, not a function body) case going forward.** Correlation shapes 4 and 5 (function- and block-scoped tables used correctly) and escape-fallback case (o) (a function-scoped table that must escape) establish this baseline for round 8's own fix; a reviewer adding a new branch to the escape predicate in a future round must add its own module/function/block trio rather than defaulting to module scope alone, the same way the original seven rounds did. **Round 9 follows this discipline for its own condition-4 fix**, even though the fix itself is not scope-sensitive the way round 8's shadow-prune bug was (`literalHasUnmodeledThisReference` inspects an object literal's own direct children regardless of where the literal sits in the tree) — cases (q), (t), and (u) exercise the identical object-spread shape at module, function, and block scope respectively, precisely BECAUSE assuming a new branch is scope-independent without a fixture proving it is the same assumption that let round 8's bug stand for seven rounds; (u) also closes a standing asymmetry noted while writing it — round 8 never added a BLOCK-scoped ESCAPING case of its own (only a function-scoped one, (o)), so (u) is the first in the suite.
 
-**What no tier catches, and what a human must check instead.** The escape analysis is a *judgment* about completeness, and no test can enumerate every JS shape that leaks an object identity. The tests above prove the recognised shapes are right and that the fail-safe default is `true`; they cannot prove the recognised set is exhaustive. **A reviewer must read `computeObjectLiteralSiteEscapes` (WU-2b) and its Rust mirror against `TRACKED_REFERENCE_PARENTS`, `isTrackedReferencePosition`, and `literalHasUnmodeledThisReference`, and satisfy themselves — against the stated invariant, not just against parent-type membership — that every position/shape they do not accept is genuinely treated as an escape.** That review is the real gate on the soundness requirement; the WU-10 tests are a sample of it — and, as of round 8, that sample must itself span module, function, and block scope, not stand in for a single scope repeated sixteen times.
+**What no tier catches, and what a human must check instead.** The escape analysis is a *judgment* about completeness, and no test can enumerate every JS shape that leaks an object identity. The tests above prove the recognised shapes are right and that the fail-safe default is `true`; they cannot prove the recognised set is exhaustive. **A reviewer must read `computeObjectLiteralSiteEscapes` (WU-2b) and its Rust mirror against `TRACKED_REFERENCE_PARENTS`, `isTrackedReferencePosition`, and `literalHasUnmodeledThisReference`, and satisfy themselves — against the stated invariant, not just against parent-type membership — that every position/shape they do not accept is genuinely treated as an escape.** That review is the real gate on the soundness requirement; the WU-10 tests are a sample of it — and, as of round 8, that sample must itself span module, function, and block scope, not stand in for a single scope repeated across all 21 lettered cases.
 
 ## Verification Commands
 
@@ -1978,14 +2346,15 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 
 | Risk | Mitigation |
 |---|---|
-| Tightening turns a conservative false negative into a **false positive** (live code reported dead) | Structural, not incidental: T1 is reachable only when `escapes === false`, and `escapes` defaults `true` on every unrecognised shape (WU-2b). Escaping sites take T2 — today's exact predicate. Gated by `tests/integration/issue-2088-escape-fallback.test.ts` (WU-10), which asserts both the classification *and* `escapes = 1`, so it fails if the guard is bypassed rather than passing on the wrong tier. Round 6 found and closed four such gaps (the alias, parameter-flow, same-literal `this`, and bare-read branches); round 7 re-applied the SAME invariant test to the round-6 result itself and found and closed five more (array-owned container calls, for-of loop-variable forwarding, identifier-valued `this`, interpolated template keys, and the owner `bindingName`/`key` contract) — see the round-7 annotations throughout WU-2b and the six new WU-10 cases (i)–(n) added to gate them. **Round 8 found the deepest gap yet by re-applying the same invariant test to the WALK ITSELF rather than to another reference position**: the shadow-prune `allReferencesTracked` reused (`introducesShadowedBinding`) self-shadows the site's own declaring scope whenever that scope is not the module (every fixture through round 7 was module-scope, which is why this survived seven rounds), silently vacuously "tracking" a table that was never actually examined at all — a strictly worse failure than any round-6/7 gap, since those each mis-tracked one REACHED reference, while this one meant entire scopes were never reached. Closed two ways, not one: (a) the walk is now rooted at, and exempts from the shadow-prune, only the site's own declaring scope (mirroring `hasLaterReferenceInEnclosingBlock`'s existing, narrower carve-out for the identical trap); and (b) a new standing rule requires the walk to PROVE it was exhaustive — any truncation now forces `escapes = true` unconditionally — so a FUTURE walk bug of this same shape fails closed instead of silently passing, rather than relying on finding every instance of it by inspection one round at a time. Round 8 also fixed a second, independent bug in the same area (`bindingName` could inherit a `#line` suffix `allReferencesTracked` could never match against real identifier text — the same "structurally can never match" failure mode finding 5 already named for `A[*]`) and a third in `isTrackedReferencePosition`'s subscript branch (the `$`-guard was mirrored onto `template_string` only, not `string`, so `T['co$t']()` was wrongly accepted — Greptile flagged this independently on this PR). See the round-8 annotations throughout WU-2b, the withdrawn round-7 vacuous-truth argument, and WU-10 correlation shapes 4–5 plus escape-fallback cases (o)–(p). |
+| Tightening turns a conservative false negative into a **false positive** (live code reported dead) | Structural, not incidental: T1 is reachable only when `escapes === false`, and `escapes` defaults `true` on every unrecognised shape (WU-2b). Escaping sites take T2 — today's exact predicate. Gated by `tests/integration/issue-2088-escape-fallback.test.ts` (WU-10), which asserts both the classification *and* `escapes = 1`, so it fails if the guard is bypassed rather than passing on the wrong tier. Round 6 found and closed four such gaps (the alias, parameter-flow, same-literal `this`, and bare-read branches); round 7 re-applied the SAME invariant test to the round-6 result itself and found and closed five more (array-owned container calls, for-of loop-variable forwarding, identifier-valued `this`, interpolated template keys, and the owner `bindingName`/`key` contract) — see the round-7 annotations throughout WU-2b and the six new WU-10 cases (i)–(n) added to gate them. **Round 8 found the deepest gap yet by re-applying the same invariant test to the WALK ITSELF rather than to another reference position**: the shadow-prune `allReferencesTracked` reused (`introducesShadowedBinding`) self-shadows the site's own declaring scope whenever that scope is not the module (every fixture through round 7 was module-scope, which is why this survived seven rounds), silently vacuously "tracking" a table that was never actually examined at all — a strictly worse failure than any round-6/7 gap, since those each mis-tracked one REACHED reference, while this one meant entire scopes were never reached. Closed two ways, not one: (a) the walk is now rooted at, and exempts from the shadow-prune, only the site's own declaring scope (mirroring `hasLaterReferenceInEnclosingBlock`'s existing, narrower carve-out for the identical trap); and (b) a new standing rule requires the walk to PROVE it was exhaustive — any truncation now forces `escapes = true` unconditionally — so a FUTURE walk bug of this same shape fails closed instead of silently passing, rather than relying on finding every instance of it by inspection one round at a time. Round 8 also fixed a second, independent bug in the same area (`bindingName` could inherit a `#line` suffix `allReferencesTracked` could never match against real identifier text — the same "structurally can never match" failure mode finding 5 already named for `A[*]`) and a third in `isTrackedReferencePosition`'s subscript branch (the `$`-guard was mirrored onto `template_string` only, not `string`, so `T['co$t']()` was wrongly accepted — Greptile flagged this independently on this PR). See the round-8 annotations throughout WU-2b, the withdrawn round-7 vacuous-truth argument, and WU-10 correlation shapes 4–5 plus escape-fallback cases (o)–(p). **Round 9 found a gap of the SAME class in condition 4 specifically**: `literalHasUnmodeledThisReference` was a positive-only detector that silently voted non-escaping (rather than escaping) on any shape it did not recognise — a `spread_element`, or a `pair` valued by a `call_expression`/`parenthesized_expression`/other unrecognised expression — the exact inversion of this row's own stated mitigation, which through round 8 was true of every OTHER condition but not yet of condition 4's own internals. Closed by rewriting the function to the same fail-closed contract, now stated once at the level of `computeObjectLiteralSiteEscapes` itself (a standing rule, mirroring round 8's `allReferencesTracked`-specific one) so a future predicate cannot repeat this exact class of gap unnoticed. See the round-9 annotations in WU-2b and WU-10 correlation shapes 6–7 plus escape-fallback cases (q)–(u). |
+| WU-5's `collectInvokedPropertySites` resolves calls against the WRONG file's points-to map (ROUND 9, #2088 finding 2) — silently under-populates T1, the exact false-dead class this plan is gated on, in a way no single-file fixture can reveal | `collectInvokedPropertyNames`/`computedDispatchTableEvidence` are pure name/file aggregations needing no points-to information, so `buildCallEdgesJS` builds them once, globally, before any file's points-to map exists. `collectInvokedPropertySites` cannot use that same pre-loop position unchanged, because resolving a receiver is inherently per-file. Mitigated structurally, not by convention: `buildCallEdgesJS` is restructured into three explicit passes (pts pre-pass → evidence assembly → per-file edge resolution, WU-5(a)), and `collectInvokedPropertySites`'s own signature is keyed by file (`ReadonlyMap<string, Iterable<Call>>` plus a `relPath`-aware `resolveReceiverSites`) rather than a flattened list, so a caller cannot wire it up without supplying the right map for each file. Gated by WU-10 correlation shape 7, a two-file fixture built specifically because every other WU-10 fixture is single-file and so cannot distinguish "resolved against the right map" from "resolved against the only map." Mirrored on the Rust side, where `EdgeContext::new` has the identical ordering shape (WU-8's own pass-ordering note). |
 | Reviewer objection: "this contradicts §8.3's field-based decision" | Pre-rebutted in [Reconciling the tension](#reconciling-the-tension-with-roadmap-83-field-based-not-field-sensitive): field-sensitivity and allocation-site abstraction are orthogonal axes, and §8.3's own Approach block already commits to allocation-site abstraction. The pts lattice stays field-based; the `site\|key` set is computed outside the solver. |
 | Reviewer objection: "this duplicates #2260's `receiver` channel" | It does not — T3 is kept name-keyed, unconditional, and untouched (WU-5b). #2088 adds a third tier beside it. The array-literal gap in #2260's own channel is filed separately as #2611 rather than folded in. |
 | New `ExtractorOutput` field silently dropped at the Worker boundary | ADR-002 §Costs.2 names this the primary parity risk, so it is its own work unit (WU-3) with its own verification, following the `computedDispatchTableEvidence` precedent in the same three files. `Call.objectLiteralSite` needs no protocol edit — verified by reading `wasm-worker-protocol.ts:51` (`calls: Call[]`, passed whole), not assumed. |
 | WASM/native escape-bit drift | The bit is persisted in `object_literal_sites`, so a divergence is directly observable by diffing that table between engine runs rather than only inferable from a differing `roles` output. WU-10 runs every integration assertion under both engines; `/parity` gates. |
 | Solver cost grows with object-literal count | Constraints added are O(sites) + O(callAssignments with a matching `::return` key), and the `callAssignments` loop is guarded on that key existing, so it adds no rows for the common case. `MAX_SOLVER_ITERATIONS` is unchanged at 50. `npm run benchmark` is in the verification block; a >5% full-build regression on this repo is reported, not absorbed. |
 | Full-vs-incremental divergence in the new channel | Both new tables are persisted and purged per file exactly as `invoked_property_names` (#2087) is — WU-5(c), WU-6. This is deliberately *not* the shortcut #2260 took, whose in-memory-only aggregation is filed as #2610. |
-| Scope growth during implementation | Two adjacent findings were filed as issues before this plan was written (#2610, #2611) rather than absorbed. Every review round since has kept the same discipline for findings that narrow the escape-analysis design rather than fix it (#2617–#2620 from rounds 4–6; #2621–#2623 from round 7) — see the Success Criteria exclusion list. Round 8 filed no new follow-up issues: all three of its findings are soundness fixes to what earlier rounds already claimed the design covers, not new named exclusions from it — see the Success Criteria note on round 8 for why that distinction matters here specifically. One PR = one concern. |
+| Scope growth during implementation | Two adjacent findings were filed as issues before this plan was written (#2610, #2611) rather than absorbed. Every review round since has kept the same discipline for findings that narrow the escape-analysis design rather than fix it (#2617–#2620 from rounds 4–6; #2621–#2623 from round 7) — see the Success Criteria exclusion list. Round 8 filed no new follow-up issues: all three of its findings are soundness fixes to what earlier rounds already claimed the design covers, not new named exclusions from it — see the Success Criteria note on round 8 for why that distinction matters here specifically. **Round 9 filed one — #2624** — because, unlike round 8's findings, inverting condition 4's default genuinely narrows recall for shapes the pre-round-9 code (incorrectly) accepted: an object literal using object-spread, or a pair valued by anything other than the positively-safe enumeration, now escapes where it previously (unsoundly) did not. Finding 2 (the WU-5 pass-ordering fix) filed no issue: it is a soundness/buildability fix to how a not-yet-implemented WU is sequenced, not a narrowing of any capability the design claims. One PR = one concern. |
 
 ## Out of Scope (filed, not silently dropped)
 
@@ -2008,7 +2377,10 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
   - (round 7) A subscript call keyed by an interpolated template string (`` T[`al${x}pha`]() ``) — the extractor's own guard never produces a named, receiver-carrying call for it, so no property name is ever available to correlate, regardless of how the receiver is referenced — #2623.
   - **(round 8) No new exclusion added to this list.** Round 8's three findings (below and throughout WU-2b) are SOUNDNESS fixes to the escape analysis's own implementation, not new accepted recall limitations in its DESIGN — unlike every bullet above, none of them names a shape the design deliberately declines to model. Finding 1 (the declaring-scope shadow-prune) and finding 2 (the `bindingName` suffix) together made the escape check WRONGLY non-escaping for every non-module-scope table regardless of how it was actually used — fixing them does not shrink what the design already claimed was trackable, it makes the claim true instead of vacuously true for shapes it was already supposed to cover (correlation shapes 4/5 above confirm function- and block-scoped tables used correctly still correlate after the fix). Finding 3 (the `$`-guard) made the escape check WRONGLY tracked for a reference the extractor can never actually produce T1 evidence for; the fix aligns it with what #2623 already correctly assumed the extractor does, for a case #2623 was never scoped to cover (a `$`-bearing STATIC key, as opposed to genuine interpolation). Recall for the shapes round 8 touches is therefore unchanged from what earlier rounds already claimed, once "claimed" means "actually verified against a fixture in that scope," which is precisely what correlation shapes 4/5 and escape-fallback cases (o)/(p) now do.
   - **(round 8) One narrow, EXPECTED conservative consequence of finding 1(b), not a new exclusion needing its own issue:** a declaring scope whose AST subtree is deep enough to hit the pre-existing `MAX_WALK_DEPTH` cap now unconditionally escapes, per the non-vacuous-coverage requirement below — where pre-round-8 (buggy) behavior would have silently returned "not found" and read a truncated walk as tracked. This is the SAME depth-cap convention already applied uniformly throughout this file's other recursive walks (`blockContainsIdentifierExcluding`, `patternBindsName`, `scanPatternDefaultsForReference`, `subtreeContainsThisKeyword`) — Category F, a standard safety boundary, not a newly-discovered gap in this design specifically — so it is not filed as a follow-up capability the way #2617–#2623 are; those name shapes the design does not yet recognise at all, while this names a depth the AST would have to be pathological to reach.
-- [ ] **(round 8, #2088 finding 1 — the standing rule).** `allReferencesTracked` treats a scope's references as fully tracked ONLY when the walk PROVES it examined every one of them: any truncation (`MAX_WALK_DEPTH`, or the pre-existing depth-6 alias/for-of recursion cap) makes the result `escapes = true` unconditionally, regardless of what was or was not found. This is a standing contract on the function's return value, not a special case for the empty-reference-set scenario — it applies identically whether the walk's surviving set has zero references or many, and every future change to this walk must preserve it, so that a NEW walk bug (not just the round-8 shadow-prune one) fails closed rather than silently reopening this same class of soundness gap.
+  - **(round 9, #2088 finding 1) A NEW exclusion, unlike round 8's — genuinely narrower recall, not a detection-gap fix.** A `pair` whose value is not positively proven `this`-free — an object-spread source (`const T = { alpha: fnA, ...mixin }`), a call-expression-valued pair (`run: makeRunner()`), a parenthesized function expression (`run: (function () { … })`), a bare member-expression read, an `as`/`satisfies` cast, or a logical/ternary expression — now marks the site escaping, where the pre-round-9 implementation (unsoundly) treated it as safe by omission. Unlike round 7's identifier-valued-pair fix (which closed a DETECTION gap in an already-sound exclusion, condition 4's own `this`-using-method rule), round 9 removes a capability the pre-round-9 code claimed to have but never actually had soundly: correlating a value-ref inside a literal that ALSO carries one of these shapes. Recall is smaller than the pre-round-9 draft implied for this narrow case; filed as a follow-up rather than silently narrowed — #2624.
+  - **(round 9, #2088 finding 2) No new exclusion — a buildability/soundness fix, not a design narrowing.** WU-5(a)'s three-pass restructuring (pts pre-pass → evidence assembly → per-file edge resolution) does not remove any capability the design claims; it is what makes `collectInvokedPropertySites` implementable at all against a per-file points-to map, a requirement WU-5's own doc comment already implied ("the receiver-CORRELATED counterpart of `collectInvokedPropertyNames`") but never stated precisely enough to build correctly. No follow-up issue.
+- [ ] **(round 9, #2088 finding 1 — the fail-closed contract, generalised).** Every predicate `computeObjectLiteralSiteEscapes` consults returns "escaping" for any shape it does not positively recognise as safe — not just `allReferencesTracked`'s own coverage (round 8's standing rule, above), and not just condition 4's enumerated `this`-free shapes (`isPositivelyThisFreeLiteral`, an `arrow_function`, an inline function/method whose subtree was searched, or an identifier/shorthand-property resolved in-file to a non-arrow `this`-free function). This is a standing contract on `computeObjectLiteralSiteEscapes`'s own return value, not a one-off patch to condition 4: any predicate this function gains in a future round — a hypothetical condition 5, or a further refinement of conditions 1–3 — inherits it automatically, the same way round 8's non-vacuous-coverage requirement binds every future change to `allReferencesTracked` specifically. Verified by WU-10 correlation shape 6 (a mixed data/handler table does NOT over-escape) and escape-fallback cases (q)–(u) (the five shapes named in the bullet above DO escape, across module, function, and block scope).
+- [ ] **(round 9, #2088 finding 2 — the pass-ordering contract).** `collectInvokedPropertySites` never resolves a call's receiver against any file's points-to map other than the one for the file that call is declared in — enforced by the revised signature (`ReadonlyMap<string, Iterable<Call>>` plus a `relPath`-aware `resolveReceiverSites`, WU-5(a)/WU-8), not merely by caller discipline. Verified by WU-10 correlation shape 7, a two-file fixture built specifically because a single-file fixture cannot distinguish "resolved against the right file's map" from "resolved against the only map there is."
 - [ ] `resolveViaPointsTo` never returns a site token to name resolution.
 - [ ] For any site with `escapes === true`, resolution is **byte-identical to pre-#2088**, and all nine listed existing tests pass unedited.
 - [ ] `resolveSiteOwner`'s `key`/`bindingName` contract (round 7 finding 5, extended round 8 finding 2) holds for every owner shape, verified by WU-10's dedicated `export const A = [{…}]` case (round 7) and by correlation shapes 4/5 and escape-fallback case (o) (round 8): condition 2's export check, the `isArrayOwner` derivation, and (round 8) `allReferencesTracked`'s own AST search all depend on `bindingName` never carrying a `[*]`/`::return` suffix (round 7) NOR a `#${scopeLine}` disambiguating suffix (round 8) — the latter being exactly what `findEnclosingTableName` would otherwise append for any non-module-scope declaration.
