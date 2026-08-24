@@ -441,7 +441,18 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
  *      propagation does not exist yet (only cross-module NAME propagation via
  *      `importedNames`) — so its evidence is necessarily partial.
  *   3. Every other in-file reference to the owner appears in a position the
- *      solver models (TRACKED_REFERENCE_PARENTS), or is a bare-identifier
+ *      solver models (TRACKED_REFERENCE_PARENTS); is the `value` field of a
+ *      `variable_declarator` whose own `name` field is a plain `identifier`
+ *      — a rebinding, `const u = T`, the alias shape `fnRefBindings` already
+ *      propagates, while a destructuring `name` such as `const { k } = T` is
+ *      rejected the same way `findEnclosingTableName`
+ *      (`src/extractors/javascript.ts:4519`) already rejects it for the
+ *      identical distinction, since destructuring extracts a property rather
+ *      than aliasing the reference and `fnRefBindings` does not model it
+ *      (round-3 critic finding: without this guard, the alias case in
+ *      WU-10's correlation test never actually exercises T1 — it stays
+ *      escaping and falls through to T2's bare-name match, which reports the
+ *      same "live" outcome for the wrong reason); or is a bare-identifier
  *      argument to a LOCALLY-DEFINED, NON-EXPORTED function — the shape
  *      `paramBindings` (Phase 8.3c) already propagates.
  *
@@ -487,7 +498,7 @@ function computeObjectLiteralSiteEscapes(
 
 `resolveSiteOwner` reuses the existing walk shape of `findEnclosingTableName` (variable-declarator lookup through `TABLE_NAME_PASSTHROUGH_TYPES`), extended with two extra cases — `array` parent → `` `${arrayVarName}[*]` `` (the pts key `buildArrayElemConstraints` already produces), and `return_statement` parent → `` `${enclosingFnName}::return` ``.
 
-`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Every surviving reference must have a parent in `TRACKED_REFERENCE_PARENTS`, or be an `arguments`-position identifier whose callee is in `localNonExportedFns`.
+`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Every surviving reference must have a parent in `TRACKED_REFERENCE_PARENTS`; be the `value` field of a `variable_declarator` whose own `name` field is a plain `identifier` (a rebinding — `const u = T` — rejecting a destructuring `name` the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference); or be an `arguments`-position identifier whose callee is in `localNonExportedFns`.
 
 > **Why walk for references rather than reuse `blockContainsIdentifierExcluding`:** that helper answers "does this block contain a reference at all", which is the wrong question here — we need to classify *every* reference's position, not detect the first one. The shadow-detection primitive is shared; the traversal is not.
 
@@ -929,6 +940,8 @@ const T = { alpha: fnA }; const u = T; u.alpha();
 const P = { beta: fnB }; function use(t) { return t.beta(); } use(P);
 // EXPECT: fnB live.
 ```
+
+> **Each case must also assert `escapes = 0`** for its site (`SELECT escapes FROM object_literal_sites WHERE file = ? AND site = ?`), not just the liveness outcome shown above (round-3 critic finding). Liveness alone does not prove T1 fired: if a site were wrongly classified escaping, T2's bare-name fallback would report the same property live for an unrelated reason, and the test would pass while silently losing coverage of the tier it claims to exercise — symmetric to how the escape-fallback test below asserts `escapes = 1` rather than trusting liveness alone. Case 3 (alias) is the load-bearing one: it is exactly the shape WU-2's `variable_declarator` handling in `allReferencesTracked` (condition 3 above) must classify non-escaping, and a regression there would otherwise pass this test unnoticed.
 
 **The escape-fallback test is the soundness gate.** Each case must be classified live *only* because the site escapes and T2 catches it — assert the classification, and assert `object_literal_sites.escapes = 1` for the site, so the test fails loudly if a future change flips the bit rather than silently passing on the wrong tier:
 
