@@ -411,18 +411,155 @@ The shorthand collector (`shorthand_property_identifier` in `runCollectorWalk`) 
 
 ```ts
 /**
- * Positions in which a reference to a site-owning binding is still tracked by
- * the points-to solver. Anything else marks the site as escaping.
+ * THE INVARIANT — binding on this set and on every future addition to it
+ * (round-6 critic finding). A position may be listed here only if EVERY
+ * invocation of the literal's properties reachable through a reference in
+ * that position is visible to T1 as a correlated member call on a receiver
+ * that points at this very site. Merely keeping the object's IDENTITY
+ * visible to the points-to solver is NOT sufficient — that is a necessary
+ * precondition for correlation, never a proof that correlation actually
+ * fires for every call that should count. Every round of review on this
+ * plan has found another shape where identity stays visible but invocation
+ * evidence does not follow it: the alias branch (round 3), the
+ * parameter-flow branch (round 5), a same-literal `this.k()` call and a
+ * bare (non-call) member/subscript read (round 6, both below) — and, found
+ * while closing that same round-6 gap rather than named by the critic
+ * directly, a subscript call keyed by a DYNAMIC expression (`T[k]()`),
+ * which the call-position check alone does not exclude on its own (see
+ * `isTrackedReferencePosition`'s static-key requirement for
+ * `subscript_expression`). Any future addition to this set — or any future
+ * loosening of `isTrackedReferencePosition` below — must be checked against
+ * this test explicitly; it must not be accepted merely because the solver
+ * can still resolve the reference.
  *
- *   member_expression    `T.k(…)`  — the correlated-evidence channel itself
- *   subscript_expression `T[k](…)` — whole-table evidence via #2260's channel
- *   for_in_statement     `for (const r of T)` — modelled by forOfBindings
+ * Positions in which a reference to a site-owning binding is still tracked by
+ * the points-to solver, refined by `isTrackedReferencePosition` immediately
+ * below to the sub-shape that actually satisfies the invariant above:
+ *
+ *   member_expression    `T.k(…)`  — the correlated-evidence channel itself,
+ *                         but ONLY when this member_expression is itself the
+ *                         `function` of an enclosing `call_expression` and
+ *                         the reference is that member_expression's `object`
+ *                         field. Bare parent-type membership is not enough:
+ *                         `T`'s parent is also `member_expression` in
+ *                         `const f = T.k;`, `arr.map(T.k)`, and `return T.k`
+ *                         — none of which is a call, so none of which can
+ *                         ever produce a `collectInvokedPropertySites` entry
+ *                         (that collector skips anything that isn't a member
+ *                         call). A bare read leaves the site local-closed
+ *                         while the read value can go anywhere, including
+ *                         straight out of the module, with no compensating
+ *                         flow: `const f = T.k` produces an `fnRefBinding`
+ *                         keyed `T.k` that nothing seeds. Filed as a
+ *                         follow-up capability (not modeled here) — #2620.
+ *   subscript_expression `T[k](…)` — same call-position restriction as
+ *                         member_expression, PLUS a static-key requirement:
+ *                         only `T['resolve'](…)` / `` T[`resolve`](…) ``
+ *                         (a string/template-string index) is tracked — a
+ *                         dynamic index (`T[k](…)`, `k` a variable) has no
+ *                         statically-known property name, so it can never
+ *                         produce a `collectInvokedPropertySites` entry for
+ *                         any specific property, regardless of how `T` is
+ *                         referenced elsewhere. Mirrors the identical
+ *                         static/dynamic distinction #2260's own
+ *                         `collectComputedDispatchTableEvidence` already
+ *                         makes for the same reason.
+ *   for_in_statement     `for (const r of T)` ONLY, i.e. the `of` variant
+ *                         with the reference in the node's `right` field —
+ *                         modelled by forOfBindings. The `in` variant is
+ *                         EXCLUDED: it enumerates KEYS, not values, and
+ *                         `for (const k in T) T[k]()` produces neither T1
+ *                         nor T3 evidence for any property of `T` — see
+ *                         `isTrackedReferencePosition`'s doc comment for why.
+ *                         Filed as a follow-up capability — #2619.
  */
 const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
   'member_expression',
   'subscript_expression',
   'for_in_statement',
 ]);
+
+/**
+ * Structural refinement of `TRACKED_REFERENCE_PARENTS` (round-6 critic
+ * finding): true only when `refNode` — an identifier reference to a
+ * site-owning binding, found by `allReferencesTracked`'s file walk — sits in
+ * a position that actually satisfies the invariant stated above the set,
+ * not merely a position whose PARENT has one of that set's node types. Bare
+ * parent-type membership was the round-5 predicate; it is necessary but not
+ * sufficient, which is exactly what let both round-6 shapes through:
+ *
+ *   - `T`'s parent is `member_expression` in `T.k()` AND in a bare read like
+ *     `const f = T.k;` — only the structural check below tells them apart.
+ *   - `T`'s parent is `for_in_statement` in `for (const r of T)` AND in
+ *     `for (const k in T)` — both parse to the same node type in
+ *     tree-sitter-javascript's grammar, distinguished only by which keyword
+ *     token appears, exactly as `collectForOfBinding` already discriminates
+ *     them (`src/extractors/javascript.ts:4285-4291`) for the solver's own
+ *     `forOfBindings` seeding. `for (const k in T) T[k]()` gets neither T1
+ *     evidence (the call's key is the loop variable `k`, never a static
+ *     property name, so `collectInvokedPropertySites` has no `name` to key
+ *     on) nor T3 evidence (`collectComputedDispatchTableEvidence` only fires
+ *     on the `const x = T[expr]; x(...)` declarator form — verified against
+ *     its guard clauses at `src/extractors/javascript.ts:5523-5538` — never
+ *     on a direct `T[expr]()` call). Extending T3 to the direct-call form is
+ *     filed as a follow-up — #2619 — not attempted here.
+ *
+ * Node identity below is compared via `.id`, never `===` — a fresh JS
+ * wrapper object is minted on every `childForFieldName()`/`parent` access,
+ * so two independently-fetched references to the same AST node are never
+ * `===`-equal. Same reasoning `collectAccessorPropertyRead` already
+ * documents at its own `.id` comparison (`src/extractors/javascript.ts:1022-1026`);
+ * the Rust mirror reuses the identical `.id()` idiom already established at
+ * `handle_accessor_property_read` (`crates/codegraph-core/src/extractors/javascript.rs:2323-2326`)
+ * — not a new convention for either engine.
+ */
+function isTrackedReferencePosition(refNode: TreeSitterNode): boolean {
+  const parent = refNode.parent;
+  if (!parent || !TRACKED_REFERENCE_PARENTS.has(parent.type)) return false;
+
+  if (parent.type === 'member_expression' || parent.type === 'subscript_expression') {
+    // Must be the object being called, not a bare read: `T.k(…)` / `T[k](…)`
+    // where this member/subscript expression is itself the callee.
+    if (parent.childForFieldName('object')?.id !== refNode.id) return false;
+    const grandparent = parent.parent;
+    if (
+      grandparent?.type !== 'call_expression' ||
+      grandparent.childForFieldName('function')?.id !== parent.id
+    ) {
+      return false;
+    }
+    if (parent.type === 'subscript_expression') {
+      // A STATIC key (`T['resolve']()`) is already normalized by the
+      // generic call extractor into the same Call shape as `T.resolve()` —
+      // verified against `collectComputedDispatchTableEvidence`'s own index
+      // guard, which skips exactly this case for the identical reason
+      // (`src/extractors/javascript.ts:5509-5511` doc, `:5533-5534` guard:
+      // `if (indexNode?.type === 'string' || indexNode?.type ===
+      // 'template_string') return;`) — genuinely correlatable, safe to
+      // track. A DYNAMIC key (`T[k]()`) is not: the call has no
+      // statically-known property name, so it can never produce a
+      // `collectInvokedPropertySites` entry for any specific property no
+      // matter how `T` is referenced elsewhere — the same reasoning that
+      // excludes the `for...in` variant below, generalised to every dynamic
+      // subscript call, not only ones reached through a loop. Filed as a
+      // follow-up capability (not modeled here) — #2619.
+      const indexType = parent.childForFieldName('index')?.type;
+      if (indexType !== 'string' && indexType !== 'template_string') return false;
+    }
+    return true;
+  }
+
+  // for_in_statement: only the `of` variant, and only in the iterated
+  // (`right`) position — never the loop-variable (`left`) pattern. Reuses
+  // the exact `child.text === 'of'` discriminator collectForOfBinding
+  // already applies, so the escape check can never disagree with the
+  // solver about which loops forOfBindings models.
+  if (parent.childForFieldName('right')?.id !== refNode.id) return false;
+  for (let i = 0; i < parent.childCount; i++) {
+    if (parent.child(i)?.text === 'of') return true;
+  }
+  return false; // `for (const k in T) …` — enumerates keys, not values.
+}
 
 /**
  * Decide, per object-literal site, whether correlated evidence for it can be
@@ -440,9 +577,11 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
  *      read from a file this pass may not be looking at, and cross-module SITE
  *      propagation does not exist yet (only cross-module NAME propagation via
  *      `importedNames`) — so its evidence is necessarily partial.
- *   3. Every other in-file reference to the owner appears in a position the
- *      solver models (TRACKED_REFERENCE_PARENTS); is the `value` field of a
- *      `variable_declarator` whose own `name` field is a plain `identifier`
+ *   3. Every other in-file reference to the owner satisfies
+ *      `isTrackedReferencePosition` (the structural refinement of
+ *      `TRACKED_REFERENCE_PARENTS` — see its own doc comment); or is the
+ *      `value` field of a `variable_declarator` whose own `name` field is a
+ *      plain `identifier`
  *      — a rebinding, `const u = T`, the alias shape `fnRefBindings` already
  *      propagates, while a destructuring `name` such as `const { k } = T` is
  *      rejected the same way `findEnclosingTableName`
@@ -473,6 +612,27 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
  *      site escaping in this iteration; recursing into the callee's body to
  *      lift this is filed as a follow-up, not attempted here — see #2617.
  *
+ *   4. The literal itself does not define a method or function-valued
+ *      property whose body references `this` (round-6 critic finding — see
+ *      `literalHasUnmodeledThisReference`'s doc comment for the full
+ *      argument). This condition is independent of 1–3: it is not a
+ *      property of any reference to the OWNER BINDING at all — `this` is a
+ *      different token — so no amount of tracking the binding's own
+ *      references can catch it. `const T = { alpha: fnA, run() { return
+ *      this.alpha(); } }; T.run();` has its only reference to `T` in a
+ *      tracked position (condition 3 is satisfied — `T.run()` is a genuine
+ *      correlated call), so without this condition the site would read as
+ *      local-closed while `this.alpha()` produces no correlated evidence at
+ *      all: nothing seeds a points-to fact for `this` here (the solver's
+ *      only `this` key is `${callee}::this`, seeded from `thisCallBindings`
+ *      only for `.call(ctx)` shapes — `src/domain/graph/resolver/points-to.ts:548-554`)
+ *      — and `fnA` would lose its only in-edge. Conservative exclusion, not
+ *      correlation: extending the design so a same-literal `this.k()` call
+ *      resolves to its own site would need per-call-site correlation the
+ *      tier ladder does not do today (it credits a property once ANY
+ *      correlated call reaches it, not per invocation) — filed as a
+ *      follow-up, not attempted here — see #2618.
+ *
  * Fail-safe: anything unrecognised leaves the seeded `escapes: true`. Getting
  * this wrong in the `true` direction costs recall (today's behavior); getting
  * it wrong in the `false` direction would cost soundness. The asymmetry is
@@ -490,6 +650,15 @@ function computeObjectLiteralSiteEscapes(
     const owner = resolveSiteOwner(objectNode);      // → { key, bindingName } | null
     if (!owner) continue;                            // inline argument, etc.
     entry.owner = owner.key;
+
+    // Condition 4 — independent of the bindingName branches below, so it is
+    // checked uniformly regardless of which kind of owner this site has.
+    // `entry.owner` is already set above, so WU-4's seeding is unaffected;
+    // only the escape bit changes.
+    if (literalHasUnmodeledThisReference(objectNode)) {
+      entry.escapes = true;
+      continue;
+    }
 
     if (owner.bindingName === null) {                // `return { … }` — no binding to scan.
       // Always escapes (round-2 critic finding): the call-assignment that
@@ -510,11 +679,74 @@ function computeObjectLiteralSiteEscapes(
     );
   }
 }
+
+/**
+ * True when the object literal itself defines a shorthand method
+ * (`method_definition`) or a non-arrow function-expression-valued property
+ * whose body contains a `this` reference anywhere in its subtree (round-6
+ * critic finding, condition 4 above). Walks `objectNode`'s DIRECT children
+ * only — `pair` and `method_definition` — the same one-level shape
+ * `extractObjectLiteralFunctions` already uses to enumerate an object
+ * literal's own methods (`src/extractors/javascript.ts:2065-2091`),
+ * including its exact three function-valued type names (`arrow_function`,
+ * `function_expression`, `function`). A more deeply nested wrapped/IIFE
+ * form is left unrecognised, matching this file's established "restrict to
+ * the simplest syntactic shape" precedent (#1771/#1784).
+ *
+ * `arrow_function`-valued properties are deliberately EXCLUDED: an arrow
+ * function never binds its own `this` — inside one, `this` resolves
+ * lexically to whatever `this` was where the literal itself was written,
+ * which is never the literal, regardless of how the enclosing method is
+ * later called. Excluding it costs no soundness and preserves recall.
+ *
+ * Conservative exclusion, not correlation — see condition 4's doc comment
+ * and #2618 for the fuller design tradeoff this accepts.
+ */
+function literalHasUnmodeledThisReference(objectNode: TreeSitterNode): boolean {
+  for (let i = 0; i < objectNode.childCount; i++) {
+    const child = objectNode.child(i);
+    if (!child) continue;
+    let fn: TreeSitterNode | null = null;
+    if (child.type === 'method_definition') {
+      fn = child;
+    } else if (child.type === 'pair') {
+      const value = child.childForFieldName('value');
+      if (value && (value.type === 'function_expression' || value.type === 'function')) {
+        fn = value;
+      }
+      // `arrow_function` is deliberately excluded — see doc comment above.
+    }
+    if (fn && subtreeContainsThisKeyword(fn, 0)) return true;
+  }
+  return false;
+}
+
+/**
+ * Depth-capped `this`-node search used only by
+ * `literalHasUnmodeledThisReference`. Reuses `MAX_WALK_DEPTH`, the same cap
+ * `blockContainsIdentifierExcluding` already uses (`javascript.ts:5053`) —
+ * but INVERTS its truncation default. `blockContainsIdentifierExcluding`
+ * fails toward "not found" on truncation because that keeps ITS caller's
+ * liveness evidence conservative; here the safe direction is the opposite
+ * one, because "contains `this`" is what drives `escapes: true`. Failing
+ * toward "not found" on truncation would let a pathologically deep method
+ * body read as safe by omission — the wrong side of the fail-safe/fail-open
+ * asymmetry this whole design is built on.
+ */
+function subtreeContainsThisKeyword(node: TreeSitterNode, depth: number): boolean {
+  if (depth >= MAX_WALK_DEPTH) return true;
+  if (node.type === 'this') return true;
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && subtreeContainsThisKeyword(child, depth + 1)) return true;
+  }
+  return false;
+}
 ```
 
 `resolveSiteOwner` reuses the existing walk shape of `findEnclosingTableName` (variable-declarator lookup through `TABLE_NAME_PASSTHROUGH_TYPES`), extended with two extra cases — `array` parent → `` `${arrayVarName}[*]` `` (the pts key `buildArrayElemConstraints` already produces), and `return_statement` parent → `` `${enclosingFnName}::return` ``.
 
-`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Every surviving reference must have a parent in `TRACKED_REFERENCE_PARENTS`, or be the `value` field of a `variable_declarator` whose own `name` field is a plain `identifier` (a rebinding — `const u = T` — rejecting a destructuring `name` the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference). An `arguments`-position identifier is never treated as tracked, regardless of the callee — see the parameter-passing exclusion in condition 3 above.
+`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Every surviving reference must satisfy `isTrackedReferencePosition` (defined above, alongside `TRACKED_REFERENCE_PARENTS`), or be the `value` field of a `variable_declarator` whose own `name` field is a plain `identifier` (a rebinding — `const u = T` — rejecting a destructuring `name` the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference). An `arguments`-position identifier is never treated as tracked, regardless of the callee — see the parameter-passing exclusion in condition 3 above.
 
 > **The rebinding branch recurses — accepting the `const u = T` reference is not enough on its own** (round-4 critic finding). `allReferencesTracked` must additionally hold, recursively, for the new alias name (`allReferencesTracked(root, aliasName, objectNode)`), or a site reads as local-closed while it can still escape through `u` — e.g. `const u = T; importedFn(u)`. The first cut of this branch (round-3) checked only the reference to `T` and never followed where `u` goes; that is exactly the same shape of gap condition 1 already documents for a return-captured binding, one alias hop later. The recursion depth is capped at 6, reusing `findEnclosingTableName`'s own `hops` bound rather than inventing a new one — a chain of `const a = T; const b = a; const c = b; …` cannot cycle (each step names a fresh `const` binding), so the cap is defense-in-depth, not a correctness requirement. A recursive call returning `false` (including by hitting the cap) makes that reference — and so the whole site — escaping; it is not a partial result the other branches paper over.
 >
@@ -879,7 +1111,10 @@ The rebuilt file's own sites and correlated evidence are recomputed in memory an
 Mirrors WU-2 one-for-one:
 
 - `types.rs` — `ObjectLiteralSite { site: String, owner: Option<String>, escapes: bool }` with serde field names matching the TS shape (`objectLiteralSite` ↔ `object_literal_site` via the existing rename convention used for `key_expr`/`dynamic_kind`); `Call.object_literal_site: Option<String>`.
-- `javascript.rs` — `object_literal_site_id`, `enclosing_object_literal`; `handle_object_literal_pair_value_ref` (line 4456) and `handle_object_literal_shorthand_value_ref` (line 4494) each gain the site seed + tag; new `compute_object_literal_site_escapes` with `TRACKED_REFERENCE_PARENT_KINDS` mirroring `TRACKED_REFERENCE_PARENTS`, placed beside the existing `TABLE_NAME_PASSTHROUGH_KINDS` (line 4372) and cross-referenced in both directions by doc comment, as that constant already is.
+- `javascript.rs` — `object_literal_site_id`, `enclosing_object_literal`; `handle_object_literal_pair_value_ref` (line 4456) and `handle_object_literal_shorthand_value_ref` (line 4494) each gain the site seed + tag; new `compute_object_literal_site_escapes` with:
+  - `TRACKED_REFERENCE_PARENT_KINDS` mirroring `TRACKED_REFERENCE_PARENTS`, placed beside the existing `TABLE_NAME_PASSTHROUGH_KINDS` (line 4372) and cross-referenced in both directions by doc comment, as that constant already is;
+  - `is_tracked_reference_position` mirroring `isTrackedReferencePosition` one-for-one, including the member/subscript call-position narrowing, the subscript static-key requirement (string/template-string `index` only), and the for-of/for-in discriminator (reusing the same `is_for_of` child-text scan `collect_for_of_binding` already applies at `javascript.rs:7553`). Node-identity comparisons use `.id()`, not `==` — not a new convention for this engine's Rust side: `handle_accessor_property_read` (the existing mirror of `collectAccessorPropertyRead`) already compares this exact shape via `.id()` at `javascript.rs:2323-2326` (`parent.child_by_field_name("function").map(|f| f.id()) == Some(node.id())`), so this bullet reuses that idiom rather than introducing one;
+  - `literal_has_unmodeled_this_reference` and its depth-capped `this`-kind subtree search, mirroring `literalHasUnmodeledThisReference` / `subtreeContainsThisKeyword` one-for-one, including the truncate-toward-`true` direction (the inverse of `block_contains_identifier_excluding`'s own truncate-toward-`false`, for the same reason the TS side documents).
 
 Every new Rust item carries a `/// Mirrors <tsSymbol> in src/extractors/javascript.ts` line — the convention `handle_object_literal_pair_value_ref` already follows.
 
@@ -1003,6 +1238,41 @@ const U = { eta: fnH }; const w = U; sink(w); w.eta();
 //     shape. Recursing into the callee's body to lift this is filed as a
 //     follow-up (#2617), not attempted here.
 const P = { beta: fnB }; function use(t) { return t.beta(); } use(P);
+// (g) A method's own `this.k()` call on a SIBLING property of the SAME
+//     literal — the regression case for literalHasUnmodeledThisReference /
+//     condition 4 (round-6 critic finding): `Q`'s only reference besides
+//     its declaration is `Q.run()`, which the round-6 narrowing classifies
+//     as a genuine tracked call position — so WITHOUT condition 4, `Q`
+//     would (wrongly) read as local-closed. `this` inside `run()` is not a
+//     reference to `Q` at all, and nothing seeds a points-to fact for
+//     `this` here (the solver's only `this` key is `${callee}::this`, from
+//     `thisCallBindings`, for `.call(ctx)` shapes only) — so T1 would find
+//     zero evidence for `alpha` and report `fnC` dead even though
+//     `Q.run()` genuinely invokes it. Filed as a follow-up capability
+//     (same-literal `this` correlation) — #2618 — not attempted here.
+const Q = { alpha: fnC, run() { return this.alpha(); } };
+Q.run();
+// (h) A bare property READ bound to a local, called through that alias,
+//     with an unrelated decoy elsewhere matching only by name — the
+//     regression case for narrowing member_expression/subscript_expression
+//     to call-position only (round-6 critic finding): `R`'s only own
+//     reference besides its declaration is the READ `R.beta` in
+//     `const f = R.beta`, never a call — `collectInvokedPropertySites`
+//     only records evidence for calls, so this can never produce a T1
+//     entry for `beta` correlated to R's site, regardless of how `f` is
+//     later used. If a bare read were (wrongly) counted tracked, `R` would
+//     read as local-closed with zero T1 evidence for `beta` — reporting
+//     `fnF` dead even though `f()` genuinely invokes it — while the
+//     decoy's coincidental name match is what correctly keeps it live once
+//     `R` is (rightly) classified escaping and falls through to T2's
+//     bare-name match, the same "any x.resolve(...) is enough" imprecision
+//     the Overview's own headline example describes. Extending correlation
+//     to this alias shape is filed as a follow-up — #2620 — not attempted
+//     here.
+const R = { beta: fnF };
+const f = R.beta;
+f();
+otherTable.beta();
 // EXPECT (all): live, escapes === 1.
 ```
 
@@ -1030,13 +1300,13 @@ WU-4 (solver) is off the critical path and should be built in parallel with WU-2
 | Tier | What it covers here | Files |
 |---|---|---|
 | **Unit / parser extraction** | Site ids are stable and unique per file; `escapes` is correct for each recognised shape and defaults `true` for unrecognised ones; value-ref calls carry `objectLiteralSite`. | `tests/parsers/javascript.test.ts` |
-| **Integration over a fixture project** | The three correlation shapes and the six escape-fallback shapes, end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
+| **Integration over a fixture project** | The three correlation shapes and the eight escape-fallback shapes, end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
 | **Resolution precision/recall** | The new `pts-javascript/objlit-site.js` fixture's expected edges. `javascript`'s precision-1.0 floor must not move — that fixture is the false-positive canary per ADR-002. | `tests/benchmarks/resolution/` |
 | **Dual-engine parity** | Every integration assertion runs under `--engine wasm` and `--engine native`; `npm run build` runs first so WASM sees the new `dist/`. | both `issue-2088-*` tests + `/parity` |
 | **Incremental vs full** | A `codegraph watch`-shaped single-file rebuild reaches the same tier decision as a full build, via the two persisted tables. | `issue-2087-…` + the incremental case in `issue-2088-correlated-property-evidence` |
 | **Benchmark / perf canary** | The solver gains constraint rows proportional to object-literal count. `npm run benchmark` guards build time; a >5% regression on this repo's full build is a finding to report, not to absorb. | `npm run benchmark` |
 
-**What no tier catches, and what a human must check instead.** The escape analysis is a *judgment* about completeness, and no test can enumerate every JS shape that leaks an object identity. The tests above prove the recognised shapes are right and that the fail-safe default is `true`; they cannot prove the recognised set is exhaustive. **A reviewer must read `computeObjectLiteralSiteEscapes` (WU-2b) and its Rust mirror against `TRACKED_REFERENCE_PARENTS` and satisfy themselves that every position not in that set is genuinely treated as an escape.** That review is the real gate on the soundness requirement; the WU-10 tests are a sample of it.
+**What no tier catches, and what a human must check instead.** The escape analysis is a *judgment* about completeness, and no test can enumerate every JS shape that leaks an object identity. The tests above prove the recognised shapes are right and that the fail-safe default is `true`; they cannot prove the recognised set is exhaustive. **A reviewer must read `computeObjectLiteralSiteEscapes` (WU-2b) and its Rust mirror against `TRACKED_REFERENCE_PARENTS`, `isTrackedReferencePosition`, and `literalHasUnmodeledThisReference`, and satisfy themselves — against the stated invariant, not just against parent-type membership — that every position/shape they do not accept is genuinely treated as an escape.** That review is the real gate on the soundness requirement; the WU-10 tests are a sample of it.
 
 ## Verification Commands
 
@@ -1093,7 +1363,11 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 
 - [ ] `codegraph roles --role dead -T` no longer credits an unrelated `x.name(...)` call as liveness evidence for a **non-escaping** object literal's `{ name: fn }` property — the exact behavior issue #2088 asks for.
 - [ ] Every object literal producing a value-ref carries a stable allocation-site id, and its `escapes` bit is persisted in `object_literal_sites`.
-- [ ] The points-to solver propagates those sites through the flows it already models and treats as tracked — direct binding, array element + for-of, and alias — with **no** change to `buildCallSiteTypeMap` / `MAX_SOLVER_ITERATIONS`, per ADR-002's "no new subsystem". Parameter-passing positions are treated as escaping in this iteration (WU-2b, WU-4) and are deliberately excluded from the correlated set; extending to them is filed as a follow-up (#2617).
+- [ ] The points-to solver propagates those sites through the flows it already models and treats as tracked — direct binding, array element + for-of, and alias — with **no** change to `buildCallSiteTypeMap` / `MAX_SOLVER_ITERATIONS`, per ADR-002's "no new subsystem". The following positions/shapes are treated as escaping in this iteration and are deliberately excluded from the correlated set, each narrower than an earlier round of this plan claimed — round-6 review found that an earlier, looser predicate would have accepted them without their invocations actually being provable via T1, which is a soundness gap, not a stylistic nit. Recall is smaller than that earlier draft claimed; each exclusion below is filed as a follow-up capability rather than silently narrowed:
+  - Parameter-passing positions (WU-2b condition 3, WU-4) — #2617.
+  - A same-literal `this.k()` call from a method/function defined inside the literal itself (WU-2b condition 4) — #2618.
+  - `for...in` enumeration (only the `for...of` variant of `for_in_statement` is tracked) and, more generally, a computed dispatch call `TABLE[expr]()` made directly rather than through the `const x = TABLE[expr]; x(...)` declarator form T3 already requires — #2619.
+  - A bare (non-call) member/subscript read of a tracked binding's property, assigned to a local and called through that alias (e.g. `const f = T.k; f()`) — #2620.
 - [ ] `resolveViaPointsTo` never returns a site token to name resolution.
 - [ ] For any site with `escapes === true`, resolution is **byte-identical to pre-#2088**, and all nine listed existing tests pass unedited.
 - [ ] WASM and native engines produce identical `object_literal_sites`, identical `invoked_property_sites`, and identical `roles --role dead -T` output on this repo.
