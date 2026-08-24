@@ -407,7 +407,7 @@ function collectObjectLiteralValueRefCall(
 
 The shorthand collector (`shorthand_property_identifier` in `runCollectorWalk`) gets the identical two additions.
 
-**(b) The escape post-pass.** Runs once per file, after `definitions`, `exports`, and `calls` are collected — it needs all three.
+**(b) The escape post-pass.** Runs once per file, after `definitions` and `exports` are collected, and reads the file's own `root` AST directly rather than its already-collected `calls` — `computeObjectLiteralSiteEscapes` takes `exportedNames` (condition 2) and, as of round 7 (finding 3), `definitionNames` (condition 4's identifier-valued-pair resolution) alongside `sites` and `root`; it has no need for `calls` at all, since every check it performs is either a property of the AST directly (conditions 1, 3, 4) or of the file's own name sets (condition 2), never of an already-extracted `Call`. (An earlier draft of this sentence claimed the post-pass "needs all three" including `calls` — reconciled here against the function's actual signature below, which never took a `calls` parameter at any round.)
 
 ```ts
 /**
@@ -422,15 +422,21 @@ The shorthand collector (`shorthand_property_identifier` in `runCollectorWalk`) 
  * plan has found another shape where identity stays visible but invocation
  * evidence does not follow it: the alias branch (round 3), the
  * parameter-flow branch (round 5), a same-literal `this.k()` call and a
- * bare (non-call) member/subscript read (round 6, both below) — and, found
- * while closing that same round-6 gap rather than named by the critic
- * directly, a subscript call keyed by a DYNAMIC expression (`T[k]()`),
- * which the call-position check alone does not exclude on its own (see
- * `isTrackedReferencePosition`'s static-key requirement for
- * `subscript_expression`). Any future addition to this set — or any future
- * loosening of `isTrackedReferencePosition` below — must be checked against
- * this test explicitly; it must not be accepted merely because the solver
- * can still resolve the reference.
+ * bare (non-call) member/subscript read (round 6), a subscript call keyed
+ * by a DYNAMIC expression (`T[k]()`, round 6) — and, round 7, three more:
+ * a member/subscript call on the CONTAINER of an array-owned site (`T`'s
+ * `object`-field reference stays visible, but nothing seeds a points-to
+ * fact tying the callback parameter back to the site — see the
+ * `member_expression`/`subscript_expression` bullet below), a `for...of`
+ * loop variable that is itself forwarded into a position this analysis does
+ * not follow (the same alias-transitivity gap round 4 fixed for `const u =
+ * T`, recurring one binding later — see the `for_in_statement` bullet
+ * below), and a subscript call keyed by a template string that LOOKS static
+ * but contains `${…}` interpolation (see the `subscript_expression` bullet
+ * below). Any future addition to this set — or any future loosening of
+ * `isTrackedReferencePosition` below — must be checked against this test
+ * explicitly; it must not be accepted merely because the solver can still
+ * resolve the reference.
  *
  * Positions in which a reference to a site-owning binding is still tracked by
  * the points-to solver, refined by `isTrackedReferencePosition` immediately
@@ -452,18 +458,69 @@ The shorthand collector (`shorthand_property_identifier` in `runCollectorWalk`) 
  *                         flow: `const f = T.k` produces an `fnRefBinding`
  *                         keyed `T.k` that nothing seeds. Filed as a
  *                         follow-up capability (not modeled here) — #2620.
+ *
+ *                         ROUND 7: also requires the site's owner `key` to
+ *                         EQUAL its `bindingName` — i.e. this branch fires
+ *                         only for a DIRECT binding (`const T = {…}`), never
+ *                         for an array-element owner (`const A = [{…}]`,
+ *                         `key === "A[*]"`, `bindingName === "A"`, so
+ *                         `key !== bindingName`). Without this, `RESOLVERS`
+ *                         in `RESOLVERS.forEach((r) => r.matches('foo'))` —
+ *                         the plan's own headline #1771 idiom — passed this
+ *                         branch (`RESOLVERS` is the `object` of a
+ *                         `member_expression` that is itself a call's
+ *                         `function`), yet `buildArrayCallbackConstraints`
+ *                         (`points-to.ts:225`) seeds a points-to fact for
+ *                         `r` only from `Array.from(source, cb)`, never from
+ *                         `.forEach`/`.map`/`.find`/`.filter`/`.some` — so
+ *                         `r.matches(...)` inside the callback produces zero
+ *                         T1 evidence no matter how `RESOLVERS` is
+ *                         referenced, and a wrongly-non-escaping site would
+ *                         make T1 exclusive over that zero evidence,
+ *                         reporting `isFoo` dead where today it is live.
+ *                         The only admissible reference to an array-owned
+ *                         site's container is therefore the `for_in_statement`
+ *                         bullet below; every member/subscript call on the
+ *                         container itself now marks the site escaping.
+ *                         Filed as a follow-up capability (not modeled
+ *                         here) — #2621.
  *   subscript_expression `T[k](…)` — same call-position restriction as
- *                         member_expression, PLUS a static-key requirement:
- *                         only `T['resolve'](…)` / `` T[`resolve`](…) ``
- *                         (a string/template-string index) is tracked — a
- *                         dynamic index (`T[k](…)`, `k` a variable) has no
- *                         statically-known property name, so it can never
- *                         produce a `collectInvokedPropertySites` entry for
- *                         any specific property, regardless of how `T` is
+ *                         member_expression (including the round-7
+ *                         array-owner restriction just above — it applies to
+ *                         both branches identically, since both share one
+ *                         `if` in `isTrackedReferencePosition`), PLUS a
+ *                         static-key requirement: only `T['resolve'](…)` /
+ *                         `` T[`resolve`](…) `` (a string/template-string
+ *                         index) is tracked — a dynamic index (`T[k](…)`, `k`
+ *                         a variable) has no statically-known property name,
+ *                         so it can never produce a
+ *                         `collectInvokedPropertySites` entry for any
+ *                         specific property, regardless of how `T` is
  *                         referenced elsewhere. Mirrors the identical
  *                         static/dynamic distinction #2260's own
  *                         `collectComputedDispatchTableEvidence` already
  *                         makes for the same reason.
+ *
+ *                         ROUND 7: a `template_string` index additionally
+ *                         requires NO `${…}` interpolation in its text — a
+ *                         plain `` T[`resolve`]() `` is static, but
+ *                         `` T[`al${x}pha`]() `` is not, and the earlier
+ *                         draft's bare `indexType === 'template_string'`
+ *                         check accepted both. This mirrors the extractor's
+ *                         OWN guard exactly, not a new distinction invented
+ *                         for the escape check:
+ *                         `extractSubscriptCallInfo` (and its Rust mirror
+ *                         `extract_call_info`) only emits a named,
+ *                         receiver-carrying `computed-literal` Call when
+ *                         `methodName` (the index text with quote/backtick
+ *                         characters stripped) contains no `$` — an
+ *                         interpolated template falls through to
+ *                         `<dynamic:unresolved>`, with no name and no
+ *                         receiver at all, so `` T[`al${x}pha`]() `` can
+ *                         never produce `collectInvokedPropertySites`
+ *                         evidence for `alpha` regardless of how `T` is
+ *                         referenced elsewhere. Filed as a follow-up
+ *                         capability (not modeled here) — #2623.
  *   for_in_statement     `for (const r of T)` ONLY, i.e. the `of` variant
  *                         with the reference in the node's `right` field —
  *                         modelled by forOfBindings. The `in` variant is
@@ -472,6 +529,36 @@ The shorthand collector (`shorthand_property_identifier` in `runCollectorWalk`) 
  *                         nor T3 evidence for any property of `T` — see
  *                         `isTrackedReferencePosition`'s doc comment for why.
  *                         Filed as a follow-up capability — #2619.
+ *
+ *                         ROUND 7: accepting `T`'s reference here is not
+ *                         enough on its own — the SAME alias-transitivity
+ *                         principle round 4 applied to `const u = T` applies
+ *                         one binding later, to the loop variable `r`
+ *                         itself. `for (const r of A) sink(r)` (`sink`
+ *                         imported) must NOT read as tracked merely because
+ *                         `A`'s own reference is structurally accepted here:
+ *                         `r` is a brand-new binding this analysis has not
+ *                         yet followed, and `sink(r)` is exactly the
+ *                         bare-identifier-argument shape condition 3's
+ *                         parameter-flow exclusion (round 5, #2617) already
+ *                         treats as untracked. `allReferencesTracked` (see
+ *                         its own doc comment below) now recurses into the
+ *                         loop variable exactly as it already recurses into
+ *                         a rebinding alias, under the same depth-6 cap.
+ *                         Further, this branch only fires at all when the
+ *                         loop variable is a SINGLE PLAIN IDENTIFIER — the
+ *                         same restriction `collectForOfBinding` itself
+ *                         already applies when deciding whether to emit a
+ *                         `forOfBindings` entry in the first place (verified:
+ *                         it requires the declarator's `name` field to be a
+ *                         plain `identifier`). A DESTRUCTURING loop variable
+ *                         (`for (const { matches } of B) matches(x)`) gets no
+ *                         `forOfBindings` entry at all — nothing seeds a
+ *                         points-to fact for `matches` — so treating `B`'s
+ *                         reference as tracked here would reopen this exact
+ *                         gap for every destructuring for-of. Filed as a
+ *                         follow-up capability, the array-element analogue
+ *                         of #2620's bare-property-read gap — #2622.
  */
 const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
   'member_expression',
@@ -481,12 +568,14 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
 
 /**
  * Structural refinement of `TRACKED_REFERENCE_PARENTS` (round-6 critic
- * finding): true only when `refNode` — an identifier reference to a
- * site-owning binding, found by `allReferencesTracked`'s file walk — sits in
- * a position that actually satisfies the invariant stated above the set,
- * not merely a position whose PARENT has one of that set's node types. Bare
- * parent-type membership was the round-5 predicate; it is necessary but not
- * sufficient, which is exactly what let both round-6 shapes through:
+ * finding, extended round 7): true only when `refNode` — an identifier
+ * reference to a site-owning binding, found by `allReferencesTracked`'s file
+ * walk — sits in a position that actually satisfies the invariant stated
+ * above the set, not merely a position whose PARENT has one of that set's
+ * node types. Bare parent-type membership was the round-5 predicate; it is
+ * necessary but not sufficient, which is exactly what let both round-6
+ * shapes through, and — one level more structural still — what let the
+ * round-7 shapes through the round-6 fix:
  *
  *   - `T`'s parent is `member_expression` in `T.k()` AND in a bare read like
  *     `const f = T.k;` — only the structural check below tells them apart.
@@ -503,6 +592,18 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
  *     its guard clauses at `src/extractors/javascript.ts:5523-5538` — never
  *     on a direct `T[expr]()` call). Extending T3 to the direct-call form is
  *     filed as a follow-up — #2619 — not attempted here.
+ *   - (round 7) `T.k()`'s call-position shape is IDENTICAL whether `T` owns
+ *     its site directly or is the array-element wildcard's bare container
+ *     (`RESOLVERS.forEach(...)`) — the AST alone cannot tell them apart;
+ *     only knowing the site's OWNER can. Hence the new `isArrayOwner`
+ *     parameter below, threaded in by the caller from `resolveSiteOwner`'s
+ *     result rather than re-derived here.
+ *   - (round 7) `` T[`resolve`]() `` and `` T[`al${x}pha`]() `` are both
+ *     `subscript_expression` with a `template_string` index — the AST NODE
+ *     TYPE alone cannot tell them apart either; only inspecting the
+ *     template's own text (for a `$`) can, mirroring the extractor's own
+ *     `extractSubscriptCallInfo` guard exactly rather than inventing a
+ *     parallel notion of "static".
  *
  * Node identity below is compared via `.id`, never `===` — a fresh JS
  * wrapper object is minted on every `childForFieldName()`/`parent` access,
@@ -512,12 +613,27 @@ const TRACKED_REFERENCE_PARENTS: ReadonlySet<string> = new Set([
  * the Rust mirror reuses the identical `.id()` idiom already established at
  * `handle_accessor_property_read` (`crates/codegraph-core/src/extractors/javascript.rs:2323-2326`)
  * — not a new convention for either engine.
+ *
+ * @param isArrayOwner — round 7. True iff the site's `resolveSiteOwner().key`
+ *   differs from its `bindingName` — the ONLY owner shape where that happens
+ *   is an array element (`key === "A[*]"`, `bindingName === "A"`); every
+ *   other owner shape has `key === bindingName`. Supplied by the caller,
+ *   never recomputed here, so this function stays a pure structural check of
+ *   `refNode`'s position and never needs its own copy of the owner-shape
+ *   logic `resolveSiteOwner` already owns.
  */
-function isTrackedReferencePosition(refNode: TreeSitterNode): boolean {
+function isTrackedReferencePosition(refNode: TreeSitterNode, isArrayOwner: boolean): boolean {
   const parent = refNode.parent;
   if (!parent || !TRACKED_REFERENCE_PARENTS.has(parent.type)) return false;
 
   if (parent.type === 'member_expression' || parent.type === 'subscript_expression') {
+    // Round 7 (finding 1): a member/subscript call on an ARRAY-OWNED site's
+    // CONTAINER is never tracked, full stop — see the round-7 addendum to
+    // the member_expression bullet above for why `RESOLVERS.forEach(...)`
+    // must not be accepted merely because it has the right AST shape. The
+    // only admissible reference for an array owner is the for_in_statement
+    // branch below.
+    if (isArrayOwner) return false;
     // Must be the object being called, not a bare read: `T.k(…)` / `T[k](…)`
     // where this member/subscript expression is itself the callee.
     if (parent.childForFieldName('object')?.id !== refNode.id) return false;
@@ -543,8 +659,24 @@ function isTrackedReferencePosition(refNode: TreeSitterNode): boolean {
       // excludes the `for...in` variant below, generalised to every dynamic
       // subscript call, not only ones reached through a loop. Filed as a
       // follow-up capability (not modeled here) — #2619.
-      const indexType = parent.childForFieldName('index')?.type;
-      if (indexType !== 'string' && indexType !== 'template_string') return false;
+      const indexNode = parent.childForFieldName('index');
+      const indexType = indexNode?.type;
+      // Round 7 (finding 4): a `template_string` is only genuinely static
+      // when its text contains no `${…}` interpolation — mirrors
+      // `extractSubscriptCallInfo`'s own guard verbatim (`methodName &&
+      // !methodName.includes('$')`, `src/extractors/javascript.ts:5898-5900`;
+      // Rust: `extract_call_info`, `!method_name.contains('$')`,
+      // `crates/codegraph-core/src/extractors/javascript.rs:6479`), not a
+      // new distinction invented for the escape check. An interpolated
+      // template produces `<dynamic:unresolved>` at extraction — no name,
+      // no receiver — so `` T[`al${x}pha`]() `` can never produce
+      // `collectInvokedPropertySites` evidence for `alpha` regardless of how
+      // `T` is referenced elsewhere. Filed as a follow-up capability (not
+      // modeled here) — #2623.
+      const isTrackedStaticKey =
+        indexType === 'string' ||
+        (indexType === 'template_string' && !indexNode!.text.includes('$'));
+      if (!isTrackedStaticKey) return false;
     }
     return true;
   }
@@ -553,7 +685,11 @@ function isTrackedReferencePosition(refNode: TreeSitterNode): boolean {
   // (`right`) position — never the loop-variable (`left`) pattern. Reuses
   // the exact `child.text === 'of'` discriminator collectForOfBinding
   // already applies, so the escape check can never disagree with the
-  // solver about which loops forOfBindings models.
+  // solver about which loops forOfBindings models. (Round 7: this branch
+  // never itself inspects the loop VARIABLE's own name or shape — that is
+  // `allReferencesTracked`'s job, described in its own doc comment below,
+  // exactly as it already owns the rebinding branch rather than this
+  // function.)
   if (parent.childForFieldName('right')?.id !== refNode.id) return false;
   for (let i = 0; i < parent.childCount; i++) {
     if (parent.child(i)?.text === 'of') return true;
@@ -576,12 +712,25 @@ function isTrackedReferencePosition(refNode: TreeSitterNode): boolean {
  *   2. That owner is not exported from this file. An exported binding can be
  *      read from a file this pass may not be looking at, and cross-module SITE
  *      propagation does not exist yet (only cross-module NAME propagation via
- *      `importedNames`) — so its evidence is necessarily partial.
+ *      `importedNames`) — so its evidence is necessarily partial. Checked on
+ *      `owner.bindingName` — see `resolveSiteOwner`'s doc comment (round-7
+ *      critic finding, #2088 finding 5) for why this must be the BARE
+ *      declarator identifier, never the `[*]`-suffixed key, for an
+ *      array-element owner: `exportedNames` holds bare identifiers, so
+ *      checking anything else here would silently never match and this
+ *      condition would never fire for an exported array.
  *   3. Every other in-file reference to the owner satisfies
  *      `isTrackedReferencePosition` (the structural refinement of
- *      `TRACKED_REFERENCE_PARENTS` — see its own doc comment); or is the
- *      `value` field of a `variable_declarator` whose own `name` field is a
- *      plain `identifier`
+ *      `TRACKED_REFERENCE_PARENTS` — see its own doc comment), called with
+ *      `isArrayOwner = owner.key !== owner.bindingName` (true for, and only
+ *      for, an array-element owner — round-7 critic finding, #2088 finding
+ *      1: `RESOLVERS.forEach((r) => r.matches(x))` must not read as tracked
+ *      merely because `RESOLVERS` sits in a call-position member expression —
+ *      `buildArrayCallbackConstraints` never seeds a points-to fact for a
+ *      `.forEach`/`.map`/`.find`/`.filter`/`.some` callback parameter, only
+ *      for `Array.from`, so no correlated evidence for `r.matches(...)` can
+ *      ever exist regardless of this reference); or is the `value` field of
+ *      a `variable_declarator` whose own `name` field is a plain `identifier`
  *      — a rebinding, `const u = T`, the alias shape `fnRefBindings` already
  *      propagates, while a destructuring `name` such as `const { k } = T` is
  *      rejected the same way `findEnclosingTableName`
@@ -599,7 +748,31 @@ function isTrackedReferencePosition(refNode: TreeSitterNode): boolean {
  *      site read as local-closed while it still escapes through `u` — e.g.
  *      `const u = T; importedFn(u)` — which is exactly the class of gap
  *      condition 1 already calls out for a return-captured binding, here
- *      recurring one hop later for an alias-captured one).
+ *      recurring one hop later for an alias-captured one); or is accepted on
+ *      the `for_in_statement` `of`-branch — round-7 critic finding, #2088
+ *      finding 2, the SAME alias-transitivity principle applied one binding
+ *      further: accepting `A`'s reference in `for (const r of A) …` is not
+ *      enough on its own, condition 3 must ALSO hold, recursively, for the
+ *      loop variable `r` itself, and ONLY when the loop variable is a single
+ *      plain identifier (mirroring the exact shape `collectForOfBinding`
+ *      itself requires before it will even emit a `forOfBindings` entry — a
+ *      destructuring loop variable, e.g. `for (const { matches } of B) …`,
+ *      gets no such entry at all, so `B`'s reference is NEVER accepted on
+ *      this branch when its loop variable destructures). `r`'s own recursive
+ *      check is made with `isArrayOwner = false` regardless of the outer
+ *      site's own `isArrayOwner` — a for-of loop variable always denotes a
+ *      single ELEMENT, never a further array, so `r.matches(...)`/
+ *      `r.resolve(...)` must be checked as direct-binding-shaped member
+ *      calls, exactly as WU-10's existing handler-array correlation shape
+ *      (`for (const r of RESOLVERS) if (r.matches(x)) return r.resolve(x);`)
+ *      already requires in order to keep resolving as tracked — re-verified
+ *      against this round's tightened rules: `RESOLVERS`'s only reference is
+ *      this for-of head (accepted structurally, `isArrayOwner = true` for
+ *      the reference to `RESOLVERS` but irrelevant to the for_in_statement
+ *      branch, which never gates on it), recursing into `r` with
+ *      `isArrayOwner = false` finds `r.matches(x)`/`r.resolve(x)` both
+ *      correlated-call-shaped — so this headline shape is unaffected by
+ *      round 7's tightening.
  *
  *      A bare-identifier argument to a function is deliberately NOT treated
  *      as a tracked reference: `buildParamFlowConstraints` (`points-to.ts`,
@@ -611,11 +784,16 @@ function isTrackedReferencePosition(refNode: TreeSitterNode): boolean {
  *      non-exported. Parameter-passing positions therefore always mark the
  *      site escaping in this iteration; recursing into the callee's body to
  *      lift this is filed as a follow-up, not attempted here — see #2617.
+ *      This exclusion applies identically to the for-of loop-variable
+ *      recursion above — `for (const r of A) sink(r)` (`sink` imported or
+ *      local, either way) fails `r`'s own check the same way `f(T)` already
+ *      fails `T`'s, without needing a separate rule.
  *
  *   4. The literal itself does not define a method or function-valued
- *      property whose body references `this` (round-6 critic finding — see
- *      `literalHasUnmodeledThisReference`'s doc comment for the full
- *      argument). This condition is independent of 1–3: it is not a
+ *      property whose body references `this` (round-6 critic finding,
+ *      extended round 7 — see `literalHasUnmodeledThisReference`'s doc
+ *      comment for the full argument, including the identifier-valued-pair
+ *      case round 7 adds). This condition is independent of 1–3: it is not a
  *      property of any reference to the OWNER BINDING at all — `this` is a
  *      different token — so no amount of tracking the binding's own
  *      references can catch it. `const T = { alpha: fnA, run() { return
@@ -631,31 +809,68 @@ function isTrackedReferencePosition(refNode: TreeSitterNode): boolean {
  *      resolves to its own site would need per-call-site correlation the
  *      tier ladder does not do today (it credits a property once ANY
  *      correlated call reaches it, not per invocation) — filed as a
- *      follow-up, not attempted here — see #2618.
+ *      follow-up, not attempted here — see #2618. The SAME reasoning applies
+ *      whether the `this`-referencing function is written inline
+ *      (`run() {…}`, `run: function() {…}`) or named and referenced by
+ *      identifier (`run: runImpl`, `function runImpl() {…}`) — round 6 only
+ *      implemented the former; round 7 (#2088 finding 3) closes the latter.
  *
  * Fail-safe: anything unrecognised leaves the seeded `escapes: true`. Getting
  * this wrong in the `true` direction costs recall (today's behavior); getting
  * it wrong in the `false` direction would cost soundness. The asymmetry is
  * deliberate.
+ *
+ * > **A vacuous `allReferencesTracked` is TRUE, not FALSE — reasoned
+ * > explicitly, round 7.** `allReferencesTracked` (and its recursive calls
+ * > for a rebinding alias or a for-of loop variable) can find ZERO surviving
+ * > references — e.g. `T` is declared and never mentioned again anywhere in
+ * > the file, or an alias `u`/loop variable `r` is created and never used.
+ * > "Every surviving reference satisfies P" is then vacuously true, and it
+ * > STAYS true here rather than being forced to `false`, because an empty
+ * > reference set is not a gap in the analysis's coverage — it is a (trivial)
+ * > proof that this specific channel of escape does not exist: every escape
+ * > channel this design accounts for (a bare read, a parameter, a rebinding
+ * > that itself escapes, a destructuring loop variable, an export, an
+ * > assignment to some other expression, a re-export specifier) manifests as
+ * > SOME AST reference node with that identifier's text, so an empty
+ * > surviving-reference set cannot be silently hiding one. Concretely: a
+ * > `const u = T;` with `u` never used again, or a `for (const r of A) {}`
+ * > with an empty body, means `fnA`'s only possible invocation paths are
+ * > exactly the ones already checked and found tracked — there is no
+ * > additional, unmodeled path a vacuous result could be masking. Forcing
+ * > vacuous to `false` would not close any soundness gap (every real escape
+ * > channel already produces a concrete, non-vacuous failing reference); it
+ * > would only forfeit T1 correlation for legitimately fully-local,
+ * > single-purpose dispatch tables — re-widening, for exactly those tables,
+ * > the bare-name imprecision #2088 exists to remove. Condition 2 already
+ * > independently excludes the cross-file-export channel before condition 3
+ * > runs, so it is not relying on condition 3's vacuous case to catch
+ * > exports either. Conclusion: **no code change** — `allReferencesTracked`
+ * > returning `true` on an empty reference set (JavaScript `Array.prototype
+ * > .every`'s native behavior on `[]`, requiring no special-casing) is
+ * > correct as designed, not a latent bug.
  */
 function computeObjectLiteralSiteEscapes(
   sites: Map<string, ObjectLiteralSite>,
   root: TreeSitterNode,
   exportedNames: ReadonlySet<string>,
+  definitionNames: ReadonlySet<string>,
 ): void {
   for (const entry of sites.values()) {
     const objectNode = findNodeAtSite(root, entry.site);
     if (!objectNode) continue;                       // stays escapes: true
 
-    const owner = resolveSiteOwner(objectNode);      // → { key, bindingName } | null
+    const owner = resolveSiteOwner(objectNode);      // → { key, bindingName } | null — see its own doc comment for the full contract (round-7 critic finding, #2088 finding 5)
     if (!owner) continue;                            // inline argument, etc.
     entry.owner = owner.key;
 
     // Condition 4 — independent of the bindingName branches below, so it is
     // checked uniformly regardless of which kind of owner this site has.
     // `entry.owner` is already set above, so WU-4's seeding is unaffected;
-    // only the escape bit changes.
-    if (literalHasUnmodeledThisReference(objectNode)) {
+    // only the escape bit changes. `root` and `definitionNames` are threaded
+    // through so the round-7 identifier-valued-pair case can resolve a
+    // same-file function by name — see literalHasUnmodeledThisReference.
+    if (literalHasUnmodeledThisReference(objectNode, root, definitionNames)) {
       entry.escapes = true;
       continue;
     }
@@ -674,24 +889,31 @@ function computeObjectLiteralSiteEscapes(
     }
     if (exportedNames.has(owner.bindingName)) continue;
 
+    // Round 7 (#2088 finding 1): the ONLY owner shape where `key` and
+    // `bindingName` differ is an array element (see resolveSiteOwner's doc
+    // comment) — reusing that difference as the isArrayOwner signal avoids
+    // a second, redundant way to ask the same question.
+    const isArrayOwner = owner.key !== owner.bindingName;
     entry.escapes = !allReferencesTracked(
-      root, owner.bindingName, objectNode,
+      root, owner.bindingName, objectNode, isArrayOwner,
     );
   }
 }
 
 /**
  * True when the object literal itself defines a shorthand method
- * (`method_definition`) or a non-arrow function-expression-valued property
- * whose body contains a `this` reference anywhere in its subtree (round-6
- * critic finding, condition 4 above). Walks `objectNode`'s DIRECT children
- * only — `pair` and `method_definition` — the same one-level shape
- * `extractObjectLiteralFunctions` already uses to enumerate an object
- * literal's own methods (`src/extractors/javascript.ts:2065-2091`),
- * including its exact three function-valued type names (`arrow_function`,
- * `function_expression`, `function`). A more deeply nested wrapped/IIFE
- * form is left unrecognised, matching this file's established "restrict to
- * the simplest syntactic shape" precedent (#1771/#1784).
+ * (`method_definition`), a non-arrow function-expression-valued property, OR
+ * (round 7, #2088 finding 3) a plain-IDENTIFIER-valued property that itself
+ * names a same-file non-arrow function — whose body contains a `this`
+ * reference anywhere in its subtree (round-6 critic finding, condition 4
+ * above). Walks `objectNode`'s DIRECT children only — `pair` and
+ * `method_definition` — the same one-level shape `extractObjectLiteralFunctions`
+ * already uses to enumerate an object literal's own methods
+ * (`src/extractors/javascript.ts:2065-2091`), including its exact three
+ * function-valued type names (`arrow_function`, `function_expression`,
+ * `function`). A more deeply nested wrapped/IIFE form is left unrecognised,
+ * matching this file's established "restrict to the simplest syntactic
+ * shape" precedent (#1771/#1784).
  *
  * `arrow_function`-valued properties are deliberately EXCLUDED: an arrow
  * function never binds its own `this` — inside one, `this` resolves
@@ -699,10 +921,36 @@ function computeObjectLiteralSiteEscapes(
  * which is never the literal, regardless of how the enclosing method is
  * later called. Excluding it costs no soundness and preserves recall.
  *
+ * Round 7 (#2088 finding 3): round 6 only inspected a `pair`'s value when it
+ * was written INLINE (`function_expression`/`function`), so
+ * `{ alpha: alphaImpl, run: runImpl }` with `function runImpl() { return
+ * this.alpha(); }` defined elsewhere in the same file slipped through
+ * entirely — `run`'s value is `identifier`, not `function_expression`, so
+ * the round-6 walk never looked at it, `T.run()` read as a genuine tracked
+ * call (condition 3 satisfied), and the site read as local-closed while
+ * `this.alpha()` produced zero correlated evidence, exactly the failure mode
+ * condition 4 exists to prevent — `alphaImpl` would be reported dead where
+ * today it is live. An identifier-valued pair is resolved via the new
+ * `resolveIdentifierValueThisReference` below, with the SAME conservative,
+ * three-way fail-safe structure the rest of this design already uses:
+ *   - resolves in-file to a non-arrow function/method → check its body for
+ *     `this`, same as the inline case;
+ *   - resolves in-file to an ARROW function → excluded, same reasoning as
+ *     an inline arrow-valued pair just above — never binds its own `this`;
+ *   - does not resolve to any in-file function-shaped definition at all
+ *     (imported, global, a non-function binding, or nested past this file's
+ *     module-level-only search) → FAIL SAFE, treated as if it might contain
+ *     `this`. Getting this wrong toward `true` costs recall, not soundness —
+ *     the same asymmetry this whole design is built on.
+ *
  * Conservative exclusion, not correlation — see condition 4's doc comment
  * and #2618 for the fuller design tradeoff this accepts.
  */
-function literalHasUnmodeledThisReference(objectNode: TreeSitterNode): boolean {
+function literalHasUnmodeledThisReference(
+  objectNode: TreeSitterNode,
+  root: TreeSitterNode,
+  definitionNames: ReadonlySet<string>,
+): boolean {
   for (let i = 0; i < objectNode.childCount; i++) {
     const child = objectNode.child(i);
     if (!child) continue;
@@ -713,12 +961,102 @@ function literalHasUnmodeledThisReference(objectNode: TreeSitterNode): boolean {
       const value = child.childForFieldName('value');
       if (value && (value.type === 'function_expression' || value.type === 'function')) {
         fn = value;
+      } else if (value?.type === 'identifier' && !BUILTIN_GLOBALS.has(value.text)) {
+        // Round 7 (finding 3) — see doc comment above for the regression
+        // this closes. Resolved and handled here directly (rather than
+        // falling through to the `fn`-based check below) because a resolved
+        // arrow function must be excluded the same way an inline
+        // arrow-valued pair already is, which the shared `fn`-truthiness
+        // check below cannot express on its own.
+        if (resolveIdentifierValueThisReference(root, value.text, definitionNames)) return true;
+        continue;
       }
       // `arrow_function` is deliberately excluded — see doc comment above.
     }
     if (fn && subtreeContainsThisKeyword(fn, 0)) return true;
   }
   return false;
+}
+
+/**
+ * Round 7 (#2088 finding 3) — resolve a plain identifier that is the value
+ * of an object-literal pair to the same-file function it names, and report
+ * whether that function's body contains `this`. Three-way fail-safe
+ * structure — see `literalHasUnmodeledThisReference`'s doc comment for the
+ * full argument; this function implements exactly those three branches and
+ * nothing else.
+ *
+ * `definitionNames` is this file's own definition names — built the same
+ * way `points-to.ts` already builds its own `definitionNames` from
+ * `symbols.definitions` (`new Set(definitions.map((d) => d.name))`), just
+ * computed here in the extractor since this post-pass runs before the
+ * file's `ExtractorOutput` (and hence `symbols.definitions` as the solver
+ * sees it) is assembled. It is a cheap existence pre-filter for the common
+ * case (an imported or global identifier) that lets this function skip the
+ * AST search below entirely; `findTopLevelFunctionNodeByName`'s own
+ * structural checks are what actually confirm a function shape, so the two
+ * checks are intentionally layered rather than either one alone being load
+ * bearing — the same defense-in-depth relationship the `MAX_WALK_DEPTH` cap
+ * already has with the (structurally acyclic) rebinding recursion below.
+ */
+function resolveIdentifierValueThisReference(
+  root: TreeSitterNode,
+  name: string,
+  definitionNames: ReadonlySet<string>,
+): boolean {
+  if (!definitionNames.has(name)) return true; // not a same-file definition at all — fail-safe.
+
+  const fnNode = findTopLevelFunctionNodeByName(root, name);
+  if (!fnNode) return true; // resolves to a non-function shape, or nested past this search — fail-safe.
+
+  if (fnNode.type === 'arrow_function') return false; // never binds its own `this`.
+  return subtreeContainsThisKeyword(fnNode, 0);
+}
+
+/**
+ * Bounded, MODULE-LEVEL-ONLY resolution of a plain identifier to the
+ * function node it names — the same "restrict to the simplest syntactic
+ * shape" precedent (#1771/#1784) `literalHasUnmodeledThisReference`'s own
+ * direct-value handling already follows, applied one hop through an
+ * identifier. Unwraps one leading `export_statement` (`export function
+ * f(){}` / `export const f = …` are still module-level declarations).
+ * Returns the `function_declaration` node itself (its own subtree is what
+ * `subtreeContainsThisKeyword` searches) or a `variable_declarator`'s
+ * `value` node (`arrow_function`, `function_expression`, or `function`) —
+ * never a declaration nested inside a block, matching `resolveSiteOwner`'s
+ * own module-level bias. Returns `null` for anything else — a class, a
+ * plain variable, or a same-named declaration this search does not reach —
+ * which `resolveIdentifierValueThisReference` above treats as fail-safe.
+ */
+function findTopLevelFunctionNodeByName(root: TreeSitterNode, name: string): TreeSitterNode | null {
+  for (let i = 0; i < root.childCount; i++) {
+    let stmt = root.child(i);
+    if (stmt?.type === 'export_statement') {
+      stmt = stmt.childForFieldName('declaration') ?? stmt.child(1);
+    }
+    if (!stmt) continue;
+    if (stmt.type === 'function_declaration') {
+      if (stmt.childForFieldName('name')?.text === name) return stmt;
+      continue;
+    }
+    if (stmt.type === 'lexical_declaration' || stmt.type === 'variable_declaration') {
+      for (let j = 0; j < stmt.childCount; j++) {
+        const decl = stmt.child(j);
+        if (decl?.type !== 'variable_declarator') continue;
+        if (decl.childForFieldName('name')?.text !== name) continue;
+        const value = decl.childForFieldName('value');
+        if (
+          value &&
+          (value.type === 'arrow_function' ||
+            value.type === 'function_expression' ||
+            value.type === 'function')
+        ) {
+          return value;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -746,9 +1084,16 @@ function subtreeContainsThisKeyword(node: TreeSitterNode, depth: number): boolea
 
 `resolveSiteOwner` reuses the existing walk shape of `findEnclosingTableName` (variable-declarator lookup through `TABLE_NAME_PASSTHROUGH_TYPES`), extended with two extra cases — `array` parent → `` `${arrayVarName}[*]` `` (the pts key `buildArrayElemConstraints` already produces), and `return_statement` parent → `` `${enclosingFnName}::return` ``.
 
-`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Every surviving reference must satisfy `isTrackedReferencePosition` (defined above, alongside `TRACKED_REFERENCE_PARENTS`), or be the `value` field of a `variable_declarator` whose own `name` field is a plain `identifier` (a rebinding — `const u = T` — rejecting a destructuring `name` the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference). An `arguments`-position identifier is never treated as tracked, regardless of the callee — see the parameter-passing exclusion in condition 3 above.
+> **`resolveSiteOwner`'s return contract, stated explicitly** (round-7 critic finding, #2088 finding 5 — the previous draft left this implicit, which is itself the bug): `resolveSiteOwner(objectNode): { key: string; bindingName: string | null } | null`.
+> - `key` is the pts-constraint LHS `buildObjectLiteralSiteConstraints` (WU-4) flows this site's pts fact into, and is also what `entry.owner` is set to, verbatim, regardless of owner kind: the bare variable name for a direct binding (`const T = {…}` → `"T"`), the array-element wildcard key for an array element (`const A = [{…}]` → `"A[*]"`), or the scoped return key for a returned literal (`return {…}` inside `f` → `"f::return"`).
+> - `bindingName` is **always the bare declarator identifier** that `allReferencesTracked` walks the file for, and **never** carries a `[*]` or `::return` suffix: `"T"` for a direct binding, `"A"` (never `"A[*]"`) for an array element, or `null` for a return-owner (there is no binding at all to scan — condition 1 already makes every return-owner escape unconditionally, before condition 3 ever runs `allReferencesTracked`).
+> - The two fields are EQUAL (`key === bindingName`) for exactly one owner kind — direct binding — and differ for exactly one other — array element (`"A[*]" !== "A"`). This is what `isArrayOwner = owner.key !== owner.bindingName` (condition 3, above) relies on, and it is why `bindingName` cannot be left to be "whatever seems natural": were it ever `"A[*]"` instead of `"A"`, `allReferencesTracked` would search the AST for an identifier literally spelled `A[*]` — text that can never appear as identifier syntax — find zero surviving references for every array-owned site, and read that vacuous walk as non-escaping (see the vacuous-`allReferencesTracked` discussion above: vacuous truth is CORRECT when the search is actually exhaustive over real references, but a search that structurally can never match anything is not exhaustive, it is broken), silently bypassing condition 2's export check for every array-owned site, exported or not, and `isArrayOwner` would also be permanently `false` for every array owner, silently bypassing finding 1's fix at the same time. Both failure modes are why WU-10 adds a dedicated `export const A = [{…}]` regression case (below) rather than trusting this contract to prose alone.
 
-> **The rebinding branch recurses — accepting the `const u = T` reference is not enough on its own** (round-4 critic finding). `allReferencesTracked` must additionally hold, recursively, for the new alias name (`allReferencesTracked(root, aliasName, objectNode)`), or a site reads as local-closed while it can still escape through `u` — e.g. `const u = T; importedFn(u)`. The first cut of this branch (round-3) checked only the reference to `T` and never followed where `u` goes; that is exactly the same shape of gap condition 1 already documents for a return-captured binding, one alias hop later. The recursion depth is capped at 6, reusing `findEnclosingTableName`'s own `hops` bound rather than inventing a new one — a chain of `const a = T; const b = a; const c = b; …` cannot cycle (each step names a fresh `const` binding), so the cap is defense-in-depth, not a correctness requirement. A recursive call returning `false` (including by hitting the cap) makes that reference — and so the whole site — escaping; it is not a partial result the other branches paper over.
+`allReferencesTracked` walks the file for identifier nodes whose text equals `bindingName`, skipping the declaration itself and any node under a scope that shadows the name — reusing `introducesShadowedBinding`, the hardened shadow detection already written for #2257 and already used by `findDeclaringScopeLine`. Its signature is `allReferencesTracked(root, bindingName, objectNode, isArrayOwner): boolean`, where `isArrayOwner` is threaded straight into every `isTrackedReferencePosition(refNode, isArrayOwner)` call for this walk's references — see condition 3 above for where the initial value comes from and how it changes across the two recursive branches below. Every surviving reference must satisfy `isTrackedReferencePosition`, or be accepted on one of the two recursive branches immediately below; an `arguments`-position identifier is never treated as tracked on its own, regardless of the callee — see the parameter-passing exclusion in condition 3 above.
+
+> **The rebinding branch recurses — accepting the `const u = T` reference is not enough on its own** (round-4 critic finding). `allReferencesTracked` must additionally hold, recursively, for the new alias name, with `isArrayOwner` UNCHANGED (`allReferencesTracked(root, aliasName, objectNode, isArrayOwner)`) — an alias of the CONTAINER is still the container, not a single element, so it must keep whatever `isArrayOwner` value the site already has — or a site reads as local-closed while it can still escape through `u` — e.g. `const u = T; importedFn(u)`. The `name` field of the `variable_declarator` must itself be a plain `identifier`; a destructuring `name` such as `const { k } = T` is rejected the same way `findEnclosingTableName` already does, since destructuring extracts a property rather than aliasing the reference. The first cut of this branch (round-3) checked only the reference to `T` and never followed where `u` goes; that is exactly the same shape of gap condition 1 already documents for a return-captured binding, one alias hop later. The recursion depth is capped at 6, reusing `findEnclosingTableName`'s own `hops` bound rather than inventing a new one — a chain of `const a = T; const b = a; const c = b; …` cannot cycle (each step names a fresh `const` binding), so the cap is defense-in-depth, not a correctness requirement. A recursive call returning `false` (including by hitting the cap) makes that reference — and so the whole site — escaping; it is not a partial result the other branches paper over.
+>
+> **The for-of branch ALSO recurses, into the loop variable — the same principle, one binding further** (round-7 critic finding, #2088 finding 2). Accepting `A`'s reference in `for (const r of A) …` on `isTrackedReferencePosition`'s `for_in_statement` branch is not enough on its own: `r` is a brand-new binding, and this analysis must follow it exactly as it follows a rebinding alias, or a site reads as local-closed while it can still escape through `r` — e.g. `for (const r of A) sink(r)` with `sink` imported (or local — the parameter-passing exclusion in condition 3 does not care which). Concretely: when a for-of-parented reference passes `isTrackedReferencePosition`, `allReferencesTracked` extracts the loop variable's name using the exact same shape `collectForOfBinding` itself already requires before it will emit a `forOfBindings` entry at all (a `variable_declarator`'s plain-`identifier` `name` field, or a bare pre-declared `identifier` `left` with no declaration keyword) and, ONLY when that yields a single plain identifier, requires `allReferencesTracked(root, loopVarName, objectNode, false)` to also hold, under the same depth-6 cap shared with the rebinding recursion above — `isArrayOwner` is hardcoded `false` for this recursive call regardless of the outer site's own `isArrayOwner`, because a for-of loop variable always denotes a single ELEMENT of the array, never the array itself, so `r.matches(...)`/`r.resolve(...)` must be checked as direct-binding-shaped member calls (see WU-10's re-verification of its own handler-array shape against this exact rule, condition 3 above). When the loop variable's shape is anything OTHER than a single plain identifier — most notably a destructuring pattern, `for (const { matches } of B) matches(x)` — the reference to `A`/`B` is REJECTED outright on this branch, full stop, with no recursive call to attempt at all: `collectForOfBinding` never emits a `forOfBindings` entry for a destructured loop variable (verified: it requires the declarator's `name` field to be a plain `identifier`), so nothing seeds a points-to fact for `matches` here, and `matches(x)` can never be a correlated call on a receiver pointing at `B`'s site no matter how `B` is referenced elsewhere — treating the reference as tracked regardless would silently reopen this exact gap for every destructuring for-of. Filed as a follow-up capability, the array-element analogue of #2620's bare-property-read gap — #2622.
 >
 > **Why walk for references rather than reuse `blockContainsIdentifierExcluding`:** that helper answers "does this block contain a reference at all", which is the wrong question here — we need to classify *every* reference's position, not detect the first one. The shadow-detection primitive is shared; the traversal is not.
 
@@ -1108,15 +1453,25 @@ The rebuilt file's own sites and correlated evidence are recomputed in memory an
 
 #### Implementation
 
-Mirrors WU-2 one-for-one:
+Mirrors WU-2 one-for-one, including every round-7 refinement — dual-engine parity (ADR-001) means none of finding 1/2/3/4/5's fixes are TS-only:
 
 - `types.rs` — `ObjectLiteralSite { site: String, owner: Option<String>, escapes: bool }` with serde field names matching the TS shape (`objectLiteralSite` ↔ `object_literal_site` via the existing rename convention used for `key_expr`/`dynamic_kind`); `Call.object_literal_site: Option<String>`.
-- `javascript.rs` — `object_literal_site_id`, `enclosing_object_literal`; `handle_object_literal_pair_value_ref` (line 4456) and `handle_object_literal_shorthand_value_ref` (line 4494) each gain the site seed + tag; new `compute_object_literal_site_escapes` with:
+- `javascript.rs` — `object_literal_site_id`, `enclosing_object_literal`; `handle_object_literal_pair_value_ref` (line 4456) and `handle_object_literal_shorthand_value_ref` (line 4493) each gain the site seed + tag; new `compute_object_literal_site_escapes(sites, root, source, exported_names, definition_names)` — the trailing `definition_names: &HashSet<String>` parameter mirrors the TS side's round-7 addition (finding 3) and is built the same way, from `symbols.definitions` — with:
   - `TRACKED_REFERENCE_PARENT_KINDS` mirroring `TRACKED_REFERENCE_PARENTS`, placed beside the existing `TABLE_NAME_PASSTHROUGH_KINDS` (line 4372) and cross-referenced in both directions by doc comment, as that constant already is;
-  - `is_tracked_reference_position` mirroring `isTrackedReferencePosition` one-for-one, including the member/subscript call-position narrowing, the subscript static-key requirement (string/template-string `index` only), and the for-of/for-in discriminator (reusing the same `is_for_of` child-text scan `collect_for_of_binding` already applies at `javascript.rs:7553`). Node-identity comparisons use `.id()`, not `==` — not a new convention for this engine's Rust side: `handle_accessor_property_read` (the existing mirror of `collectAccessorPropertyRead`) already compares this exact shape via `.id()` at `javascript.rs:2323-2326` (`parent.child_by_field_name("function").map(|f| f.id()) == Some(node.id())`), so this bullet reuses that idiom rather than introducing one;
-  - `literal_has_unmodeled_this_reference` and its depth-capped `this`-kind subtree search, mirroring `literalHasUnmodeledThisReference` / `subtreeContainsThisKeyword` one-for-one, including the truncate-toward-`true` direction (the inverse of `block_contains_identifier_excluding`'s own truncate-toward-`false`, for the same reason the TS side documents).
+  - `is_tracked_reference_position(ref_node: &Node, is_array_owner: bool, source: &[u8]) -> bool` mirroring `isTrackedReferencePosition` one-for-one, including:
+    - the member/subscript call-position narrowing;
+    - round 7 / finding 1: `is_array_owner` short-circuits the member/subscript branch to `false` before any other check runs, exactly as the TS side does — an array-owned site's container is tracked only through the for-of branch;
+    - the subscript static-key requirement, round 7 / finding 4: a `string` index, or a `template_string` index whose text contains no `$` — mirroring `extract_call_info`'s OWN guard verbatim (`!method_name.contains('$')`, `javascript.rs:6479`, subscript arm at `javascript.rs:6469-6489`), not a new distinction invented for the escape check;
+    - the for-of/for-in discriminator (reusing the same `is_for_of` child-text scan `collect_for_of_binding` already applies at `javascript.rs:7553`).
+
+    Node-identity comparisons use `.id()`, not `==` — not a new convention for this engine's Rust side: `handle_accessor_property_read` (the existing mirror of `collectAccessorPropertyRead`) already compares this exact shape via `.id()` at `javascript.rs:2323-2326` (`parent.child_by_field_name("function").map(|f| f.id()) == Some(node.id())`), so this bullet reuses that idiom rather than introducing one;
+  - `all_references_tracked(root, binding_name, object_node, is_array_owner, source) -> bool` mirroring `allReferencesTracked` one-for-one, including BOTH recursive branches: the round-4 rebinding recursion (`is_array_owner` unchanged across the recursive call) and the round-7 for-of-loop-variable recursion (finding 2 — `is_array_owner` hardcoded `false` for the recursive call, and the reference rejected outright, no recursive call attempted, when the loop variable's `left` is not a single plain identifier — reusing `collect_for_of_binding`'s own `var_name` extraction shape at `javascript.rs:7576-7597` to decide "single plain identifier" the same way the TS side reuses `collectForOfBinding`'s);
+  - `resolve_site_owner(object_node: &Node, source: &[u8]) -> Option<SiteOwner>` where `SiteOwner { key: String, binding_name: Option<String> }` — round 7 / finding 5: `binding_name` is always the bare declarator identifier (never `[*]`- or `::return`-suffixed), matching the TS contract field-for-field, for the identical reason (an `is_array_owner` derived from `key != binding_name` that could ever be wrong for the array case would silently disable finding 1's fix and condition 2's export check together, on this engine too);
+  - `literal_has_unmodeled_this_reference(object_node, root, definition_names, source) -> bool` and its depth-capped `this`-kind subtree search, mirroring `literalHasUnmodeledThisReference` / `subtreeContainsThisKeyword` one-for-one, including the truncate-toward-`true` direction (the inverse of `block_contains_identifier_excluding`'s own truncate-toward-`false`, for the same reason the TS side documents) — PLUS, round 7 / finding 3, the identifier-valued-pair branch: new `resolve_identifier_value_this_reference(root, name, definition_names, source) -> bool` and `find_top_level_function_node_by_name(root, name, source) -> Option<Node>`, mirroring `resolveIdentifierValueThisReference` / `findTopLevelFunctionNodeByName` one-for-one, including the identical three-way fail-safe (resolves to a same-file non-arrow function → check its body; resolves to an arrow function → excluded; does not resolve in-file → fail-safe `true`).
 
 Every new Rust item carries a `/// Mirrors <tsSymbol> in src/extractors/javascript.ts` line — the convention `handle_object_literal_pair_value_ref` already follows.
+
+> **Parity risk specific to round 7:** finding 1's `is_array_owner` short-circuit and finding 4's `$`-interpolation guard are both one-line conditions that are trivial to omit silently in a hand-written port. WU-10's dual-engine assertion on the new escape-fallback cases (below) is what actually catches a missed one — a reviewer diffing the two `is_tracked_reference_position`/`isTrackedReferencePosition` bodies side by side is the other half of the gate, per the Testing Strategy section's "what no tier catches" note.
 
 ---
 
@@ -1203,6 +1558,10 @@ const T = { alpha: fnA }; const u = T; u.alpha();
 ```
 
 > **Each case must also assert `escapes = 0`** for its site (`SELECT escapes FROM object_literal_sites WHERE file = ? AND site = ?`), not just the liveness outcome shown above (round-3 critic finding). Liveness alone does not prove T1 fired: if a site were wrongly classified escaping, T2's bare-name fallback would report the same property live for an unrelated reason, and the test would pass while silently losing coverage of the tier it claims to exercise — symmetric to how the escape-fallback test below asserts `escapes = 1` rather than trusting liveness alone. Case 3 (alias) is the load-bearing one: it is exactly the shape WU-2's `variable_declarator` handling in `allReferencesTracked` (condition 3 above) must classify non-escaping, and a regression there would otherwise pass this test unnoticed.
+>
+> **Case 2 re-verified against round 7's tightened rules.** `RESOLVERS` is an array-element owner (`isArrayOwner = true`), so its own reference — the for-of head in `for (const r of RESOLVERS) …` — is checked on the `for_in_statement` branch, which does not gate on `isArrayOwner` at all (only the member/subscript branch does, per finding 1). Accepting that reference now additionally requires `allReferencesTracked(root, 'r', objectNode, false)` to hold (finding 2): `r`'s only two references, `r.matches(x)` and `r.resolve(x)`, are both call-position member expressions checked with `isArrayOwner = false` (a loop variable always denotes a single element), so both pass unchanged. This shape was the plan's own headline #1771 idiom and is confirmed unaffected by round 7 — the array-owned shape round 7 actually excludes is the CONTAINER-level `.forEach`/`.map`/etc. call, added as new case (i) below, which this correlation test does not and should not exercise.
+
+**Naming convention:** the correlation test's three shapes (used by their numbers, 1–3, throughout this plan) and the escape-fallback test's shapes ((a)–(n), used by their letters) are two independent, alphabetically/numerically-keyed lists — a re-verified shape 2 above is unrelated to the lettered cases below.
 
 **The escape-fallback test is the soundness gate.** Each case must be classified live *only* because the site escapes and T2 catches it — assert the classification, and assert `object_literal_sites.escapes = 1` for the site, so the test fails loudly if a future change flips the bit rather than silently passing on the wrong tier:
 
@@ -1273,6 +1632,102 @@ const R = { beta: fnF };
 const f = R.beta;
 f();
 otherTable.beta();
+// (i) An ARRAY-OWNED site's CONTAINER called via `.forEach` — the regression
+//     case for finding 1 (round-7 critic finding): WU-10 previously had NO
+//     array-owned escape case at all, so nothing could catch the plan's own
+//     headline #1771 idiom regressing. `A`'s only reference besides its
+//     declaration is `A.forEach(...)` — a call-position member expression,
+//     which the pre-round-7 predicate accepted as tracked. But
+//     `buildArrayCallbackConstraints` seeds a points-to fact for a callback
+//     parameter only from `Array.from`, never from `.forEach`, so `r.k()`
+//     inside the callback produces zero T1 evidence regardless — a
+//     wrongly-non-escaping `A` would make T1 exclusive over that zero
+//     evidence and report `fnK` dead, even though `.forEach` genuinely
+//     invokes it. Round 7 requires the member/subscript branch to see
+//     `isArrayOwner === false`, so `A.forEach(...)` is now rejected outright
+//     and `A` correctly escapes, falling to T2 — which finds "k" from
+//     `r.k()` itself, exactly as case (g)/(h) already rely on a call's own
+//     name populating T2 regardless of correlation. Filed as a follow-up
+//     capability (not modeled here) — #2621.
+const A = [{ k: fnK }];
+A.forEach((r) => r.k());
+otherObj.k();
+// (j) A for-of loop variable forwarded into an imported function — the
+//     regression case for finding 2 (round-7 critic finding): accepting the
+//     reference to the ARRAY on the for-of branch is not enough on its own,
+//     exactly as accepting `const u = T` alone is not enough for the
+//     rebinding branch (round 4) — the loop variable `r`'s OWN references
+//     must be tracked too, recursively. `sink(r)` passes `r` as a
+//     bare-identifier argument to an imported function, which the existing
+//     parameter-flow exclusion (condition 3, round 5, #2617) already treats
+//     as untracked regardless of what the callee does with it — so `r`'s
+//     recursive check fails and the site must escape even though `A`'s own
+//     for-of reference looks safe in isolation.
+import { sink } from './sink.js';
+const C = [{ gamma: fnG }];
+for (const r of C) sink(r);
+otherObj.gamma();
+// (k) A DESTRUCTURED for-of loop variable — a natural extension of finding 2
+//     round 7 identified while closing it: the for_in_statement branch only
+//     ever forwards a SINGLE PLAIN IDENTIFIER loop variable, mirroring
+//     `collectForOfBinding`'s own extraction exactly; a destructuring `left`
+//     such as `{ matches }` extracts a property directly, and
+//     `collectForOfBinding` never emits a `forOfBindings` entry for it at
+//     all (verified: it requires the declarator's `name` field to be a
+//     plain `identifier`) — so `matches(x)` below is never a correlated
+//     call on a receiver pointing at this site, regardless of how the array
+//     is referenced. Treating the array reference as tracked here would
+//     silently reopen finding 2's exact gap for every destructuring for-of,
+//     not just the plain-identifier one the fix names explicitly. Filed as
+//     a follow-up capability, the array-element analogue of #2620 — #2622.
+const B = [{ matches: isBar }];
+for (const { matches } of B) matches(x);
+otherObj.matches();
+// (l) An identifier-valued property whose named function body references
+//     `this` on a SIBLING property — the regression case for finding 3
+//     (round-7 critic finding) in `literalHasUnmodeledThisReference`: round
+//     6 only inspected a `pair`'s value when it was written INLINE
+//     (`method_definition`, or a direct `function`/`function_expression`
+//     value), never a plain identifier value that itself names a same-file
+//     function — so `alphaImpl`'s `this` was invisible to condition 4 even
+//     though `run`'s only reference (`T.run()`) is itself a genuine tracked
+//     call, and the site would (wrongly) read as local-closed with zero T1
+//     evidence for `alpha`. T2 catches it via `this.alpha()` itself, the
+//     same way case (g) already relies on `this.alpha()` populating T2
+//     once the site correctly escapes — no separate decoy needed.
+function alphaImpl() { }
+function runImpl() { return this.alpha(); }
+const T2 = { alpha: alphaImpl, run: runImpl };
+T2.run();
+// (m) A subscript call keyed by an INTERPOLATED template string — the
+//     regression case for finding 4 (round-7 critic finding):
+//     `isTrackedReferencePosition`'s static-key requirement previously
+//     accepted ANY `template_string` index unconditionally, but
+//     `extractSubscriptCallInfo`'s own extraction guard
+//     (`!methodName.includes('$')`) never produces a named,
+//     receiver-carrying Call for an INTERPOLATED template key — only
+//     `<dynamic:unresolved>`, with no name and no receiver — so correlated
+//     evidence for `alpha` can never exist for this shape regardless of how
+//     `V` is referenced elsewhere.
+const V = { alpha: fnA2 };
+const part = 'pha';
+V[`al${part}`]();
+otherObj.alpha();
+// (n) An EXPORTED array literal — the regression case for finding 5
+//     (round-7 critic finding) confirming `resolveSiteOwner`'s `bindingName`
+//     contract: if `bindingName` were ever the KEY form (`"A[*]"`) rather
+//     than the bare declarator identifier (`"A"`), condition 2's
+//     `exportedNames.has(owner.bindingName)` check would look up a string
+//     that can never be in `exportedNames` (which holds bare identifiers)
+//     and would never fire for an exported array; `allReferencesTracked`
+//     would then search the AST for an identifier literally spelled `A[*]`
+//     — text that cannot exist — find zero surviving references, and read
+//     that vacuous walk as non-escaping (see the vacuous-`allReferencesTracked`
+//     discussion in WU-2b), silently bypassing condition 2 for every
+//     array-owned site, exported or not. With the contract correctly
+//     stated, condition 2 catches this BEFORE condition 3 ever runs.
+export const W = [{ theta: fnT }];
+otherObj.theta();
 // EXPECT (all): live, escapes === 1.
 ```
 
@@ -1300,7 +1755,7 @@ WU-4 (solver) is off the critical path and should be built in parallel with WU-2
 | Tier | What it covers here | Files |
 |---|---|---|
 | **Unit / parser extraction** | Site ids are stable and unique per file; `escapes` is correct for each recognised shape and defaults `true` for unrecognised ones; value-ref calls carry `objectLiteralSite`. | `tests/parsers/javascript.test.ts` |
-| **Integration over a fixture project** | The three correlation shapes and the eight escape-fallback shapes, end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
+| **Integration over a fixture project** | The three correlation shapes and the fourteen escape-fallback shapes (eight from earlier rounds plus six added in round 7 for findings 1, 2 — split into its plain-forwarding and destructuring sub-cases — 3, 4, and 5), end-to-end through `buildGraph` into `nodes.role`. | `tests/integration/issue-2088-*.test.ts` |
 | **Resolution precision/recall** | The new `pts-javascript/objlit-site.js` fixture's expected edges. `javascript`'s precision-1.0 floor must not move — that fixture is the false-positive canary per ADR-002. | `tests/benchmarks/resolution/` |
 | **Dual-engine parity** | Every integration assertion runs under `--engine wasm` and `--engine native`; `npm run build` runs first so WASM sees the new `dist/`. | both `issue-2088-*` tests + `/parity` |
 | **Incremental vs full** | A `codegraph watch`-shaped single-file rebuild reaches the same tier decision as a full build, via the two persisted tables. | `issue-2087-…` + the incremental case in `issue-2088-correlated-property-evidence` |
@@ -1343,14 +1798,14 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 
 | Risk | Mitigation |
 |---|---|
-| Tightening turns a conservative false negative into a **false positive** (live code reported dead) | Structural, not incidental: T1 is reachable only when `escapes === false`, and `escapes` defaults `true` on every unrecognised shape (WU-2b). Escaping sites take T2 — today's exact predicate. Gated by `tests/integration/issue-2088-escape-fallback.test.ts` (WU-10), which asserts both the classification *and* `escapes = 1`, so it fails if the guard is bypassed rather than passing on the wrong tier. |
+| Tightening turns a conservative false negative into a **false positive** (live code reported dead) | Structural, not incidental: T1 is reachable only when `escapes === false`, and `escapes` defaults `true` on every unrecognised shape (WU-2b). Escaping sites take T2 — today's exact predicate. Gated by `tests/integration/issue-2088-escape-fallback.test.ts` (WU-10), which asserts both the classification *and* `escapes = 1`, so it fails if the guard is bypassed rather than passing on the wrong tier. Round 6 found and closed four such gaps (the alias, parameter-flow, same-literal `this`, and bare-read branches); round 7 re-applied the SAME invariant test to the round-6 result itself and found and closed five more (array-owned container calls, for-of loop-variable forwarding, identifier-valued `this`, interpolated template keys, and the owner `bindingName`/`key` contract) — see the round-7 annotations throughout WU-2b and the six new WU-10 cases (i)–(n) added to gate them. |
 | Reviewer objection: "this contradicts §8.3's field-based decision" | Pre-rebutted in [Reconciling the tension](#reconciling-the-tension-with-roadmap-83-field-based-not-field-sensitive): field-sensitivity and allocation-site abstraction are orthogonal axes, and §8.3's own Approach block already commits to allocation-site abstraction. The pts lattice stays field-based; the `site\|key` set is computed outside the solver. |
 | Reviewer objection: "this duplicates #2260's `receiver` channel" | It does not — T3 is kept name-keyed, unconditional, and untouched (WU-5b). #2088 adds a third tier beside it. The array-literal gap in #2260's own channel is filed separately as #2611 rather than folded in. |
 | New `ExtractorOutput` field silently dropped at the Worker boundary | ADR-002 §Costs.2 names this the primary parity risk, so it is its own work unit (WU-3) with its own verification, following the `computedDispatchTableEvidence` precedent in the same three files. `Call.objectLiteralSite` needs no protocol edit — verified by reading `wasm-worker-protocol.ts:51` (`calls: Call[]`, passed whole), not assumed. |
 | WASM/native escape-bit drift | The bit is persisted in `object_literal_sites`, so a divergence is directly observable by diffing that table between engine runs rather than only inferable from a differing `roles` output. WU-10 runs every integration assertion under both engines; `/parity` gates. |
 | Solver cost grows with object-literal count | Constraints added are O(sites) + O(callAssignments with a matching `::return` key), and the `callAssignments` loop is guarded on that key existing, so it adds no rows for the common case. `MAX_SOLVER_ITERATIONS` is unchanged at 50. `npm run benchmark` is in the verification block; a >5% full-build regression on this repo is reported, not absorbed. |
 | Full-vs-incremental divergence in the new channel | Both new tables are persisted and purged per file exactly as `invoked_property_names` (#2087) is — WU-5(c), WU-6. This is deliberately *not* the shortcut #2260 took, whose in-memory-only aggregation is filed as #2610. |
-| Scope growth during implementation | Two adjacent findings were filed as issues before this plan was written (#2610, #2611) rather than absorbed. Any further finding gets the same treatment; one PR = one concern. |
+| Scope growth during implementation | Two adjacent findings were filed as issues before this plan was written (#2610, #2611) rather than absorbed. Every review round since has kept the same discipline for findings that narrow the escape-analysis design rather than fix it (#2617–#2620 from rounds 4–6; #2621–#2623 from round 7) — see the Success Criteria exclusion list. One PR = one concern. |
 
 ## Out of Scope (filed, not silently dropped)
 
@@ -1363,13 +1818,17 @@ The two `roles --role dead -T` runs are the parity check *and* the dogfood measu
 
 - [ ] `codegraph roles --role dead -T` no longer credits an unrelated `x.name(...)` call as liveness evidence for a **non-escaping** object literal's `{ name: fn }` property — the exact behavior issue #2088 asks for.
 - [ ] Every object literal producing a value-ref carries a stable allocation-site id, and its `escapes` bit is persisted in `object_literal_sites`.
-- [ ] The points-to solver propagates those sites through the flows it already models and treats as tracked — direct binding, array element + for-of, and alias — with **no** change to `buildCallSiteTypeMap` / `MAX_SOLVER_ITERATIONS`, per ADR-002's "no new subsystem". The following positions/shapes are treated as escaping in this iteration and are deliberately excluded from the correlated set, each narrower than an earlier round of this plan claimed — round-6 review found that an earlier, looser predicate would have accepted them without their invocations actually being provable via T1, which is a soundness gap, not a stylistic nit. Recall is smaller than that earlier draft claimed; each exclusion below is filed as a follow-up capability rather than silently narrowed:
-  - Parameter-passing positions (WU-2b condition 3, WU-4) — #2617.
-  - A same-literal `this.k()` call from a method/function defined inside the literal itself (WU-2b condition 4) — #2618.
+- [ ] The points-to solver propagates those sites through the flows it already models and treats as tracked — direct binding, array element + for-of, and alias — with **no** change to `buildCallSiteTypeMap` / `MAX_SOLVER_ITERATIONS`, per ADR-002's "no new subsystem". The following positions/shapes are treated as escaping in this iteration and are deliberately excluded from the correlated set, each narrower than an earlier round of this plan claimed — round 6 (and, re-applying the identical invariant test to round 6's OWN result, round 7) found that an earlier, looser predicate would have accepted them without their invocations actually being provable via T1, which is a soundness gap, not a stylistic nit. Recall is smaller than that earlier draft claimed, again; each exclusion below is filed as a follow-up capability rather than silently narrowed:
+  - Parameter-passing positions (WU-2b condition 3, WU-4) — #2617. This exclusion also applies transitively to a for-of loop variable forwarded into a function call (round 7) — no separate issue; it is the same gap one binding further, per condition 3's own note.
+  - A same-literal `this.k()` call from a method/function defined inside the literal itself (WU-2b condition 4) — #2618. Round 7 closed a DETECTION gap in this same condition (an identifier-valued property naming a same-file function was previously invisible to the check at all) without changing the underlying exclusion itself — no new issue for that fix; it makes an existing checkbox true rather than narrowing it further.
   - `for...in` enumeration (only the `for...of` variant of `for_in_statement` is tracked) and, more generally, a computed dispatch call `TABLE[expr]()` made directly rather than through the `const x = TABLE[expr]; x(...)` declarator form T3 already requires — #2619.
   - A bare (non-call) member/subscript read of a tracked binding's property, assigned to a local and called through that alias (e.g. `const f = T.k; f()`) — #2620.
+  - (round 7) A member/subscript call on an ARRAY-OWNED site's CONTAINER (`RESOLVERS.forEach(...)`, `.map`, `.find`, `.filter`, `.some`) — only a `for...of` head over the container is admissible; `buildArrayCallbackConstraints` seeds no points-to fact for any of these callbacks' parameters — #2621.
+  - (round 7) A `for...of` loop variable forwarded into a position this analysis does not itself follow, beyond the plain parameter-passing case above — specifically, a DESTRUCTURING loop variable (`for (const { k } of A) k()`), which `collectForOfBinding` never seeds a points-to fact for at all — #2622.
+  - (round 7) A subscript call keyed by an interpolated template string (`` T[`al${x}pha`]() ``) — the extractor's own guard never produces a named, receiver-carrying call for it, so no property name is ever available to correlate, regardless of how the receiver is referenced — #2623.
 - [ ] `resolveViaPointsTo` never returns a site token to name resolution.
 - [ ] For any site with `escapes === true`, resolution is **byte-identical to pre-#2088**, and all nine listed existing tests pass unedited.
+- [ ] `resolveSiteOwner`'s `key`/`bindingName` contract (round 7, #2088 finding 5) holds for every owner shape, verified by WU-10's dedicated `export const A = [{…}]` case: condition 2's export check and the `isArrayOwner` derivation both depend on `bindingName` never carrying a `[*]`/`::return` suffix.
 - [ ] WASM and native engines produce identical `object_literal_sites`, identical `invoked_property_sites`, and identical `roles --role dead -T` output on this repo.
 - [ ] A scoped incremental rebuild reaches the same tier decision as a full build for the same file.
 - [ ] `analysis.correlatedPropertyEvidence` is the only new behavioral constant, lives in `DEFAULTS`, is wired to both engines, and setting it `false` restores pre-#2088 behavior exactly.
