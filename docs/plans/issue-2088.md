@@ -1409,15 +1409,26 @@ function computeObjectLiteralSiteEscapes(
     const isArrayOwner = owner.key !== owner.bindingName;
     // Top-level call — `declaringScope` is omitted, so `allReferencesTracked`
     // computes it once via `findDeclaringScopeNode(objectNode, owner.bindingName)
-    // ?? root` (round 8, #2088 finding 1) and threads that fixed node through
-    // its own recursive calls unchanged. See `allReferencesTracked`'s own doc
-    // comment below for why the boundary must be computed exactly once, here,
-    // rather than re-derived per recursive call. `exportedNames` is threaded
-    // through as of ROUND 25 (#2088, blocking) so every recursive call can
-    // re-apply condition 2 to its own subject — see that round's own essay,
-    // below, for why the single check just above (line 1368-ish, `if
-    // (exportedNames.has(owner.bindingName)) continue;`) is not enough on its
-    // own once an alias is involved.
+    // ?? root` (round 8, #2088 finding 1). ROUND 21 (#2088, blocking) corrects
+    // this comment's own prior claim (through round 20) that this fixed node
+    // is then threaded through every recursive call unchanged: as of round
+    // 21, it is NOT — each recursion (rebinding alias, for-of loop variable)
+    // instead computes its OWN `declaringScope`, seeded from the recursion
+    // subject's own lexical position, and falls back to the ENCLOSING call's
+    // `declaringScope` (never straight to `root`) only when nothing shadows
+    // the subject between its own position and that boundary. Reusing the
+    // outer boundary unchanged — this comment's own pre-round-21 text — is
+    // exactly the bug round 21 closes: it self-shadows on the alias/loop-
+    // variable's own declaring block whenever that block differs from the
+    // outer call's. See `allReferencesTracked`'s own doc comment below, and
+    // the round-21 essay it points to, for the executed counter-example this
+    // closes and for why the for-of recursion additionally needs a
+    // `kind === 'var'` split that the alias recursion does not (#2643).
+    // `exportedNames` is threaded through as of ROUND 25 (#2088, blocking) so
+    // every recursive call can re-apply condition 2 to its own subject — see
+    // that round's own essay, below, for why the single check just above
+    // (line 1368-ish, `if (exportedNames.has(owner.bindingName)) continue;`)
+    // is not enough on its own once an alias is involved.
     entry.escapes = !allReferencesTracked(
       root, exportedNames, owner.bindingName, objectNode, isArrayOwner,
     );
