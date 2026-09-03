@@ -1340,6 +1340,9 @@ function persistObjectLiteralSites(ctx: PipelineContext): void {
 /**
  * Persist correlated invoked-property evidence (#2088) so a scoped incremental
  * build sees `${siteKey}|${name}` pairs produced by files it did not re-parse.
+ * Called from `buildCallEdgesPhase` for both the native-call-edges and JS
+ * sub-paths — same "once per pass regardless of sub-path" contract as
+ * `persistInvokedPropertyNames`.
  */
 function persistInvokedPropertySites(
   ctx: PipelineContext,
@@ -1378,6 +1381,90 @@ function persistInvokedPropertySites(
     }
   });
   tx();
+}
+
+type ImportedNamesBundle = ReturnType<typeof buildImportedNamesMap>;
+
+type FileCallWithCaller = {
+  name: string;
+  receiver?: string;
+  dynamicKind?: string | null;
+  callerName: string | null;
+};
+
+interface InvokedPropertySitePrep {
+  importedNamesByFile: Map<string, ImportedNamesBundle>;
+  ptsMapsByFile: Map<string, PointsToMap | null>;
+  fileCallsWithCaller: Map<string, FileCallWithCaller[]>;
+  resolveReceiverSites: (
+    relPath: string,
+    receiver: string,
+    callerName: string | null,
+  ) => ReadonlyArray<string>;
+}
+
+/** #2088 (round 28) — probe every scope a for-of receiver's pts key could be written under. */
+function candidateScopesFor(callerName: string | null): readonly string[] {
+  const scoped = callerName ?? '<module>';
+  const lastDotIdx = callerName?.lastIndexOf('.') ?? -1;
+  const afterLastDot = lastDotIdx >= 0 ? callerName!.slice(lastDotIdx + 1) : null;
+  return [...new Set([scoped, ...(afterLastDot ? [afterLastDot] : []), '<module>'])];
+}
+
+/**
+ * #2088 pass 1: per-file pts maps + caller-derived receivers, used both to
+ * persist `invoked_property_sites` (every sub-path of `buildCallEdgesPhase`)
+ * and to resolve T1 evidence in `buildCallEdgesJS`.
+ */
+function prepareInvokedPropertySiteResolution(
+  ctx: PipelineContext,
+  getNodeIdStmt: NodeIdStmt,
+): InvokedPropertySitePrep {
+  const { fileSymbols, barrelOnlyFiles, rootDir } = ctx;
+  const lookup = makeContextLookup(ctx, getNodeIdStmt);
+  const importedNamesByFile = new Map<string, ImportedNamesBundle>();
+  const ptsMapsByFile = new Map<string, PointsToMap | null>();
+  for (const [relPath, symbols] of fileSymbols) {
+    if (barrelOnlyFiles.has(relPath)) continue;
+    const imported = buildImportedNamesMap(ctx, relPath, symbols, rootDir);
+    importedNamesByFile.set(relPath, imported);
+    ptsMapsByFile.set(
+      relPath,
+      buildPointsToMapForFile(
+        symbols,
+        imported.importedNames,
+        ctx.config.analysis.pointsToMaxIterations,
+        relPath,
+      ),
+    );
+  }
+
+  const fileCallsWithCaller = new Map<string, FileCallWithCaller[]>();
+  for (const [relPath, symbols] of fileSymbols) {
+    if (barrelOnlyFiles.has(relPath)) continue;
+    const fileNodeRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
+    if (!fileNodeRow) continue;
+    fileCallsWithCaller.set(
+      relPath,
+      symbols.calls.map((call) => ({
+        name: call.name,
+        receiver: call.receiver,
+        dynamicKind: call.dynamicKind,
+        callerName: findCaller(lookup, call, symbols.definitions, relPath, fileNodeRow).callerName,
+      })),
+    );
+  }
+
+  const resolveReceiverSites = (relPath: string, receiver: string, callerName: string | null) => {
+    const ptsMap = ptsMapsByFile.get(relPath);
+    if (!ptsMap) return [];
+    const scopedHits = candidateScopesFor(callerName).flatMap((scope) =>
+      resolveSitesViaPointsTo(`${scope}::${receiver}`, ptsMap),
+    );
+    return scopedHits.concat(resolveSitesViaPointsTo(receiver, ptsMap));
+  };
+
+  return { importedNamesByFile, ptsMapsByFile, fileCallsWithCaller, resolveReceiverSites };
 }
 
 /**
@@ -1462,7 +1549,8 @@ function buildCallEdgesJS(
   ctx: PipelineContext,
   getNodeIdStmt: NodeIdStmt,
   allEdgeRows: EdgeRowTuple[],
-  chaCtx?: ChaContext,
+  chaCtx: ChaContext | undefined,
+  sitePrep: InvokedPropertySitePrep,
 ): void {
   const { db, fileSymbols, barrelOnlyFiles, rootDir } = ctx;
   const lookup = makeContextLookup(ctx, getNodeIdStmt);
@@ -1508,26 +1596,8 @@ function buildCallEdgesJS(
     }
   }
 
-  // #2088 pass 1: build every file's points-to map BEFORE assembling
-  // correlated evidence — collectInvokedPropertySites resolves receivers
-  // through a per-file map that does not exist until this pass finishes.
-  type ImportedNamesBundle = ReturnType<typeof buildImportedNamesMap>;
-  const importedNamesByFile = new Map<string, ImportedNamesBundle>();
-  const ptsMapsByFile = new Map<string, PointsToMap | null>();
-  for (const [relPath, symbols] of fileSymbols) {
-    if (barrelOnlyFiles.has(relPath)) continue;
-    const imported = buildImportedNamesMap(ctx, relPath, symbols, rootDir);
-    importedNamesByFile.set(relPath, imported);
-    ptsMapsByFile.set(
-      relPath,
-      buildPointsToMapForFile(
-        symbols,
-        imported.importedNames,
-        ctx.config.analysis.pointsToMaxIterations,
-        relPath,
-      ),
-    );
-  }
+  const { importedNamesByFile, ptsMapsByFile, fileCallsWithCaller, resolveReceiverSites } =
+    sitePrep;
 
   // #2088 pass 2: non-escaping sites + correlated invoked-property evidence.
   const nonEscapingSites = new Set<string>();
@@ -1546,44 +1616,6 @@ function buildCallEdgesJS(
     // Table may not exist yet on a brand-new DB before migration runs.
   }
 
-  const fileCallsWithCaller = new Map<
-    string,
-    Array<{
-      name: string;
-      receiver?: string;
-      dynamicKind?: string | null;
-      callerName: string | null;
-    }>
-  >();
-  for (const [relPath, symbols] of fileSymbols) {
-    if (barrelOnlyFiles.has(relPath)) continue;
-    const fileNodeRow = getNodeIdStmt.get(relPath, 'file', relPath, 0);
-    if (!fileNodeRow) continue;
-    fileCallsWithCaller.set(
-      relPath,
-      symbols.calls.map((call) => ({
-        name: call.name,
-        receiver: call.receiver,
-        dynamicKind: call.dynamicKind,
-        callerName: findCaller(lookup, call, symbols.definitions, relPath, fileNodeRow).callerName,
-      })),
-    );
-  }
-
-  function candidateScopesFor(callerName: string | null): readonly string[] {
-    const scoped = callerName ?? '<module>';
-    const lastDotIdx = callerName?.lastIndexOf('.') ?? -1;
-    const afterLastDot = lastDotIdx >= 0 ? callerName!.slice(lastDotIdx + 1) : null;
-    return [...new Set([scoped, ...(afterLastDot ? [afterLastDot] : []), '<module>'])];
-  }
-  const resolveReceiverSites = (relPath: string, receiver: string, callerName: string | null) => {
-    const ptsMap = ptsMapsByFile.get(relPath);
-    if (!ptsMap) return [];
-    const scopedHits = candidateScopesFor(callerName).flatMap((scope) =>
-      resolveSitesViaPointsTo(`${scope}::${receiver}`, ptsMap),
-    );
-    return scopedHits.concat(resolveSitesViaPointsTo(receiver, ptsMap));
-  };
   const correlated = collectInvokedPropertySites(fileCallsWithCaller, resolveReceiverSites);
   try {
     for (const row of db
@@ -1597,7 +1629,6 @@ function buildCallEdgesJS(
   } catch {
     // Table may not exist yet on a brand-new DB before migration runs.
   }
-  persistInvokedPropertySites(ctx, fileCallsWithCaller, resolveReceiverSites);
 
   const evidence: InvocationEvidence = {
     invokedNames: invokedPropertyNames,
@@ -3150,6 +3181,12 @@ function buildCallEdgesPhase(
   persistObjectLiteralSites(ctx);
   // #2138: same rationale, for cross-file return-type propagation.
   persistReturnTypes(ctx);
+  // #2088: persist correlated keys once per pass regardless of which
+  // sub-path below resolves this build's edges — same contract as
+  // persistInvokedPropertyNames. Native-call-edges otherwise skipped
+  // persistInvokedPropertySites (it lived only in buildCallEdgesJS).
+  const sitePrep = prepareInvokedPropertySiteResolution(ctx, getNodeIdStmt);
+  persistInvokedPropertySites(ctx, sitePrep.fileCallsWithCaller, sitePrep.resolveReceiverSites);
 
   // Skip native call-edge path for small incremental builds: napi-rs
   // marshaling overhead for allNodes exceeds Rust computation savings.
@@ -3172,7 +3209,7 @@ function buildCallEdgesPhase(
     // calls and interface dispatch are not expanded to concrete implementations.
     buildChaPostPass(ctx, getNodeIdStmt, allEdgeRows, chaCtx);
   } else {
-    buildCallEdgesJS(ctx, getNodeIdStmt, allEdgeRows, chaCtx);
+    buildCallEdgesJS(ctx, getNodeIdStmt, allEdgeRows, chaCtx, sitePrep);
   }
 }
 

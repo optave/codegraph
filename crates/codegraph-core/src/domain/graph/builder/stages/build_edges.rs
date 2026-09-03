@@ -986,16 +986,15 @@ fn candidate_scopes_for(caller_name: &str) -> Vec<String> {
     scopes
 }
 
-fn collect_invoked_property_sites(
+/// Per-file `${siteKey}|${name}` keys for this pass (#2088). Used both to
+/// assemble in-memory T1 evidence and to persist `invoked_property_sites`
+/// so a later incremental pass's extra-SELECT is not vacuously empty.
+pub(crate) fn collect_invoked_property_sites_by_file(
     files: &[FileEdgeInput],
     all_nodes: &[NodeInfo],
-    extra: &[String],
     max_iterations: u32,
-) -> HashSet<String> {
-    let mut keys = HashSet::new();
-    for extra_key in extra {
-        keys.insert(extra_key.clone());
-    }
+) -> HashMap<String, HashSet<String>> {
+    let mut by_file: HashMap<String, HashSet<String>> = HashMap::new();
     for file in files {
         let imported_names: HashMap<&str, &str> = file
             .imported_names
@@ -1023,6 +1022,7 @@ fn collect_invoked_property_sites(
                 }
             })
             .collect();
+        let mut keys = HashSet::new();
         for call in &file.calls {
             if call.receiver.is_none() || call.dynamic_kind.as_deref() == Some("value-ref") {
                 continue;
@@ -1041,6 +1041,27 @@ fn collect_invoked_property_sites(
                 keys.insert(correlated_evidence_key(site_key, &call.name));
             }
         }
+        if !keys.is_empty() {
+            by_file.insert(file.file.clone(), keys);
+        }
+    }
+    by_file
+}
+
+fn collect_invoked_property_sites(
+    files: &[FileEdgeInput],
+    all_nodes: &[NodeInfo],
+    extra: &[String],
+    max_iterations: u32,
+) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    for extra_key in extra {
+        keys.insert(extra_key.clone());
+    }
+    for file_keys in
+        collect_invoked_property_sites_by_file(files, all_nodes, max_iterations).into_values()
+    {
+        keys.extend(file_keys);
     }
     keys
 }

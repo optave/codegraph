@@ -290,6 +290,27 @@ function runSuite(engine: 'wasm' | 'native') {
       }
     });
 
+    it('persists invoked_property_sites after a full build, before any rebuildFile', () => {
+      // WU-8: native orchestrator (engine=native) and JS orchestrator +
+      // native-call-edges (engine=wasm with the addon loaded) must both
+      // write the table on the full-build path. decoyDir is never passed
+      // through rebuildFile, so a COUNT>0 here cannot be a watch-path write.
+      const dbPath = path.join(decoyDir, '.codegraph', 'graph.db');
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        const sites = db.prepare('SELECT COUNT(*) AS c FROM object_literal_sites').get() as {
+          c: number;
+        };
+        const invoked = db.prepare('SELECT COUNT(*) AS c FROM invoked_property_sites').get() as {
+          c: number;
+        };
+        expect(sites.c).toBeGreaterThan(0);
+        expect(invoked.c).toBeGreaterThan(0);
+      } finally {
+        db.close();
+      }
+    });
+
     it('does not credit an unrelated x.resolve() as evidence for a local-closed table', () => {
       const dbPath = path.join(decoyDir, '.codegraph', 'graph.db');
       expect(isDead(dbPath, 'neverCalled')).toBe(true);
