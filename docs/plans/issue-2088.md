@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-23
 **Author:** planner-agent
-**Status:** Draft
+**Status:** Complete
 **Tracking:** issue #2088 · Roadmap: no dedicated phase entry — issue-only; delivers the object-literal slice of `docs/roadmap/ROADMAP.md` §8.3's remaining unchecked item ("Full allocation-site abstraction and constraint solver"), and builds on §4.2 (Receiver Type Tracking, ✅) and BACKLOG item 73 (PROMOTED → §4.2) · ADRs relied on: `002-dynamic-call-resolution` (binding: new constraints land in the existing points-to solver, "no new subsystem"; `value-ref` `DynamicKind`; RES-2 dispatch-table expansion), `001-dual-engine-architecture` (binding: WASM/native parity)
 
 > **Plan round 1.** No `plan-carry-forward` artifact exists on issue #2088 — `gh api repos/optave/ops-codegraph-tool/issues/2088/comments --paginate` returned zero comments carrying the `<!-- plan-carry-forward task=issue-2088 -->` sentinel, from any author, trusted or not. Everything below is derived fresh from the live source at `origin/main` @ `6221df16`.

@@ -63,6 +63,9 @@ pub struct CallInfo {
     /// field's doc comment for the full rationale.
     #[napi(js_name = "accessorRead")]
     pub accessor_read: Option<String>,
+    /// #2088 — file-local object-literal site id. Mirrors TS `Call.objectLiteralSite`.
+    #[napi(js_name = "objectLiteralSite")]
+    pub object_literal_site: Option<String>,
 }
 
 #[napi(object)]
@@ -162,6 +165,13 @@ pub struct FileEdgeInput {
     /// `src/types.ts` — see `collect_cha_instantiated_types`'s doc comment.
     #[napi(js_name = "newExpressions")]
     pub new_expressions: Option<Vec<String>>,
+    /// #2088 — object-literal allocation sites. Mirrors TS `ExtractorOutput.objectLiteralSites`.
+    #[napi(js_name = "objectLiteralSites")]
+    pub object_literal_sites: Option<Vec<crate::types::ObjectLiteralSite>>,
+    /// Cross-file return-type call assignments, reused for #2088 site flow
+    /// (`const t = f()` → pts(t) ⊇ pts(f::return)).
+    #[napi(js_name = "callAssignments")]
+    pub call_assignments: Option<Vec<crate::types::NativeCallAssignment>>,
 }
 
 #[napi(object)]
@@ -214,6 +224,11 @@ struct EdgeContext<'a> {
     /// `TABLE.key(...)` can, so evidence is credited to the whole table
     /// rather than per-key. See `collect_computed_dispatch_table_evidence`.
     computed_dispatch_table_evidence: HashSet<String>,
+    /// #2088 correlated `${siteKey}|${name}` evidence.
+    correlated_property_sites: HashSet<String>,
+    /// #2088 local-closed site keys.
+    non_escaping_sites: HashSet<String>,
+    correlation_enabled: bool,
     /// CHA + RTA typed-dispatch context (#1949): interface/class name →
     /// concrete classes that implement or extend it, built once per build
     /// pass from every file's `classes` (`extends`/`implements`). Used by
@@ -293,6 +308,9 @@ impl<'a> EdgeContext<'a> {
         builtin_receivers: &'a [String],
         files: &'a [FileEdgeInput],
         extra_invoked_property_names: &[String],
+        extra_invoked_property_sites: &[String],
+        max_iterations: u32,
+        correlation_enabled: bool,
     ) -> Self {
         let mut nodes_by_name: HashMap<&str, Vec<&NodeInfo>> = HashMap::new();
         let mut nodes_by_name_and_file: HashMap<(&str, &str), Vec<&NodeInfo>> = HashMap::new();
@@ -325,6 +343,14 @@ impl<'a> EdgeContext<'a> {
                 extra_invoked_property_names,
             ),
             computed_dispatch_table_evidence: collect_computed_dispatch_table_evidence(files),
+            correlated_property_sites: collect_invoked_property_sites(
+                files,
+                all_nodes,
+                extra_invoked_property_sites,
+                max_iterations,
+            ),
+            non_escaping_sites: collect_non_escaping_sites(files),
+            correlation_enabled,
             cha_implementors: cha.implementors,
             cha_implementors_by_file: cha.implementors_by_file,
             cha_parents: cha.parents,
@@ -888,6 +914,37 @@ fn computed_dispatch_table_evidence_key(file: &str, table_name: &str) -> String 
     format!("{file}::{table_name}")
 }
 
+fn has_invocation_evidence(
+    call: &CallInfo,
+    rel_path: &str,
+    ctx: &EdgeContext<'_>,
+    key_expr: &str,
+) -> bool {
+    let site_key = call
+        .object_literal_site
+        .as_deref()
+        .map(|site| object_literal_site_key(rel_path, site));
+    let local_closed = site_key
+        .as_ref()
+        .is_some_and(|k| ctx.non_escaping_sites.contains(k));
+    if ctx.correlation_enabled && local_closed {
+        if let Some(site_key) = site_key.as_deref() {
+            if ctx
+                .correlated_property_sites
+                .contains(&correlated_evidence_key(site_key, key_expr))
+            {
+                return true;
+            }
+        }
+    } else if ctx.invoked_property_names.contains(key_expr) {
+        return true;
+    }
+    call.receiver.as_deref().is_some_and(|r| {
+        ctx.computed_dispatch_table_evidence
+            .contains(&computed_dispatch_table_evidence_key(rel_path, r))
+    })
+}
+
 /// invocation evidence across every file in this build pass — mirrors
 /// `computedDispatchTableEvidence`'s aggregation in
 /// `src/domain/graph/builder/stages/build-edges.ts`. Each file's own list
@@ -899,6 +956,95 @@ fn computed_dispatch_table_evidence_key(file: &str, table_name: &str) -> String 
 /// the table+consumer for this idiom are typically same-file, so this
 /// narrower, in-memory-only scope is accepted for now; a cross-file case
 /// missed on a scoped incremental build recovers on the next full build.
+fn collect_non_escaping_sites(files: &[FileEdgeInput]) -> HashSet<String> {
+    let mut sites = HashSet::new();
+    for file in files {
+        if let Some(list) = &file.object_literal_sites {
+            for site in list {
+                if !site.escapes {
+                    sites.insert(object_literal_site_key(&file.file, &site.site));
+                }
+            }
+        }
+    }
+    sites
+}
+
+fn candidate_scopes_for(caller_name: &str) -> Vec<String> {
+    let scoped = if caller_name.is_empty() {
+        "<module>".to_string()
+    } else {
+        caller_name.to_string()
+    };
+    let mut scopes = vec![scoped];
+    if let Some(idx) = caller_name.rfind('.') {
+        scopes.push(caller_name[idx + 1..].to_string());
+    }
+    scopes.push("<module>".to_string());
+    scopes.sort();
+    scopes.dedup();
+    scopes
+}
+
+fn collect_invoked_property_sites(
+    files: &[FileEdgeInput],
+    all_nodes: &[NodeInfo],
+    extra: &[String],
+    max_iterations: u32,
+) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    for extra_key in extra {
+        keys.insert(extra_key.clone());
+    }
+    for file in files {
+        let imported_names: HashMap<&str, &str> = file
+            .imported_names
+            .iter()
+            .map(|im| (im.name.as_str(), im.file.as_str()))
+            .collect();
+        let Some(pts) = build_pts_map_for_file(file, &imported_names, max_iterations) else {
+            continue;
+        };
+        let file_nodes: Vec<&NodeInfo> = all_nodes.iter().filter(|n| n.file == file.file).collect();
+        let defs_with_ids: Vec<DefWithId> = file
+            .definitions
+            .iter()
+            .map(|d| {
+                let node_id = file_nodes
+                    .iter()
+                    .find(|n| n.name == d.name && n.kind == d.kind && n.line == d.line)
+                    .map(|n| n.id);
+                DefWithId {
+                    name: &d.name,
+                    kind: &d.kind,
+                    line: d.line,
+                    end_line: d.end_line.unwrap_or(u32::MAX),
+                    node_id,
+                }
+            })
+            .collect();
+        for call in &file.calls {
+            if call.receiver.is_none() || call.dynamic_kind.as_deref() == Some("value-ref") {
+                continue;
+            }
+            let Some(receiver) = call.receiver.as_deref() else {
+                continue;
+            };
+            let (_, caller_name, _) =
+                find_enclosing_caller(&defs_with_ids, call.line, file.file_node_id);
+            for scope in candidate_scopes_for(caller_name) {
+                for site_key in resolve_sites_via_points_to(&format!("{scope}::{receiver}"), &pts) {
+                    keys.insert(correlated_evidence_key(site_key, &call.name));
+                }
+            }
+            for site_key in resolve_sites_via_points_to(receiver, &pts) {
+                keys.insert(correlated_evidence_key(site_key, &call.name));
+            }
+        }
+    }
+    keys
+}
+
 fn collect_computed_dispatch_table_evidence(files: &[FileEdgeInput]) -> HashSet<String> {
     let mut names = HashSet::new();
     for file in files {
@@ -949,12 +1095,26 @@ struct PtsBindings<'a> {
 /// `max_iterations` caps the fixed-point loop below — resolved from
 /// `CodegraphConfig.analysis.pointsToMaxIterations` by the caller (mirrors
 /// the `maxIterations` parameter of the TS `buildPointsToMap`).
+const OBJLIT_PTS_PREFIX: &str = "objlit@";
+
+fn object_literal_site_key(rel_path: &str, site: &str) -> String {
+    format!("{OBJLIT_PTS_PREFIX}{rel_path}#{site}")
+}
+
+fn correlated_evidence_key(site_key: &str, property_name: &str) -> String {
+    format!("{site_key}|{property_name}")
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_points_to_map(
     bindings: &PtsBindings,
     def_names: &HashSet<&str>,
     imported_names: &HashMap<&str, &str>,
     definition_params: &HashMap<&str, Vec<&str>>,
     max_iterations: u32,
+    rel_path: &str,
+    object_literal_sites: &[crate::types::ObjectLiteralSite],
+    call_assignments: &[crate::types::NativeCallAssignment],
 ) -> HashMap<String, HashSet<String>> {
     let mut pts: HashMap<String, HashSet<String>> = HashMap::new();
     for name in def_names {
@@ -1111,6 +1271,20 @@ fn build_points_to_map(
         }
     }
 
+    for site in object_literal_sites {
+        let site_key = object_literal_site_key(rel_path, &site.site);
+        pts.entry(site_key.clone()).or_default().insert(site_key.clone());
+        if let Some(owner) = &site.owner {
+            constraints.push((owner.clone(), site_key));
+        }
+    }
+    for ca in call_assignments {
+        let return_key = format!("{}::return", ca.callee_name);
+        if pts.contains_key(&return_key) || constraints.iter().any(|(lhs, _)| lhs == &return_key) {
+            constraints.push((ca.var_name.clone(), return_key));
+        }
+    }
+
     if constraints.is_empty() {
         return pts;
     }
@@ -1149,7 +1323,21 @@ fn resolve_via_points_to<'a>(
         None => vec![],
         Some(targets) => targets
             .iter()
-            .filter(|t| t.as_str() != call_name)
+            .filter(|t| t.as_str() != call_name && !t.starts_with(OBJLIT_PTS_PREFIX))
+            .map(|t| t.as_str())
+            .collect(),
+    }
+}
+
+fn resolve_sites_via_points_to<'a>(
+    var_name: &str,
+    pts: &'a HashMap<String, HashSet<String>>,
+) -> Vec<&'a str> {
+    match pts.get(var_name) {
+        None => vec![],
+        Some(targets) => targets
+            .iter()
+            .filter(|t| t.starts_with(OBJLIT_PTS_PREFIX))
             .map(|t| t.as_str())
             .collect(),
     }
@@ -1191,6 +1379,7 @@ fn emit_pts_alias_edges<'a>(
             dynamic_kind: None,
             key_expr: None,
             accessor_read: None,
+            object_literal_site: None,
         };
         // The CHA typed-dispatch fallback (#1949) only fires for a genuine
         // receiver; `alias_call` is always receiver-less (an alias name
@@ -1267,9 +1456,20 @@ pub fn build_call_edges(
     builtin_receivers: Vec<String>,
     max_iterations: u32,
     extra_invoked_property_names: Option<Vec<String>>,
+    extra_invoked_property_sites: Option<Vec<String>>,
+    correlation_enabled: Option<bool>,
 ) -> Vec<ComputedEdge> {
     let extra_names = extra_invoked_property_names.unwrap_or_default();
-    let ctx = EdgeContext::new(&all_nodes, &builtin_receivers, &files, &extra_names);
+    let extra_sites = extra_invoked_property_sites.unwrap_or_default();
+    let ctx = EdgeContext::new(
+        &all_nodes,
+        &builtin_receivers,
+        &files,
+        &extra_names,
+        &extra_sites,
+        max_iterations,
+        correlation_enabled.unwrap_or(true),
+    );
     let mut edges = Vec::new();
 
     for file_input in &files {
@@ -1352,6 +1552,10 @@ fn build_pts_map_for_file(
             .unwrap_or(&[]),
         object_prop_bindings: file_input.object_prop_bindings.as_deref().unwrap_or(&[]),
     };
+    let has_object_literal_sites = file_input
+        .object_literal_sites
+        .as_ref()
+        .is_some_and(|s| !s.is_empty());
     let has_pts_inputs = !bindings.fn_ref_bindings.is_empty()
         || !bindings.param_bindings.is_empty()
         || !bindings.array_elem_bindings.is_empty()
@@ -1360,7 +1564,8 @@ fn build_pts_map_for_file(
         || !bindings.array_callback_bindings.is_empty()
         || !bindings.object_rest_param_bindings.is_empty()
         || !bindings.object_prop_bindings.is_empty()
-        || !this_calls.is_empty();
+        || !this_calls.is_empty()
+        || has_object_literal_sites;
     if !has_pts_inputs {
         return None;
     }
@@ -1411,6 +1616,9 @@ fn build_pts_map_for_file(
         imported_names,
         &definition_params,
         max_iterations,
+        &file_input.file,
+        file_input.object_literal_sites.as_deref().unwrap_or(&[]),
+        file_input.call_assignments.as_deref().unwrap_or(&[]),
     ))
 }
 
@@ -1685,11 +1893,7 @@ fn process_file<'a>(
             // can't name this specific property statically, so that
             // evidence is credited to the whole table rather than per-key.
             if let Some(key_expr) = call.key_expr.as_deref() {
-                let has_computed_evidence = call.receiver.as_deref().is_some_and(|r| {
-                    ctx.computed_dispatch_table_evidence
-                        .contains(&computed_dispatch_table_evidence_key(fc.rel_path, r))
-                });
-                if !ctx.invoked_property_names.contains(key_expr) && !has_computed_evidence {
+                if !has_invocation_evidence(call, fc.rel_path, ctx, key_expr) {
                     targets.clear();
                 }
             }
@@ -4750,6 +4954,7 @@ mod call_edge_tests {
             dynamic_kind: None,
             key_expr: None,
             accessor_read: None,
+            object_literal_site: None,
         }
     }
 
@@ -4763,6 +4968,7 @@ mod call_edge_tests {
             dynamic_kind: None,
             key_expr: None,
             accessor_read: Some(accessor_read.to_string()),
+            object_literal_site: None,
         }
     }
 
@@ -4809,6 +5015,8 @@ mod call_edge_tests {
             object_prop_bindings: None,
             computed_dispatch_table_evidence: None,
             new_expressions: None,
+            object_literal_sites: None,
+            call_assignments: None,
         }
     }
 
@@ -4832,7 +5040,7 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -4884,7 +5092,7 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let call_edge = edges.iter().find(|e| e.kind == "calls");
         assert!(
@@ -4919,7 +5127,7 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         assert!(
             !edges.iter().any(|e| e.kind == "calls"),
@@ -4952,7 +5160,7 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert_eq!(
@@ -5019,7 +5227,7 @@ mod call_edge_tests {
             namespace: None,
         }];
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert_eq!(
@@ -5078,7 +5286,7 @@ mod call_edge_tests {
             namespace: None,
         }];
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert_eq!(
@@ -5136,7 +5344,7 @@ mod call_edge_tests {
             namespace: None,
         }];
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         assert!(
             !edges.iter().any(|e| e.kind == "calls"),
@@ -5196,6 +5404,8 @@ mod call_edge_tests {
             vec![],
             MAX_SOLVER_ITERATIONS,
             None,
+            None,
+            None,
         );
 
         let calls_never_read = edges.iter().any(|e| e.kind == "calls" && e.target_id == 2);
@@ -5251,7 +5461,7 @@ mod call_edge_tests {
             namespace: None,
         }];
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5291,7 +5501,7 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5321,7 +5531,7 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5349,7 +5559,7 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5381,7 +5591,7 @@ mod call_edge_tests {
             vec![type_map_entry("UserService.logger", "Logger", 1.0)],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
         assert!(
             edges
                 .iter()
@@ -5410,7 +5620,7 @@ mod call_edge_tests {
             vec![type_map_entry("useRest::eerest", "E4", 0.85)],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
         assert!(
             edges
                 .iter()
@@ -5439,7 +5649,7 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
         assert!(
             !edges
                 .iter()
@@ -5464,7 +5674,7 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
         assert!(
             edges
                 .iter()
@@ -5494,7 +5704,7 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
         assert!(
             edges
                 .iter()
@@ -5528,7 +5738,7 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
         assert!(
             !edges.iter().any(|e| e.kind == "calls" && e.source_id == 1),
             "ambiguous same-confidence candidates must not fan out into calls edges; got: {:?}",
@@ -5560,7 +5770,7 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
         let call_edges: Vec<_> = edges
             .iter()
             .filter(|e| e.kind == "calls" && e.source_id == 1)
@@ -5598,7 +5808,7 @@ mod call_edge_tests {
             vec![type_map_entry("calc", "Calculator", 0.85)],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
         let re = edges
             .iter()
             .find(|e| e.kind == "receiver")
@@ -5628,7 +5838,7 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5710,6 +5920,8 @@ mod call_edge_tests {
             all_nodes,
             vec![],
             MAX_SOLVER_ITERATIONS,
+            None,
+            None,
             None,
         );
 
@@ -5805,6 +6017,8 @@ mod call_edge_tests {
             vec![],
             MAX_SOLVER_ITERATIONS,
             None,
+            None,
+            None,
         );
 
         let calls_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
@@ -5869,6 +6083,8 @@ mod call_edge_tests {
             all_nodes,
             vec![],
             MAX_SOLVER_ITERATIONS,
+            None,
+            None,
             None,
         );
 
@@ -5950,6 +6166,8 @@ mod call_edge_tests {
             all_nodes,
             vec![],
             MAX_SOLVER_ITERATIONS,
+            None,
+            None,
             None,
         );
 
@@ -6053,6 +6271,8 @@ mod call_edge_tests {
             vec![],
             MAX_SOLVER_ITERATIONS,
             None,
+            None,
+            None,
         );
 
         let to_real = edges.iter().find(|e| e.kind == "calls" && e.target_id == 5);
@@ -6109,6 +6329,8 @@ mod call_edge_tests {
             all_nodes,
             vec![],
             MAX_SOLVER_ITERATIONS,
+            None,
+            None,
             None,
         );
 
@@ -6175,6 +6397,8 @@ mod call_edge_tests {
             vec![],
             MAX_SOLVER_ITERATIONS,
             None,
+            None,
+            None,
         );
 
         let to_abstract = edges.iter().find(|e| e.kind == "calls" && e.target_id == 2);
@@ -6230,6 +6454,8 @@ mod call_edge_tests {
             all_nodes,
             vec![],
             MAX_SOLVER_ITERATIONS,
+            None,
+            None,
             None,
         );
 
@@ -6305,6 +6531,8 @@ mod call_edge_tests {
             vec![],
             MAX_SOLVER_ITERATIONS,
             None,
+            None,
+            None,
         );
 
         let to_real = edges.iter().any(|e| e.kind == "calls" && e.target_id == 2);
@@ -6363,7 +6591,7 @@ mod call_edge_tests {
             arg_name: "target".to_string(),
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         assert!(
             edges
@@ -6420,7 +6648,7 @@ mod call_edge_tests {
             f
         };
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let pts_edge = edges
             .iter()
@@ -6474,7 +6702,7 @@ mod call_edge_tests {
             f
         };
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         let hof_to_target: Vec<_> = edges
             .iter()
@@ -6526,6 +6754,7 @@ mod call_edge_tests {
                     dynamic_kind: None,
                     key_expr: None,
                     accessor_read: None,
+                    object_literal_site: None,
                 },
             ],
             vec![],
@@ -6536,7 +6765,7 @@ mod call_edge_tests {
             this_arg: "handler".to_string(),
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         assert!(
             edges
@@ -6600,7 +6829,7 @@ mod call_edge_tests {
             enclosing_func: "iterPlain".to_string(),
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         for target in [1u32, 2u32] {
             assert!(
@@ -6640,6 +6869,7 @@ mod call_edge_tests {
                     dynamic_kind: None,
                     key_expr: None,
                     accessor_read: None,
+                    object_literal_site: None,
                 },
                 call("f3", 9, None),
             ],
@@ -6668,7 +6898,7 @@ mod call_edge_tests {
             value_name: "e4".to_string(),
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         assert!(
             edges
@@ -6727,7 +6957,7 @@ mod call_edge_tests {
             start_index: 0,
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None);
+        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
 
         assert!(
             edges
@@ -6797,6 +7027,9 @@ mod call_edge_tests {
             &imported_names,
             &definition_params,
             3,
+            "",
+            &[],
+            &[],
         );
         assert!(
             resolve_via_points_to("a0", &pts_low).is_empty(),
@@ -6810,6 +7043,9 @@ mod call_edge_tests {
             &imported_names,
             &definition_params,
             chain_len,
+            "",
+            &[],
+            &[],
         );
         assert_eq!(
             resolve_via_points_to("a0", &pts_high),
