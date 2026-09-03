@@ -73,6 +73,20 @@ import { make } from './factory.js';
 export function go() { return make().alpha(); }
 `,
   },
+  globalThisRead: {
+    // WU-10 (bh) / B5 / #2640: classic script, no "use strict", no
+    // "type": "module". A globalThis-qualified read must mark the site
+    // escaping — otherwise T1 exclusive-misses liveFn as dead.
+    'globalthis-read.js': `
+function liveFn() { return 1; }
+var T = { resolve: liveFn };
+function sink() { return globalThis.T.resolve(); }
+function take(x) { return x.resolve(); }
+sink();
+take(globalThis.T);
+export function go() { return sink(); }
+`,
+  },
 };
 
 function writeFixture(dir: string, files: Record<string, string>): void {
@@ -121,6 +135,7 @@ function runSuite(engine: 'wasm' | 'native') {
     let spreadDir: string;
     let forEachDir: string;
     let factoryDir: string;
+    let globalThisDir: string;
 
     beforeAll(async () => {
       exportedDir = await buildFixture('exported', engine);
@@ -129,10 +144,19 @@ function runSuite(engine: 'wasm' | 'native') {
       spreadDir = await buildFixture('spread', engine);
       forEachDir = await buildFixture('forEach', engine);
       factoryDir = await buildFixture('factoryReturn', engine);
+      globalThisDir = await buildFixture('globalThisRead', engine);
     });
 
     afterAll(() => {
-      for (const dir of [exportedDir, paramDir, thisDir, spreadDir, forEachDir, factoryDir]) {
+      for (const dir of [
+        exportedDir,
+        paramDir,
+        thisDir,
+        spreadDir,
+        forEachDir,
+        factoryDir,
+        globalThisDir,
+      ]) {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     });
@@ -172,6 +196,12 @@ function runSuite(engine: 'wasm' | 'native') {
       const dbPath = path.join(factoryDir, '.codegraph', 'graph.db');
       expect(siteEscapes(dbPath, 'factory.js')).toBe(1);
       expect(isDead(dbPath, 'fnA')).toBe(false);
+    });
+
+    it('a globalThis-qualified read of a script-scope var escapes (B5 / #2640 case bh)', () => {
+      const dbPath = path.join(globalThisDir, '.codegraph', 'graph.db');
+      expect(siteEscapes(dbPath, 'globalthis-read.js')).toBe(1);
+      expect(isDead(dbPath, 'liveFn')).toBe(false);
     });
   });
 }

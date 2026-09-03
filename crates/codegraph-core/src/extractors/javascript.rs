@@ -5314,6 +5314,15 @@ fn all_references_tracked(
         if node.id() != scope_id && scope_shadows_name(&node, binding_name, source) {
             return;
         }
+        // #2088 B5 / #2640: a globalThis/window/global/self qualified read
+        // of this binding is a real reference the identifier walk cannot
+        // see (`property_identifier` / string index). Unconditionally
+        // untracked — no T1 channel exists for a synthetic global-object
+        // lookup.
+        if is_global_object_qualified_write(&node, binding_name, source) {
+            *covered = false;
+            return;
+        }
         if (node.kind() == "identifier" || node.kind() == "shorthand_property_identifier")
             && node_text(&node, source) == binding_name
             && !is_binding_occurrence(&node, source)

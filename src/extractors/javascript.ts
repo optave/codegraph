@@ -5154,6 +5154,15 @@ function allReferencesTracked(
     }
     if (node.id !== scope.id && scopeShadowsName(node, bindingName)) return;
 
+    // #2088 B5 / #2640: a globalThis/window/global/self qualified read of
+    // this binding is a real reference the identifier walk cannot see
+    // (`property_identifier` / string index). Unconditionally untracked —
+    // no T1 channel exists for a synthetic global-object lookup.
+    if (isGlobalObjectQualifiedWrite(node, bindingName)) {
+      covered = false;
+      return;
+    }
+
     if (
       (node.type === 'identifier' || node.type === 'shorthand_property_identifier') &&
       node.text === bindingName &&
