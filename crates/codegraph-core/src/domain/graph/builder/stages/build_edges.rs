@@ -1273,7 +1273,9 @@ fn build_points_to_map(
 
     for site in object_literal_sites {
         let site_key = object_literal_site_key(rel_path, &site.site);
-        pts.entry(site_key.clone()).or_default().insert(site_key.clone());
+        pts.entry(site_key.clone())
+            .or_default()
+            .insert(site_key.clone());
         if let Some(owner) = &site.owner {
             constraints.push((owner.clone(), site_key));
         }
@@ -5040,7 +5042,15 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5092,7 +5102,15 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let call_edge = edges.iter().find(|e| e.kind == "calls");
         assert!(
@@ -5127,7 +5145,15 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         assert!(
             !edges.iter().any(|e| e.kind == "calls"),
@@ -5160,7 +5186,15 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert_eq!(
@@ -5227,7 +5261,15 @@ mod call_edge_tests {
             namespace: None,
         }];
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert_eq!(
@@ -5286,7 +5328,15 @@ mod call_edge_tests {
             namespace: None,
         }];
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let call_edges: Vec<_> = edges.iter().filter(|e| e.kind == "calls").collect();
         assert_eq!(
@@ -5344,7 +5394,15 @@ mod call_edge_tests {
             namespace: None,
         }];
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         assert!(
             !edges.iter().any(|e| e.kind == "calls"),
@@ -5461,7 +5519,15 @@ mod call_edge_tests {
             namespace: None,
         }];
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5501,7 +5567,15 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5531,7 +5605,15 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5559,7 +5641,15 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -5591,7 +5681,15 @@ mod call_edge_tests {
             vec![type_map_entry("UserService.logger", "Logger", 1.0)],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
         assert!(
             edges
                 .iter()
@@ -5620,7 +5718,15 @@ mod call_edge_tests {
             vec![type_map_entry("useRest::eerest", "E4", 0.85)],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
         assert!(
             edges
                 .iter()
@@ -5649,7 +5755,15 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
         assert!(
             !edges
                 .iter()
@@ -5674,7 +5788,15 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
         assert!(
             edges
                 .iter()
@@ -5704,7 +5826,15 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
         assert!(
             edges
                 .iter()
@@ -5738,7 +5868,15 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
         assert!(
             !edges.iter().any(|e| e.kind == "calls" && e.source_id == 1),
             "ambiguous same-confidence candidates must not fan out into calls edges; got: {:?}",
@@ -5770,7 +5908,15 @@ mod call_edge_tests {
             vec![],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
         let call_edges: Vec<_> = edges
             .iter()
             .filter(|e| e.kind == "calls" && e.source_id == 1)
@@ -5808,7 +5954,15 @@ mod call_edge_tests {
             vec![type_map_entry("calc", "Calculator", 0.85)],
             vec![],
         )];
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
         let re = edges
             .iter()
             .find(|e| e.kind == "receiver")
@@ -5838,7 +5992,15 @@ mod call_edge_tests {
             vec![],
         )];
 
-        let edges = build_call_edges(files, all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            files,
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let receiver_edge = edges.iter().find(|e| e.kind == "receiver");
         assert!(
@@ -6591,7 +6753,15 @@ mod call_edge_tests {
             arg_name: "target".to_string(),
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         assert!(
             edges
@@ -6648,7 +6818,15 @@ mod call_edge_tests {
             f
         };
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let pts_edge = edges
             .iter()
@@ -6702,7 +6880,15 @@ mod call_edge_tests {
             f
         };
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         let hof_to_target: Vec<_> = edges
             .iter()
@@ -6765,7 +6951,15 @@ mod call_edge_tests {
             this_arg: "handler".to_string(),
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         assert!(
             edges
@@ -6829,7 +7023,15 @@ mod call_edge_tests {
             enclosing_func: "iterPlain".to_string(),
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         for target in [1u32, 2u32] {
             assert!(
@@ -6898,7 +7100,15 @@ mod call_edge_tests {
             value_name: "e4".to_string(),
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         assert!(
             edges
@@ -6957,7 +7167,15 @@ mod call_edge_tests {
             start_index: 0,
         }]);
 
-        let edges = build_call_edges(vec![file], all_nodes, vec![], MAX_SOLVER_ITERATIONS, None, None, None);
+        let edges = build_call_edges(
+            vec![file],
+            all_nodes,
+            vec![],
+            MAX_SOLVER_ITERATIONS,
+            None,
+            None,
+            None,
+        );
 
         assert!(
             edges

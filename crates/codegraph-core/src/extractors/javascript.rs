@@ -4452,7 +4452,11 @@ fn find_enclosing_table_name(node: &Node, source: &[u8]) -> Option<String> {
 }
 
 const MAX_ALIAS_DEPTH: usize = 6;
-const OBJLIT_TRACKED_PARENTS: &[&str] = &["member_expression", "subscript_expression", "for_in_statement"];
+const OBJLIT_TRACKED_PARENTS: &[&str] = &[
+    "member_expression",
+    "subscript_expression",
+    "for_in_statement",
+];
 const GLOBAL_OBJECT_NAMES: &[&str] = &["globalThis", "global", "self", "window"];
 
 fn object_literal_site_id(object_node: &Node) -> String {
@@ -4472,7 +4476,10 @@ fn enclosing_object_literal<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     }
 }
 
-fn seed_object_literal_site(object_node: Option<Node>, symbols: &mut FileSymbols) -> Option<String> {
+fn seed_object_literal_site(
+    object_node: Option<Node>,
+    symbols: &mut FileSymbols,
+) -> Option<String> {
     let object_node = object_node?;
     let site = object_literal_site_id(&object_node);
     if !symbols.object_literal_sites.iter().any(|s| s.site == site) {
@@ -4668,7 +4675,8 @@ fn collect_exported_binding_names(root: &Node, source: &[u8]) -> HashSet<String>
                             names.insert(node_text(&name_n, source).to_string());
                         }
                         "object_pattern" => {
-                            for n in collect_object_pattern_names(&name_n, source, &mut Vec::new()) {
+                            for n in collect_object_pattern_names(&name_n, source, &mut Vec::new())
+                            {
                                 names.insert(n);
                             }
                         }
@@ -4705,7 +4713,12 @@ fn collect_exported_binding_names(root: &Node, source: &[u8]) -> HashSet<String>
     names
 }
 
-fn collect_export_clause_names(node: &Node, source: &[u8], names: &mut HashSet<String>, depth: usize) {
+fn collect_export_clause_names(
+    node: &Node,
+    source: &[u8],
+    names: &mut HashSet<String>,
+    depth: usize,
+) {
     if depth >= MAX_WALK_DEPTH {
         return;
     }
@@ -4786,8 +4799,13 @@ fn literal_has_unmodeled_this_reference(
             if JS_BUILTIN_GLOBALS.contains(&text) {
                 return true;
             }
-            if resolve_identifier_value_this_reference(object_node, root, source, text, definition_names)
-            {
+            if resolve_identifier_value_this_reference(
+                object_node,
+                root,
+                source,
+                text,
+                definition_names,
+            ) {
                 return true;
             }
             continue;
@@ -4958,7 +4976,12 @@ fn find_top_level_function_node_by_name<'a>(
     }
 }
 
-fn count_hoisted_var_scope_declarations(node: &Node, name: &str, source: &[u8], depth: usize) -> usize {
+fn count_hoisted_var_scope_declarations(
+    node: &Node,
+    name: &str,
+    source: &[u8],
+    depth: usize,
+) -> usize {
     if depth >= MAX_WALK_DEPTH {
         return 2;
     }
@@ -5152,13 +5175,15 @@ fn is_binding_occurrence(node: &Node, source: &[u8]) -> bool {
     }
     if parent.kind() == "for_in_statement" {
         if let Some(left) = parent.child_by_field_name("left") {
-            if left.id() == node.id() || pattern_binds_name(&unwrap_parens(left, 0), node_text(node, source), source, 0)
+            if left.id() == node.id()
+                || pattern_binds_name(&unwrap_parens(left, 0), node_text(node, source), source, 0)
             {
                 return true;
             }
         }
     }
-    if (parent.kind() == "function_declaration" || parent.kind() == "generator_function_declaration")
+    if (parent.kind() == "function_declaration"
+        || parent.kind() == "generator_function_declaration")
         && parent
             .child_by_field_name("name")
             .is_some_and(|n| n.id() == node.id())
@@ -5369,7 +5394,8 @@ fn all_references_tracked(
                 return false;
             }
             let alias = node_text(&name_node, source).to_string();
-            let alias_scope = find_declaring_scope_node(&name_node, &alias, source).unwrap_or(scope);
+            let alias_scope =
+                find_declaring_scope_node(&name_node, &alias, source).unwrap_or(scope);
             if !all_references_tracked(
                 root,
                 source,
@@ -5432,7 +5458,11 @@ fn handle_object_literal_pair_value_ref(node: &Node, source: &[u8], symbols: &mu
 ///
 /// Mirrors the walk path's `shorthand_property_identifier` handling in
 /// `src/extractors/javascript.ts`'s `runCollectorWalk` (issue #1771).
-fn handle_object_literal_shorthand_value_ref(node: &Node, source: &[u8], symbols: &mut FileSymbols) {
+fn handle_object_literal_shorthand_value_ref(
+    node: &Node,
+    source: &[u8],
+    symbols: &mut FileSymbols,
+) {
     let text = node_text(node, source);
     if JS_BUILTIN_GLOBALS.contains(&text) {
         return;
