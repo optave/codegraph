@@ -2192,12 +2192,12 @@ fn build_and_insert_call_edges(
         .map_err(|e| format!("invoked property name persistence failed: {e}"))?;
     import_edges::persist_object_literal_sites(conn, &file_entries)
         .map_err(|e| format!("object literal site persistence failed: {e}"))?;
-    // #2088: persist this pass's correlated keys before the extra-SELECT
-    // below (and before `file_entries` is moved into `build_call_edges`) so
-    // a later incremental rebuild's extra-SELECT is not vacuously empty.
-    let sites_by_file =
-        collect_invoked_property_sites_by_file(&file_entries, &all_nodes, max_iterations);
-    import_edges::persist_invoked_property_sites(conn, &file_entries, &sites_by_file)
+    // #2088: one Andersen pass for this file set, reused for persist AND
+    // call-edge emission — mirrors JS `prepareInvokedPropertySiteResolution`.
+    // Persist before the extra-SELECT so a later incremental rebuild's
+    // extra-SELECT is not vacuously empty.
+    let prep = prepare_invoked_property_site_resolution(&file_entries, &all_nodes, max_iterations);
+    import_edges::persist_invoked_property_sites(conn, &file_entries, &prep.sites_by_file)
         .map_err(|e| format!("invoked property site persistence failed: {e}"))?;
 
     // Read back the now-current whole-graph view (includes the fresh rows
@@ -2220,14 +2220,14 @@ fn build_and_insert_call_edges(
         })
         .unwrap_or_default();
 
-    let computed_edges = build_call_edges(
+    let computed_edges = build_call_edges_prepared(
         file_entries,
         all_nodes,
         builtin_receivers,
-        max_iterations,
         Some(extra_invoked_property_names),
         Some(extra_invoked_property_sites),
         Some(correlation_enabled),
+        prep,
     );
     insert_call_edge_rows(conn, &computed_edges)
 }

@@ -308,8 +308,7 @@ impl<'a> EdgeContext<'a> {
         builtin_receivers: &'a [String],
         files: &'a [FileEdgeInput],
         extra_invoked_property_names: &[String],
-        extra_invoked_property_sites: &[String],
-        max_iterations: u32,
+        correlated_property_sites: HashSet<String>,
         correlation_enabled: bool,
     ) -> Self {
         let mut nodes_by_name: HashMap<&str, Vec<&NodeInfo>> = HashMap::new();
@@ -343,12 +342,7 @@ impl<'a> EdgeContext<'a> {
                 extra_invoked_property_names,
             ),
             computed_dispatch_table_evidence: collect_computed_dispatch_table_evidence(files),
-            correlated_property_sites: collect_invoked_property_sites(
-                files,
-                all_nodes,
-                extra_invoked_property_sites,
-                max_iterations,
-            ),
+            correlated_property_sites,
             non_escaping_sites: collect_non_escaping_sites(files),
             correlation_enabled,
             cha_implementors: cha.implementors,
@@ -986,15 +980,36 @@ fn candidate_scopes_for(caller_name: &str) -> Vec<String> {
     scopes
 }
 
-/// Per-file `${siteKey}|${name}` keys for this pass (#2088). Used both to
-/// assemble in-memory T1 evidence and to persist `invoked_property_sites`
-/// so a later incremental pass's extra-SELECT is not vacuously empty.
-pub(crate) fn collect_invoked_property_sites_by_file(
+/// Per-file points-to maps plus `${siteKey}|${name}` keys for this pass (#2088).
+///
+/// Mirrors `prepareInvokedPropertySiteResolution` in `build-edges.ts`: the
+/// Andersen solver runs once per file and the maps are reused for both
+/// `invoked_property_sites` persistence and call-edge emission. Computing
+/// them separately (persist, then `EdgeContext`, then `process_file`) was
+/// three solver passes per file on the native orchestrator path.
+pub(crate) struct InvokedPropertySitePrep {
+    pub sites_by_file: HashMap<String, HashSet<String>>,
+    pub pts_maps_by_file: HashMap<String, HashMap<String, HashSet<String>>>,
+}
+
+/// #2088 pass 1: per-file pts maps + correlated keys. Used by the native
+/// orchestrator to persist `invoked_property_sites` and by `build_call_edges`
+/// / `build_call_edges_prepared` to emit T1 evidence without re-solving.
+pub(crate) fn prepare_invoked_property_site_resolution(
     files: &[FileEdgeInput],
     all_nodes: &[NodeInfo],
     max_iterations: u32,
-) -> HashMap<String, HashSet<String>> {
-    let mut by_file: HashMap<String, HashSet<String>> = HashMap::new();
+) -> InvokedPropertySitePrep {
+    let mut nodes_by_file: HashMap<&str, Vec<&NodeInfo>> = HashMap::new();
+    for node in all_nodes {
+        nodes_by_file
+            .entry(node.file.as_str())
+            .or_default()
+            .push(node);
+    }
+
+    let mut sites_by_file: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut pts_maps_by_file: HashMap<String, HashMap<String, HashSet<String>>> = HashMap::new();
     for file in files {
         let imported_names: HashMap<&str, &str> = file
             .imported_names
@@ -1004,7 +1019,10 @@ pub(crate) fn collect_invoked_property_sites_by_file(
         let Some(pts) = build_pts_map_for_file(file, &imported_names, max_iterations) else {
             continue;
         };
-        let file_nodes: Vec<&NodeInfo> = all_nodes.iter().filter(|n| n.file == file.file).collect();
+        let file_nodes: &[&NodeInfo] = nodes_by_file
+            .get(file.file.as_str())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         let defs_with_ids: Vec<DefWithId> = file
             .definitions
             .iter()
@@ -1042,26 +1060,26 @@ pub(crate) fn collect_invoked_property_sites_by_file(
             }
         }
         if !keys.is_empty() {
-            by_file.insert(file.file.clone(), keys);
+            sites_by_file.insert(file.file.clone(), keys);
         }
+        pts_maps_by_file.insert(file.file.clone(), pts);
     }
-    by_file
+    InvokedPropertySitePrep {
+        sites_by_file,
+        pts_maps_by_file,
+    }
 }
 
-fn collect_invoked_property_sites(
-    files: &[FileEdgeInput],
-    all_nodes: &[NodeInfo],
+fn union_invoked_property_sites(
     extra: &[String],
-    max_iterations: u32,
+    sites_by_file: &HashMap<String, HashSet<String>>,
 ) -> HashSet<String> {
     let mut keys = HashSet::new();
     for extra_key in extra {
         keys.insert(extra_key.clone());
     }
-    for file_keys in
-        collect_invoked_property_sites_by_file(files, all_nodes, max_iterations).into_values()
-    {
-        keys.extend(file_keys);
+    for file_keys in sites_by_file.values() {
+        keys.extend(file_keys.iter().cloned());
     }
     keys
 }
@@ -1482,21 +1500,49 @@ pub fn build_call_edges(
     extra_invoked_property_sites: Option<Vec<String>>,
     correlation_enabled: Option<bool>,
 ) -> Vec<ComputedEdge> {
+    let prep = prepare_invoked_property_site_resolution(&files, &all_nodes, max_iterations);
+    build_call_edges_prepared(
+        files,
+        all_nodes,
+        builtin_receivers,
+        extra_invoked_property_names,
+        extra_invoked_property_sites,
+        correlation_enabled,
+        prep,
+    )
+}
+
+/// Call-edge emission with a precomputed pts-map / correlated-site prep.
+///
+/// The native orchestrator persists `prep.sites_by_file` then calls this so
+/// the Andersen solver does not run a second (or third) time. The NAPI
+/// `build_call_edges` wrapper prepares internally for JS-orchestrated tests
+/// and the per-stage native path.
+pub(crate) fn build_call_edges_prepared(
+    files: Vec<FileEdgeInput>,
+    all_nodes: Vec<NodeInfo>,
+    builtin_receivers: Vec<String>,
+    extra_invoked_property_names: Option<Vec<String>>,
+    extra_invoked_property_sites: Option<Vec<String>>,
+    correlation_enabled: Option<bool>,
+    mut prep: InvokedPropertySitePrep,
+) -> Vec<ComputedEdge> {
     let extra_names = extra_invoked_property_names.unwrap_or_default();
     let extra_sites = extra_invoked_property_sites.unwrap_or_default();
+    let correlated = union_invoked_property_sites(&extra_sites, &prep.sites_by_file);
     let ctx = EdgeContext::new(
         &all_nodes,
         &builtin_receivers,
         &files,
         &extra_names,
-        &extra_sites,
-        max_iterations,
+        correlated,
         correlation_enabled.unwrap_or(true),
     );
     let mut edges = Vec::new();
 
     for file_input in &files {
-        process_file(&ctx, file_input, &all_nodes, &mut edges, max_iterations);
+        let cached_pts = prep.pts_maps_by_file.remove(&file_input.file);
+        process_file(&ctx, file_input, &all_nodes, &mut edges, cached_pts);
     }
 
     edges
@@ -1646,10 +1692,14 @@ fn build_pts_map_for_file(
 }
 
 /// Build all per-file lookup structures needed for edge emission.
+///
+/// `pts_map` is the Andersen result for this file, computed once by
+/// `prepare_invoked_property_site_resolution` and moved in here so
+/// `process_file` does not re-solve.
 fn build_file_context<'a>(
     file_input: &'a FileEdgeInput,
     all_nodes: &'a [NodeInfo],
-    max_iterations: u32,
+    pts_map: Option<HashMap<String, HashSet<String>>>,
 ) -> FileContext<'a> {
     let rel_path = file_input.file.as_str();
     let imported_names: HashMap<&str, &str> = file_input
@@ -1687,7 +1737,6 @@ fn build_file_context<'a>(
             }
         })
         .collect();
-    let pts_map = build_pts_map_for_file(file_input, &imported_names, max_iterations);
     let raw_fn_ref: &[FnRefBinding] = file_input.fn_ref_bindings.as_deref().unwrap_or(&[]);
     // Case (c) flat-key gate set: lhs names from the *raw* fnRefBindings only
     // (thisCall conversions are scoped keys and never flat-matched).
@@ -1836,9 +1885,9 @@ fn process_file<'a>(
     file_input: &'a FileEdgeInput,
     all_nodes: &'a [NodeInfo],
     edges: &mut Vec<ComputedEdge>,
-    max_iterations: u32,
+    pts_map: Option<HashMap<String, HashSet<String>>>,
 ) {
-    let fc = build_file_context(file_input, all_nodes, max_iterations);
+    let fc = build_file_context(file_input, all_nodes, pts_map);
 
     // Phase 8.3: tracks pts-resolved edges separately from seen_edges so that a
     // subsequent direct call to the same caller→target pair can upgrade confidence

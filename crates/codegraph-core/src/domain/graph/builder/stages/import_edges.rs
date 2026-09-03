@@ -400,7 +400,7 @@ pub fn persist_object_literal_sites(
 /// Persist per-file correlated invoked-property evidence (#2088) into
 /// `invoked_property_sites` — the durable counterpart of
 /// `persistInvokedPropertySites` in `build-edges.ts`. Called once per native
-/// orchestrator pass after `collect_invoked_property_sites_by_file` has this
+/// orchestrator pass after `prepare_invoked_property_site_resolution` has this
 /// pass's keys, so a later `codegraph watch` extra-SELECT is not empty.
 ///
 /// Deletes and re-inserts per file so a file whose correlated keys changed
