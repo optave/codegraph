@@ -10,10 +10,7 @@
 
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  PINNED_HUB_CANDIDATES,
-  selectHubTargetsFromDb,
-} from '../../scripts/lib/hub-selection.js';
+import { PINNED_HUB_CANDIDATES, selectHubTargetsFromDb } from '../../scripts/lib/hub-selection.js';
 import { initSchema } from '../../src/db/index.js';
 
 function insertNode(db, name, kind, file, line) {
